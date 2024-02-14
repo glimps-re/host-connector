@@ -1,3 +1,8 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: Release
+
 on:
   release:
     types: [created]
@@ -10,8 +15,9 @@ jobs:
       matrix:
         goos: [linux, windows]
         goarch: [amd64]
+        goversion: [1.21.7]
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.40
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -21,3 +27,4 @@ jobs:
           binary_name: "gmhost"
           ldflags: "-s -w"
           extra_files: README.md LICENSE
+          goversion: ${{ matrix.goversion }}

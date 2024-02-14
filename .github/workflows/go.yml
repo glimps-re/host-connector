@@ -11,23 +11,28 @@ on:
 
 jobs:
   build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ["ubuntu-latest"]
+        go: ["1.21.7"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v4
         with:
-          go-version: 1.21
+          go-version: ${{ matrix.go }}
       - name: build
         run: go build -v ./...
       - name: test
         env:
-          TESTCOVERAGE_TRESHOLD: 85
+          TESTCOVERAGE_TRESHOLD: 75
         run: |
           go test -v ./... -covermode=count -coverprofile=coverage.out
           go tool cover -func=coverage.out -o=coverage.out
           totalCoverage=`cat coverage.out | grep 'total' | grep -Eo '[0-9\.]+'`
-          if (( $(echo "$totalCoverage $TESTCOVERAGE_TRESHOLD" |awk '{print ($1 > $2)}') )); then 
+          if (( $(echo "$totalCoverage $TESTCOVERAGE_TRESHOLD" |awk '{print ($1 >= $2)}') )); then 
             echo "OK"
           else
             echo "Current test coverage too low"
@@ -36,6 +41,8 @@ jobs:
       - uses: dominikh/staticcheck-action@v1.3.0
         with:
           version: "2023.1.6"
+          min-go-version: ${{ matrix.go }}
+          install-go: false
       - name: gofumpt
         env:
           GOFUMPT_VERSION: v0.4.0

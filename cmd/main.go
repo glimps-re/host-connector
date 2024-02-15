@@ -43,7 +43,7 @@ func initGCtx() error {
 			Quarantine: conf.Actions.Quarantine,
 			Inform:     conf.Actions.Print,
 			Verbose:    conf.Verbose,
-			Deleted:    conf.Actions.Delete,
+			Deleted:    conf.Actions.Delete || conf.Actions.Quarantine,
 		},
 		WaitOpts: gdetect.WaitForOptions{
 			Tags:     append(conf.GDetect.Tags, "GMHost"),

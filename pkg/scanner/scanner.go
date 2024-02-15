@@ -148,8 +148,8 @@ func (c *Connector) handleFile(file string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 	if _, err = io.Copy(hash, f); err != nil {
+		f.Close()
 		return err
 	}
 	sha256 := hex.EncodeToString(hash.Sum(nil))
@@ -161,11 +161,13 @@ func (c *Connector) handleFile(file string) error {
 		if c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
 			// skip file
 			Logger.Debug("skip cached file", "file", file)
+			f.Close()
 			return nil
 		}
 	case errors.Is(err, cache.ErrEntryNotFound):
 		// ok
 	default:
+		f.Close()
 		return err
 	}
 
@@ -181,9 +183,12 @@ func (c *Connector) handleFile(file string) error {
 		opts.Filename = file
 		result, err = c.config.Submitter.WaitForReader(ctx, f, opts)
 		if err != nil {
+			f.Close()
 			return err
 		}
 	}
+	// f need to be closed before action, to allow deletion
+	f.Close()
 	report := &Report{}
 	if err = c.Action.Handle(file, sha256, result, report); err != nil {
 		return err

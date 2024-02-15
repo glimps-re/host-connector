@@ -9,8 +9,9 @@ import (
 )
 
 var scanCmd = &cobra.Command{
-	Use:   "scan",
-	Short: "Scan folders",
+	Use:     "scan",
+	Short:   "Scan folders",
+	PreRunE: GlobalInit,
 	Run: func(cmd *cobra.Command, args []string) {
 		gctx.conn.Start()
 		defer gctx.conn.Close()

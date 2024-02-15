@@ -134,6 +134,7 @@ func (a *QuarantineAction) Handle(path string, sha256 string, result gdetect.Res
 	if err != nil {
 		return
 	}
+	defer fin.Close()
 	malware := "unknown"
 	if len(result.Malwares) > 0 {
 		malware = result.Malwares[0]
@@ -193,10 +194,13 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 		entry.RestoredAt = Now()
 		a.cache.Set(entry)
 	}
-	Logger.Debug("file restored", "file", file, "reason", reason)
-	os.Remove(f.Name())
+	Logger.Info("file restored", "file", file, "reason", reason)
+	defer func() {
+		err = f.Close()
+		err = os.Remove(f.Name())
+	}()
 
-	return nil
+	return err
 }
 
 func restoreFileInfo(path string, info os.FileInfo) (err error) {
@@ -237,6 +241,7 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 			if err != nil {
 				return err
 			}
+			defer file.Close()
 			entry, err := a.locker.GetHeader(file)
 			if err != nil {
 				return err
@@ -249,7 +254,6 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 				// push entry
 				return nil
 			}
-			return nil
 		})
 		close(qfiles)
 	}()

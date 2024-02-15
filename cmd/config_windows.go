@@ -9,10 +9,10 @@ import (
 )
 
 var (
-	DefaultConfigPath         = filepath.Join(os.Getenv("PROGRAMDATA"), "gmhost", "config")
-	DefaultCacheLocation      = "" // filepath.Join(os.Getenv("PROGRAMDATA"), "gmhost", "cache")
-	DefaultQuarantineLocation = filepath.Join(os.Getenv("PROGRAMDATA"), "gmhost", "quarantine")
-	DefaultExportLocation     = filepath.Join(os.Getenv("PROGRAMDATA"), "gmhost", "export")
+	DefaultConfigPath         = filepath.Join(os.Getenv("AppData"), "gmhost", "config.yml")
+	DefaultCacheLocation      = filepath.Join(os.Getenv("AppData"), "gmhost", "cache.db")
+	DefaultQuarantineLocation = filepath.Join(os.Getenv("AppData"), "gmhost", "quarantine")
+	DefaultExportLocation     = filepath.Join(os.Getenv("AppData"), "gmhost", "export")
 )
 
 func getConfigFile() (config string) {
@@ -25,4 +25,4 @@ func getConfigFile() (config string) {
 	return
 }
 
-var defaultConfigUsage = "config file (default is %PROGRAMDATA%/gmhost/config)"
+var defaultConfigUsage = "config file (default is %ProgramFiles%/gmhost/config)"

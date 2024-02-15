@@ -12,6 +12,7 @@ var (
 )
 
 var conf = &config{
+	Config:  DefaultConfigPath,
 	Workers: uint(DefaultWorkers),
 	Actions: actionsConfig{
 		Delete:     true,
@@ -39,10 +40,10 @@ type actionsConfig struct {
 }
 
 type monitoringConfig struct {
-	PreScan           bool          `json:"pre_scan,omitempty" yaml:"pre_scan" desc:"scan all files when starting to monitor"`
-	ReScan            bool          `json:"re_scan,omitempty" yaml:"re_scan" desc:"re scan all files periodically"`
+	PreScan           bool          `json:"pre_scan,omitempty" yaml:"preScan" desc:"scan all files when starting to monitor"`
+	ReScan            bool          `json:"re_scan,omitempty" yaml:"reScan" desc:"re scan all files periodically"`
 	Period            time.Duration `json:"period,omitempty" yaml:"period" desc:"every period, walk through all files to check if they need to be scan again"`
-	ModificationDelay time.Duration `json:"modification_delay" yaml:"modification_delay" desc:"modification delay before scanning a file"`
+	ModificationDelay time.Duration `json:"modification_delay" yaml:"modificationDelay" desc:"modification delay before scanning a file"`
 }
 
 type gdetectConfig struct {
@@ -60,7 +61,7 @@ type quarantineConfig struct {
 
 type cacheConfig struct {
 	Location     string        `json:"location" yaml:"location" desc:"location of the cache file. if empty, cache will be volatile"`
-	ScanValidity time.Duration `json:"scan_validity" yaml:"scan_validity" desc:"when time since the last scan if lesser than ScanValidity the files won't be scan again"`
+	ScanValidity time.Duration `json:"scan_validity" yaml:"scanValidity" desc:"when time since the last scan if lesser than ScanValidity the files won't be scan again"`
 }
 
 type exportConfig struct {

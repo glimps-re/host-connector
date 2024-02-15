@@ -10,14 +10,9 @@ import (
 )
 
 var monitoringCmd = &cobra.Command{
-	Use:   "monitoring",
-	Short: "start monitoring location with GMalware host",
-	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
-		if err := GlobalInit(cmd, args); err != nil {
-			return err
-		}
-		return nil
-	},
+	Use:               "monitoring",
+	Short:             "start monitoring location with GMalware host",
+	PersistentPreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		Logger.Debug("config", "conf", conf)
 		if len(args) == 0 {

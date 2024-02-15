@@ -68,7 +68,7 @@ func GlobalInit(cmd *cobra.Command, args []string) error {
 	if conf.Quarantine.Location != "" {
 		_, err := os.Stat(conf.Quarantine.Location)
 		if errors.Is(err, os.ErrNotExist) {
-			if err = os.Mkdir(conf.Quarantine.Location, 0o755); err != nil {
+			if err = os.MkdirAll(conf.Quarantine.Location, 0o755); err != nil {
 				return err
 			}
 		}

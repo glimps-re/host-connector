@@ -8,12 +8,12 @@ on:
     types: [created]
 
 jobs:
-  release-matrix:
+  release-matrix-linux:
     name: Release Go Binary
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, windows]
+        goos: [linux]
         goarch: [amd64]
         goversion: [1.21.7]
     steps:
@@ -28,3 +28,36 @@ jobs:
           ldflags: "-s -w"
           extra_files: README.md LICENSE
           goversion: ${{ matrix.goversion }}
+  release-matrix-windows:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [windows]
+        goarch: [amd64]
+        goversion: [1.21.7]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wangyoucao577/go-release-action@v1.40
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          project_path: "."
+          binary_name: "gmhost"
+          ldflags: "-s -w -H windowsgui"
+          extra_files: README.md LICENSE
+          goversion: ${{ matrix.goversion }}
+          pre_command: apt-get update && apt-get install -y wixl
+          post_command: wixl -a x64
+              -o "${INPUT_BINARY_NAME}_${INPUT_GOARCH}_${GITHUB_REF_NAME}.msi"
+              ../setup.wxs
+              && github-assets-uploader
+              -logtostderr
+              -f "${INPUT_BINARY_NAME}_${INPUT_GOARCH}_${GITHUB_REF_NAME}.msi"
+              -mediatype text/plain
+              -repo glimps-re/host-connector
+              -token "${INPUT_GITHUB_TOKEN}"
+              -tag="${GITHUB_REF_NAME}"
+              -releasename="${INPUT_RELEASE_NAME}"
+              -retry 3

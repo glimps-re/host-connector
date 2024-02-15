@@ -1,0 +1,22 @@
+workers: 4
+paths: []
+actions:
+  delete: true
+  quarantine: true
+monitoring:
+  preScan: true
+  reScan: true
+  period: 1h
+  modificationDelay: 30s
+gdetect:
+  url: https://gmalware.ggp.glimps.re
+  token: 00000000-00000000-00000000-00000000-00000000
+  timeout: 5m
+  tags: ["Server1"]
+  insecure: false
+quarantine:
+  location: "C:\\Program Files\\GMHost\\quarantine"
+  password: infected
+cache:
+location: "C:\\Program Files\\GMHost\\cache.db"
+  scanValidity: 168h

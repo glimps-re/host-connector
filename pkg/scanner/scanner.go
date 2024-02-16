@@ -33,6 +33,7 @@ type Config struct {
 	Timeout          time.Duration
 	WaitOpts         gdetect.WaitForOptions
 	Actions          Actions
+	CustomActions    []ResultHandler
 	ScanPeriod       time.Duration
 }
 
@@ -68,6 +69,7 @@ func NewConnector(config Config) *Connector {
 	if config.Actions.Inform {
 		action.Actions = append(action.Actions, &InformAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
 	}
+	action.Actions = append(action.Actions, config.CustomActions...)
 	if config.Workers == 0 {
 		config.Workers = 1
 	}
@@ -158,9 +160,14 @@ func (c *Connector) handleFile(file string) error {
 	entry, err := c.config.Cache.Get(sha256)
 	switch {
 	case err == nil:
+		if entry.RestoredAt.UnixMilli() > 0 {
+			Logger.Debug("skip file", "file", file, "reason", "restored")
+			f.Close()
+			return nil
+		}
 		if c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
 			// skip file
-			Logger.Debug("skip cached file", "file", file)
+			Logger.Debug("skip file", "file", file, "reason", "cache valid")
 			f.Close()
 			return nil
 		}

@@ -30,21 +30,21 @@
             </Component>
             <Component Id="RegistryEntries" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <RegistryKey Root="HKLM"
-                    Key="SOFTWARE\Classes\*\shell\GMHost\command"
+                    Key="SOFTWARE\Classes\*\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <!-- <RegistryValue Type="integer" Name="SomeIntegerValue" Value="1"
                     KeyPath="yes" /> -->
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]gmhost.exe scan &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhost.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
-                    Key="SOFTWARE\Classes\*\shell\GMHost"
+                    Key="SOFTWARE\Classes\*\shell\GMHost-Scan"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="string" Name="Icon"
                         Value="[APPLICATIONROOTDIRECTORY]Glimps.ico" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
-                    Key="SOFTWARE\Classes\.lock\shell\GMHost\command"
+                    Key="SOFTWARE\Classes\.lock\shell\GMHost-Restore\command"
                     Action="createAndRemoveOnUninstall">
                     <!-- <RegistryValue Type="integer" Name="SomeIntegerValue" Value="1"
                 KeyPath="yes" /> -->
@@ -52,21 +52,21 @@
                         Value="[APPLICATIONROOTDIRECTORY]gmhost.exe quarantine restore &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
-                    Key="SOFTWARE\Classes\.lock\shell\GMHost\command"
+                    Key="SOFTWARE\Classes\.lock\shell\GMHost-restore"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="string" Name="Icon"
                         Value="[APPLICATIONROOTDIRECTORY]Glimps.ico" />
                 </RegistryKey>
                 <RegistryKey Root="HKCU"
-                    Key="SOFTWARE\Classes\*\shell\GMHost\command"
+                    Key="SOFTWARE\Classes\*\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <!-- <RegistryValue Type="integer" Name="SomeIntegerValue" Value="1"
                 KeyPath="yes" /> -->
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]gmhost.exe scan &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhost.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKCU"
-                    Key="SOFTWARE\Classes\*\shell\GMHost"
+                    Key="SOFTWARE\Classes\*\shell\GMHost-Scan"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="string" Name="Icon"
                         Value="[APPLICATIONROOTDIRECTORY]Glimps.ico" />

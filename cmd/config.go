@@ -84,4 +84,5 @@ type config struct {
 	Cache      cacheConfig      `json:"cache" yaml:"cache" desc:"cache configuration"`
 	Monitoring monitoringConfig `json:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
 	Export     exportConfig     `json:"export" yaml:"export" desc:"export config"`
+	Gui        bool
 }

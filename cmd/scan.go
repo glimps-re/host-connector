@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,11 +19,19 @@ var scanCmd = &cobra.Command{
 		if len(args) == 0 {
 			args = conf.Paths
 		}
+		var done context.Context
+		if conf.Gui {
+			done = Gui("", 0)
+		}
 		for _, arg := range args {
 			if err := gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
 				Logger.Error("error during scan", "file", arg, "error", err)
 				return
 			}
+		}
+		HandleScanFinished()
+		if conf.Gui {
+			<-done.Done()
 		}
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
@@ -38,3 +47,7 @@ var scanCmd = &cobra.Command{
 		return nil
 	},
 }
+
+type GuiHandleResult struct{}
+
+var HandleScanFinished = func() {}

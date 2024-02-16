@@ -163,7 +163,15 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	// prepare file handle to be closed
+	// if we correctly restore the file we must delete the lock file
+	deleteLocked := false
+	defer func() {
+		f.Close()
+		if deleteLocked {
+			os.Remove(f.Name())
+		}
+	}()
 	header, err := a.locker.GetHeader(f)
 	if err != nil {
 		return
@@ -195,10 +203,8 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 		a.cache.Set(entry)
 	}
 	Logger.Info("file restored", "file", file, "reason", reason)
-	defer func() {
-		err = f.Close()
-		err = os.Remove(f.Name())
-	}()
+	// from here we want the lock file to be deleted
+	deleteLocked = true
 
 	return err
 }

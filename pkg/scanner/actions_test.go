@@ -201,7 +201,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 					return
 				}
 				f.WriteString("test 1234")
-				defer f.Close()
+				f.Close()
 				defer os.Remove(f.Name())
 				tt.args.path = f.Name()
 			}

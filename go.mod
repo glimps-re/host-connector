@@ -9,10 +9,14 @@ require (
 	modernc.org/sqlite v1.28.0
 )
 
-require golang.org/x/crypto v0.14.0
+require (
+	github.com/gonutz/wui/v2 v2.8.1
+	golang.org/x/crypto v0.14.0
+)
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/gonutz/w32/v2 v2.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/inconshreveable/mousetrap v1.0.1 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect

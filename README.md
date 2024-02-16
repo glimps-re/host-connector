@@ -43,10 +43,10 @@ Flags:
 
 ## Configuration
 
-The following default configuration could be used to monitor a Documents folder.
+The following default configuration could be used to monitor a `Documents` folder.
 When starting `gmhost.exe monitoring`, the tool will start to monitor the folder `C:\\Users\\YourUser\\Documents`.
-The files will be pre scan to ensure that their is no previous malware. Every hour, all the file will be check again to see if their is a need for a new GDetect scan.
-A GDetect scan is valid for one week (168h). When are malware is found, it will be move to quarantine and locked.
+The files will be pre scanned to ensure that there is not already a malware. Every hour, all the file will be checked again to see if there is a need for a new GDetect scan.
+A GDetect scan is valid for one week (168h). When malware are found, it will be moved to quarantine and locked.
 
 ```yaml
 workers: 4
@@ -104,7 +104,7 @@ Usage:
 Flags:
   -h, --help                   help for monitoring
       --mod-delay duration     Time waited between two modifications of a file before submitting it (default 30s)
-      --pre-scan               scan monitoring with a scan
+      --pre-scan               start monitoring with a scan
       --scan-period duration   re-scan files every scan-period
 
 Global Flags:
@@ -113,7 +113,7 @@ Global Flags:
       --debug                    print debug strings
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
-      --insecure                 do not validate certificates
+      --insecure                 do not check certificates
       --quarantine string        location of the quarantine folder
       --quiet                    print no information
       --scan-validity duration   Validity duration for each scan result (default 168h0m0s)

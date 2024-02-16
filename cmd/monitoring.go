@@ -34,7 +34,8 @@ var monitoringCmd = &cobra.Command{
 			}
 		}
 		// wait forever
-		select {}
+		<-cmd.Context().Done()
+		return nil
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		// append paths from conf
@@ -52,7 +53,7 @@ var monitoringCmd = &cobra.Command{
 }
 
 func initMonitoring(cmd *cobra.Command) {
-	cmd.PersistentFlags().BoolVar(&conf.Monitoring.PreScan, "pre-scan", false, "scan monitoring with a scan")
+	cmd.PersistentFlags().BoolVar(&conf.Monitoring.PreScan, "pre-scan", false, "start monitoring with a scan")
 	cmd.PersistentFlags().DurationVar(&conf.Monitoring.Period, "scan-period", conf.Monitoring.Period, "re-scan files every scan-period")
 	cmd.PersistentFlags().DurationVar(&conf.Monitoring.ModificationDelay, "mod-delay", DefaultModificationDelay, "Time waited between two modifications of a file before submitting it")
 }

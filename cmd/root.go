@@ -41,9 +41,10 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().BoolVar(&conf.Debug, "debug", conf.Debug, "print debug strings")
 	rootCmd.PersistentFlags().BoolVar(&conf.Verbose, "verbose", conf.Verbose, "print more information")
 	rootCmd.PersistentFlags().BoolVar(&conf.Quiet, "quiet", conf.Quiet, "print no information")
-	rootCmd.PersistentFlags().BoolVar(&conf.GDetect.Insecure, "insecure", conf.GDetect.Insecure, "do not validate certificates")
+	rootCmd.PersistentFlags().BoolVar(&conf.GDetect.Insecure, "insecure", conf.GDetect.Insecure, "do not check certificates")
 
 	initMonitoring(monitoringCmd)
+	scanCmd.PersistentFlags().BoolVar(&conf.Gui, "gui", conf.Gui, "gui")
 }
 
 var rootCmd = &cobra.Command{

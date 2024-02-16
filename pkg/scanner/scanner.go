@@ -33,6 +33,7 @@ type Config struct {
 	Timeout          time.Duration
 	WaitOpts         gdetect.WaitForOptions
 	Actions          Actions
+	CustomActions    []ResultHandler
 	ScanPeriod       time.Duration
 }
 
@@ -51,6 +52,23 @@ var MaxWorkers uint = 40
 
 func NewConnector(config Config) *Connector {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	if config.Workers == 0 {
+		config.Workers = 1
+	}
+	if config.Workers > MaxWorkers {
+		config.Workers = MaxWorkers
+	}
+	return &Connector{
+		done:     ctx,
+		cancel:   cancel,
+		fileChan: make(chan string),
+		config:   config,
+		Action:   newAction(config),
+	}
+}
+
+func newAction(config Config) ResultHandler {
 	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: Logger})
@@ -68,19 +86,8 @@ func NewConnector(config Config) *Connector {
 	if config.Actions.Inform {
 		action.Actions = append(action.Actions, &InformAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
 	}
-	if config.Workers == 0 {
-		config.Workers = 1
-	}
-	if config.Workers > MaxWorkers {
-		config.Workers = MaxWorkers
-	}
-	return &Connector{
-		done:     ctx,
-		cancel:   cancel,
-		fileChan: make(chan string),
-		config:   config,
-		Action:   action,
-	}
+	action.Actions = append(action.Actions, config.CustomActions...)
+	return action
 }
 
 func (c *Connector) Start() error {
@@ -158,9 +165,14 @@ func (c *Connector) handleFile(file string) error {
 	entry, err := c.config.Cache.Get(sha256)
 	switch {
 	case err == nil:
-		if c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
+		if entry.RestoredAt.UnixMilli() > 0 {
+			Logger.Debug("skip file", "file", file, "reason", "restored")
+			f.Close()
+			return nil
+		}
+		if entry.InitialLocation == file && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
 			// skip file
-			Logger.Debug("skip cached file", "file", file)
+			Logger.Debug("skip file", "file", file, "reason", "cache valid")
 			f.Close()
 			return nil
 		}

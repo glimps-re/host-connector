@@ -9,6 +9,7 @@ import (
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/glimps-re/host-connector/pkg/scanner"
+	"github.com/spf13/cobra"
 )
 
 var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -31,6 +32,10 @@ func initGCtx() error {
 	if err != nil {
 		return fmt.Errorf("init gdetect client error: %s", err)
 	}
+	customAction := make([]scanner.ResultHandler, 0)
+	if conf.Gui {
+		customAction = append(customAction, &GuiHandleResult{})
+	}
 	connector := scanner.NewConnector(scanner.Config{
 		QuarantineFolder: conf.Quarantine.Location,
 		Workers:          conf.Workers,
@@ -50,7 +55,8 @@ func initGCtx() error {
 			Timeout:  conf.GDetect.Timeout,
 			PullTime: time.Millisecond * 500,
 		},
-		ScanPeriod: conf.Monitoring.Period,
+		ScanPeriod:    conf.Monitoring.Period,
+		CustomActions: customAction,
 	})
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{
@@ -78,4 +84,9 @@ func Main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+}
+
+func init() {
+	// mandatory tricks for windowsgui app
+	cobra.MousetrapHelpText = ""
 }

@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -14,15 +16,24 @@ var scanCmd = &cobra.Command{
 	PreRunE: GlobalInit,
 	Run: func(cmd *cobra.Command, args []string) {
 		gctx.conn.Start()
-		defer gctx.conn.Close()
 		if len(args) == 0 {
 			args = conf.Paths
+		}
+		var done context.Context
+		if conf.Gui {
+			done = Gui("", 0)
 		}
 		for _, arg := range args {
 			if err := gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
 				Logger.Error("error during scan", "file", arg, "error", err)
+				gctx.conn.Close()
 				return
 			}
+		}
+		gctx.conn.Close()
+		HandleScanFinished()
+		if conf.Gui {
+			<-done.Done()
 		}
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
@@ -38,3 +49,7 @@ var scanCmd = &cobra.Command{
 		return nil
 	},
 }
+
+type GuiHandleResult struct{}
+
+var HandleScanFinished = func() {}

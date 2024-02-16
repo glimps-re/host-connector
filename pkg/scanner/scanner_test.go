@@ -381,6 +381,7 @@ func TestConnector_ScanFile(t *testing.T) {
 					t.Errorf("could not create temp file, error: %s", err)
 					return
 				}
+				defer f.Close()
 				data := make([]byte, tt.args.inputSize)
 				rand.Read(data)
 				f.Write(data)

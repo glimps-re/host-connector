@@ -16,8 +16,10 @@
         <DirectoryRef Id="APPLICATIONROOTDIRECTORY">
             <!-- <RemoveFolder Id="APPLICATIONROOTDIRECTORY" On="uninstall" /> -->
             <Component Id="ghmhost.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="gmhost.exe" Source="gmhost.exe" KeyPath="yes" />
-                <!-- <RemoveFile Id="Purgegmhost" Name="*.*" On="uninstall" /> -->
+                <File Id="gmhost.exe" Source="gmhost.exe"/>
+            </Component>
+            <Component Id="ghmhostc.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+                <File Id="gmhostc.exe" Source="gmhostc.exe"/>
             </Component>
             <Component Id="README.md" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <File Id="README.md" Source="../README.md" />
@@ -77,6 +79,7 @@
         <!-- Step 3: Tell WiX to install the files -->
         <Feature Id="MainApplication" Title="GMHost" Level="1">
             <ComponentRef Id="ghmhost.exe" />
+            <ComponentRef Id="ghmhostc.exe" />
             <ComponentRef Id="README.md" />
             <ComponentRef Id="Glimps.ico" />
             <ComponentRef Id="config" />

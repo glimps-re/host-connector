@@ -52,6 +52,23 @@ var MaxWorkers uint = 40
 
 func NewConnector(config Config) *Connector {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	if config.Workers == 0 {
+		config.Workers = 1
+	}
+	if config.Workers > MaxWorkers {
+		config.Workers = MaxWorkers
+	}
+	return &Connector{
+		done:     ctx,
+		cancel:   cancel,
+		fileChan: make(chan string),
+		config:   config,
+		Action:   newAction(config),
+	}
+}
+
+func newAction(config Config) ResultHandler {
 	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: Logger})
@@ -70,19 +87,7 @@ func NewConnector(config Config) *Connector {
 		action.Actions = append(action.Actions, &InformAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
 	}
 	action.Actions = append(action.Actions, config.CustomActions...)
-	if config.Workers == 0 {
-		config.Workers = 1
-	}
-	if config.Workers > MaxWorkers {
-		config.Workers = MaxWorkers
-	}
-	return &Connector{
-		done:     ctx,
-		cancel:   cancel,
-		fileChan: make(chan string),
-		config:   config,
-		Action:   action,
-	}
+	return action
 }
 
 func (c *Connector) Start() error {

@@ -15,7 +15,6 @@ var scanCmd = &cobra.Command{
 	PreRunE: GlobalInit,
 	Run: func(cmd *cobra.Command, args []string) {
 		gctx.conn.Start()
-		defer gctx.conn.Close()
 		if len(args) == 0 {
 			args = conf.Paths
 		}
@@ -26,9 +25,11 @@ var scanCmd = &cobra.Command{
 		for _, arg := range args {
 			if err := gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
 				Logger.Error("error during scan", "file", arg, "error", err)
+				gctx.conn.Close()
 				return
 			}
 		}
+		gctx.conn.Close()
 		HandleScanFinished()
 		if conf.Gui {
 			<-done.Done()

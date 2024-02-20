@@ -34,7 +34,8 @@ var monitoringCmd = &cobra.Command{
 			}
 		}
 		// wait forever
-		select {}
+		<-cmd.Context().Done()
+		return nil
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		// append paths from conf

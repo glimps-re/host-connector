@@ -50,7 +50,7 @@ jobs:
           goversion: ${{ matrix.goversion }}
           pre_command: apt-get update && apt-get install -y wixl
           post_command: 
-              go build -o gmhostc.exe -ldflags "-s -w" ../main.go
+              GOOS=windows go build -o gmhostc.exe -ldflags "-s -w" ../main.go
               && wixl -a x64
               -o "${INPUT_BINARY_NAME}_${INPUT_GOARCH}_${GITHUB_REF_NAME}.msi"
               ../setup.wxs

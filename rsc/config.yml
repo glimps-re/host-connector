@@ -19,4 +19,4 @@ quarantine:
   password: infected
 cache:
 location: "C:\\Program Files\\GMHost\\cache.db"
-  scanValidity: 168h
+scanValidity: 168h

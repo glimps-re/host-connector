@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -51,6 +52,19 @@ var CreateTable = `CREATE TABLE IF NOT EXISTS entries (
 func NewCache(location string) (c *Cache, err error) {
 	if location == "" {
 		location = "file::memory:"
+	} else {
+		_, err = os.Stat(location)
+		if errors.Is(err, os.ErrNotExist) {
+			dir, _ := filepath.Split(location)
+			err = os.MkdirAll(dir, 0o755)
+			if err != nil {
+				return
+			}
+			_, err = os.Create(location)
+			if err != nil {
+				return
+			}
+		}
 	}
 	db, err := sql.Open("sqlite", location)
 	if err != nil {

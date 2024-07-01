@@ -29,5 +29,3 @@ func getConfigFile() (config string) {
 	}
 	return
 }
-
-var defaultConfigUsage = "config file (default is /etc/gmhost/config)"

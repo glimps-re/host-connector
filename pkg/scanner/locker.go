@@ -146,7 +146,6 @@ func (l *Lock) GetHeader(in io.Reader) (entry LockEntry, err error) {
 		var hdr *tar.Header
 		hdr, err = tr.Next()
 		if err == io.EOF {
-			err = nil
 			break // End of archive
 		}
 		if err != nil {

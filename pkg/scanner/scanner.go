@@ -33,7 +33,7 @@ type Config struct {
 	Timeout          time.Duration
 	WaitOpts         gdetect.WaitForOptions
 	Actions          Actions
-	CustomActions    []ResultHandler
+	CustomActions    []Action
 	ScanPeriod       time.Duration
 }
 
@@ -43,7 +43,7 @@ type Connector struct {
 	config      Config
 	wg          sync.WaitGroup
 	fileChan    chan string
-	Action      ResultHandler
+	action      Action
 	reportMutex sync.Mutex
 	reports     []*Report
 }
@@ -64,11 +64,11 @@ func NewConnector(config Config) *Connector {
 		cancel:   cancel,
 		fileChan: make(chan string),
 		config:   config,
-		Action:   newAction(config),
+		action:   newAction(config),
 	}
 }
 
-func newAction(config Config) ResultHandler {
+func newAction(config Config) Action {
 	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: Logger})
@@ -123,11 +123,18 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	// WalkDir seems to not handle correctly path without ending /
 	input = input + string(filepath.Separator)
 
-	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, err error) error {
-		if !d.IsDir() {
-			c.fileChan <- path
+	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) (err error) {
+		if walkErr != nil {
+			return
 		}
-		return err
+		if !d.IsDir() {
+			err = c.ScanFile(ctx, path)
+			if err != nil {
+				Logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
+				return
+			}
+		}
+		return
 	})
 	return
 }
@@ -202,7 +209,7 @@ func (c *Connector) handleFile(file string) error {
 	// f need to be closed before action, to allow deletion
 	f.Close()
 	report := &Report{}
-	if err = c.Action.Handle(file, sha256, result, report); err != nil {
+	if err = c.action.Handle(file, sha256, result, report); err != nil {
 		return err
 	}
 	c.addReport(report)

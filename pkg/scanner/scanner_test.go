@@ -67,8 +67,8 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid workers %v", conn.config.Workers)
 				}
 
-				if a, ok := conn.Action.(*MultiAction); !ok {
-					t.Errorf("invalid action: %v", conn.Action)
+				if a, ok := conn.action.(*MultiAction); !ok {
+					t.Errorf("invalid action: %v", conn.action)
 				} else {
 					if len(a.Actions) != 5 {
 						t.Errorf("invalid actions %#v", a.Actions)
@@ -178,8 +178,8 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid workers %v", conn.config.Workers)
 				}
 
-				if a, ok := conn.Action.(*MultiAction); !ok {
-					t.Errorf("invalid action: %v", conn.Action)
+				if a, ok := conn.action.(*MultiAction); !ok {
+					t.Errorf("invalid action: %v", conn.action)
 				} else {
 					if len(a.Actions) != 5 {
 						t.Errorf("invalid actions %#v", a.Actions)
@@ -267,8 +267,8 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid workers %v", conn.config.Workers)
 				}
 
-				if a, ok := conn.Action.(*MultiAction); !ok {
-					t.Errorf("invalid action: %v", conn.Action)
+				if a, ok := conn.action.(*MultiAction); !ok {
+					t.Errorf("invalid action: %v", conn.action)
 				} else {
 					if len(a.Actions) != 5 {
 						t.Errorf("invalid actions %#v", a.Actions)

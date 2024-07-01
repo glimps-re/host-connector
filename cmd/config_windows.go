@@ -24,5 +24,3 @@ func getConfigFile() (config string) {
 	}
 	return
 }
-
-var defaultConfigUsage = "config file (default is %ProgramFiles%/gmhost/config)"

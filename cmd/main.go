@@ -32,7 +32,7 @@ func initGCtx() error {
 	if err != nil {
 		return fmt.Errorf("init gdetect client error: %s", err)
 	}
-	customAction := make([]scanner.ResultHandler, 0)
+	customAction := make([]scanner.Action, 0)
 	if conf.Gui {
 		customAction = append(customAction, &GuiHandleResult{})
 	}

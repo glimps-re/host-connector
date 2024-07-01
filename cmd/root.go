@@ -29,14 +29,15 @@ func initRoot(rootCmd *cobra.Command) {
 		}
 	}
 	cobra.OnInitialize(initConfig)
-	rootCmd.PersistentFlags().StringVar(&conf.Config, "config", getConfigFile(), defaultConfigUsage)
+
+	rootCmd.PersistentFlags().StringVar(&conf.Config, "config", DefaultConfigPath, "config file")
 	rootCmd.PersistentFlags().StringVar(&conf.GDetect.Token, "gdetect-token", os.Getenv("GDETECT_TOKEN"), "GMalware Detect token")
 	rootCmd.PersistentFlags().StringVar(&conf.GDetect.URL, "gdetect-url", os.Getenv("GDETECT_URL"), "GMalware Detect url (E.g https://gmalware.ggp.glimps.re)")
 	rootCmd.PersistentFlags().DurationVar(&conf.GDetect.Timeout, "timeout", DefaultTimeout, "Time allowed to analyze each files")
 	rootCmd.PersistentFlags().DurationVar(&conf.Cache.ScanValidity, "scan-validity", DefaultScanValidity, "Validity duration for each scan result")
 	rootCmd.PersistentFlags().UintVar(&conf.Workers, "workers", DefaultWorkers, "number of files analyzed at the same time")
 	rootCmd.PersistentFlags().StringVar(&conf.Cache.Location, "cache", DefaultCacheLocation, "location of the cache DB")
-	rootCmd.PersistentFlags().StringVar(&conf.Quarantine.Location, "quarantine", DefaultCacheLocation, "location of the quarantine folder")
+	rootCmd.PersistentFlags().StringVar(&conf.Quarantine.Location, "quarantine", DefaultQuarantineLocation, "location of the quarantine folder")
 	// rootCmd.PersistentFlags().StringVar(&conf.ExportLocation, "export", DefaultExportLocation, "location of the quarantine folder")
 	rootCmd.PersistentFlags().BoolVar(&conf.Debug, "debug", conf.Debug, "print debug strings")
 	rootCmd.PersistentFlags().BoolVar(&conf.Verbose, "verbose", conf.Verbose, "print more information")
@@ -66,7 +67,7 @@ func GlobalInit(cmd *cobra.Command, args []string) error {
 	if conf.Workers == 0 {
 		conf.Workers = 1
 	}
-	if conf.Quarantine.Location != "" {
+	if conf.Quarantine.Location != "" && conf.Actions.Quarantine {
 		_, err := os.Stat(conf.Quarantine.Location)
 		if errors.Is(err, os.ErrNotExist) {
 			if err = os.MkdirAll(conf.Quarantine.Location, 0o755); err != nil {

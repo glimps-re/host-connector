@@ -28,7 +28,7 @@ type Actions struct {
 // for test purposes
 var Now = time.Now
 
-type ResultHandler interface {
+type Action interface {
 	Handle(path string, sha256 string, result gdetect.Result, report *Report) error
 }
 
@@ -74,7 +74,7 @@ func (a *LogAction) Handle(path string, sha256 string, result gdetect.Result, re
 }
 
 type MultiAction struct {
-	Actions []ResultHandler
+	Actions []Action
 }
 
 func (a *MultiAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
@@ -86,7 +86,7 @@ func (a *MultiAction) Handle(path string, sha256 string, result gdetect.Result, 
 	return
 }
 
-func NewMultiAction(actions ...ResultHandler) *MultiAction {
+func NewMultiAction(actions ...Action) *MultiAction {
 	return &MultiAction{Actions: actions}
 }
 

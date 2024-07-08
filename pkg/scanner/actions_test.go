@@ -15,15 +15,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
 )
 
 func TestReportAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		sha256 string
-		result gdetect.Result
+		result SummarizedGMalwareResult
 		report *Report
 	}
 	tests := []struct {
@@ -37,8 +35,7 @@ func TestReportAction_Handle(t *testing.T) {
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
-				sha256: "123456789",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -57,7 +54,7 @@ func TestReportAction_Handle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &ReportAction{}
-			if err := a.Handle(tt.args.path, tt.args.sha256, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("ReportAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -71,8 +68,7 @@ func TestReportAction_Handle(t *testing.T) {
 func TestLogAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		sha256 string
-		result gdetect.Result
+		result SummarizedGMalwareResult
 		report *Report
 	}
 	tests := []struct {
@@ -86,8 +82,7 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
-				sha256: "123456789",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -98,11 +93,35 @@ func TestLogAction_Handle(t *testing.T) {
 `,
 		},
 		{
+			name: "test subfiles",
+			args: args{
+				path: "/tmp/test1",
+				result: SummarizedGMalwareResult{
+					Malware:  true,
+					Malwares: []string{"MALWARE-1"},
+					Sha256:   "123456789",
+					MaliciousSubfiles: map[string]SummarizedGMalwareResult{
+						"test/test.txt": SummarizedGMalwareResult{
+							Sha256:   "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
+							Malware:  true,
+							Malwares: []string{"MALWARE-1"},
+						},
+					},
+				},
+				report: &Report{
+					FileName: "test",
+					Deleted:  true,
+				},
+			},
+			logLevel: slog.LevelDebug,
+			wantLog: `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/test1","sha256":"123456789","malware":true,"malwares":["MALWARE-1"],"malicious-subfiles":{"test/test.txt":{"sha256":"8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc","malware":true,"malwares":["MALWARE-1"]}}}
+`,
+		},
+		{
 			name: "test debug false",
 			args: args{
 				path:   "/tmp/test1",
-				sha256: "123456789",
-				result: gdetect.Result{Malware: false},
+				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -115,8 +134,7 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test debug true",
 			args: args{
 				path:   "/tmp/test1",
-				sha256: "123456789",
-				result: gdetect.Result{Malware: false},
+				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -150,7 +168,7 @@ func TestLogAction_Handle(t *testing.T) {
 					},
 				})),
 			}
-			if err := a.Handle(tt.args.path, tt.args.sha256, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("LogAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -165,8 +183,7 @@ func TestLogAction_Handle(t *testing.T) {
 func TestRemoveFileAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		sha256 string
-		result gdetect.Result
+		result SummarizedGMalwareResult
 		report *Report
 	}
 	tests := []struct {
@@ -178,7 +195,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 			name: "test malware",
 			args: args{
 				path:   "test_malware",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true},
 				report: &Report{},
 			},
 		},
@@ -186,7 +203,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 			name: "test not malware",
 			args: args{
 				path:   "test_malware",
-				result: gdetect.Result{Malware: false},
+				result: SummarizedGMalwareResult{Malware: false},
 				report: &Report{},
 			},
 		},
@@ -205,7 +222,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 				defer os.Remove(f.Name())
 				tt.args.path = f.Name()
 			}
-			if err := a.Handle(tt.args.path, tt.args.sha256, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("RemoveFileAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 			}
 
@@ -234,8 +251,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 	}
 	type args struct {
 		path   string
-		sha256 string
-		result gdetect.Result
+		result SummarizedGMalwareResult
 		report *Report
 	}
 	tests := []struct {
@@ -252,8 +268,10 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				root:   "quarantine",
 			},
 			args: args{
-				path:   "test_quarantine",
-				sha256: "123456",
+				path: "test_quarantine",
+				result: SummarizedGMalwareResult{
+					Sha256: "123456789",
+				},
 			},
 		},
 		{
@@ -269,8 +287,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine",
-				sha256: "123456",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
 			},
 			wantErr: true,
 		},
@@ -291,8 +308,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine",
-				sha256: "123456",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
 			},
 			wantErr: true,
 		},
@@ -322,8 +338,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine1234",
-				sha256: "123456",
-				result: gdetect.Result{Malware: true},
+				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
 				report: &Report{},
 			},
 		},
@@ -353,8 +368,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine1234",
-				sha256: "123456",
-				result: gdetect.Result{Malware: true, Malwares: []string{"eicar"}},
+				result: SummarizedGMalwareResult{Malware: true, Malwares: []string{"eicar"}, Sha256: "123456"},
 				report: &Report{},
 			},
 		},
@@ -386,7 +400,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				root:   tt.fields.root,
 				locker: tt.fields.locker,
 			}
-			if err := a.Handle(tt.args.path, tt.args.sha256, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("QuarantineAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
@@ -399,8 +413,7 @@ func TestInformAction_Handle(t *testing.T) {
 	}
 	type args struct {
 		path   string
-		sha256 string
-		result gdetect.Result
+		result SummarizedGMalwareResult
 		report *Report
 	}
 	tests := []struct {
@@ -416,7 +429,7 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: false,
 			},
 			args: args{
-				result: gdetect.Result{
+				result: SummarizedGMalwareResult{
 					Malware: false,
 				},
 				report: &Report{},
@@ -429,7 +442,7 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: gdetect.Result{
+				result: SummarizedGMalwareResult{
 					Malware: false,
 				},
 				path:   "test_file.bin",
@@ -443,7 +456,7 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: gdetect.Result{
+				result: SummarizedGMalwareResult{
 					Malware: true,
 				},
 				path:   "test_file.bin",
@@ -457,7 +470,7 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: gdetect.Result{
+				result: SummarizedGMalwareResult{
 					Malware:  true,
 					Malwares: []string{"eicar", "test_eicar"},
 				},
@@ -477,7 +490,7 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: tt.fields.Verbose,
 				Out:     &out,
 			}
-			if err := a.Handle(tt.args.path, tt.args.sha256, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("InformAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}

@@ -38,7 +38,7 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().UintVar(&conf.Workers, "workers", DefaultWorkers, "number of files analyzed at the same time")
 	rootCmd.PersistentFlags().StringVar(&conf.Cache.Location, "cache", DefaultCacheLocation, "location of the cache DB")
 	rootCmd.PersistentFlags().StringVar(&conf.Quarantine.Location, "quarantine", DefaultQuarantineLocation, "location of the quarantine folder")
-	// rootCmd.PersistentFlags().StringVar(&conf.ExportLocation, "export", DefaultExportLocation, "location of the quarantine folder")
+	rootCmd.PersistentFlags().StringVar(&conf.MaxFileSize, "max-file-size", DefaultMaxFileSize, "config file")
 	rootCmd.PersistentFlags().BoolVar(&conf.Debug, "debug", conf.Debug, "print debug strings")
 	rootCmd.PersistentFlags().BoolVar(&conf.Verbose, "verbose", conf.Verbose, "print more information")
 	rootCmd.PersistentFlags().BoolVar(&conf.Quiet, "quiet", conf.Quiet, "print no information")

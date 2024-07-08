@@ -10,11 +10,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/google/uuid"
+	"golift.io/xtractr"
 )
 
 type Submitter interface {
@@ -25,7 +29,6 @@ type Submitter interface {
 type Config struct {
 	// Path             string
 	QuarantineFolder string
-	ExportLocation   string
 	Workers          uint
 	Password         string
 	Cache            cache.Cacher
@@ -35,20 +38,41 @@ type Config struct {
 	Actions          Actions
 	CustomActions    []Action
 	ScanPeriod       time.Duration
+	Extract          bool
+	ExtractAll       bool
+	MaxFileSize      int64
+}
+
+type fileToAnalyze struct {
+	location  string
+	filename  string
+	archiveID string
+}
+
+type archiveStatus struct {
+	finished    bool
+	archiveName string
+	result      SummarizedGMalwareResult
+	analyzed    int
+	total       int
 }
 
 type Connector struct {
-	done        context.Context
-	cancel      context.CancelFunc
-	config      Config
-	wg          sync.WaitGroup
-	fileChan    chan string
-	action      Action
-	reportMutex sync.Mutex
-	reports     []*Report
+	done           context.Context
+	cancel         context.CancelFunc
+	config         Config
+	wg             sync.WaitGroup
+	fileChan       chan fileToAnalyze
+	action         Action
+	reportMutex    sync.Mutex
+	reports        []*Report
+	archivesStatus map[string]archiveStatus
+	archiveMutex   sync.RWMutex
 }
 
 var MaxWorkers uint = 40
+
+var MaxFileSize int64 = 100 * 1024 * 1024
 
 func NewConnector(config Config) *Connector {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -59,12 +83,21 @@ func NewConnector(config Config) *Connector {
 	if config.Workers > MaxWorkers {
 		config.Workers = MaxWorkers
 	}
+	if config.ExtractAll && !config.Extract {
+		config.Extract = true
+	}
+
+	if config.MaxFileSize <= 0 || config.MaxFileSize > MaxFileSize {
+		config.MaxFileSize = MaxFileSize
+	}
+
 	return &Connector{
-		done:     ctx,
-		cancel:   cancel,
-		fileChan: make(chan string),
-		config:   config,
-		action:   newAction(config),
+		done:           ctx,
+		cancel:         cancel,
+		fileChan:       make(chan fileToAnalyze),
+		config:         config,
+		archivesStatus: make(map[string]archiveStatus),
+		action:         newAction(config),
 	}
 }
 
@@ -105,23 +138,104 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	}
 	if info.Size() == 0 {
 		Logger.Warn("skip file", "file", input, "reason", "size 0")
-		return nil
+		return
 	}
-	if info.Size() > 100*1024*1024 {
-		Logger.Warn("skip file", "file", input, "reason", "size above 100MiB")
-		return nil
+	if info.Size() > c.config.MaxFileSize {
+		if !c.config.Extract {
+			Logger.Warn("skip file", "file", input, "reason", "size above max file size")
+			return
+		}
+		hash := sha256.New()
+		f, openErr := os.Open(input)
+		if openErr != nil {
+			err = openErr
+			return
+		}
+		if _, err = io.Copy(hash, f); err != nil {
+			f.Close()
+			return
+		}
+		archiveSha256 := hex.EncodeToString(hash.Sum(nil))
+		outputDir, outputDirErr := os.MkdirTemp(os.TempDir(), archiveSha256)
+		if outputDirErr != nil {
+			err = outputDirErr
+			return
+		}
+
+		xfile := xtractr.XFile{
+			FilePath:  input,
+			OutputDir: outputDir,
+			FileMode:  0o755,
+			DirMode:   0o755,
+		}
+
+		_, files, _, extractErr := xtractr.ExtractFile(&xfile)
+		if extractErr != nil {
+			Logger.Warn("failed extraction", slog.String("archive", input), slog.String("reason", extractErr.Error()))
+			return
+		}
+
+		Logger.Info("extract files from archive", slog.String("archive", input), slog.Int("files", len(files)))
+
+		id := uuid.New()
+
+		eStatus := archiveStatus{
+			archiveName: input,
+			result: SummarizedGMalwareResult{
+				Sha256:            archiveSha256,
+				MaliciousSubfiles: make(map[string]SummarizedGMalwareResult),
+				Malware:           false,
+				Malwares:          []string{},
+			},
+			analyzed: 0,
+			total:    len(files),
+		}
+
+		// Filter files
+		for i, f := range files {
+			info, infoErr := os.Stat(f)
+			if infoErr != nil {
+				eStatus.total--
+				c.archivesStatus[id.String()] = eStatus
+				files = append(files[:i], files[i+1:]...)
+				os.Remove(f)
+				continue
+			}
+			if info.Size() <= 0 || info.Size() > c.config.MaxFileSize {
+				eStatus.total--
+				c.archivesStatus[id.String()] = eStatus
+				files = append(files[:i], files[i+1:]...)
+				os.Remove(f)
+				continue
+			}
+
+		}
+		c.archivesStatus[id.String()] = eStatus
+		for _, f := range files {
+			dir, file := filepath.Split(f)
+			bef, _ := strings.CutPrefix(dir, outputDir)
+			realPath := filepath.Join(bef, file)
+			select {
+			case <-ctx.Done():
+				return context.Canceled
+			case c.fileChan <- fileToAnalyze{location: f, archiveID: id.String(), filename: realPath}:
+				continue
+			}
+		}
+		return
 	}
+
 	if !info.IsDir() {
 		select {
 		case <-ctx.Done():
 			return context.Canceled
-		case c.fileChan <- input:
-			return nil
+		case c.fileChan <- fileToAnalyze{location: input}:
+			return
 		}
 	}
 
 	// WalkDir seems to not handle correctly path without ending /
-	input = input + string(filepath.Separator)
+	input += string(filepath.Separator)
 
 	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) (err error) {
 		if walkErr != nil {
@@ -146,74 +260,164 @@ func (c *Connector) worker() {
 		case <-c.done.Done():
 			return
 		case input := <-c.fileChan:
-			err := c.handleFile(input)
-			if err != nil {
-				Logger.Error("could not handle file", "file", input, "error", err)
+			switch input.archiveID {
+			case "":
+				result, err := c.handleFile(input.location)
+				if err != nil {
+					Logger.Error("could not handle file", "file", input, "error", err)
+				}
+				report := &Report{}
+				if err = c.action.Handle(input.location, result, report); err != nil {
+					return
+				}
+				c.addReport(report)
+			default:
+				err := c.handleArchive(input)
+				if err != nil {
+					Logger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("file", input.filename), slog.String("error", err.Error()))
+				}
 			}
 		}
 	}
 }
 
+func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
+	c.archiveMutex.Lock()
+	defer c.archiveMutex.Unlock()
+	status := c.archivesStatus[input.archiveID]
+	if status.finished {
+		Logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
+		return
+	}
+	entry, err := c.config.Cache.Get(status.result.Sha256)
+	switch {
+	case err == nil:
+		if entry.RestoredAt.UnixMilli() > 0 {
+			Logger.Debug("skip archive", slog.String("archive", status.archiveName), slog.String("reason", "restored"))
+			status.finished = true
+			c.archivesStatus[input.archiveID] = status
+			return
+		}
+		if entry.InitialLocation == status.archiveName && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
+			// skip file
+			Logger.Debug("skip archive", slog.String("archive", status.archiveName), slog.String("reason", "cache valid"))
+			status.finished = true
+			c.archivesStatus[input.archiveID] = status
+			return
+		}
+	case errors.Is(err, cache.ErrEntryNotFound):
+		// ok
+	default:
+		return
+	}
+	result, err := c.handleFile(input.location)
+	if err != nil {
+		status.total--
+		c.archivesStatus[input.archiveID] = status
+		return
+	}
+	status.analyzed++
+	status.result = mergeResult(status.result, result, input.filename)
+	if (c.config.ExtractAll && status.analyzed == status.total) || (!c.config.ExtractAll && result.Malware) {
+		status.finished = true
+		report := &Report{}
+		if err = c.action.Handle(status.archiveName, status.result, report); err != nil {
+			return
+		}
+		c.addReport(report)
+	}
+	c.archivesStatus[input.archiveID] = status
+	return
+}
+
 var Since = time.Since
 
-func (c *Connector) handleFile(file string) error {
+type SummarizedGMalwareResult struct {
+	MaliciousSubfiles map[string]SummarizedGMalwareResult `json:"malicious-subfiles,omitempty"`
+	Sha256            string                              `json:"sha256"`
+	Malware           bool                                `json:"malware"`
+	Malwares          []string                            `json:"malwares"`
+}
+
+func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename string) (result SummarizedGMalwareResult) {
+	result = baseResult
+	for _, m := range resultToMerge.Malwares {
+		if !slices.Contains(result.Malwares, m) {
+			result.Malwares = append(result.Malwares, m)
+		}
+	}
+	result.Malware = baseResult.Malware || resultToMerge.Malware
+
+	result.MaliciousSubfiles = make(map[string]SummarizedGMalwareResult)
+	if baseResult.MaliciousSubfiles != nil {
+		result.MaliciousSubfiles = baseResult.MaliciousSubfiles
+	}
+	if resultToMerge.Malware {
+		result.MaliciousSubfiles[filename] = resultToMerge
+	}
+	return
+}
+
+func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult, err error) {
 	hash := sha256.New()
 	f, err := os.Open(file)
 	if err != nil {
-		return err
+		return
 	}
 	if _, err = io.Copy(hash, f); err != nil {
 		f.Close()
-		return err
+		return
 	}
-	sha256 := hex.EncodeToString(hash.Sum(nil))
+	fileSHA256 := hex.EncodeToString(hash.Sum(nil))
 
 	// check if file has already been handle
-	entry, err := c.config.Cache.Get(sha256)
+	entry, err := c.config.Cache.Get(fileSHA256)
 	switch {
 	case err == nil:
 		if entry.RestoredAt.UnixMilli() > 0 {
 			Logger.Debug("skip file", "file", file, "reason", "restored")
 			f.Close()
-			return nil
+			return
 		}
 		if entry.InitialLocation == file && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
 			// skip file
 			Logger.Debug("skip file", "file", file, "reason", "cache valid")
 			f.Close()
-			return nil
+			return
 		}
 	case errors.Is(err, cache.ErrEntryNotFound):
 		// ok
 	default:
 		f.Close()
-		return err
+		return
 	}
-
+	err = nil
 	// GDetect cache
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()
-	result, err := c.config.Submitter.GetResultBySHA256(ctx, sha256)
+	result, err := c.config.Submitter.GetResultBySHA256(ctx, fileSHA256)
 	if err != nil {
 		// result not found, ask a new scan
-		f.Seek(0, io.SeekStart)
+		if _, err = f.Seek(0, io.SeekStart); err != nil {
+			return
+		}
 
 		opts := c.config.WaitOpts
 		opts.Filename = file
 		result, err = c.config.Submitter.WaitForReader(ctx, f, opts)
 		if err != nil {
 			f.Close()
-			return err
+			return
 		}
 	}
 	// f need to be closed before action, to allow deletion
 	f.Close()
-	report := &Report{}
-	if err = c.action.Handle(file, sha256, result, report); err != nil {
-		return err
+	sumResult = SummarizedGMalwareResult{
+		Sha256:   fileSHA256,
+		Malware:  result.Malware,
+		Malwares: result.Malwares,
 	}
-	c.addReport(report)
-	return nil
+	return
 }
 
 func (c *Connector) addReport(report *Report) {

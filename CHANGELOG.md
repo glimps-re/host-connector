@@ -2,6 +2,10 @@
 
 ## [v0.2.0] - 2024-07-12
 
+### Added
+
+- Extraction feature
+
 ### Fix
 
 - Help message for config file

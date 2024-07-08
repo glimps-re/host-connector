@@ -5,15 +5,17 @@ import (
 )
 
 var (
-	DefaultTimeout                         = 5 * time.Minute
-	DefaultWorkers           uint          = 4
-	DefaultScanValidity                    = time.Hour * 24 * 7
-	DefaultModificationDelay time.Duration = time.Second * 30
+	DefaultTimeout                = 5 * time.Minute
+	DefaultWorkers           uint = 4
+	DefaultScanValidity           = time.Hour * 24 * 7
+	DefaultModificationDelay      = time.Second * 30
+	DefaultMaxFileSize            = "100MB"
 )
 
 var conf = &config{
-	Config:  DefaultConfigPath,
-	Workers: uint(DefaultWorkers),
+	Config:      DefaultConfigPath,
+	Workers:     DefaultWorkers,
+	MaxFileSize: DefaultMaxFileSize,
 	Actions: actionsConfig{
 		Delete:     true,
 		Quarantine: true,
@@ -33,56 +35,53 @@ var conf = &config{
 }
 
 type actionsConfig struct {
-	Delete     bool `yaml:"delete" desc:"delete malware files"`
-	Quarantine bool `yaml:"quarantine" desc:"copy malware files in quarantine folder (locked)"`
-	Print      bool `yaml:"print" desc:"print malware file information"`
-	Log        bool `yaml:"log" desc:"log malware file information"`
+	Delete     bool `mapstructure:"delete" yaml:"delete" desc:"delete malware files"`
+	Quarantine bool `mapstructure:"quarantine" yaml:"quarantine" desc:"copy malware files in quarantine folder (locked)"`
+	Print      bool `mapstructure:"print" yaml:"print" desc:"print malware file information"`
+	Log        bool `mapstructure:"log" yaml:"log" desc:"log malware file information"`
 }
 
 type monitoringConfig struct {
-	PreScan           bool          `yaml:"preScan" desc:"scan all files when starting to monitor"`
-	ReScan            bool          `yaml:"reScan" desc:"re-scan all files periodically"`
-	Period            time.Duration `yaml:"period" desc:"every period, walk through all files to check if they need to be scan again"`
-	ModificationDelay time.Duration `yaml:"modificationDelay" desc:"modification delay before scanning a file"`
+	PreScan           bool          `mapstructure:"preScan" yaml:"preScan" desc:"scan all files when starting to monitor"`
+	ReScan            bool          `mapstructure:"reScan" yaml:"reScan" desc:"re-scan all files periodically"`
+	Period            time.Duration `mapstructure:"period" yaml:"period" desc:"every period, walk through all files to check if they need to be scan again"`
+	ModificationDelay time.Duration `mapstructure:"modificationDelay" yaml:"modificationDelay" desc:"modification delay before scanning a file"`
 }
 
 type gdetectConfig struct {
-	URL      string        `yaml:"url" validate:"required" desc:"URL to gdetect API"`
-	Token    string        `yaml:"token" validate:"required" password:"true" desc:"Token for gdetect API"`
-	Timeout  time.Duration `yaml:"timeout" desc:"timeout allow to scan a single file"`
-	Tags     []string      `yaml:"tags" desc:"tags add to each scan. those tags will be added to the default one (GMHost)"`
-	Insecure bool          `yaml:"insecure" desc:"do no check GDetect certificates"`
+	URL      string        `mapstructure:"url" yaml:"url" validate:"required" desc:"URL to gdetect API"`
+	Token    string        `mapstructure:"token" yaml:"token" validate:"required" password:"true" desc:"Token for gdetect API"`
+	Timeout  time.Duration `mapstructure:"timeout" yaml:"timeout" desc:"timeout allow to scan a single file"`
+	Tags     []string      `mapstructure:"tags" yaml:"tags" desc:"tags add to each scan. those tags will be added to the default one (GMHost)"`
+	Insecure bool          `mapstructure:"insecure" yaml:"insecure" desc:"do no check GDetect certificates"`
 }
 
 type quarantineConfig struct {
-	Location string `yaml:"location" desc:"path to keep quarantined files"`
-	Password string `yaml:"password" desc:"password used to lock files in quarantine"`
+	Location string `mapstructure:"location" yaml:"location" desc:"path to keep quarantined files"`
+	Password string `mapstructure:"password" yaml:"password" desc:"password used to lock files in quarantine"`
 }
 
 type cacheConfig struct {
-	Location     string        `yaml:"location" desc:"location of the cache file. if empty, cache will be volatile"`
-	ScanValidity time.Duration `yaml:"scanValidity" desc:"when time since the last scan if lesser than ScanValidity the files won't be scan again"`
+	Location     string        `mapstructure:"location" yaml:"location" desc:"location of the cache file. if empty, cache will be volatile"`
+	ScanValidity time.Duration `mapstructure:"scanValidity" yaml:"scanValidity" desc:"when time since the last scan if lesser than ScanValidity the files won't be scan again"`
 }
-
-type exportConfig struct {
-	Location string
-}
-
 type config struct {
 	// global
-	Config  string `yaml:"config"  desc:"path to configuration file"`
-	Workers uint   `yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
-	Debug   bool   `yaml:"debug" desc:"print debug strings"`
-	Verbose bool   `yaml:"verbose" desc:"print information strings"`
-	Quiet   bool   `yaml:"quiet" desc:"print no information strings"`
+	Config      string `yaml:"config" desc:"path to configuration file"`
+	Workers     uint   `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
+	Extract     bool   `mapstructure:"extract" yaml:"extract" desc:"extract big archive to send it to gmalware"`
+	ExtractAll  bool   `mapstructure:"extract-all" yaml:"extract-all" desc:"extract all files from an archive before performing actions on it"`
+	MaxFileSize string `mapstructure:"max-file-size" yaml:"max-file-size" desc:"max file size to push to gmalware"`
+	Debug       bool   `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`
+	Verbose     bool   `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
+	Quiet       bool   `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`
 
 	Paths []string `yaml:"paths" desc:"Paths to monitor"`
 
-	Actions    actionsConfig    `yaml:"actions" desc:"actions done when a malware is found"`
-	GDetect    gdetectConfig    `yaml:"gdetect" desc:"GDetect configuration"`
-	Quarantine quarantineConfig `yaml:"quarantine" desc:"quarantine configuration"`
-	Cache      cacheConfig      `yaml:"cache" desc:"cache configuration"`
-	Monitoring monitoringConfig `yaml:"monitoring" desc:"monitoring configuration"`
-	Export     exportConfig     `yaml:"export" desc:"export config"`
+	Actions    actionsConfig    `mapstructure:"actions" yaml:"actions" desc:"actions done when a malware is found"`
+	GDetect    gdetectConfig    `mapstructure:"gdetect" yaml:"gdetect" desc:"GDetect configuration"`
+	Quarantine quarantineConfig `mapstructure:"quarantine" yaml:"quarantine" desc:"quarantine configuration"`
+	Cache      cacheConfig      `mapstructure:"cache" yaml:"cache" desc:"cache configuration"`
+	Monitoring monitoringConfig `mapstructure:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
 	Gui        bool
 }

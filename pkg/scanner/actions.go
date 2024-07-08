@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
 )
 
@@ -29,12 +28,12 @@ type Actions struct {
 var Now = time.Now
 
 type Action interface {
-	Handle(path string, sha256 string, result gdetect.Result, report *Report) error
+	Handle(path string, result SummarizedGMalwareResult, report *Report) error
 }
 
 type NoAction struct{}
 
-func (*NoAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) error {
+func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *Report) error {
 	return nil
 }
 
@@ -54,21 +53,25 @@ type LogAction struct {
 
 type ReportAction struct{}
 
-func (a *ReportAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *ReportAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	report.FileName = path
 	report.Malicious = result.Malware
-	report.Sha256 = sha256
+	report.Sha256 = result.Sha256
 	return
 }
 
-func (a *LogAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *LogAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if result.Malware {
 		if len(result.Malwares) == 0 {
 			result.Malwares = []string{}
 		}
-		a.logger.Info("info scanned", "file", path, "sha256", sha256, "malware", true, "malwares", result.Malwares)
+		if len(result.MaliciousSubfiles) == 0 {
+			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
+		} else {
+			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
+		}
 	} else {
-		a.logger.Debug("info scanned", "file", path, "sha256", sha256, "malware", false)
+		a.logger.Debug("info scanned", "file", path, "sha256", result.Sha256, "malware", false)
 	}
 	return nil
 }
@@ -77,9 +80,9 @@ type MultiAction struct {
 	Actions []Action
 }
 
-func (a *MultiAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *MultiAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	for _, h := range a.Actions {
-		if err = h.Handle(path, sha256, result, report); err != nil {
+		if err = h.Handle(path, result, report); err != nil {
 			return
 		}
 	}
@@ -92,7 +95,7 @@ func NewMultiAction(actions ...Action) *MultiAction {
 
 type RemoveFileAction struct{}
 
-func (a *RemoveFileAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *RemoveFileAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if !result.Malware {
 		return
 	}
@@ -104,7 +107,7 @@ func (a *RemoveFileAction) Handle(path string, sha256 string, result gdetect.Res
 	return
 }
 
-func (a *QuarantineAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	// skip legit files
 	if !result.Malware {
 		return
@@ -116,7 +119,7 @@ func (a *QuarantineAction) Handle(path string, sha256 string, result gdetect.Res
 		}
 	}
 	entry := &cache.Entry{
-		Sha256:          sha256,
+		Sha256:          result.Sha256,
 		InitialLocation: path,
 	}
 	stat, err := os.Stat(path)
@@ -124,7 +127,7 @@ func (a *QuarantineAction) Handle(path string, sha256 string, result gdetect.Res
 		return
 	}
 
-	entry.QuarantineLocation = filepath.Join(a.root, fmt.Sprintf("%s.lock", sha256))
+	entry.QuarantineLocation = filepath.Join(a.root, fmt.Sprintf("%s.lock", result.Sha256))
 
 	fout, err := os.Create(entry.QuarantineLocation)
 	if err != nil {
@@ -271,7 +274,7 @@ type InformAction struct {
 	Out     io.Writer
 }
 
-func (a *InformAction) Handle(path string, sha256 string, result gdetect.Result, report *Report) (err error) {
+func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}

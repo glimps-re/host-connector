@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/glimps-re/host-connector/pkg/scanner"
@@ -23,10 +24,10 @@ type GContext struct {
 
 var gctx = GContext{}
 
-func initGCtx() error {
+func initGCtx() (err error) {
 	cache, err := cache.NewCache(conf.Cache.Location)
 	if err != nil {
-		return err
+		return
 	}
 	client, err := gdetect.NewClient(conf.GDetect.URL, conf.GDetect.Token, conf.GDetect.Insecure, nil)
 	if err != nil {
@@ -36,8 +37,15 @@ func initGCtx() error {
 	if conf.Gui {
 		customAction = append(customAction, &GuiHandleResult{})
 	}
+
+	maxFileSize, err := units.ParseStrictBytes(conf.MaxFileSize)
+	if err != nil {
+		return fmt.Errorf("could not parse max-file-size: %w", err)
+	}
+
 	connector := scanner.NewConnector(scanner.Config{
 		QuarantineFolder: conf.Quarantine.Location,
+		MaxFileSize:      maxFileSize,
 		Workers:          conf.Workers,
 		Password:         conf.Quarantine.Password,
 		Cache:            cache,
@@ -57,6 +65,8 @@ func initGCtx() error {
 		},
 		ScanPeriod:    conf.Monitoring.Period,
 		CustomActions: customAction,
+		Extract:       conf.Extract,
+		ExtractAll:    conf.ExtractAll,
 	})
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{
@@ -65,7 +75,7 @@ func initGCtx() error {
 		lock:   lock,
 		cache:  cache,
 	}
-	return nil
+	return
 }
 
 func Main() {

@@ -12,7 +12,6 @@ var (
 	DefaultConfigPath         = filepath.Join(os.Getenv("AppData"), "gmhost", "config.yml")
 	DefaultCacheLocation      = filepath.Join(os.Getenv("AppData"), "gmhost", "cache.db")
 	DefaultQuarantineLocation = filepath.Join(os.Getenv("AppData"), "gmhost", "quarantine")
-	DefaultExportLocation     = filepath.Join(os.Getenv("AppData"), "gmhost", "export")
 )
 
 func getConfigFile() (config string) {

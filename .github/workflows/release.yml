@@ -8,12 +8,12 @@ on:
     types: [created]
 
 jobs:
-  release-matrix-linux:
-    name: Release Go Binary
+  release-matrix:
+    name: Release binary for linux and windows (console mode)
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux]
+        goos: [linux,windows]
         goarch: [amd64]
         goversion: [1.21.7]
     steps:
@@ -28,8 +28,8 @@ jobs:
           ldflags: "-s -w"
           extra_files: README.md LICENSE
           goversion: ${{ matrix.goversion }}
-  release-matrix-windows:
-    name: Release Go Binary
+  release-binary-msi:
+    name: Release msi file
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -44,19 +44,18 @@ jobs:
           goos: ${{ matrix.goos }}
           goarch: ${{ matrix.goarch }}
           project_path: "."
-          binary_name: "gmhost"
+          binary_name: "gmhostgui"
           ldflags: "-s -w -H windowsgui"
           extra_files: README.md LICENSE
           goversion: ${{ matrix.goversion }}
           pre_command: apt-get update && apt-get install -y wixl
           post_command: 
-              GOOS=windows go build -o gmhostc.exe -ldflags "-s -w" ../main.go
-              && wixl -a x64
-              -o "${INPUT_BINARY_NAME}_${INPUT_GOARCH}_${GITHUB_REF_NAME}.msi"
+              wixl -a x64
+              -o "${INPUT_BINARY_NAME}-${GITHUB_REF_NAME}-${INPUT_GOARCH}-${INPUT_GOOS}.msi"
               ../setup.wxs
               && github-assets-uploader
               -logtostderr
-              -f "${INPUT_BINARY_NAME}_${INPUT_GOARCH}_${GITHUB_REF_NAME}.msi"
+              -f "${INPUT_BINARY_NAME}-${GITHUB_REF_NAME}-${INPUT_GOARCH}-${INPUT_GOOS}.msi"
               -mediatype text/plain
               -repo glimps-re/host-connector
               -token "${INPUT_GITHUB_TOKEN}"

@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"context"
-	_ "embed"
+	_ "embed" // embed file
 	"errors"
 	"fmt"
 	"os"
@@ -14,8 +14,10 @@ var scanCmd = &cobra.Command{
 	Use:     "scan",
 	Short:   "Scan folders",
 	PreRunE: GlobalInit,
-	Run: func(cmd *cobra.Command, args []string) {
-		gctx.conn.Start()
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		if err = gctx.conn.Start(); err != nil {
+			return
+		}
 		if len(args) == 0 {
 			args = conf.Paths
 		}
@@ -24,7 +26,7 @@ var scanCmd = &cobra.Command{
 			done = Gui("", 0)
 		}
 		for _, arg := range args {
-			if err := gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
+			if err = gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
 				Logger.Error("error during scan", "file", arg, "error", err)
 				gctx.conn.Close()
 				return
@@ -35,6 +37,7 @@ var scanCmd = &cobra.Command{
 		if conf.Gui {
 			<-done.Done()
 		}
+		return
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		args = append(args, conf.Paths...)

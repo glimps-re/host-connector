@@ -190,7 +190,10 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 			os.Remove(out.Name())
 		}
 	}()
-	f.Seek(0, io.SeekStart)
+	_, err = f.Seek(0, io.SeekStart)
+	if err != nil {
+		return
+	}
 	file, info, reason, err := a.locker.UnlockFile(f, out)
 	if err != nil {
 		return
@@ -203,7 +206,10 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 	if err == nil {
 		entry.QuarantineLocation = ""
 		entry.RestoredAt = Now()
-		a.cache.Set(entry)
+		err = a.cache.Set(entry)
+		if err != nil {
+			Logger.Error("error set cache", slog.String("sha256", sha256), slog.String("err", err.Error()))
+		}
 	}
 	Logger.Info("file restored", "file", file, "reason", reason)
 	// from here we want the lock file to be deleted
@@ -218,8 +224,14 @@ func restoreFileInfo(path string, info os.FileInfo) (err error) {
 		return
 	}
 	if stat, ok := info.Sys().(*tar.Header); ok {
-		os.Chown(path, stat.Uid, stat.Gid)
-		os.Chtimes(path, stat.AccessTime, stat.ModTime)
+		err = os.Chown(path, stat.Uid, stat.Gid)
+		if err != nil {
+			Logger.Error("error chown file", slog.String("path", path), slog.String("err", err.Error()))
+		}
+		err = os.Chtimes(path, stat.AccessTime, stat.ModTime)
+		if err != nil {
+			Logger.Error("error chtimes file", slog.String("path", path), slog.String("err", err.Error()))
+		}
 	}
 	return
 }
@@ -232,7 +244,7 @@ type QuarantinedFile struct {
 func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles chan QuarantinedFile, err error) {
 	qfiles = make(chan QuarantinedFile)
 	go func() {
-		filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
+		err = filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				Logger.Warn("list quarantined error", "error", err)
 				return nil
@@ -264,6 +276,9 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 				return nil
 			}
 		})
+		if err != nil {
+			return
+		}
 		close(qfiles)
 	}()
 	return qfiles, nil

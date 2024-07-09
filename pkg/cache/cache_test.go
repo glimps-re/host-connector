@@ -137,8 +137,6 @@ func TestCache(t *testing.T) {
 				}
 				worker := func(i int) {
 					defer wg.Done()
-					for range start {
-					}
 					_, err = cache.Get("test")
 					if !errors.Is(err, ErrEntryNotFound) {
 						t.Errorf("[%d]cache.Get(unknown) error = %v, want = %v", i, err, ErrEntryNotFound)
@@ -166,8 +164,6 @@ func TestCache(t *testing.T) {
 				}
 				worker := func(i int) {
 					defer wg.Done()
-					for range start {
-					}
 					err = cache.Set(&Entry{Sha256: "test"})
 					if !errors.Is(err, nil) {
 						t.Errorf("[%d]cache.Set(unknown) error = %v", i, err)

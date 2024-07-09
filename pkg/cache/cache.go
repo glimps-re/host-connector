@@ -72,8 +72,10 @@ func NewCache(location string) (c *Cache, err error) {
 	}
 
 	result, err := db.Exec(CreateTable)
+	if err != nil {
+		return
+	}
 	Logger.Info("create new db", "result", result)
-
 	c = &Cache{db: db}
 	return
 }
@@ -116,7 +118,7 @@ func (c *Cache) Set(entry *Entry) (err error) {
 	if err != nil {
 		return
 	}
-	defer tx.Commit()
+	defer tx.Commit() // nolint:errcheck
 	sqlStatement := `
 INSERT INTO entries (sha256, created_at, updated_at, quarantine, location, restored_at)
 VALUES ($1, $2, $3, $4, $5, $6)`
@@ -138,7 +140,8 @@ VALUES ($1, $2, $3, $4, $5, $6)`
 		return
 	}
 	// check for update
-	if e, ok := err.(*sqlite.Error); ok && e.Code() == 1555 {
+	sqliteErr := new(sqlite.Error)
+	if errors.As(err, &sqliteErr) && sqliteErr.Code() == 1555 {
 		sqlStatement := `
 		UPDATE entries SET created_at=$2, updated_at=$3, quarantine=$4, location=$5, restored_at=$6
 		WHERE sha256 = $1`

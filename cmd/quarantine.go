@@ -13,8 +13,11 @@ import (
 var quarantineCmd = &cobra.Command{
 	Use:   "quarantine",
 	Short: "Handler GMalware host quarantined files",
-	Run: func(cmd *cobra.Command, args []string) {
-		cmd.Usage()
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		if err = cmd.Usage(); err != nil {
+			return
+		}
+		return
 	},
 	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 		if err := GlobalInit(cmd, args); err != nil {

@@ -31,7 +31,7 @@ func initGCtx() (err error) {
 	}
 	client, err := gdetect.NewClient(conf.GDetect.URL, conf.GDetect.Token, conf.GDetect.Insecure, nil)
 	if err != nil {
-		return fmt.Errorf("init gdetect client error: %s", err)
+		return fmt.Errorf("init gdetect client error: %w", err)
 	}
 	customAction := make([]scanner.Action, 0)
 	if conf.Gui {

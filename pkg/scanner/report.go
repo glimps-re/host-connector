@@ -24,24 +24,30 @@ func NewReportsWriter(dst io.WriteSeeker) *ReportsWriter {
 	return &ReportsWriter{dst: dst}
 }
 
-func (rw *ReportsWriter) Write(r Report) error {
+func (rw *ReportsWriter) Write(r Report) (err error) {
 	// try to seek above last "\n]"
 	n, _ := rw.dst.Seek(-2, io.SeekEnd)
 	out := bufio.NewWriter(rw.dst)
 	if n == 0 {
 		// start of file
-		out.WriteString("[\n")
+		if _, err = out.WriteString("[\n"); err != nil {
+			return
+		}
 	} else {
-		out.WriteString(",\n")
+		if _, err = out.WriteString(",\n"); err != nil {
+			return
+		}
 	}
 
 	encoder := json.NewEncoder(out)
 	// encoder.SetIndent("  ", "")
-	err := encoder.Encode(r)
+	err = encoder.Encode(r)
 	if err != nil {
-		return err
+		return
 	}
-	_, err = out.WriteString("]")
+	if _, err = out.WriteString("]"); err != nil {
+		return
+	}
 	out.Flush()
-	return err
+	return
 }

@@ -51,11 +51,17 @@ func initRoot(rootCmd *cobra.Command) {
 var rootCmd = &cobra.Command{
 	Use:   "GMHost",
 	Short: "GMalware Host connector is a tool to scan files with GMalware Detect",
-	Run: func(cmd *cobra.Command, args []string) {
-		yaml.NewEncoder(os.Stdout).Encode(conf)
-		cmd.Usage()
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		err = yaml.NewEncoder(os.Stdout).Encode(conf)
+		if err != nil {
+			Logger.Error("error encode yaml conf", slog.String("err", err.Error()))
+			return
+		}
+		if err = cmd.Usage(); err != nil {
+			return
+		}
+		return
 	},
-	// PersistentPreRunE: GlobalInit,
 }
 
 func GlobalInit(cmd *cobra.Command, args []string) error {

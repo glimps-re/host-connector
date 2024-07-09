@@ -19,12 +19,12 @@ type Monitorer interface {
 	Remove(path string) error
 }
 
-type MonitorFunc func(file string) error
+type OnNewFileFunc func(file string) error
 
 type Monitor struct {
 	watcher        *fsnotify.Watcher
 	wg             sync.WaitGroup
-	cb             MonitorFunc
+	cb             OnNewFileFunc
 	preScan        bool
 	period         time.Duration
 	modDelay       time.Duration
@@ -35,7 +35,7 @@ type Monitor struct {
 	fileToScanLock sync.Mutex
 }
 
-func NewMonitor(onNewFile MonitorFunc, prescan bool, period time.Duration, modDelay time.Duration) (*Monitor, error) {
+func NewMonitor(onNewFile OnNewFileFunc, prescan bool, period time.Duration, modDelay time.Duration) (*Monitor, error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
@@ -81,7 +81,10 @@ func (m *Monitor) scan() {
 			return
 		case <-ticker.C:
 			for path := range m.paths {
-				m.cb(path)
+				err := m.cb(path)
+				if err != nil {
+					Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+				}
 			}
 		}
 	}
@@ -126,7 +129,10 @@ func (m *Monitor) scanFiles() {
 		case <-ticker.C:
 			for path := range m.fileToScan {
 				if info, err := os.Stat(path); err == nil && Since(info.ModTime()) > m.modDelay {
-					m.cb(path)
+					err := m.cb(path)
+					if err != nil {
+						Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+					}
 					m.fileToScanLock.Lock()
 					delete(m.fileToScan, path)
 					m.fileToScanLock.Unlock()
@@ -143,7 +149,10 @@ func (m *Monitor) Add(path string) error {
 	m.paths[path] = struct{}{}
 	if m.preScan {
 		go func() {
-			m.cb(path)
+			err := m.cb(path)
+			if err != nil {
+				Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+			}
 		}()
 	}
 	return nil

@@ -6,6 +6,10 @@
 
 - Extraction feature
 
+### Changed
+
+- Golangci-lint
+
 ### Fix
 
 - Help message for config file

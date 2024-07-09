@@ -75,7 +75,7 @@ func (l *Lock) LockFile(file string, in io.Reader, info os.FileInfo, reason stri
 		Mode:    int64(info.Mode()),
 		ModTime: info.ModTime(),
 	}
-	entryHeader.Uid = getUid(info)
+	entryHeader.Uid = getUID(info)
 	entryHeader.Gid = getGid(info)
 
 	if err = tw.WriteHeader(&entryHeader); err != nil {
@@ -100,7 +100,7 @@ func (l *Lock) UnlockFile(in io.Reader, out io.Writer) (file string, info os.Fil
 	for {
 		var hdr *tar.Header
 		hdr, err = tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			err = nil
 			break // End of archive
 		}
@@ -145,7 +145,7 @@ func (l *Lock) GetHeader(in io.Reader) (entry LockEntry, err error) {
 	for {
 		var hdr *tar.Header
 		hdr, err = tr.Next()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break // End of archive
 		}
 		if err != nil {

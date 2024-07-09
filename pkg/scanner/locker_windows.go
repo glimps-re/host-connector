@@ -7,7 +7,7 @@ import (
 	"io/fs"
 )
 
-func getUid(info fs.FileInfo) int {
+func getUID(info fs.FileInfo) int {
 	return 0
 }
 

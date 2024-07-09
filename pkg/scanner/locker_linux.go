@@ -8,7 +8,7 @@ import (
 	"syscall"
 )
 
-func getUid(info fs.FileInfo) int {
+func getUID(info fs.FileInfo) int {
 	if stat, ok := info.Sys().(*syscall.Stat_t); ok {
 		return int(stat.Uid)
 	}

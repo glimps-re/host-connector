@@ -13,29 +13,31 @@ var monitoringCmd = &cobra.Command{
 	Use:               "monitoring",
 	Short:             "start monitoring location with GMalware host",
 	PersistentPreRunE: GlobalInit,
-	RunE: func(cmd *cobra.Command, args []string) error {
+	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		Logger.Debug("config", "conf", conf)
 		if len(args) == 0 {
 			args = conf.Paths
 		}
-		gctx.conn.Start()
+		if err = gctx.conn.Start(); err != nil {
+			return
+		}
 		defer gctx.conn.Close()
 		mon, err := monitor.NewMonitor(func(file string) error {
 			return gctx.conn.ScanFile(cmd.Context(), file)
 		}, conf.Monitoring.PreScan, conf.Monitoring.Period, conf.Monitoring.ModificationDelay)
 		if err != nil {
-			return err
+			return
 		}
 		mon.Start()
 		defer mon.Close()
 		for _, arg := range args {
-			if err := mon.Add(arg); err != nil {
-				return err
+			if err = mon.Add(arg); err != nil {
+				return
 			}
 		}
 		// wait forever
 		<-cmd.Context().Done()
-		return nil
+		return
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		// append paths from conf

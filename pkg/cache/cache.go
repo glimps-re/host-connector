@@ -75,7 +75,7 @@ func NewCache(location string) (c *Cache, err error) {
 	if err != nil {
 		return
 	}
-	Logger.Info("create new db", "result", result)
+	Logger.Info("create new db", slog.Any("result", result))
 	c = &Cache{db: db}
 	return
 }

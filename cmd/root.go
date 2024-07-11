@@ -21,11 +21,11 @@ func initRoot(rootCmd *cobra.Command) {
 		viper.SetConfigType("yaml")
 
 		if err := viper.ReadInConfig(); err != nil {
-			Logger.Debug("Can't read config", "error", err)
+			Logger.Error("Can't read config", slog.String("error", err.Error()))
 			return
 		}
 		if err := viper.Unmarshal(conf); err != nil {
-			Logger.Error("Can't unmarshal config", "error", err)
+			Logger.Error("Can't unmarshal config", slog.String("error", err.Error()))
 		}
 	}
 	cobra.OnInitialize(initConfig)
@@ -83,7 +83,7 @@ func GlobalInit(cmd *cobra.Command, args []string) error {
 	}
 	Logger.Debug("debug activated")
 	if err := initGCtx(); err != nil {
-		Logger.Error("could not init context", "error", err)
+		Logger.Error("could not init context", slog.String("error", err.Error()))
 		return err
 	}
 	return nil

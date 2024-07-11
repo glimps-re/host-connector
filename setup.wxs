@@ -10,15 +10,24 @@
             <Directory Id="ProgramFiles64Folder">
                 <Directory Id="APPLICATIONROOTDIRECTORY" Name="GMHost" />
             </Directory>
+            <Directory Id="AppDataFolder">
+                <Directory Id="APPLICATIONCONFIGDIRECTORY" Name="gmhost" />
+            </Directory>
         </Directory>
+
+        <DirectoryRef Id="APPLICATIONCONFIGDIRECTORY">
+            <Component Id="config" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+                <File Id="config" Source="../rsc/config" />
+            </Component>
+        </DirectoryRef>
 
         <!-- Step 2: Add files to your installer package -->
         <DirectoryRef Id="APPLICATIONROOTDIRECTORY">
             <!-- <RemoveFolder Id="APPLICATIONROOTDIRECTORY" On="uninstall" /> -->
             <Component Id="ghmhostgui.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="ghmhostgui.exe" Source="ghmhostgui.exe" />
+                <File Id="gmhostgui.exe" Source="gmhostgui.exe" />
             </Component>
-            <Component Id="gmhost.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+            <Component Id="ghmhost.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <File Id="gmhost.exe" Source="gmhost.exe" />
             </Component>
             <Component Id="README.md" Guid="508eaf53-83e2-46df-8717-0643c997e094">
@@ -27,15 +36,12 @@
             <Component Id="Glimps.ico" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <File Id="Glimps.ico" Source="../rsc/Glimps.ico" />
             </Component>
-            <Component Id="config" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="config" Source="../rsc/config.yml" />
-            </Component>
             <Component Id="RegistryEntries" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <RegistryKey Root="HKLM"
                     Key="SOFTWARE\Classes\*\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]ghmhostgui.exe scan --gui &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhostgui.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
                     Key="SOFTWARE\Classes\*\shell\GMHost-Scan"
@@ -47,7 +53,7 @@
                     Key="SOFTWARE\Classes\.lock\shell\GMHost-Restore\command"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]ghmhostgui.exe quarantine restore &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhostgui.exe quarantine restore &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
                     Key="SOFTWARE\Classes\.lock\shell\GMHost-restore"
@@ -59,7 +65,7 @@
                     Key="SOFTWARE\Classes\*\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]ghmhostgui.exe scan --gui &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhostgui.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKCU"
                     Key="SOFTWARE\Classes\*\shell\GMHost-Scan"
@@ -71,7 +77,7 @@
                     Key="SOFTWARE\Classes\Directory\Background\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]ghmhostgui.exe scan --gui &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhostgui.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
                     Key="SOFTWARE\Classes\Directory\Background\shell\GMHost-Scan"
@@ -83,7 +89,7 @@
                     Key="SOFTWARE\Classes\Directory\shell\GMHost-Scan\command"
                     Action="createAndRemoveOnUninstall">
                     <RegistryValue Type="expandable"
-                        Value="[APPLICATIONROOTDIRECTORY]ghmhostgui.exe scan --gui &quot;%1&quot;" />
+                        Value="[APPLICATIONROOTDIRECTORY]gmhostgui.exe scan --gui &quot;%1&quot;" />
                 </RegistryKey>
                 <RegistryKey Root="HKLM"
                     Key="SOFTWARE\Classes\Directory\shell\GMHost-Scan"
@@ -97,7 +103,7 @@
         <!-- Step 3: Tell WiX to install the files -->
         <Feature Id="MainApplication" Title="GMHost" Level="1">
             <ComponentRef Id="ghmhostgui.exe" />
-            <ComponentRef Id="gmhost.exe" />
+            <ComponentRef Id="ghmhost.exe" />
             <ComponentRef Id="README.md" />
             <ComponentRef Id="Glimps.ico" />
             <ComponentRef Id="config" />

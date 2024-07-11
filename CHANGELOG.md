@@ -17,6 +17,7 @@
 - Use default quarantine location
 - Cache file creation when not existing
 - Export windows executable in console mode
+- msi installation
 
 ## [v0.1.0] - 2024-02-23
 

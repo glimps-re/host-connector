@@ -15,8 +15,8 @@ gdetect:
   tags: ["Server1"]
   insecure: false
 quarantine:
-  location: "C:\\Program Files\\GMHost\\quarantine"
+  # location: "C:\\Program Files\\GMHost\\quarantine"
   password: infected
 cache:
-location: "C:\\Program Files\\GMHost\\cache.db"
-scanValidity: 168h
+  # location: "C:\\Program Files\\GMHost\\cache.db"
+  scanValidity: 168h

@@ -5,6 +5,7 @@ import (
 	_ "embed" // embed file
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -27,7 +28,7 @@ var scanCmd = &cobra.Command{
 		}
 		for _, arg := range args {
 			if err = gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
-				Logger.Error("error during scan", "file", arg, "error", err)
+				Logger.Error("error during scan", slog.String("file", arg), slog.String("error", err.Error()))
 				gctx.conn.Close()
 				return
 			}

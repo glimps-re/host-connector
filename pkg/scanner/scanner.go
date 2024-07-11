@@ -137,12 +137,12 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		return
 	}
 	if info.Size() == 0 {
-		Logger.Warn("skip file", "file", input, "reason", "size 0")
+		Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size 0"))
 		return
 	}
 	if info.Size() > c.config.MaxFileSize {
 		if !c.config.Extract {
-			Logger.Warn("skip file", "file", input, "reason", "size above max file size")
+			Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size above max file size"))
 			return
 		}
 		hash := sha256.New()
@@ -208,7 +208,6 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				os.Remove(f)
 				continue
 			}
-
 		}
 		c.archivesStatus[id.String()] = eStatus
 		for _, f := range files {
@@ -264,7 +263,7 @@ func (c *Connector) worker() {
 			case "":
 				result, err := c.handleFile(input.location)
 				if err != nil {
-					Logger.Error("could not handle file", "file", input, "error", err)
+					Logger.Error("could not handle file", slog.String("file", input.filename), slog.String("error", err.Error()))
 				}
 				report := &Report{}
 				if err = c.action.Handle(input.location, result, report); err != nil {
@@ -287,27 +286,6 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 	status := c.archivesStatus[input.archiveID]
 	if status.finished {
 		Logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
-		return
-	}
-	entry, err := c.config.Cache.Get(status.result.Sha256)
-	switch {
-	case err == nil:
-		if entry.RestoredAt.UnixMilli() > 0 {
-			Logger.Debug("skip archive", slog.String("archive", status.archiveName), slog.String("reason", "restored"))
-			status.finished = true
-			c.archivesStatus[input.archiveID] = status
-			return
-		}
-		if entry.InitialLocation == status.archiveName && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
-			// skip file
-			Logger.Debug("skip archive", slog.String("archive", status.archiveName), slog.String("reason", "cache valid"))
-			status.finished = true
-			c.archivesStatus[input.archiveID] = status
-			return
-		}
-	case errors.Is(err, cache.ErrEntryNotFound):
-		// ok
-	default:
 		return
 	}
 	result, err := c.handleFile(input.location)
@@ -375,13 +353,13 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 	switch {
 	case err == nil:
 		if entry.RestoredAt.UnixMilli() > 0 {
-			Logger.Debug("skip file", "file", file, "reason", "restored")
+			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
 			f.Close()
 			return
 		}
 		if entry.InitialLocation == file && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
 			// skip file
-			Logger.Debug("skip file", "file", file, "reason", "cache valid")
+			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "cache valid"))
 			f.Close()
 			return
 		}
@@ -391,7 +369,6 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 		f.Close()
 		return
 	}
-	err = nil
 	// GDetect cache
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()

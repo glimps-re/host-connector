@@ -71,7 +71,7 @@ func (a *LogAction) Handle(path string, result SummarizedGMalwareResult, report 
 			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
 		}
 	} else {
-		a.logger.Debug("info scanned", "file", path, "sha256", result.Sha256, "malware", false)
+		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", false))
 	}
 	return nil
 }
@@ -211,7 +211,7 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 			Logger.Error("error set cache", slog.String("sha256", sha256), slog.String("err", err.Error()))
 		}
 	}
-	Logger.Info("file restored", "file", file, "reason", reason)
+	Logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
 	// from here we want the lock file to be deleted
 	deleteLocked = true
 
@@ -246,7 +246,7 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 	go func() {
 		err = filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				Logger.Warn("list quarantined error", "error", err)
+				Logger.Warn("list quarantined error", slog.String("error", err.Error()))
 				return nil
 			}
 			if ctx.Err() != nil {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/glimps-re/host-connector/pkg/monitor"
@@ -14,7 +15,7 @@ var monitoringCmd = &cobra.Command{
 	Short:             "start monitoring location with GMalware host",
 	PersistentPreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		Logger.Debug("config", "conf", conf)
+		Logger.Debug("config", slog.Any("config", conf))
 		if len(args) == 0 {
 			args = conf.Paths
 		}

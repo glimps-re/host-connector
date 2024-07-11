@@ -101,7 +101,7 @@ func TestLogAction_Handle(t *testing.T) {
 					Malwares: []string{"MALWARE-1"},
 					Sha256:   "123456789",
 					MaliciousSubfiles: map[string]SummarizedGMalwareResult{
-						"test/test.txt": SummarizedGMalwareResult{
+						"test/test.txt": {
 							Sha256:   "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
 							Malware:  true,
 							Malwares: []string{"MALWARE-1"},

@@ -98,7 +98,7 @@ func (m *Monitor) work() {
 			if !ok {
 				return
 			}
-			Logger.Debug("new event", "event", event)
+			Logger.Debug("new event", slog.Any("event", event))
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				m.fileToScanLock.Lock()
 				m.fileToScan[event.Name] = struct{}{}
@@ -108,7 +108,7 @@ func (m *Monitor) work() {
 			if !ok {
 				return
 			}
-			Logger.Error("watcher error", "error", err)
+			Logger.Error("watcher error", slog.String("error", err.Error()))
 		}
 	}
 }

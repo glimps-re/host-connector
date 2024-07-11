@@ -35,10 +35,6 @@ func TestMonitor_work(t *testing.T) {
 					return
 				}
 				defer monitor.Close()
-				if err != nil {
-					t.Errorf("could not create new Monitor, error: %s", err)
-					return
-				}
 				monitor.Start()
 				monitor.Add(tmpDir)
 				f, err := os.Create(filepath.Join(tmpDir, "test1"))
@@ -78,10 +74,6 @@ func TestMonitor_work(t *testing.T) {
 					return
 				}
 				defer monitor.Close()
-				if err != nil {
-					t.Errorf("could not create new Monitor, error: %s", err)
-					return
-				}
 				monitor.Start()
 				monitor.Add(tmpDir)
 				f, err := os.CreateTemp(os.TempDir(), "test1_*")
@@ -122,10 +114,6 @@ func TestMonitor_work(t *testing.T) {
 					return
 				}
 				defer monitor.Close()
-				if err != nil {
-					t.Errorf("could not create new Monitor, error: %s", err)
-					return
-				}
 				monitor.Start()
 				monitor.Add(tmpDir)
 				f, err := os.Create(filepath.Join(tmpDir, "test1"))
@@ -183,10 +171,6 @@ func TestMonitor_work(t *testing.T) {
 					return
 				}
 				defer monitor.Close()
-				if err != nil {
-					t.Errorf("could not create new Monitor, error: %s", err)
-					return
-				}
 				monitor.Start()
 				monitor.Add(tmpDir)
 
@@ -228,10 +212,6 @@ func TestMonitor_work(t *testing.T) {
 					return
 				}
 				defer monitor.Close()
-				if err != nil {
-					t.Errorf("could not create new Monitor, error: %s", err)
-					return
-				}
 				monitor.Start()
 				monitor.Add(tmpDir)
 

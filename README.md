@@ -5,7 +5,7 @@
 
 # GMalware Detect host connector 
 
-A agent tool to scan selected folders on a Windows or GNU/Linux hosts.
+An agent tool to scan selected folders on a Windows or GNU/Linux hosts.
 
 ## Usage
 
@@ -50,9 +50,8 @@ A GDetect scan is valid for one week (168h). When malware are found, it will be 
 
 ```yaml
 workers: 4
-paths: [
-    "C:\\Users\\YourUser\\Documents"
-]
+paths: 
+  - C:\\Users\\YourUser\\Documents
 actions:
   delete: true
   quarantine: true
@@ -68,10 +67,10 @@ gdetect:
   tags: ["Server1"]
   insecure: false
 quarantine:
-  location: "C:\\Program Files\\GMHost\\quarantine"
+  location: C:\\Program Files\\GMHost\\quarantine
   password: infected
 cache:
-  location: "C:\\Program Files\\GMHost\\cache"
+  location: C:\\Program Files\\GMHost\\cache
   scanValidity: 168h
 ```
 

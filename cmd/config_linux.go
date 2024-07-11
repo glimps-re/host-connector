@@ -4,6 +4,7 @@
 package cmd
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -25,6 +26,12 @@ func getConfigFile() (config string) {
 	cfg := filepath.Join(home, ".config", "gmhost", "config")
 	if _, err := os.Stat(cfg); err == nil {
 		return cfg
+	}
+	if _, err := os.Stat(config); err != nil {
+		_, err = os.Create(config)
+		if err != nil {
+			Logger.Error("could not create config file", slog.String("location", config))
+		}
 	}
 	return
 }

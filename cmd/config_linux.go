@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	DefaultConfigPath         = "/etc/gmhost/config"
+	DefaultConfigPath         = "/etc/gmhost/config.yml"
 	DefaultCacheLocation      = ""
 	DefaultQuarantineLocation = "/var/lib/gmhost/quarantine"
 )
@@ -23,7 +23,7 @@ func getConfigFile() (config string) {
 	if err != nil {
 		return
 	}
-	cfg := filepath.Join(home, ".config", "gmhost", "config")
+	cfg := filepath.Join(home, ".config", "gmhost", "config.yml")
 	if _, err := os.Stat(cfg); err == nil {
 		return cfg
 	}

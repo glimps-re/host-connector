@@ -17,7 +17,7 @@
 
         <DirectoryRef Id="APPLICATIONCONFIGDIRECTORY">
             <Component Id="config" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="config" Source="../rsc/config" />
+                <File Id="config" Source="../rsc/config.yml" />
             </Component>
         </DirectoryRef>
 
@@ -106,7 +106,7 @@
             <ComponentRef Id="ghmhost.exe" />
             <ComponentRef Id="README.md" />
             <ComponentRef Id="Glimps.ico" />
-            <ComponentRef Id="config" />
+            <ComponentRef Id="config.yml" />
             <ComponentRef Id="RegistryEntries" />
         </Feature>
     </Product>

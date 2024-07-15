@@ -108,7 +108,7 @@ Flags:
 
 Global Flags:
       --cache string             location of the cache DB
-      --config string            config file (default "/etc/gmhost/config")
+      --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
@@ -134,7 +134,7 @@ Flags:
 
 Global Flags:
       --cache string             location of the cache DB
-      --config string            config file (default "/etc/gmhost/config")
+      --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
@@ -165,7 +165,7 @@ Flags:
 
 Global Flags:
       --cache string             location of the cache DB
-      --config string            config file (default "/etc/gmhost/config")
+      --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)

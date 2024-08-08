@@ -571,6 +571,19 @@ func TestNewConnector(t *testing.T) {
 		},
 	}
 	for _, tt := range tests {
+		// do all test in dedicated tmp dir that will be removed after
+		sysTmpDir := os.Getenv("TMPDIR")
+		testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
+		if err != nil {
+			t.Errorf("could not create temp dir, error: %s", err)
+			return
+		}
+		os.Setenv("TMPDIR", testTmpDir)
+		defer func() {
+			os.RemoveAll(testTmpDir)
+			os.Setenv("TMPDIR", sysTmpDir)
+		}()
+
 		t.Run(tt.name, tt.test)
 	}
 }
@@ -586,7 +599,7 @@ var bigZipFile []byte
 
 func TestConnector_ScanFile(t *testing.T) {
 	type fields struct {
-		unknwonFile bool
+		unknownFile bool
 		maxFileSize int64
 		extract     bool
 	}
@@ -605,7 +618,7 @@ func TestConnector_ScanFile(t *testing.T) {
 		{
 			name: "error unknown file",
 			fields: fields{
-				unknwonFile: true,
+				unknownFile: true,
 			},
 			wantErr: true,
 		},
@@ -713,7 +726,21 @@ func TestConnector_ScanFile(t *testing.T) {
 				archivesStatus: make(map[string]archiveStatus),
 			}
 			var input string
-			if !tt.fields.unknwonFile {
+
+			// do all test in dedicated tmp dir that will be removed after
+			sysTmpDir := os.Getenv("TMPDIR")
+			testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
+			if err != nil {
+				t.Errorf("could not create temp dir, error: %s", err)
+				return
+			}
+			os.Setenv("TMPDIR", testTmpDir)
+			defer func() {
+				os.RemoveAll(testTmpDir)
+				os.Setenv("TMPDIR", sysTmpDir)
+			}()
+
+			if !tt.fields.unknownFile {
 				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test_*.%s", tt.args.extension))
 				if err != nil {
 					t.Errorf("could not create temp file, error: %s", err)

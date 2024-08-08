@@ -55,6 +55,7 @@ type archiveStatus struct {
 	result      SummarizedGMalwareResult
 	analyzed    int
 	total       int
+	tmpFolder   string
 }
 
 type Connector struct {
@@ -187,8 +188,9 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				Malware:           false,
 				Malwares:          []string{},
 			},
-			analyzed: 0,
-			total:    len(files),
+			analyzed:  0,
+			total:     len(files),
+			tmpFolder: outputDir,
 		}
 
 		// Filter files
@@ -199,6 +201,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				c.archivesStatus[id.String()] = eStatus
 				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
+				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
 				continue
 			}
 			if info.Size() <= 0 || info.Size() > c.config.MaxFileSize {
@@ -206,6 +209,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				c.archivesStatus[id.String()] = eStatus
 				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
+				Logger.Warn("skip archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("raison", "file too large"))
 				continue
 			}
 		}
@@ -303,6 +307,7 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 			return
 		}
 		c.addReport(report)
+		os.RemoveAll(status.tmpFolder)
 	}
 	c.archivesStatus[input.archiveID] = status
 	return

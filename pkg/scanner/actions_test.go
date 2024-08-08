@@ -375,6 +375,19 @@ func TestQuarantineAction_Handle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// do all test in dedicated tmp dir that will be removed after
+			sysTmpDir := os.Getenv("TMPDIR")
+			testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
+			if err != nil {
+				t.Errorf("could not create temp dir, error: %s", err)
+				return
+			}
+			os.Setenv("TMPDIR", testTmpDir)
+			defer func() {
+				os.RemoveAll(testTmpDir)
+				os.Setenv("TMPDIR", sysTmpDir)
+			}()
+
 			if tt.args.path != "" {
 				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test-action-%s-*", tt.args.path))
 				if err != nil {

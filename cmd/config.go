@@ -70,8 +70,7 @@ type config struct {
 	Config      string `yaml:"config" desc:"path to configuration file"`
 	Workers     uint   `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
 	Extract     bool   `mapstructure:"extract" yaml:"extract" desc:"extract big archive to send it to gmalware"`
-	ExtractAll  bool   `mapstructure:"extract-all" yaml:"extract-all" desc:"extract all files from an archive before performing actions on it"`
-	MaxFileSize string `mapstructure:"max-file-size" yaml:"max-file-size" desc:"max file size to push to gmalware"`
+	MaxFileSize string `mapstructure:"max-file-size" yaml:"maxFileSize" desc:"max file size to push to gmalware"`
 	Debug       bool   `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`
 	Verbose     bool   `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
 	Quiet       bool   `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`

@@ -16,18 +16,18 @@
         </Directory>
 
         <DirectoryRef Id="APPLICATIONCONFIGDIRECTORY">
-            <Component Id="config" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="config" Source="../rsc/config.yml" />
+            <Component Id="config.yml" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+                <File Id="config.yml" Source="../rsc/config.yml" />
             </Component>
         </DirectoryRef>
 
         <!-- Step 2: Add files to your installer package -->
         <DirectoryRef Id="APPLICATIONROOTDIRECTORY">
             <!-- <RemoveFolder Id="APPLICATIONROOTDIRECTORY" On="uninstall" /> -->
-            <Component Id="ghmhostgui.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+            <Component Id="gmhostgui.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <File Id="gmhostgui.exe" Source="gmhostgui.exe" />
             </Component>
-            <Component Id="ghmhost.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
+            <Component Id="gmhost.exe" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <File Id="gmhost.exe" Source="gmhost.exe" />
             </Component>
             <Component Id="README.md" Guid="508eaf53-83e2-46df-8717-0643c997e094">
@@ -102,8 +102,8 @@
 
         <!-- Step 3: Tell WiX to install the files -->
         <Feature Id="MainApplication" Title="GMHost" Level="1">
-            <ComponentRef Id="ghmhostgui.exe" />
-            <ComponentRef Id="ghmhost.exe" />
+            <ComponentRef Id="gmhostgui.exe" />
+            <ComponentRef Id="gmhost.exe" />
             <ComponentRef Id="README.md" />
             <ComponentRef Id="Glimps.ico" />
             <ComponentRef Id="config.yml" />

@@ -50,7 +50,8 @@ jobs:
           goversion: ${{ matrix.goversion }}
           pre_command: apt-get update && apt-get install -y wixl
           post_command: 
-              wixl -a x64
+              GOOS=windows go build -o gmhost.exe -ldflags "-s -w" ../main.go
+              && wixl -a x64
               -o "${INPUT_BINARY_NAME}-${GITHUB_REF_NAME}-${INPUT_GOARCH}-${INPUT_GOOS}.msi"
               ../setup.wxs
               && github-assets-uploader

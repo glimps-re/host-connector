@@ -66,7 +66,6 @@ func initGCtx() (err error) {
 		ScanPeriod:    conf.Monitoring.Period,
 		CustomActions: customAction,
 		Extract:       conf.Extract,
-		ExtractAll:    conf.ExtractAll,
 	})
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{

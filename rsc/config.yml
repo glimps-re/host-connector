@@ -1,5 +1,7 @@
 workers: 4
 paths: []
+# extract: false
+# maxFileSize: 100MiB
 actions:
   delete: true
   quarantine: true

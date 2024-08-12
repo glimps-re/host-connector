@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/google/uuid"
@@ -39,7 +41,6 @@ type Config struct {
 	CustomActions    []Action
 	ScanPeriod       time.Duration
 	Extract          bool
-	ExtractAll       bool
 	MaxFileSize      int64
 }
 
@@ -83,9 +84,6 @@ func NewConnector(config Config) *Connector {
 	}
 	if config.Workers > MaxWorkers {
 		config.Workers = MaxWorkers
-	}
-	if config.ExtractAll && !config.Extract {
-		config.Extract = true
 	}
 
 	if config.MaxFileSize <= 0 || config.MaxFileSize > MaxFileSize {
@@ -209,7 +207,12 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				c.archivesStatus[id.String()] = eStatus
 				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
-				Logger.Warn("skip archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("raison", "file too large"))
+				Logger.Warn(
+					"skip archive inner file",
+					slog.String("archive", input),
+					slog.String("file", f),
+					slog.String("raison", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
+				)
 				continue
 			}
 		}
@@ -300,7 +303,7 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 	}
 	status.analyzed++
 	status.result = mergeResult(status.result, result, input.filename)
-	if (c.config.ExtractAll && status.analyzed == status.total) || (!c.config.ExtractAll && result.Malware) {
+	if (c.config.Extract && status.analyzed == status.total) || (!c.config.Extract && result.Malware) {
 		status.finished = true
 		report := &Report{}
 		if err = c.action.Handle(status.archiveName, status.result, report); err != nil {

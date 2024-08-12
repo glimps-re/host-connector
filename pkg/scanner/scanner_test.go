@@ -268,7 +268,6 @@ func TestNewConnector(t *testing.T) {
 				conn := NewConnector(Config{
 					MaxFileSize: 200,
 					Extract:     true,
-					ExtractAll:  true,
 					Actions: Actions{
 						Deleted:    true,
 						Quarantine: true,

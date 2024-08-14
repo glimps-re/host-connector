@@ -244,7 +244,7 @@ type QuarantinedFile struct {
 func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles chan QuarantinedFile, err error) {
 	qfiles = make(chan QuarantinedFile)
 	go func() {
-		err = filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
+		err := filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				Logger.Warn("list quarantined error", slog.String("error", err.Error()))
 				return nil

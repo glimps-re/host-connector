@@ -29,6 +29,7 @@ type Monitor struct {
 	period         time.Duration
 	modDelay       time.Duration
 	paths          map[string]struct{}
+	pathsLock      sync.Mutex
 	stop           context.Context
 	cancel         context.CancelFunc
 	fileToScan     map[string]struct{}
@@ -80,12 +81,14 @@ func (m *Monitor) scan() {
 		case <-m.stop.Done():
 			return
 		case <-ticker.C:
+			m.pathsLock.Lock()
 			for path := range m.paths {
 				err := m.cb(path)
 				if err != nil {
 					Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
 				}
 			}
+			m.pathsLock.Unlock()
 		}
 	}
 }
@@ -127,17 +130,17 @@ func (m *Monitor) scanFiles() {
 		case <-m.stop.Done():
 			return
 		case <-ticker.C:
+			m.fileToScanLock.Lock()
 			for path := range m.fileToScan {
 				if info, err := os.Stat(path); err == nil && Since(info.ModTime()) > m.modDelay {
 					err := m.cb(path)
 					if err != nil {
 						Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
 					}
-					m.fileToScanLock.Lock()
 					delete(m.fileToScan, path)
-					m.fileToScanLock.Unlock()
 				}
 			}
+			m.fileToScanLock.Unlock()
 		}
 	}
 }
@@ -146,9 +149,13 @@ func (m *Monitor) Add(path string) error {
 	if err := m.watcher.Add(path); err != nil {
 		return err
 	}
+	m.pathsLock.Lock()
 	m.paths[path] = struct{}{}
+	m.pathsLock.Unlock()
 	if m.preScan {
+		m.wg.Add(1)
 		go func() {
+			defer m.wg.Done()
 			err := m.cb(path)
 			if err != nil {
 				Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
@@ -159,6 +166,8 @@ func (m *Monitor) Add(path string) error {
 }
 
 func (m *Monitor) Remove(path string) error {
+	m.pathsLock.Lock()
+	defer m.pathsLock.Unlock()
 	delete(m.paths, path)
 	return m.watcher.Remove(path)
 }

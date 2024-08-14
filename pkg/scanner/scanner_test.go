@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -562,6 +563,7 @@ func TestNewConnector(t *testing.T) {
 				if err := conn.ScanFile(ctx, testDir); err != nil {
 					t.Errorf("unwanted error: %v", err)
 				}
+				conn.Close()
 
 				if !strings.HasSuffix(buffer.String(), "no malware found\n") {
 					t.Errorf("invalid output: %v", buffer.String())
@@ -754,7 +756,10 @@ func TestConnector_ScanFile(t *testing.T) {
 			}
 
 			fileRetrieved := 0
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
 			go func() {
+				defer wg.Done()
 				select {
 				case <-c.fileChan:
 					fileRetrieved++
@@ -770,6 +775,7 @@ func TestConnector_ScanFile(t *testing.T) {
 
 			time.Sleep(time.Millisecond * 1)
 			cancel()
+			wg.Wait()
 
 			if fileRetrieved != tt.wantFileRetrieved {
 				t.Errorf("Connector.ScanFile() retrieved %d file, want %d", fileRetrieved, tt.wantFileRetrieved)

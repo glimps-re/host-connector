@@ -137,7 +137,7 @@ func TestCache(t *testing.T) {
 				}
 				worker := func(i int) {
 					defer wg.Done()
-					_, err = cache.Get("test")
+					_, err := cache.Get("test")
 					if !errors.Is(err, ErrEntryNotFound) {
 						t.Errorf("[%d]cache.Get(unknown) error = %v, want = %v", i, err, ErrEntryNotFound)
 					}
@@ -164,7 +164,7 @@ func TestCache(t *testing.T) {
 				}
 				worker := func(i int) {
 					defer wg.Done()
-					err = cache.Set(&Entry{Sha256: "test"})
+					err := cache.Set(&Entry{Sha256: "test"})
 					if !errors.Is(err, nil) {
 						t.Errorf("[%d]cache.Set(unknown) error = %v", i, err)
 					}
@@ -179,13 +179,5 @@ func TestCache(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.test)
-		// func(t *testing.T) {
-		// 	c := &Cache{
-		// 		db: tt.fields.db,
-		// 	}
-		// 	if err := c.Set(tt.args.entry); (err != nil) != tt.wantErr {
-		// 		t.Errorf("Cache.Set() error = %v, wantErr %v", err, tt.wantErr)
-		// 	}
-		// })
 	}
 }

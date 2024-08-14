@@ -131,12 +131,16 @@ func (c *Connector) Start() error {
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	info, err := os.Stat(input)
+	info, err := os.Lstat(input)
 	if err != nil {
 		return
 	}
 	if info.IsDir() {
 		return c.scanDir(ctx, input)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		Logger.Debug("skip file", slog.String("file", input), slog.String("reason", "size 0"))
+		return
 	}
 	if info.Size() == 0 {
 		Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size 0"))
@@ -144,7 +148,11 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	}
 	if info.Size() > c.config.MaxFileSize {
 		if !c.config.Extract {
-			Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size above max file size"))
+			Logger.Warn("skip file",
+				slog.String("file", input),
+				slog.String("reason", "file too large"),
+				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
+			)
 			return
 		}
 		hash := sha256.New()
@@ -172,7 +180,17 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		}
 
 		_, files, _, extractErr := xtractr.ExtractFile(&xfile)
-		if extractErr != nil {
+		switch {
+		case extractErr == nil:
+			// OK
+		case errors.Is(extractErr, xtractr.ErrUnknownArchiveType):
+			Logger.Warn("skip file",
+				slog.String("file", input),
+				slog.String("reason", "file too large (not an archive)"),
+				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
+			)
+			return
+		default:
 			Logger.Warn("failed extraction", slog.String("archive", input), slog.String("reason", extractErr.Error()))
 			return
 		}
@@ -214,7 +232,8 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 					"skip archive inner file",
 					slog.String("archive", input),
 					slog.String("file", f),
-					slog.String("raison", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
+					slog.String("raison", "file too large"),
+					slog.String("yysize", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
 				)
 				continue
 			}

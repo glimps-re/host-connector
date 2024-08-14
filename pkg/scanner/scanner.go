@@ -135,6 +135,9 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	if err != nil {
 		return
 	}
+	if info.IsDir() {
+		return c.scanDir(ctx, input)
+	}
 	if info.Size() == 0 {
 		Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size 0"))
 		return
@@ -231,15 +234,15 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		return
 	}
 
-	if !info.IsDir() {
-		select {
-		case <-ctx.Done():
-			return context.Canceled
-		case c.fileChan <- fileToAnalyze{location: input}:
-			return
-		}
+	select {
+	case <-ctx.Done():
+		return context.Canceled
+	case c.fileChan <- fileToAnalyze{location: input}:
+		return
 	}
+}
 
+func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	// WalkDir seems to not handle correctly path without ending /
 	input += string(filepath.Separator)
 

@@ -21,7 +21,7 @@ type Entry struct {
 	// DeletedAt          gorm.DeletedAt `gorm:"index"`
 	InitialLocation    string    `field:"location"`
 	QuarantineLocation string    `field:"quarantine"`
-	RestoredAt         time.Time `field:"restore_at"`
+	RestoredAt         time.Time `field:"restored_at"`
 }
 
 type Cacher interface {
@@ -47,7 +47,7 @@ var CreateTable = `CREATE TABLE IF NOT EXISTS entries (
 	updated_at int NOT NULL, 
 	quarantine TEXT, 
 	location TEXT, 
-	restored_at int );`
+	restored_at int);`
 
 func NewCache(location string) (c *Cache, err error) {
 	if location == "" {

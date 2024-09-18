@@ -31,7 +31,7 @@ type Submitter interface {
 type Config struct {
 	// Path             string
 	QuarantineFolder string
-	Workers          uint
+	Workers          int
 	Password         string
 	Cache            cache.Cacher
 	Submitter        Submitter
@@ -72,14 +72,14 @@ type Connector struct {
 	archiveMutex   sync.RWMutex
 }
 
-var MaxWorkers uint = 40
+var MaxWorkers = 40
 
 var MaxFileSize int64 = 100 * 1024 * 1024
 
 func NewConnector(config Config) *Connector {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if config.Workers == 0 {
+	if config.Workers < 1 {
 		config.Workers = 1
 	}
 	if config.Workers > MaxWorkers {
@@ -123,7 +123,7 @@ func newAction(config Config) Action {
 }
 
 func (c *Connector) Start() error {
-	for i := 0; i < int(c.config.Workers); i++ {
+	for i := 0; i < c.config.Workers; i++ {
 		c.wg.Add(1)
 		go c.worker()
 	}
@@ -232,7 +232,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 					"skip archive inner file",
 					slog.String("archive", input),
 					slog.String("file", f),
-					slog.String("raison", "file too large"),
+					slog.String("reason", "file too large"),
 					slog.String("yysize", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
 				)
 				continue
@@ -387,12 +387,7 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 			f.Close()
 			return
 		}
-		if entry.InitialLocation == file && c.config.ScanPeriod.Milliseconds() > 0 && Since(entry.UpdatedAt) <= c.config.ScanPeriod {
-			// skip file
-			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "cache valid"))
-			f.Close()
-			return
-		}
+		Logger.Warn("file cached but not restored correctly, analyzing it again", slog.String("file", file), slog.String("reason", " not restored"))
 	case errors.Is(err, cache.ErrEntryNotFound):
 		// ok
 	default:

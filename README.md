@@ -9,7 +9,6 @@ An agent tool to scan selected folders on a Windows or GNU/Linux hosts.
 
 ## Usage
 
-
 ```bash
 GMalware Host connector is a tool to scan files with GMalware Detect
 
@@ -26,13 +25,15 @@ Available Commands:
 
 Flags:
       --cache string             location of the cache DB
-      --config string            config file (default "/etc/gmhost/config")
+      --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
+      --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
   -h, --help                     help for GMHost
-      --insecure                 do not validate certificates
-      --quarantine string        location of the quarantine folder
+      --insecure                 do not check certificates
+      --max-file-size string     max file size to push to gmalware (default "100MiB")
+      --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
       --quiet                    print no information
       --scan-validity duration   Validity duration for each scan result (default 168h0m0s)
       --timeout duration         Time allowed to analyze each files (default 5m0s)
@@ -50,6 +51,7 @@ A GDetect scan is valid for one week (168h). When malware are found, it will be 
 
 ```yaml
 workers: 4
+extract: true
 paths: 
   - C:\\Users\\YourUser\\Documents
 actions:
@@ -110,10 +112,12 @@ Global Flags:
       --cache string             location of the cache DB
       --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
+      --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
       --insecure                 do not check certificates
-      --quarantine string        location of the quarantine folder
+      --max-file-size string     max file size to push to gmalware (default "100MiB")
+      --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
       --quiet                    print no information
       --scan-validity duration   Validity duration for each scan result (default 168h0m0s)
       --timeout duration         Time allowed to analyze each files (default 5m0s)
@@ -136,10 +140,12 @@ Global Flags:
       --cache string             location of the cache DB
       --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
+      --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
-      --insecure                 do not validate certificates
-      --quarantine string        location of the quarantine folder
+      --insecure                 do not check certificates
+      --max-file-size string     max file size to push to gmalware (default "100MiB")
+      --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
       --quiet                    print no information
       --scan-validity duration   Validity duration for each scan result (default 168h0m0s)
       --timeout duration         Time allowed to analyze each files (default 5m0s)
@@ -167,10 +173,12 @@ Global Flags:
       --cache string             location of the cache DB
       --config string            config file (default "/etc/gmhost/config.yml")
       --debug                    print debug strings
+      --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
-      --insecure                 do not validate certificates
-      --quarantine string        location of the quarantine folder
+      --insecure                 do not check certificates
+      --max-file-size string     max file size to push to gmalware (default "100MiB")
+      --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
       --quiet                    print no information
       --scan-validity duration   Validity duration for each scan result (default 168h0m0s)
       --timeout duration         Time allowed to analyze each files (default 5m0s)

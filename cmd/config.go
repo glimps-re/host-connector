@@ -5,11 +5,11 @@ import (
 )
 
 var (
-	DefaultTimeout                = 5 * time.Minute
-	DefaultWorkers           uint = 4
-	DefaultScanValidity           = time.Hour * 24 * 7
-	DefaultModificationDelay      = time.Second * 30
-	DefaultMaxFileSize            = "100MB"
+	DefaultTimeout           = 5 * time.Minute
+	DefaultWorkers           = 4
+	DefaultScanValidity      = time.Hour * 24 * 7
+	DefaultModificationDelay = time.Second * 30
+	DefaultMaxFileSize       = "100MiB"
 )
 
 var conf = &config{
@@ -68,7 +68,7 @@ type cacheConfig struct {
 type config struct {
 	// global
 	Config      string `yaml:"config" desc:"path to configuration file"`
-	Workers     uint   `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
+	Workers     int    `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
 	Extract     bool   `mapstructure:"extract" yaml:"extract" desc:"extract big archive to send it to gmalware"`
 	MaxFileSize string `mapstructure:"max-file-size" yaml:"maxFileSize" desc:"max file size to push to gmalware"`
 	Debug       bool   `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`

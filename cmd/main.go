@@ -42,6 +42,10 @@ func initGCtx() (err error) {
 	if err != nil {
 		return fmt.Errorf("could not parse max-file-size: %w", err)
 	}
+	if maxFileSize > 100*1024*1024 {
+		Logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
+		maxFileSize = 100 * 1024 * 1024
+	}
 
 	connector := scanner.NewConnector(scanner.Config{
 		QuarantineFolder: conf.Quarantine.Location,

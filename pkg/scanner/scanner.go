@@ -398,12 +398,12 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()
 	result, err := c.config.Submitter.GetResultBySHA256(ctx, fileSHA256)
-	if err != nil {
+	switch {
+	case err != nil:
 		// result not found, ask a new scan
 		if _, err = f.Seek(0, io.SeekStart); err != nil {
 			return
 		}
-
 		opts := c.config.WaitOpts
 		opts.Filename = file
 		result, err = c.config.Submitter.WaitForReader(ctx, f, opts)
@@ -411,7 +411,32 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 			f.Close()
 			return
 		}
+	case !result.Done:
+		pullTime := time.Millisecond * 500
+		if c.config.WaitOpts.PullTime != 0*time.Second {
+			pullTime = c.config.WaitOpts.PullTime
+		}
+		ticker := time.NewTicker(pullTime)
+	GET_LOOP:
+		for {
+			select {
+			case <-ticker.C:
+				Logger.Debug("getting result")
+				result, err = c.config.Submitter.GetResultByUUID(ctx, result.UUID)
+				if err != nil {
+					f.Close()
+					return
+				}
+				if result.Done {
+					break GET_LOOP
+				}
+			case <-ctx.Done():
+				err = context.DeadlineExceeded
+				return
+			}
+		}
 	}
+
 	// f need to be closed before action, to allow deletion
 	f.Close()
 	sumResult = SummarizedGMalwareResult{

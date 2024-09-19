@@ -1,5 +1,12 @@
 # Changelog
 
+## [v0.2.1] - 2024-09-19
+
+### Fixed
+
+- Check if analysis is done when using detect cache
+- Do not skip badly restored file
+
 ## [v0.2.0] - 2024-07-12
 
 ### Added

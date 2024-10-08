@@ -33,6 +33,9 @@ func initGCtx() (err error) {
 	if err != nil {
 		return fmt.Errorf("init gdetect client error: %w", err)
 	}
+	if conf.GDetect.Syndetect {
+		client.SetSyndetect()
+	}
 	customAction := make([]scanner.Action, 0)
 	if conf.Gui {
 		customAction = append(customAction, &GuiHandleResult{})
@@ -42,8 +45,16 @@ func initGCtx() (err error) {
 	if err != nil {
 		return fmt.Errorf("could not parse max-file-size: %w", err)
 	}
-	if maxFileSize > 100*1024*1024 {
+	if maxFileSize > 100*1024*1024 && !conf.GDetect.Syndetect {
 		Logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
+		maxFileSize = 100 * 1024 * 1024
+	}
+	if maxFileSize > 2048*1024*1024 {
+		Logger.Warn("max file size can't exceed 2GiB, set the value to 2GiB", slog.String("max-file-size", conf.MaxFileSize))
+		maxFileSize = 2048 * 1024 * 1024
+	}
+	if maxFileSize <= 0 {
+		Logger.Warn("max file size must be greater than 0, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
 		maxFileSize = 100 * 1024 * 1024
 	}
 

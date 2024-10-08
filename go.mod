@@ -3,9 +3,9 @@ module github.com/glimps-re/host-connector
 go 1.21
 
 require (
-	github.com/glimps-re/go-gdetect v1.2.0
+	github.com/glimps-re/go-gdetect v1.3.0
 	github.com/mitchellh/go-homedir v1.1.0
-	github.com/spf13/cobra v1.5.0
+	github.com/spf13/cobra v1.8.1
 	modernc.org/sqlite v1.28.0
 )
 
@@ -27,7 +27,7 @@ require (
 	github.com/gonutz/w32/v2 v2.2.2 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
-	github.com/inconshreveable/mousetrap v1.0.1 // indirect
+	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/kballard/go-shellquote v0.0.0-20180428030007-95032a82bc51 // indirect
 	github.com/kdomanski/iso9660 v0.3.3 // indirect
 	github.com/klauspost/compress v1.17.0 // indirect

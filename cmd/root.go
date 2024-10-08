@@ -33,6 +33,7 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().StringVar(&conf.Config, "config", DefaultConfigPath, "config file")
 	rootCmd.PersistentFlags().StringVar(&conf.GDetect.Token, "gdetect-token", os.Getenv("GDETECT_TOKEN"), "GMalware Detect token")
 	rootCmd.PersistentFlags().StringVar(&conf.GDetect.URL, "gdetect-url", os.Getenv("GDETECT_URL"), "GMalware Detect url (E.g https://gmalware.ggp.glimps.re)")
+	rootCmd.PersistentFlags().BoolVar(&conf.GDetect.Syndetect, "gdetect-syndetect", conf.GDetect.Syndetect, "Use syndetect API to analyze files")
 	rootCmd.PersistentFlags().DurationVar(&conf.GDetect.Timeout, "timeout", DefaultTimeout, "Time allowed to analyze each files")
 	rootCmd.PersistentFlags().DurationVar(&conf.Cache.ScanValidity, "scan-validity", DefaultScanValidity, "Validity duration for each scan result")
 	rootCmd.PersistentFlags().IntVar(&conf.Workers, "workers", DefaultWorkers, "number of files analyzed at the same time")

@@ -86,7 +86,7 @@ func NewConnector(config Config) *Connector {
 		config.Workers = MaxWorkers
 	}
 
-	if config.MaxFileSize <= 0 || config.MaxFileSize > MaxFileSize {
+	if config.MaxFileSize <= 0 {
 		config.MaxFileSize = MaxFileSize
 	}
 

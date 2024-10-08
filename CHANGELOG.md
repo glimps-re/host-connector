@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.3.0] - 2024-10-08
+
+### Added
+
+- syndetect API support
+
 ## [v0.2.1] - 2024-09-19
 
 ### Fixed

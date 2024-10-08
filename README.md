@@ -115,6 +115,7 @@ Global Flags:
       --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
+      --gdetect-syndetect        use syndetect API to analyze files
       --insecure                 do not check certificates
       --max-file-size string     max file size to push to gmalware (default "100MiB")
       --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
@@ -143,6 +144,7 @@ Global Flags:
       --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
+      --gdetect-syndetect        use syndetect API to analyze files
       --insecure                 do not check certificates
       --max-file-size string     max file size to push to gmalware (default "100MiB")
       --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")
@@ -176,6 +178,7 @@ Global Flags:
       --extract                  extract archive and scan inner files
       --gdetect-token string     GMalware Detect token
       --gdetect-url string       GMalware Detect url (E.g https://gmalware.ggp.glimps.re)
+      --gdetect-syndetect        use syndetect API to analyze files
       --insecure                 do not check certificates
       --max-file-size string     max file size to push to gmalware (default "100MiB")
       --quarantine string        location of the quarantine folder (default "/var/lib/gmhost/quarantine")

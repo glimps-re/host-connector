@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-    <Product Id="*" UpgradeCode="508eaf53-83e2-46df-8717-0643c997e094" Version="1.0.0.1"
+    <Product Id="*" UpgradeCode="508eaf53-83e2-46df-8717-0643c997e094" Version="1.0.3.0"
         Language="1033" Name="GMHost connector" Manufacturer="GLIMPS">
         <Package InstallerVersion="302" Compressed="yes" />
         <Media Id="1" Cabinet="gmhost.cab" EmbedCab="yes" />

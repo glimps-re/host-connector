@@ -49,11 +49,12 @@ type monitoringConfig struct {
 }
 
 type gdetectConfig struct {
-	URL      string        `mapstructure:"url" yaml:"url" validate:"required" desc:"URL to gdetect API"`
-	Token    string        `mapstructure:"token" yaml:"token" validate:"required" password:"true" desc:"Token for gdetect API"`
-	Timeout  time.Duration `mapstructure:"timeout" yaml:"timeout" desc:"timeout allow to scan a single file"`
-	Tags     []string      `mapstructure:"tags" yaml:"tags" desc:"tags add to each scan. those tags will be added to the default one (GMHost)"`
-	Insecure bool          `mapstructure:"insecure" yaml:"insecure" desc:"do no check GDetect certificates"`
+	URL       string        `mapstructure:"url" yaml:"url" validate:"required" desc:"URL to gdetect API"`
+	Token     string        `mapstructure:"token" yaml:"token" validate:"required" password:"true" desc:"Token for gdetect API"`
+	Timeout   time.Duration `mapstructure:"timeout" yaml:"timeout" desc:"timeout allow to scan a single file"`
+	Tags      []string      `mapstructure:"tags" yaml:"tags" desc:"tags add to each scan. those tags will be added to the default one (GMHost)"`
+	Insecure  bool          `mapstructure:"insecure" yaml:"insecure" desc:"do no check GDetect certificates"`
+	Syndetect bool          `mapstructure:"syndetect" yaml:"syndetect" desc:"use syndetect API to analyze files"`
 }
 
 type quarantineConfig struct {

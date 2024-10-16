@@ -52,16 +52,17 @@ var restorePattern = regexp.MustCompile(".*([0-9a-f]{64}).lock")
 var quarantineRestoreCmd = &cobra.Command{
 	Use:   "restore",
 	Short: "Restore quarantined files",
+	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		qa := scanner.NewQuarantineAction(gctx.cache, conf.Quarantine.Location, gctx.lock)
-		for _, sha := range args {
-			if strings.HasSuffix(sha, ".lock") {
-				ts := restorePattern.FindStringSubmatch(sha)
+		for _, id := range args {
+			if strings.HasSuffix(id, ".lock") {
+				ts := restorePattern.FindStringSubmatch(id)
 				if len(ts) == 2 {
-					sha = ts[1]
+					id = ts[1]
 				}
 			}
-			if err := qa.Restore(sha); err != nil {
+			if err := qa.Restore(id); err != nil {
 				return err
 			}
 		}

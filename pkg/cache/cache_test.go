@@ -21,6 +21,7 @@ func TestCache(t *testing.T) {
 					return
 				}
 				entry1 := Entry{
+					ID:              "abcdef",
 					Sha256:          "abcdef",
 					InitialLocation: "/test/abc",
 				}
@@ -29,13 +30,22 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry1) error = %v", err)
 					return
 				}
-				entry2, err := cache.Get(entry1.Sha256)
+				entry2, err := cache.Get(entry1.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry1.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
 					return
 				}
 				if entry1.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
+					return
+				}
+				entrySha, err := cache.GetBySha256(entry1.Sha256)
+				if err != nil {
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
+					return
+				}
+				if entry1.InitialLocation != entrySha.InitialLocation {
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entrySha)
 					return
 				}
 
@@ -45,13 +55,13 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry2) error = %v", err)
 					return
 				}
-				entry3, err := cache.Get(entry2.Sha256)
+				entry3, err := cache.Get(entry2.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry2.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry2.ID) error = %v", err)
 					return
 				}
 				if entry2.InitialLocation != entry3.InitialLocation {
-					t.Errorf("cache.Get(entry2.Sha256) != entry2, want = %v, got = %v", entry2, entry3)
+					t.Errorf("cache.Get(entry2.ID) != entry2, want = %v, got = %v", entry2, entry3)
 					return
 				}
 			},
@@ -72,6 +82,7 @@ func TestCache(t *testing.T) {
 					return
 				}
 				entry1 := Entry{
+					ID:              "abcdef",
 					Sha256:          "abcdef",
 					InitialLocation: "/test/abc",
 				}
@@ -80,13 +91,22 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry1) error = %v", err)
 					return
 				}
-				entry2, err := cache.Get(entry1.Sha256)
+				entry2, err := cache.Get(entry1.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry1.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
 					return
 				}
 				if entry1.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
+					return
+				}
+				entrySha, err := cache.GetBySha256(entry1.Sha256)
+				if err != nil {
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
+					return
+				}
+				if entry1.InitialLocation != entrySha.InitialLocation {
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entrySha)
 					return
 				}
 
@@ -97,13 +117,13 @@ func TestCache(t *testing.T) {
 					return
 				}
 				defer cache2.Close()
-				entry, err := cache2.Get(entry2.Sha256)
+				entry, err := cache2.Get(entry2.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry2.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry2.ID) error = %v", err)
 					return
 				}
 				if entry.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
 			},
@@ -117,6 +137,10 @@ func TestCache(t *testing.T) {
 					return
 				}
 				_, err = cache.Get("test")
+				if !errors.Is(err, ErrEntryNotFound) {
+					t.Errorf("cache.Get(unknown) error = %v, want = %v", err, ErrEntryNotFound)
+				}
+				_, err = cache.GetBySha256("test")
 				if !errors.Is(err, ErrEntryNotFound) {
 					t.Errorf("cache.Get(unknown) error = %v, want = %v", err, ErrEntryNotFound)
 				}
@@ -167,6 +191,33 @@ func TestCache(t *testing.T) {
 					err := cache.Set(&Entry{Sha256: "test"})
 					if !errors.Is(err, nil) {
 						t.Errorf("[%d]cache.Set(unknown) error = %v", i, err)
+					}
+				}
+				for i := 0; i < workers; i++ {
+					go worker(i)
+				}
+				close(start)
+				wg.Wait()
+			},
+		},
+		{
+			name: "goroutines getSha",
+			test: func(t *testing.T) {
+				// prepare goroutine
+				wg := sync.WaitGroup{}
+				workers := 50
+				wg.Add(workers)
+				start := make(chan struct{})
+				cache, err := NewCache("")
+				if err != nil {
+					t.Errorf("NewCache() error = %v", err)
+					return
+				}
+				worker := func(i int) {
+					defer wg.Done()
+					_, err := cache.GetBySha256("test")
+					if !errors.Is(err, ErrEntryNotFound) {
+						t.Errorf("[%d]cache.Get(unknown) error = %v, want = %v", i, err, ErrEntryNotFound)
 					}
 				}
 				for i := 0; i < workers; i++ {

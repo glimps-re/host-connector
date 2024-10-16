@@ -379,7 +379,8 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 	fileSHA256 := hex.EncodeToString(hash.Sum(nil))
 
 	// check if file has already been handle
-	entry, err := c.config.Cache.Get(fileSHA256)
+	// get result by sha instead of id because same files may have different ids (if different names)
+	entry, err := c.config.Cache.GetBySha256(fileSHA256)
 	switch {
 	case err == nil:
 		if entry.RestoredAt.UnixMilli() > 0 {

@@ -128,7 +128,7 @@ func TestNewConnector(t *testing.T) {
 
 				conn.Close()
 
-				if !strings.HasSuffix(buffer.String(), "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893.lock, it has been deleted\n") {
+				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile2.Name()))) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -234,7 +234,7 @@ func TestNewConnector(t *testing.T) {
 
 				conn.Close()
 
-				if !strings.HasSuffix(buffer.String(), "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893.lock, it has been deleted\n") {
+				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile.Name()))) {
 					t.Errorf("invalid output: %s", buffer.String())
 				}
 			},
@@ -368,7 +368,7 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 
-				if !strings.HasSuffix(buffer.String(), "e813f5023843f5d654f37032cd407c3e78c079b212eab6ab584262903f9c6d46.lock, it has been deleted\n") {
+				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(archive.Name()))) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -501,7 +501,7 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 
-				if !strings.HasSuffix(buffer.String(), "e813f5023843f5d654f37032cd407c3e78c079b212eab6ab584262903f9c6d46.lock, it has been deleted\n") {
+				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(archive.Name()))) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -594,7 +594,7 @@ func TestNewConnector(t *testing.T) {
 
 				conn.Close()
 
-				if !strings.HasSuffix(buffer.String(), "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893.lock, it has been deleted\n") {
+				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile2.Name()))) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},

@@ -20,6 +20,13 @@ func (m *MockCache) Get(id string) (*Entry, error) {
 	panic("GetMock not implemented")
 }
 
+func (m *MockCache) GetBySha256(id string) (*Entry, error) {
+	if m.GetMock != nil {
+		return m.GetMock(id)
+	}
+	panic("GetMock not implemented")
+}
+
 func (m *MockCache) Close() error {
 	if m.CloseMock != nil {
 		return m.CloseMock()

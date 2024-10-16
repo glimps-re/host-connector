@@ -493,7 +493,7 @@ func TestInformAction_Handle(t *testing.T) {
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
 			},
-			wantOut: `file test_file.bin seems malicious [[eicar test_eicar]], it has been quarantine to /tmp/q/test.lock, it has been deleted`,
+			wantOut: `file test_file.bin seems malicious [[eicar test_eicar]], it has been quarantined to /tmp/q/test.lock, it has been deleted`,
 		},
 	}
 	for _, tt := range tests {
@@ -680,14 +680,15 @@ func TestQuarantineAction_Restore(t *testing.T) {
 						},
 					},
 				)
-				f, err := os.CreateTemp(tmpDir, "test_*.lock")
+				cacheName := cache.ComputeCacheID("test")
+				f, err := os.Create(fmt.Sprintf("%s/%s.lock", tmpDir, cacheName))
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
 				f.WriteString("test_content")
 				f.Close()
-				err = a.Restore(strings.TrimSuffix(filepath.Base(f.Name()), ".lock"))
+				err = a.Restore(cacheName)
 				if err != nil {
 					t.Errorf("QuarantineAction.Restore, error: %s", err)
 					return

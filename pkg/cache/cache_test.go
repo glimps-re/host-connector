@@ -21,6 +21,7 @@ func TestCache(t *testing.T) {
 					return
 				}
 				entry1 := Entry{
+					ID:              "abcdef",
 					Sha256:          "abcdef",
 					InitialLocation: "/test/abc",
 				}
@@ -29,13 +30,13 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry1) error = %v", err)
 					return
 				}
-				entry2, err := cache.Get(entry1.Sha256)
+				entry2, err := cache.Get(entry1.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry1.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
 					return
 				}
 				if entry1.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
 
@@ -45,13 +46,13 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry2) error = %v", err)
 					return
 				}
-				entry3, err := cache.Get(entry2.Sha256)
+				entry3, err := cache.Get(entry2.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry2.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry2.ID) error = %v", err)
 					return
 				}
 				if entry2.InitialLocation != entry3.InitialLocation {
-					t.Errorf("cache.Get(entry2.Sha256) != entry2, want = %v, got = %v", entry2, entry3)
+					t.Errorf("cache.Get(entry2.ID) != entry2, want = %v, got = %v", entry2, entry3)
 					return
 				}
 			},
@@ -72,6 +73,7 @@ func TestCache(t *testing.T) {
 					return
 				}
 				entry1 := Entry{
+					ID:              "abcdef",
 					Sha256:          "abcdef",
 					InitialLocation: "/test/abc",
 				}
@@ -80,13 +82,13 @@ func TestCache(t *testing.T) {
 					t.Errorf("cache.Set(entry1) error = %v", err)
 					return
 				}
-				entry2, err := cache.Get(entry1.Sha256)
+				entry2, err := cache.Get(entry1.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry1.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry1.ID) error = %v", err)
 					return
 				}
 				if entry1.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
 
@@ -97,13 +99,13 @@ func TestCache(t *testing.T) {
 					return
 				}
 				defer cache2.Close()
-				entry, err := cache2.Get(entry2.Sha256)
+				entry, err := cache2.Get(entry2.ID)
 				if err != nil {
-					t.Errorf("cache.Get(entry2.Sha256) error = %v", err)
+					t.Errorf("cache.Get(entry2.ID) error = %v", err)
 					return
 				}
 				if entry.InitialLocation != entry2.InitialLocation {
-					t.Errorf("cache.Get(entry1.Sha256) != entry1, want = %v, got = %v", entry1, entry2)
+					t.Errorf("cache.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
 			},

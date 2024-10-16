@@ -119,6 +119,7 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 		}
 	}
 	entry := &cache.Entry{
+		ID:              cache.ComputeCacheID(path),
 		Sha256:          result.Sha256,
 		InitialLocation: path,
 	}
@@ -127,7 +128,7 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 		return
 	}
 
-	entry.QuarantineLocation = filepath.Join(a.root, fmt.Sprintf("%s.lock", result.Sha256))
+	entry.QuarantineLocation = filepath.Join(a.root, fmt.Sprintf("%s.lock", entry.ID))
 
 	fout, err := os.Create(entry.QuarantineLocation)
 	if err != nil {
@@ -154,15 +155,15 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 	return nil
 }
 
-func (a *QuarantineAction) Restore(sha256 string) (err error) {
+func (a *QuarantineAction) Restore(id string) (err error) {
 	if a.root == "" {
 		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
 		if err != nil {
 			return err
 		}
 	}
-	path := filepath.Join(a.root, fmt.Sprintf("%s.lock", sha256))
-	f, err := os.Open(path)
+	fpath := filepath.Join(a.root, fmt.Sprintf("%s.lock", id))
+	f, err := os.Open(fpath)
 	if err != nil {
 		return
 	}
@@ -202,13 +203,13 @@ func (a *QuarantineAction) Restore(sha256 string) (err error) {
 	if err != nil {
 		return
 	}
-	entry, err := a.cache.Get(sha256)
+	entry, err := a.cache.Get(id)
 	if err == nil {
 		entry.QuarantineLocation = ""
 		entry.RestoredAt = Now()
 		err = a.cache.Set(entry)
 		if err != nil {
-			Logger.Error("error set cache", slog.String("sha256", sha256), slog.String("err", err.Error()))
+			Logger.Error("error set cache", slog.String("sha256", entry.Sha256), slog.String("err", err.Error()))
 		}
 	}
 	Logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
@@ -300,7 +301,7 @@ func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, repo
 			fmt.Fprintf(&sb, " [%v]", result.Malwares)
 		}
 		if report.QuarantineLocation != "" {
-			fmt.Fprintf(&sb, ", it has been quarantine to %s", report.QuarantineLocation)
+			fmt.Fprintf(&sb, ", it has been quarantined to %s", report.QuarantineLocation)
 		}
 		if report.Deleted {
 			fmt.Fprint(&sb, ", it has been deleted")

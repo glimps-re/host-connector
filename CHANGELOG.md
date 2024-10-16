@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.3.1] - 2024-10-16
+
+### Fixed
+
+- Handle when two files with the same name are put into quarantine
+
 ## [v0.3.0] - 2024-10-08
 
 ### Added

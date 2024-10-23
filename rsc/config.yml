@@ -1,10 +1,11 @@
 workers: 4
 paths: []
 # extract: false
-# max-file-size: 100MiB
+# maxFileSize: 100MiB
 actions:
   delete: true
   quarantine: true
+  moveLegit: false
 monitoring:
   preScan: true
   reScan: true

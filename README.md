@@ -76,6 +76,30 @@ cache:
   scanValidity: 168h
 ```
 
+## Actions
+
+When a file has been scanned several action could be activated
+
+### Quarantine
+
+* When: malware found
+* Effect: a protected version of the malicious file is created in the `location` folder.
+
+### Delete
+
+* When: malware found (after quarantine)
+* Effect: the malicious file is deleted
+
+### Move
+
+* When: no malware found
+* Effect: the file is move to the `destination` folder. The arborescence from `source` is reproduced.
+
+### Print
+
+* When: always
+* Effect: print information when a malware is found, when a legit file is moved or in verbose mode when a legit file is found
+
 ## add GMHost to run at startup
 
 ```powershell

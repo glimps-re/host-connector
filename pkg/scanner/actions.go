@@ -22,6 +22,7 @@ type Actions struct {
 	Inform     bool
 	Verbose    bool
 	InformDest io.Writer
+	Move       bool
 }
 
 // for test purposes
@@ -294,7 +295,8 @@ func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, repo
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}
-	if result.Malware {
+	switch {
+	case result.Malware:
 		sb := strings.Builder{}
 		fmt.Fprintf(&sb, "file %s seems malicious", path)
 		if len(result.Malwares) > 0 {
@@ -307,8 +309,64 @@ func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, repo
 			fmt.Fprint(&sb, ", it has been deleted")
 		}
 		fmt.Fprintln(a.Out, sb.String())
-	} else if a.Verbose {
+	case report.MoveTo != "":
+		fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+	case a.Verbose:
 		fmt.Fprintf(a.Out, "file %s no malware found\n", path)
 	}
 	return nil
 }
+
+type MoveAction struct {
+	Dest string
+	Src  string
+}
+
+func NewMoveAction(dest string, src string) (*MoveAction, error) {
+	a := &MoveAction{}
+	var err error
+	a.Dest, err = filepath.Abs(dest)
+	if err != nil {
+		return nil, err
+	}
+	pp, err := filepath.Abs(src)
+	if err != nil {
+		return nil, err
+	}
+	a.Src = pp
+	return a, nil
+}
+
+func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+	// do not move malicious files
+	if result.Malware {
+		return
+	}
+	path, err = filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	if strings.HasPrefix(path, a.Src) {
+		ptokens := strings.Split(path, string(os.PathSeparator))
+		dtokens := strings.Split(a.Src, string(os.PathSeparator))
+		newPath := append([]string{a.Dest}, ptokens[len(dtokens):]...)
+		dest := filepath.Join(newPath...)
+		err = MkdirAll(filepath.Dir(dest), 0o755)
+		if err != nil {
+			return
+		}
+		err = Rename(path, dest)
+		if err != nil {
+			return err
+		}
+		report.MoveTo = dest
+		return
+
+	}
+	return fmt.Errorf("file not in paths")
+}
+
+var (
+	Rename   = os.Rename
+	MkdirAll = os.MkdirAll
+)

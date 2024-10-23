@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestReportAction_Handle(t *testing.T) {
@@ -698,5 +699,67 @@ func TestQuarantineAction_Restore(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.test)
+	}
+}
+
+func TestMoveAction_Handle(t *testing.T) {
+	tests := []struct {
+		name         string
+		samplePath   string
+		isMalware    bool
+		wantErr      bool
+		wantedReport Report
+	}{
+		{
+			name:         "malware",
+			isMalware:    true,
+			wantedReport: Report{},
+		},
+		{
+			name:       "unexpected path",
+			wantErr:    true,
+			samplePath: "/a/b/c",
+		},
+		{
+			name:       "move legit",
+			samplePath: "/media/test/e/test.txt",
+			wantedReport: Report{
+				MoveTo: "/path/to/move/e/test.txt",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			Rename = func(oldpath, newpath string) error {
+				if oldpath != tt.samplePath {
+					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
+				}
+				if newpath != tt.wantedReport.MoveTo {
+					return fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MoveTo)
+				}
+				return nil
+			}
+			MkdirAll = func(path string, perm os.FileMode) error {
+				return nil
+			}
+			defer func() {
+				Rename = os.Rename
+				MkdirAll = os.MkdirAll
+			}()
+			a, err := NewMoveAction("/path/to/move", "/mnt/../media/test")
+			if err != nil {
+				t.Errorf("MoveAction.Handle() could not get new move action, error: %v", err)
+				return
+			}
+			report := Report{}
+			if err := a.Handle(tt.samplePath, SummarizedGMalwareResult{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
+				t.Errorf("MoveAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !cmp.Equal(report, tt.wantedReport) {
+				t.Errorf("MoveAction.Handle() report = %v, want report %v, %s", report, tt.wantedReport, cmp.Diff(report, tt.wantedReport))
+				return
+			}
+		})
 	}
 }

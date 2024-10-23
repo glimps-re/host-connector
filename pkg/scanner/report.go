@@ -14,6 +14,7 @@ type Report struct {
 	QuarantineLocation string `json:"quarantine-location,omitempty"`
 	ExpertViewURL      string `json:"expert-View-url,omitempty"`
 	HasBeenRestored    bool   `json:"has-been-restored,omitempty"`
+	MoveTo             string `json:"move-to,omitempty"`
 }
 
 type ReportsWriter struct {

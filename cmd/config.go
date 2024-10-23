@@ -39,6 +39,7 @@ type actionsConfig struct {
 	Quarantine bool `mapstructure:"quarantine" yaml:"quarantine" desc:"copy malware files in quarantine folder (locked)"`
 	Print      bool `mapstructure:"print" yaml:"print" desc:"print malware file information"`
 	Log        bool `mapstructure:"log" yaml:"log" desc:"log malware file information"`
+	Move       bool `mapstructure:"moveLegit" yaml:"moveLegit" desc:"move legit files after analysis"`
 }
 
 type monitoringConfig struct {
@@ -66,6 +67,12 @@ type cacheConfig struct {
 	Location     string        `mapstructure:"location" yaml:"location" desc:"location of the cache file. if empty, cache will be volatile"`
 	ScanValidity time.Duration `mapstructure:"scanValidity" yaml:"scanValidity" desc:"when time since the last scan if lesser than ScanValidity the files won't be scan again"`
 }
+
+type moveConfig struct {
+	Destination string `mapstructure:"destination" yaml:"destination" desc:"destination where legit files are moved"`
+	Source      string `mapstructure:"source" yaml:"source" desc:"to be move, a legit file must be in source folder of sub folders"`
+}
+
 type config struct {
 	// global
 	Config      string `yaml:"config" desc:"path to configuration file"`
@@ -83,5 +90,6 @@ type config struct {
 	Quarantine quarantineConfig `mapstructure:"quarantine" yaml:"quarantine" desc:"quarantine configuration"`
 	Cache      cacheConfig      `mapstructure:"cache" yaml:"cache" desc:"cache configuration"`
 	Monitoring monitoringConfig `mapstructure:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
+	Move       moveConfig       `mapstructure:"move" yaml:"move" desc:"move legit files configuration"`
 	Gui        bool
 }

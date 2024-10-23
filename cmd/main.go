@@ -71,6 +71,7 @@ func initGCtx() (err error) {
 			Quarantine: conf.Actions.Quarantine,
 			Inform:     conf.Actions.Print,
 			Verbose:    conf.Verbose,
+			Move:       conf.Actions.Move,
 			Deleted:    conf.Actions.Delete || conf.Actions.Quarantine,
 		},
 		WaitOpts: gdetect.WaitForOptions{
@@ -81,6 +82,8 @@ func initGCtx() (err error) {
 		ScanPeriod:    conf.Monitoring.Period,
 		CustomActions: customAction,
 		Extract:       conf.Extract,
+		MoveTo:        conf.Move.Destination,
+		MoveFrom:      conf.Move.Source,
 	})
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{

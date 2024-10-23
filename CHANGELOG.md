@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.4.0] - 2024-10-23
+
+### Added
+
+- move action
+
 ## [v0.3.1] - 2024-10-16
 
 ### Fixed

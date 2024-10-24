@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"time"
@@ -58,6 +59,14 @@ func initGCtx() (err error) {
 		maxFileSize = 100 * 1024 * 1024
 	}
 
+	var informDest io.Writer = os.Stdout
+	if conf.Print.Location != "" {
+		informDest, err = os.Create(conf.Print.Location)
+		if err != nil {
+			return fmt.Errorf("could not open report location: %w", err)
+		}
+	}
+
 	connector := scanner.NewConnector(scanner.Config{
 		QuarantineFolder: conf.Quarantine.Location,
 		MaxFileSize:      maxFileSize,
@@ -71,7 +80,9 @@ func initGCtx() (err error) {
 			Quarantine: conf.Actions.Quarantine,
 			Inform:     conf.Actions.Print,
 			Verbose:    conf.Verbose,
+			Move:       conf.Actions.Move,
 			Deleted:    conf.Actions.Delete || conf.Actions.Quarantine,
+			InformDest: informDest,
 		},
 		WaitOpts: gdetect.WaitForOptions{
 			Tags:     append(conf.GDetect.Tags, "GMHost"),
@@ -81,6 +92,8 @@ func initGCtx() (err error) {
 		ScanPeriod:    conf.Monitoring.Period,
 		CustomActions: customAction,
 		Extract:       conf.Extract,
+		MoveTo:        conf.Move.Destination,
+		MoveFrom:      conf.Move.Source,
 	})
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{

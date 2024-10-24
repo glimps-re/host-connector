@@ -42,6 +42,8 @@ type Config struct {
 	ScanPeriod       time.Duration
 	Extract          bool
 	MaxFileSize      int64
+	MoveTo           string
+	MoveFrom         string
 }
 
 type fileToAnalyze struct {
@@ -114,6 +116,14 @@ func newAction(config Config) Action {
 	}
 	if config.Actions.Deleted {
 		action.Actions = append(action.Actions, &RemoveFileAction{})
+	}
+	if config.Actions.Move {
+		move, err := NewMoveAction(config.MoveTo, config.MoveFrom)
+		if err == nil {
+			action.Actions = append(action.Actions, move)
+		} else {
+			Logger.Error("could not add move legit action", slog.String("error", err.Error()))
+		}
 	}
 	if config.Actions.Inform {
 		action.Actions = append(action.Actions, &InformAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})

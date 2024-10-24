@@ -12,6 +12,7 @@ require (
 require (
 	github.com/alecthomas/units v0.0.0-20240626203959-61d1e3462e30
 	github.com/gonutz/wui/v2 v2.8.1
+	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.23.0
 	golift.io/xtractr v0.2.2

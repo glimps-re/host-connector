@@ -73,6 +73,10 @@ type moveConfig struct {
 	Source      string `mapstructure:"source" yaml:"source" desc:"to be move, a legit file must be in source folder of sub folders"`
 }
 
+type printConfig struct {
+	Location string `mapstructure:"location" yaml:"location" desc:"location of the report logs"`
+}
+
 type config struct {
 	// global
 	Config      string `yaml:"config" desc:"path to configuration file"`
@@ -91,5 +95,6 @@ type config struct {
 	Cache      cacheConfig      `mapstructure:"cache" yaml:"cache" desc:"cache configuration"`
 	Monitoring monitoringConfig `mapstructure:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
 	Move       moveConfig       `mapstructure:"move" yaml:"move" desc:"move legit files configuration"`
+	Print      printConfig      `mapstructure:"print" yaml:"print" desc:"print report configuration"`
 	Gui        bool
 }

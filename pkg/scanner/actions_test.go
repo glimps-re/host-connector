@@ -713,6 +713,7 @@ func TestMoveAction_Handle(t *testing.T) {
 		{
 			name:         "malware",
 			isMalware:    true,
+			samplePath:   "/media/test/e/test.txt",
 			wantedReport: Report{},
 		},
 		{
@@ -730,6 +731,15 @@ func TestMoveAction_Handle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			tempReport, err := os.CreateTemp(os.TempDir(), "report*")
+			if err != nil {
+				t.Errorf("MoveAction.Handle() could not create temp file for report, error: %s", err)
+				return
+			}
+			defer func() {
+				tempReport.Close()
+				os.Remove(tempReport.Name())
+			}()
 			Rename = func(oldpath, newpath string) error {
 				if oldpath != tt.samplePath {
 					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
@@ -742,9 +752,13 @@ func TestMoveAction_Handle(t *testing.T) {
 			MkdirAll = func(path string, perm os.FileMode) error {
 				return nil
 			}
+			Create = func(name string) (*os.File, error) {
+				return tempReport, nil
+			}
 			defer func() {
 				Rename = os.Rename
 				MkdirAll = os.MkdirAll
+				Create = os.Create
 			}()
 			a, err := NewMoveAction("/path/to/move", "/mnt/../media/test")
 			if err != nil {

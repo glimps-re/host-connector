@@ -3,6 +3,7 @@ package scanner
 import (
 	"archive/tar"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"io/fs"
@@ -58,6 +59,7 @@ func (a *ReportAction) Handle(path string, result SummarizedGMalwareResult, repo
 	report.FileName = path
 	report.Malicious = result.Malware
 	report.Sha256 = result.Sha256
+	report.Malware = result.Malwares
 	return
 }
 
@@ -338,10 +340,6 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 }
 
 func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
-	// do not move malicious files
-	if result.Malware {
-		return
-	}
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return
@@ -355,6 +353,19 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		if err != nil {
 			return
 		}
+		// do not move malicious files
+		// write report instead
+		if result.Malware {
+			if f, err := Create(fmt.Sprintf("%s.locked", dest)); err == nil {
+				defer f.Close()
+				if err = json.NewEncoder(f).Encode(report); err != nil {
+					return err
+				}
+			} else {
+				return err
+			}
+			return
+		}
 		err = Rename(path, dest)
 		if err != nil {
 			return err
@@ -366,7 +377,9 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 	return fmt.Errorf("file not in paths")
 }
 
+// for test purposes
 var (
 	Rename   = os.Rename
 	MkdirAll = os.MkdirAll
+	Create   = os.Create
 )

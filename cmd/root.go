@@ -45,6 +45,9 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().BoolVar(&conf.Quiet, "quiet", conf.Quiet, "print no information")
 	rootCmd.PersistentFlags().BoolVar(&conf.Extract, "extract", conf.Extract, "extract archive and scan inner files")
 	rootCmd.PersistentFlags().BoolVar(&conf.GDetect.Insecure, "insecure", conf.GDetect.Insecure, "do not check certificates")
+	rootCmd.PersistentFlags().StringVar(&conf.Move.Source, "move-source", "", "root folder from where to move files")
+	rootCmd.PersistentFlags().StringVar(&conf.Move.Destination, "move-destination", "", "folder where legit files will be moved")
+	rootCmd.PersistentFlags().StringVar(&conf.Print.Location, "print-location", "", "destination file for report logs")
 
 	initMonitoring(monitoringCmd)
 	scanCmd.PersistentFlags().BoolVar(&conf.Gui, "gui", conf.Gui, "gui")

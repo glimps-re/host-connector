@@ -7,14 +7,15 @@ import (
 )
 
 type Report struct {
-	FileName           string `json:"file-name"`
-	Sha256             string `json:"sha256"`
-	Malicious          bool   `json:"malicious"`
-	Deleted            bool   `json:"deleted,omitempty"`
-	QuarantineLocation string `json:"quarantine-location,omitempty"`
-	ExpertViewURL      string `json:"expert-View-url,omitempty"`
-	HasBeenRestored    bool   `json:"has-been-restored,omitempty"`
-	MoveTo             string `json:"move-to,omitempty"`
+	FileName           string   `json:"file-name"`
+	Sha256             string   `json:"sha256"`
+	Malicious          bool     `json:"malicious"`
+	Deleted            bool     `json:"deleted,omitempty"`
+	QuarantineLocation string   `json:"quarantine-location,omitempty"`
+	ExpertViewURL      string   `json:"expert-View-url,omitempty"`
+	HasBeenRestored    bool     `json:"has-been-restored,omitempty"`
+	MoveTo             string   `json:"move-to,omitempty"`
+	Malware            []string `json:"malware,omitempty"`
 }
 
 type ReportsWriter struct {

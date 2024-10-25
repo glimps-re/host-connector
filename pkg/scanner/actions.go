@@ -27,7 +27,12 @@ type Actions struct {
 }
 
 // for test purposes
-var Now = time.Now
+var (
+	Now      = time.Now
+	Rename   = os.Rename
+	MkdirAll = os.MkdirAll
+	Create   = os.Create
+)
 
 type Action interface {
 	Handle(path string, result SummarizedGMalwareResult, report *Report) error
@@ -356,9 +361,11 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		// do not move malicious files
 		// write report instead
 		if result.Malware {
-			if f, err := Create(fmt.Sprintf("%s.locked", dest)); err == nil {
+			if f, err := Create(fmt.Sprintf("%s.locked.json", dest)); err == nil {
 				defer f.Close()
-				if err = json.NewEncoder(f).Encode(report); err != nil {
+				w := json.NewEncoder(f)
+				w.SetIndent("", "  ")
+				if err = w.Encode(report); err != nil {
 					return err
 				}
 			} else {
@@ -376,10 +383,3 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 	}
 	return fmt.Errorf("file not in paths")
 }
-
-// for test purposes
-var (
-	Rename   = os.Rename
-	MkdirAll = os.MkdirAll
-	Create   = os.Create
-)

@@ -243,7 +243,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 					slog.String("archive", input),
 					slog.String("file", f),
 					slog.String("reason", "file too large"),
-					slog.String("yysize", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
+					slog.String("size", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
 				)
 				continue
 			}

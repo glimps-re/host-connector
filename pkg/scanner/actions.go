@@ -350,10 +350,11 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		return
 	}
 	if strings.HasPrefix(path, a.Src) {
-		ptokens := strings.Split(path, string(os.PathSeparator))
-		dtokens := strings.Split(a.Src, string(os.PathSeparator))
-		newPath := append([]string{a.Dest}, ptokens[len(dtokens):]...)
-		dest := filepath.Join(newPath...)
+		destSubpath, ok := strings.CutPrefix(path, a.Src)
+		if !ok {
+			destSubpath = path
+		}
+		dest := filepath.Join(a.Dest, destSubpath)
 		err = MkdirAll(filepath.Dir(dest), 0o755)
 		if err != nil {
 			return

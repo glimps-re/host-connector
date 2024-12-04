@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.4.1] - 2024-12-04
+
+### Fixed
+
+- destination path for move action
+
 ## [v0.4.0] - 2024-10-23
 
 ### Added

@@ -708,6 +708,8 @@ func TestMoveAction_Handle(t *testing.T) {
 		samplePath   string
 		isMalware    bool
 		wantErr      bool
+		srcPath      string
+		destPath     string
 		wantedReport Report
 	}{
 		{
@@ -727,6 +729,15 @@ func TestMoveAction_Handle(t *testing.T) {
 			wantedReport: Report{
 				MoveTo: "/path/to/move/e/test.txt",
 			},
+		},
+		{
+			name:       "move legit /",
+			samplePath: "/media/test/e/test.txt",
+			wantedReport: Report{
+				MoveTo: "/legit/media/test/e/test.txt",
+			},
+			srcPath:  "/",
+			destPath: "/legit",
 		},
 	}
 	for _, tt := range tests {
@@ -760,7 +771,15 @@ func TestMoveAction_Handle(t *testing.T) {
 				MkdirAll = os.MkdirAll
 				Create = os.Create
 			}()
-			a, err := NewMoveAction("/path/to/move", "/mnt/../media/test")
+			dst := "/path/to/move"
+			src := "/mnt/../media/test"
+			if tt.srcPath != "" {
+				src = tt.srcPath
+			}
+			if tt.destPath != "" {
+				dst = tt.destPath
+			}
+			a, err := NewMoveAction(dst, src)
 			if err != nil {
 				t.Errorf("MoveAction.Handle() could not get new move action, error: %v", err)
 				return

@@ -118,6 +118,7 @@ func Main() {
 		}
 	}()
 	if err := rootCmd.Execute(); err != nil {
+		Logger.Error("could not execute GMHost", slog.String("error", err.Error()))
 		fmt.Println(err)
 		os.Exit(1)
 	}

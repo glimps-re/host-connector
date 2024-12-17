@@ -76,6 +76,30 @@ cache:
   scanValidity: 168h
 ```
 
+## Extraction
+
+The GMHost connector is able to extract files from archives that are too large to be pushed to GLIMPS Malware at once.
+
+Supported archive or compression types:
+
+- `zip`
+- `gzip`
+- `tar`
+- `bzip`
+- `rar`
+- `7z`
+- `iso`
+- `brotli`
+- `lz4`
+- `xz`
+- `zstandard`
+- `S2`
+- `snappy`
+- `zlib`
+- `lzw`
+
+The extractor does not remove malicious file from archive, so if a file in the archive is considered malicious, the archive is considered malicious. Information about malware can be found in logs, quarantine files or in your GLIMPS Malware expert console.
+
 ## Actions
 
 When a file has been scanned several action could be activated

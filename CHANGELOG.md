@@ -1,5 +1,9 @@
 # Changelog
 
+## [v0.4.2] - 2024-12-18
+
+- fix log message for archive with empty files
+
 ## [v0.4.1] - 2024-12-04
 
 ### Fixed

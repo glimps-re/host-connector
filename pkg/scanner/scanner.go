@@ -233,7 +233,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
 				continue
 			}
-			if info.Size() <= 0 || info.Size() > c.config.MaxFileSize {
+			if info.Size() > c.config.MaxFileSize {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
 				files = append(files[:i], files[i+1:]...)
@@ -244,6 +244,19 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 					slog.String("file", f),
 					slog.String("reason", "file too large"),
 					slog.String("size", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
+				)
+				continue
+			}
+			if info.Size() <= 0 {
+				eStatus.total--
+				c.archivesStatus[id.String()] = eStatus
+				files = append(files[:i], files[i+1:]...)
+				os.Remove(f)
+				Logger.Warn(
+					"skip archive inner file",
+					slog.String("archive", input),
+					slog.String("file", f),
+					slog.String("reason", "size 0"),
 				)
 				continue
 			}

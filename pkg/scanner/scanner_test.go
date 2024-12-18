@@ -351,6 +351,12 @@ func TestNewConnector(t *testing.T) {
 				}
 				io.Copy(f2, testFile2)
 
+				f3, err := zipWriter.Create("file3")
+				if err != nil {
+					panic(err)
+				}
+				io.Copy(f3, bytes.NewReader([]byte{}))
+
 				testFile.Close()
 				testFile2.Close()
 

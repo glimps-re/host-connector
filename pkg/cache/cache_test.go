@@ -232,3 +232,27 @@ func TestCache(t *testing.T) {
 		t.Run(tt.name, tt.test)
 	}
 }
+
+func TestComputeCacheID(t *testing.T) {
+	type args struct {
+		path string
+	}
+	tests := []struct {
+		name   string
+		args   args
+		wantID string
+	}{
+		{
+			name:   "test",
+			args:   args{path: "test_path"},
+			wantID: "8e2787502f1eef4fcbc40e9a5be298520f177146db1a04dae4bf9680db31f5f1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if gotID := ComputeCacheID(tt.args.path); gotID != tt.wantID {
+				t.Errorf("ComputeCacheID() = %v, want %v", gotID, tt.wantID)
+			}
+		})
+	}
+}

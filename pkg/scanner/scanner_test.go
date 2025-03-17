@@ -56,7 +56,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -180,7 +180,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -285,7 +285,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -425,7 +425,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -545,7 +545,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -632,7 +632,7 @@ func TestNewConnector(t *testing.T) {
 						SetMock: func(entry *cache.Entry) error {
 							return nil
 						},
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",

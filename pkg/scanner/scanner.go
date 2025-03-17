@@ -223,12 +223,12 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		}
 
 		// Filter files
-		for i, f := range files {
+		filteredFiles := []string{}
+		for _, f := range files {
 			info, infoErr := os.Stat(f)
 			if infoErr != nil {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
 				continue
@@ -236,7 +236,6 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if info.Size() > c.config.MaxFileSize {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn(
 					"skip archive inner file",
@@ -250,7 +249,6 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if info.Size() <= 0 {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn(
 					"skip archive inner file",
@@ -260,7 +258,9 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				)
 				continue
 			}
+			filteredFiles = append(filteredFiles, f)
 		}
+		files = filteredFiles
 		c.archivesStatus[id.String()] = eStatus
 		for _, f := range files {
 			dir, file := filepath.Split(f)

@@ -25,11 +25,16 @@ jobs:
           go-version: ${{ matrix.go }}
       - name: build
         run: go build -v ./...
+      - name: govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+           go-version-input: ${{ matrix.go }}
+           go-package: ./...
       - name: test
         env:
           TESTCOVERAGE_TRESHOLD: 75
         run: |
-          go test -v ./... -covermode=count -coverprofile=coverage.out
+          go test -v ./pkg/... -covermode=count -coverprofile=coverage.out
           go tool cover -func=coverage.out -o=coverage.out
           totalCoverage=`cat coverage.out | grep 'total' | grep -Eo '[0-9\.]+'`
           if (( $(echo "$totalCoverage $TESTCOVERAGE_TRESHOLD" |awk '{print ($1 >= $2)}') )); then 

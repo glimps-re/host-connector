@@ -4,6 +4,7 @@
 
 - fix file filtering
 - update go to 1.24.1
+- update go-gdetect to v1.4.0
 
 ## [v0.4.2] - 2024-12-18
 

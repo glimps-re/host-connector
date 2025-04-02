@@ -4,7 +4,9 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -35,17 +37,19 @@ func TestNewConnector(t *testing.T) {
 						InformDest: &buffer,
 					},
 					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
-							if sha256 == "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893" {
+						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
+							hash := sha256.New()
+							if _, err = io.Copy(hash, r); err != nil {
+								return
+							}
+							fileSHA256 := hex.EncodeToString(hash.Sum(nil))
+							if fileSHA256 == "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893" {
 								return gdetect.Result{
 									Malware: true,
 									SHA256:  "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893",
 									Done:    true,
 								}, nil
 							}
-							return result, fmt.Errorf("test")
-						},
-						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							return gdetect.Result{
 								Malware: false,
 								Done:    true,
@@ -134,112 +138,6 @@ func TestNewConnector(t *testing.T) {
 			},
 		},
 		{
-			name: "test one file analysis not done",
-			test: func(t *testing.T) {
-				buffer := bytes.Buffer{}
-				conn := NewConnector(Config{
-					Timeout: time.Second * 3,
-					Actions: Actions{
-						Deleted:    true,
-						Quarantine: true,
-						Log:        true,
-						Inform:     true,
-						InformDest: &buffer,
-					},
-					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
-							if sha256 == "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893" {
-								return gdetect.Result{
-									Malware: false,
-									SHA256:  "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893",
-									Done:    false,
-									UUID:    "d85ed270-fb08-4af7-9a00-bcfb89f64791",
-								}, nil
-							}
-							return result, fmt.Errorf("test")
-						},
-						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
-							return gdetect.Result{
-								Malware: false,
-								Done:    true,
-							}, nil
-						},
-						GetResultByUUIDMock: func(ctx context.Context, uuid string) (result gdetect.Result, err error) {
-							if uuid == "d85ed270-fb08-4af7-9a00-bcfb89f64791" {
-								return gdetect.Result{
-									Malware: true,
-									SHA256:  "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893",
-									Done:    true,
-									UUID:    "d85ed270-fb08-4af7-9a00-bcfb89f64791",
-								}, nil
-							}
-							return result, fmt.Errorf("test")
-						},
-					},
-					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
-							return nil
-						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
-							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
-								return &cache.Entry{
-									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
-								}, nil
-							}
-							return nil, cache.ErrEntryNotFound
-						},
-					},
-				})
-				defer conn.Close()
-				if conn.config.Workers != 1 {
-					t.Errorf("invalid workers %v", conn.config.Workers)
-				}
-
-				if a, ok := conn.action.(*MultiAction); !ok {
-					t.Errorf("invalid action: %v", conn.action)
-				} else if len(a.Actions) != 5 {
-					t.Errorf("invalid actions %#v", a.Actions)
-				}
-
-				if err := conn.Start(); err != nil {
-					t.Errorf("could not start connector, error: %v", err)
-				}
-
-				// scan invalid file
-				if err := conn.ScanFile(context.Background(), "/az/et/test"); err == nil {
-					t.Errorf("err wanted")
-				}
-
-				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
-				testFile, err := os.CreateTemp(testDir, "ScanFile_test2_*")
-				if err != nil {
-					t.Errorf("could not create test file2, error: %s", err)
-					return
-				}
-				testFile.WriteString("test content2")
-				testFile.Close()
-
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
-				defer cancel()
-
-				if err := conn.ScanFile(ctx, testFile.Name()); err != nil {
-					t.Errorf("unwanted error: %v", err)
-				}
-
-				conn.Close()
-
-				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile.Name()))) {
-					t.Errorf("invalid output: %s", buffer.String())
-				}
-			},
-		},
-		{
 			name: "test one archive (extract all)",
 			test: func(t *testing.T) {
 				buffer := bytes.Buffer{}
@@ -254,7 +152,12 @@ func TestNewConnector(t *testing.T) {
 						InformDest: &buffer,
 					},
 					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
+						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
+							hash := sha256.New()
+							if _, err = io.Copy(hash, r); err != nil {
+								return
+							}
+							sha256 := hex.EncodeToString(hash.Sum(nil))
 							switch sha256 {
 							case "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893":
 								return gdetect.Result{
@@ -270,15 +173,12 @@ func TestNewConnector(t *testing.T) {
 									SHA256:   "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
 									Done:     true,
 								}, nil
+							default:
+								return gdetect.Result{
+									Malware: false,
+									Done:    true,
+								}, nil
 							}
-							t.Errorf("get result called on %s", sha256)
-							return result, fmt.Errorf("test")
-						},
-						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
-							return gdetect.Result{
-								Malware: false,
-								Done:    true,
-							}, nil
 						},
 					},
 					Cache: &cache.MockCache{
@@ -394,7 +294,12 @@ func TestNewConnector(t *testing.T) {
 						InformDest: &buffer,
 					},
 					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
+						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
+							hash := sha256.New()
+							if _, err = io.Copy(hash, r); err != nil {
+								return
+							}
+							sha256 := hex.EncodeToString(hash.Sum(nil))
 							switch sha256 {
 							case "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893":
 								return gdetect.Result{
@@ -410,15 +315,12 @@ func TestNewConnector(t *testing.T) {
 									SHA256:   "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
 									Done:     true,
 								}, nil
+							default:
+								return gdetect.Result{
+									Malware: false,
+									Done:    true,
+								}, nil
 							}
-							t.Errorf("get result called on %s", sha256)
-							return result, fmt.Errorf("test")
-						},
-						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
-							return gdetect.Result{
-								Malware: false,
-								Done:    true,
-							}, nil
 						},
 					},
 					Cache: &cache.MockCache{
@@ -525,7 +427,12 @@ func TestNewConnector(t *testing.T) {
 						InformDest: &buffer,
 					},
 					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
+						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
+							hash := sha256.New()
+							if _, err = io.Copy(hash, r); err != nil {
+								return
+							}
+							sha256 := hex.EncodeToString(hash.Sum(nil))
 							if sha256 == "3fc6540b6002f7622d978ea8c6fcb6a661089de0f4952f42390a694107269893" {
 								return gdetect.Result{
 									Malware: true,
@@ -533,9 +440,6 @@ func TestNewConnector(t *testing.T) {
 									Done:    true,
 								}, nil
 							}
-							return result, fmt.Errorf("test")
-						},
-						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							return gdetect.Result{
 								Malware: false,
 							}, nil
@@ -619,9 +523,6 @@ func TestNewConnector(t *testing.T) {
 						InformDest: &buffer,
 					},
 					Submitter: &MockSubmitter{
-						GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) {
-							return result, fmt.Errorf("test")
-						},
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							return gdetect.Result{
 								Malware: false,

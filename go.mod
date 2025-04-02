@@ -2,8 +2,10 @@ module github.com/glimps-re/host-connector
 
 go 1.24
 
+toolchain go1.24.1
+
 require (
-	github.com/glimps-re/go-gdetect v1.3.0
+	github.com/glimps-re/go-gdetect v1.4.0
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/spf13/cobra v1.8.1
 	modernc.org/sqlite v1.28.0

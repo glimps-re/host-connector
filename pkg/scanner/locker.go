@@ -197,7 +197,7 @@ func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if _, err = out.Write(iv); err != nil {
 		return err
 	}
-	wstream := &cipher.StreamWriter{S: cipher.NewOFB(block, iv), W: out}
+	wstream := &cipher.StreamWriter{S: cipher.NewOFB(block, iv), W: out} //nolint: staticcheck
 	_, err = io.Copy(wstream, in)
 	return
 }
@@ -216,7 +216,7 @@ func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
-	rstream := &cipher.StreamReader{S: cipher.NewOFB(block, iv), R: in}
+	rstream := &cipher.StreamReader{S: cipher.NewOFB(block, iv), R: in} //nolint: staticcheck
 	_, err = io.Copy(out, rstream)
 	return
 }

@@ -223,12 +223,12 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		}
 
 		// Filter files
-		for i, f := range files {
+		filteredFiles := []string{}
+		for _, f := range files {
 			info, infoErr := os.Stat(f)
 			if infoErr != nil {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
 				continue
@@ -236,7 +236,6 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if info.Size() > c.config.MaxFileSize {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn(
 					"skip archive inner file",
@@ -250,7 +249,6 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if info.Size() <= 0 {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				files = append(files[:i], files[i+1:]...)
 				os.Remove(f)
 				Logger.Warn(
 					"skip archive inner file",
@@ -260,7 +258,9 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				)
 				continue
 			}
+			filteredFiles = append(filteredFiles, f)
 		}
+		files = filteredFiles
 		c.archivesStatus[id.String()] = eStatus
 		for _, f := range files {
 			dir, file := filepath.Split(f)
@@ -421,44 +421,16 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 	// GDetect cache
 	ctx, cancel := context.WithTimeout(context.Background(), c.config.Timeout)
 	defer cancel()
-	result, err := c.config.Submitter.GetResultBySHA256(ctx, fileSHA256)
-	switch {
-	case err != nil:
-		// result not found, ask a new scan
-		if _, err = f.Seek(0, io.SeekStart); err != nil {
-			return
-		}
-		opts := c.config.WaitOpts
-		opts.Filename = file
-		result, err = c.config.Submitter.WaitForReader(ctx, f, opts)
-		if err != nil {
-			f.Close()
-			return
-		}
-	case !result.Done:
-		pullTime := time.Millisecond * 500
-		if c.config.WaitOpts.PullTime != 0*time.Second {
-			pullTime = c.config.WaitOpts.PullTime
-		}
-		ticker := time.NewTicker(pullTime)
-	GET_LOOP:
-		for {
-			select {
-			case <-ticker.C:
-				Logger.Debug("getting result")
-				result, err = c.config.Submitter.GetResultByUUID(ctx, result.UUID)
-				if err != nil {
-					f.Close()
-					return
-				}
-				if result.Done {
-					break GET_LOOP
-				}
-			case <-ctx.Done():
-				err = context.DeadlineExceeded
-				return
-			}
-		}
+
+	if _, err = f.Seek(0, io.SeekStart); err != nil {
+		return
+	}
+	opts := c.config.WaitOpts
+	opts.Filename = file
+	result, err := c.config.Submitter.WaitForReader(ctx, f, opts)
+	if err != nil {
+		f.Close()
+		return
 	}
 
 	// f need to be closed before action, to allow deletion

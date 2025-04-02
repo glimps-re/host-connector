@@ -1,5 +1,11 @@
 # Changelog
 
+## [v0.4.3] - 2025-03-17
+
+- fix file filtering
+- update go to 1.24.1
+- update go-gdetect to v1.4.0
+
 ## [v0.4.2] - 2024-12-18
 
 - fix log message for archive with empty files

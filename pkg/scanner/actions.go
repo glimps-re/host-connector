@@ -369,8 +369,6 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 				if err = w.Encode(report); err != nil {
 					return err
 				}
-			} else {
-				return err
 			}
 			return
 		}

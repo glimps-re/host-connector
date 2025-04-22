@@ -69,13 +69,16 @@ func TestCache(t *testing.T) {
 		{
 			name: "test file",
 			test: func(t *testing.T) {
-				tfile, err := os.CreateTemp(os.TempDir(), "test_db_*.db")
+				tfile, err := os.CreateTemp(t.TempDir(), "test_db_*.db")
 				if err != nil {
 					t.Errorf("NewCache() error = %v", err)
 					return
 				}
-				tfile.Close()
-				defer os.Remove(tfile.Name())
+				if err := tfile.Close(); err != nil {
+					t.Errorf("NewCache() error closing file = %v", err)
+					return
+				}
+
 				cache, err := NewCache(tfile.Name())
 				if err != nil {
 					t.Errorf("NewCache() error = %v", err)
@@ -110,13 +113,19 @@ func TestCache(t *testing.T) {
 					return
 				}
 
-				cache.Close()
+				if e := cache.Close(); e != nil {
+					t.Errorf("cache.Close() error = %v", e)
+				}
 				cache2, err := NewCache(tfile.Name())
 				if err != nil {
 					t.Errorf("NewCache() error = %v", err)
 					return
 				}
-				defer cache2.Close()
+				defer func() {
+					if err = cache2.Close(); err != nil {
+						t.Errorf("cache.Close() error = %v", err)
+					}
+				}()
 				entry, err := cache2.Get(entry2.ID)
 				if err != nil {
 					t.Errorf("cache.Get(entry2.ID) error = %v", err)

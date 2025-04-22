@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,6 +11,7 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/filesystem"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/spf13/cobra"
 )
@@ -17,6 +19,7 @@ import (
 var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 type GContext struct {
+	fs     filesystem.FileSystem
 	conn   *scanner.Connector
 	client scanner.Submitter
 	lock   scanner.Locker
@@ -24,6 +27,11 @@ type GContext struct {
 }
 
 var gctx = GContext{}
+
+const (
+	maxFileSizeDetect    = 100 * 1024 * 1024
+	maxFileSizeSyndetect = 2048 * 1024 * 1024
+)
 
 func initGCtx() (err error) {
 	cache, err := cache.NewCache(conf.Cache.Location)
@@ -46,17 +54,17 @@ func initGCtx() (err error) {
 	if err != nil {
 		return fmt.Errorf("could not parse max-file-size: %w", err)
 	}
-	if maxFileSize > 100*1024*1024 && !conf.GDetect.Syndetect {
+	if maxFileSize > maxFileSizeDetect && !conf.GDetect.Syndetect {
 		Logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
-		maxFileSize = 100 * 1024 * 1024
+		maxFileSize = maxFileSizeDetect
 	}
-	if maxFileSize > 2048*1024*1024 {
+	if maxFileSize > maxFileSizeSyndetect {
 		Logger.Warn("max file size can't exceed 2GiB, set the value to 2GiB", slog.String("max-file-size", conf.MaxFileSize))
-		maxFileSize = 2048 * 1024 * 1024
+		maxFileSize = maxFileSizeSyndetect
 	}
 	if maxFileSize <= 0 {
 		Logger.Warn("max file size must be greater than 0, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
-		maxFileSize = 100 * 1024 * 1024
+		maxFileSize = maxFileSizeDetect
 	}
 
 	var informDest io.Writer = os.Stdout
@@ -65,6 +73,22 @@ func initGCtx() (err error) {
 		if err != nil {
 			return fmt.Errorf("could not open report location: %w", err)
 		}
+	}
+
+	var fs filesystem.FileSystem
+	if conf.S3Config != nil {
+		fsCtx, cancel := context.WithTimeout(context.Background(), time.Second*30)
+		defer cancel()
+		fs, err = filesystem.NewS3FileSystem(fsCtx, filesystem.S3Config{
+			Endpoint:        conf.S3Config.Endpoint,
+			AccessKeyID:     conf.S3Config.AccessKey,
+			SecretAccessKey: conf.S3Config.SecretKey,
+			Insecure:        conf.S3Config.Insecure,
+			Region:          conf.S3Config.Region,
+			UsePathStyle:    conf.S3Config.UsePathStyle,
+		})
+	} else {
+		fs = filesystem.NewLocalFileSystem()
 	}
 
 	connector := scanner.NewConnector(scanner.Config{
@@ -80,7 +104,7 @@ func initGCtx() (err error) {
 			Quarantine: conf.Actions.Quarantine,
 			Inform:     conf.Actions.Print,
 			Verbose:    conf.Verbose,
-			Move:       conf.Actions.Move,
+			Move:       conf.Actions.MoveLegit,
 			Deleted:    conf.Actions.Delete || conf.Actions.Quarantine,
 			InformDest: informDest,
 		},
@@ -94,9 +118,10 @@ func initGCtx() (err error) {
 		Extract:       conf.Extract,
 		MoveTo:        conf.Move.Destination,
 		MoveFrom:      conf.Move.Source,
-	})
+	}, fs)
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{
+		fs:     fs,
 		conn:   connector,
 		client: client,
 		lock:   lock,
@@ -114,13 +139,19 @@ func Main() {
 	rootCmd.AddCommand(monitoringCmd)
 	defer func() {
 		if gctx.cache != nil {
-			gctx.cache.Close()
+			if e := gctx.cache.Close(); e != nil {
+				Logger.Warn("could not close cache", slog.String("error", e.Error()))
+			}
 		}
 	}()
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		exitErrorCode()
 	}
+}
+
+func exitErrorCode() {
+	os.Exit(1)
 }
 
 func init() {

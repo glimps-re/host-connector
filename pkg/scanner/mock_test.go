@@ -29,13 +29,13 @@ func TestMockLock(t *testing.T) {
 					return nil
 				},
 			},
-			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) },
+			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test Lock file (panic)",
 			fields:    fields{},
-			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) },
+			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -45,13 +45,13 @@ func TestMockLock(t *testing.T) {
 					return "", &LockFileInfo{}, "", nil
 				},
 			},
-			test:      func(m *MockLock) { m.UnlockFile(nil, nil) },
+			test:      func(m *MockLock) { m.UnlockFile(nil, nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test Unlock file (panic)",
 			fields:    fields{},
-			test:      func(m *MockLock) { m.UnlockFile(nil, nil) },
+			test:      func(m *MockLock) { m.UnlockFile(nil, nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -61,13 +61,13 @@ func TestMockLock(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockLock) { m.GetHeader(nil) },
+			test:      func(m *MockLock) { m.GetHeader(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetHeader (panic)",
 			fields:    fields{},
-			test:      func(m *MockLock) { m.GetHeader(nil) },
+			test:      func(m *MockLock) { m.GetHeader(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 	}
@@ -113,13 +113,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) },
+			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test ExtractExpertViewURL (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) },
+			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -127,13 +127,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetResultByUUIDMock: func(ctx context.Context, uuid string) (result gdetect.Result, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetResultByUUID(context.TODO(), "") },
+			test:      func(m *MockSubmitter) { m.GetResultByUUID(t.Context(), "") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetResultByUUID (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResultByUUID(context.TODO(), "") },
+			test:      func(m *MockSubmitter) { m.GetResultByUUID(t.Context(), "") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -141,13 +141,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetResultBySHA256(context.TODO(), "") },
+			test:      func(m *MockSubmitter) { m.GetResultBySHA256(t.Context(), "") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetResultBySHA256 (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResultBySHA256(context.TODO(), "") },
+			test:      func(m *MockSubmitter) { m.GetResultBySHA256(t.Context(), "") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -157,13 +157,13 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.GetResults(context.TODO(), 0, 0) },
+			test:      func(m *MockSubmitter) { m.GetResults(t.Context(), 0, 0) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetResults (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResults(context.TODO(), 0, 0) },
+			test:      func(m *MockSubmitter) { m.GetResults(t.Context(), 0, 0) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -173,13 +173,13 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{}) },
+			test:      func(m *MockSubmitter) { m.SubmitFile(t.Context(), "", gdetect.SubmitOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test SubmitFile (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{}) },
+			test:      func(m *MockSubmitter) { m.SubmitFile(t.Context(), "", gdetect.SubmitOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -187,13 +187,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				SubmitReaderMock: func(ctx context.Context, r io.Reader, options gdetect.SubmitOptions) (uuid string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{}) },
+			test:      func(m *MockSubmitter) { m.SubmitReader(t.Context(), nil, gdetect.SubmitOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test SubmitReader (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{}) },
+			test:      func(m *MockSubmitter) { m.SubmitReader(t.Context(), nil, gdetect.SubmitOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -203,13 +203,13 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{}) },
+			test:      func(m *MockSubmitter) { m.WaitForFile(t.Context(), "", gdetect.WaitForOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test WaitForFile (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{}) },
+			test:      func(m *MockSubmitter) { m.WaitForFile(t.Context(), "", gdetect.WaitForOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -219,13 +219,13 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{}) },
+			test:      func(m *MockSubmitter) { m.WaitForReader(t.Context(), nil, gdetect.WaitForOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test WaitForReader (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{}) },
+			test:      func(m *MockSubmitter) { m.WaitForReader(t.Context(), nil, gdetect.WaitForOptions{}) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -233,13 +233,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetProfileStatusMock: func(ctx context.Context) (status gdetect.ProfileStatus, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetProfileStatus(context.TODO()) },
+			test:      func(m *MockSubmitter) { m.GetProfileStatus(t.Context()) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetProfileStatus (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetProfileStatus(context.TODO()) },
+			test:      func(m *MockSubmitter) { m.GetProfileStatus(t.Context()) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -247,13 +247,13 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetAPIVersionMock: func(ctx context.Context) (version string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetAPIVersion(context.TODO()) },
+			test:      func(m *MockSubmitter) { m.GetAPIVersion(t.Context()) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: false,
 		},
 		{
 			name:      "test GetAPIVersion (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetAPIVersion(context.TODO()) },
+			test:      func(m *MockSubmitter) { m.GetAPIVersion(t.Context()) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 	}

@@ -2,9 +2,7 @@ package cmd
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/glimps-re/host-connector/pkg/monitor"
 	"github.com/spf13/cobra"
@@ -23,7 +21,7 @@ var monitoringCmd = &cobra.Command{
 			return
 		}
 		defer gctx.conn.Close()
-		mon, err := monitor.NewMonitor(func(file string) error {
+		mon, err := monitor.NewMonitor(gctx.fs, func(file string) error {
 			return gctx.conn.ScanFile(cmd.Context(), file)
 		}, conf.Monitoring.PreScan, conf.Monitoring.Period, conf.Monitoring.ModificationDelay)
 		if err != nil {
@@ -45,11 +43,6 @@ var monitoringCmd = &cobra.Command{
 		args = append(args, conf.Paths...)
 		if len(args) < 1 {
 			return errors.New("at least one file is mandatory")
-		}
-		for _, arg := range args {
-			if _, err := os.Stat(arg); err != nil {
-				return fmt.Errorf("could not check file %s", arg)
-			}
 		}
 		return nil
 	},

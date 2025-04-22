@@ -19,6 +19,7 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/filesystem"
 	"github.com/google/uuid"
 	"golift.io/xtractr"
 )
@@ -33,17 +34,18 @@ type Config struct {
 	QuarantineFolder string
 	Workers          int
 	Password         string
-	Cache            cache.Cacher
-	Submitter        Submitter
-	Timeout          time.Duration
-	WaitOpts         gdetect.WaitForOptions
-	Actions          Actions
-	CustomActions    []Action
-	ScanPeriod       time.Duration
-	Extract          bool
-	MaxFileSize      int64
-	MoveTo           string
-	MoveFrom         string
+
+	Cache         cache.Cacher
+	Submitter     Submitter
+	Timeout       time.Duration
+	WaitOpts      gdetect.WaitForOptions
+	Actions       Actions
+	CustomActions []Action
+	ScanPeriod    time.Duration
+	Extract       bool
+	MaxFileSize   int64
+	MoveTo        string
+	MoveFrom      string
 }
 
 type fileToAnalyze struct {
@@ -72,13 +74,14 @@ type Connector struct {
 	reports        []*Report
 	archivesStatus map[string]archiveStatus
 	archiveMutex   sync.RWMutex
+	fs             filesystem.FileSystem
 }
 
-var MaxWorkers = 40
+const MaxWorkers = 40
 
-var MaxFileSize int64 = 100 * 1024 * 1024
+const MaxFileSize int64 = 100 * 1024 * 1024
 
-func NewConnector(config Config) *Connector {
+func NewConnector(config Config, fs filesystem.FileSystem) *Connector {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	if config.Workers < 1 {
@@ -98,27 +101,24 @@ func NewConnector(config Config) *Connector {
 		fileChan:       make(chan fileToAnalyze),
 		config:         config,
 		archivesStatus: make(map[string]archiveStatus),
-		action:         newAction(config),
+		action:         newAction(config, fs),
+		fs:             fs,
 	}
 }
 
-func newAction(config Config) Action {
+func newAction(config Config, fs filesystem.FileSystem) Action {
 	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: Logger})
 	}
 	if config.Actions.Quarantine {
-		action.Actions = append(action.Actions, &QuarantineAction{
-			cache:  config.Cache,
-			root:   config.QuarantineFolder,
-			locker: &Lock{Password: config.Password},
-		})
+		action.Actions = append(action.Actions, NewQuarantineAction(fs, config.Cache, config.QuarantineFolder, &Lock{Password: config.Password}))
 	}
 	if config.Actions.Deleted {
-		action.Actions = append(action.Actions, &RemoveFileAction{})
+		action.Actions = append(action.Actions, NewRemoveFileAction(fs))
 	}
 	if config.Actions.Move {
-		move, err := NewMoveAction(config.MoveTo, config.MoveFrom)
+		move, err := NewMoveAction(fs, config.MoveTo, config.MoveFrom)
 		if err == nil {
 			action.Actions = append(action.Actions, move)
 		} else {
@@ -133,7 +133,7 @@ func newAction(config Config) Action {
 }
 
 func (c *Connector) Start() error {
-	for i := 0; i < c.config.Workers; i++ {
+	for range c.config.Workers {
 		c.wg.Add(1)
 		go c.worker()
 	}
@@ -141,7 +141,7 @@ func (c *Connector) Start() error {
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	info, err := os.Lstat(input)
+	info, err := c.fs.Lstat(ctx, input)
 	if err != nil {
 		return
 	}
@@ -166,14 +166,19 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			return
 		}
 		hash := sha256.New()
-		f, openErr := os.Open(input)
+		f, openErr := c.fs.Open(ctx, input)
 		if openErr != nil {
 			err = openErr
 			return
 		}
 		if _, err = io.Copy(hash, f); err != nil {
-			f.Close()
+			if e := f.Close(); e != nil {
+				Logger.Warn("could not close scanned file properly", slog.String("path", input), slog.String("error", e.Error()))
+			}
 			return
+		}
+		if e := f.Close(); e != nil {
+			Logger.Warn("could not close scanned file properly", slog.String("path", input), slog.String("error", e.Error()))
 		}
 		archiveSha256 := hex.EncodeToString(hash.Sum(nil))
 		outputDir, outputDirErr := os.MkdirTemp(os.TempDir(), archiveSha256)
@@ -182,14 +187,41 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			return
 		}
 
-		xfile := xtractr.XFile{
+		xfile := &xtractr.XFile{
 			FilePath:  input,
 			OutputDir: outputDir,
-			FileMode:  0o755,
-			DirMode:   0o755,
+			FileMode:  0o750,
+			DirMode:   0o750,
 		}
 
-		_, files, _, extractErr := xtractr.ExtractFile(&xfile)
+		if !c.fs.IsLocal() {
+			file, openErr := c.fs.Open(ctx, input)
+			if openErr != nil {
+				err = openErr
+				return
+			}
+			inputArchive, createTempErr := os.CreateTemp(os.TempDir(), archiveSha256+"*"+filepath.Ext(input)) // preserve extension for xtractr
+			if createTempErr != nil {
+				err = createTempErr
+				if e := file.Close(); e != nil {
+					Logger.Warn("could not close input file properly", slog.String("name", input), slog.String("error", e.Error()))
+				}
+				return
+			}
+			_, err = io.Copy(inputArchive, file)
+			if e := file.Close(); e != nil {
+				Logger.Warn("could not close input file properly", slog.String("name", input), slog.String("error", e.Error()))
+			}
+			if e := inputArchive.Close(); e != nil {
+				Logger.Warn("could not close created archive properly", slog.String("name", inputArchive.Name()), slog.String("error", e.Error()))
+			}
+			if err != nil {
+				return
+			}
+			xfile.FilePath = inputArchive.Name()
+		}
+
+		_, files, _, extractErr := xfile.Extract()
 		switch {
 		case extractErr == nil:
 			// OK
@@ -212,7 +244,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		eStatus := archiveStatus{
 			archiveName: input,
 			result: SummarizedGMalwareResult{
-				Sha256:            archiveSha256,
+				SHA256:            archiveSha256,
 				MaliciousSubfiles: make(map[string]SummarizedGMalwareResult),
 				Malware:           false,
 				Malwares:          []string{},
@@ -229,14 +261,18 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if infoErr != nil {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				os.Remove(f)
+				if err := os.Remove(f); err != nil {
+					Logger.Warn("could not remove archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", err.Error()))
+				}
 				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
 				continue
 			}
 			if info.Size() > c.config.MaxFileSize {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				os.Remove(f)
+				if err := os.Remove(f); err != nil {
+					Logger.Warn("could not remove archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", err.Error()))
+				}
 				Logger.Warn(
 					"skip archive inner file",
 					slog.String("archive", input),
@@ -249,7 +285,9 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			if info.Size() <= 0 {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
-				os.Remove(f)
+				if err := os.Remove(f); err != nil {
+					Logger.Warn("could not remove archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", err.Error()))
+				}
 				Logger.Warn(
 					"skip archive inner file",
 					slog.String("archive", input),
@@ -260,9 +298,8 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			}
 			filteredFiles = append(filteredFiles, f)
 		}
-		files = filteredFiles
 		c.archivesStatus[id.String()] = eStatus
-		for _, f := range files {
+		for _, f := range filteredFiles {
 			dir, file := filepath.Split(f)
 			bef, _ := strings.CutPrefix(dir, outputDir)
 			realPath := filepath.Join(bef, file)
@@ -288,8 +325,9 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	// WalkDir seems to not handle correctly path without ending /
 	input += string(filepath.Separator)
 
-	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) (err error) {
+	err = c.fs.WalkDir(ctx, input, func(path string, d fs.DirEntry, walkErr error) (err error) {
 		if walkErr != nil {
+			err = walkErr
 			return
 		}
 		if !d.IsDir() {
@@ -313,9 +351,18 @@ func (c *Connector) worker() {
 		case input := <-c.fileChan:
 			switch input.archiveID {
 			case "":
-				result, err := c.handleFile(input.location)
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				defer cancel()
+				file, err := c.fs.Open(ctx, input.location)
+				if err != nil {
+					return
+				}
+				result, err := c.handleFile(input.location, file)
 				if err != nil {
 					Logger.Error("could not handle file", slog.String("file", input.filename), slog.String("error", err.Error()))
+				}
+				if e := file.Close(); e != nil {
+					Logger.Warn("could not close file properly", slog.String("name", input.location), slog.String("error", e.Error()))
 				}
 				report := &Report{}
 				if err = c.action.Handle(input.location, result, report); err != nil {
@@ -340,7 +387,17 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 		Logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
 		return
 	}
-	result, err := c.handleFile(input.location)
+
+	file, err := os.Open(input.location)
+	if err != nil {
+		return
+	}
+	defer func() {
+		if e := file.Close(); e != nil {
+			Logger.Warn("could not close file properly", slog.String("name", input.location), slog.String("error", e.Error()))
+		}
+	}()
+	result, err := c.handleFile(input.location, file)
 	if err != nil {
 		status.total--
 		c.archivesStatus[input.archiveID] = status
@@ -355,17 +412,17 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 			return
 		}
 		c.addReport(report)
-		os.RemoveAll(status.tmpFolder)
+		if e := os.RemoveAll(status.tmpFolder); e != nil {
+			Logger.Warn("could not remove tmp extract folder properly", slog.String("path", status.tmpFolder), slog.String("error", e.Error()))
+		}
 	}
 	c.archivesStatus[input.archiveID] = status
 	return
 }
 
-var Since = time.Since
-
 type SummarizedGMalwareResult struct {
 	MaliciousSubfiles map[string]SummarizedGMalwareResult `json:"malicious-subfiles,omitempty"`
-	Sha256            string                              `json:"sha256"`
+	SHA256            string                              `json:"sha256"`
 	Malware           bool                                `json:"malware"`
 	Malwares          []string                            `json:"malwares"`
 }
@@ -389,14 +446,9 @@ func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename st
 	return
 }
 
-func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult, err error) {
+func (c *Connector) handleFile(name string, f io.ReadSeeker) (sumResult SummarizedGMalwareResult, err error) {
 	hash := sha256.New()
-	f, err := os.Open(file)
-	if err != nil {
-		return
-	}
 	if _, err = io.Copy(hash, f); err != nil {
-		f.Close()
 		return
 	}
 	fileSHA256 := hex.EncodeToString(hash.Sum(nil))
@@ -407,15 +459,12 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 	switch {
 	case err == nil:
 		if entry.RestoredAt.UnixMilli() > 0 {
-			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
-			f.Close()
+			Logger.Debug("skip file", slog.String("file", name), slog.String("reason", "restored"))
 			return
 		}
-		Logger.Warn("file cached but not restored correctly, analyzing it again", slog.String("file", file), slog.String("reason", " not restored"))
 	case errors.Is(err, cache.ErrEntryNotFound):
 		// ok
 	default:
-		f.Close()
 		return
 	}
 	// GDetect cache
@@ -426,17 +475,14 @@ func (c *Connector) handleFile(file string) (sumResult SummarizedGMalwareResult,
 		return
 	}
 	opts := c.config.WaitOpts
-	opts.Filename = file
+	opts.Filename = name
 	result, err := c.config.Submitter.WaitForReader(ctx, f, opts)
 	if err != nil {
-		f.Close()
 		return
 	}
 
-	// f need to be closed before action, to allow deletion
-	f.Close()
 	sumResult = SummarizedGMalwareResult{
-		Sha256:   fileSHA256,
+		SHA256:   fileSHA256,
 		Malware:  result.Malware,
 		Malwares: result.Malwares,
 	}

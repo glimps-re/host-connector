@@ -12,13 +12,14 @@ import (
 	"errors"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 
 	"golang.org/x/crypto/pbkdf2"
 )
 
 type Locker interface {
-	LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error
+	LockFile(file string, in io.Reader, info fs.FileInfo, reason string, out io.Writer) error
 	UnlockFile(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error)
 	GetHeader(in io.Reader) (entry LockEntry, err error)
 }
@@ -36,12 +37,20 @@ type LockEntry struct {
 
 var _ Locker = &Lock{}
 
-func (l *Lock) LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
+func (l *Lock) LockFile(file string, in io.Reader, info fs.FileInfo, reason string, out io.Writer) error {
 	gzw := gzip.NewWriter(out)
-	defer gzw.Close()
+	defer func() {
+		if e := gzw.Close(); e != nil {
+			Logger.Warn("could not close gzip writer", slog.String("err", e.Error()))
+		}
+	}()
 
 	tw := tar.NewWriter(gzw)
-	defer tw.Close()
+	defer func() {
+		if e := tw.Close(); e != nil {
+			Logger.Warn("could not close tar writer", slog.String("err", e.Error()))
+		}
+	}()
 
 	// add index entry
 	entry := LockEntry{
@@ -57,8 +66,8 @@ func (l *Lock) LockFile(file string, in io.Reader, info os.FileInfo, reason stri
 	indexHeader := tar.Header{
 		Name:       "index",
 		Size:       int64(len(buffer.Bytes())),
-		ChangeTime: Now(),
-		AccessTime: Now(),
+		ChangeTime: now(),
+		AccessTime: now(),
 	}
 	if err = tw.WriteHeader(&indexHeader); err != nil {
 		return err
@@ -92,7 +101,11 @@ func (l *Lock) UnlockFile(in io.Reader, out io.Writer) (file string, info os.Fil
 	if err != nil {
 		return
 	}
-	defer gr.Close()
+	defer func() {
+		if err := gr.Close(); err != nil {
+			Logger.Warn("could not close gzip reader", slog.String("error", err.Error()))
+		}
+	}()
 	tr := tar.NewReader(gr)
 	var entry LockEntry
 	indexFound := false
@@ -140,7 +153,11 @@ func (l *Lock) GetHeader(in io.Reader) (entry LockEntry, err error) {
 	if err != nil {
 		return
 	}
-	defer gr.Close()
+	defer func() {
+		if err := gr.Close(); err != nil {
+			Logger.Warn("could not close gzip reader", slog.String("error", err.Error()))
+		}
+	}()
 	tr := tar.NewReader(gr)
 	for {
 		var hdr *tar.Header
@@ -197,7 +214,7 @@ func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if _, err = out.Write(iv); err != nil {
 		return err
 	}
-	wstream := &cipher.StreamWriter{S: cipher.NewOFB(block, iv), W: out} //nolint: staticcheck
+	wstream := &cipher.StreamWriter{S: cipher.NewCTR(block, iv), W: out}
 	_, err = io.Copy(wstream, in)
 	return
 }
@@ -216,7 +233,7 @@ func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if err != nil {
 		return err
 	}
-	rstream := &cipher.StreamReader{S: cipher.NewOFB(block, iv), R: in} //nolint: staticcheck
+	rstream := &cipher.StreamReader{S: cipher.NewCTR(block, iv), R: in}
 	_, err = io.Copy(out, rstream)
 	return
 }

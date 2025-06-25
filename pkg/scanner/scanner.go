@@ -319,7 +319,7 @@ func (c *Connector) worker() {
 				}
 				report := &Report{}
 				if err = c.action.Handle(input.location, result, report); err != nil {
-					return
+					Logger.Error("could not handle file action", slog.String("file", input.filename), slog.String("error", err.Error()))
 				}
 				c.addReport(report)
 			default:

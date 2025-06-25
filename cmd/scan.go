@@ -4,9 +4,7 @@ import (
 	"context"
 	_ "embed" // embed file
 	"errors"
-	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/spf13/cobra"
 )
@@ -44,11 +42,6 @@ var scanCmd = &cobra.Command{
 		args = append(args, conf.Paths...)
 		if len(args) < 1 {
 			return errors.New("at least one file is mandatory")
-		}
-		for _, arg := range args {
-			if _, err := os.Stat(arg); err != nil {
-				return fmt.Errorf("could not check file %s", arg)
-			}
 		}
 		return nil
 	},

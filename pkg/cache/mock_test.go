@@ -24,12 +24,16 @@ func TestMockCache(t *testing.T) {
 					return nil, nil
 				},
 			},
-			test: func(m *MockCache) { m.Get("") },
+			test: func(m *MockCache) {
+				m.Get("") //nolint:errcheck,gosec // we just test that calling the mock panic or not
+			},
 		},
 		{
-			name:      "test Get (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockCache) { m.Get("") },
+			name:   "test Get (PANIC)",
+			fields: fields{},
+			test: func(m *MockCache) {
+				m.Get("") //nolint:errcheck,gosec // we just test that calling the mock panic or not
+			},
 			wantPanic: true,
 		},
 		{
@@ -37,12 +41,12 @@ func TestMockCache(t *testing.T) {
 			fields: fields{
 				SetMock: func(entry *Entry) error { return nil },
 			},
-			test: func(m *MockCache) { m.Set(nil) },
+			test: func(m *MockCache) { m.Set(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 		},
 		{
 			name:      "test Set (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockCache) { m.Set(nil) },
+			test:      func(m *MockCache) { m.Set(nil) }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -50,12 +54,12 @@ func TestMockCache(t *testing.T) {
 			fields: fields{
 				GetBySha256Mock: func(id string) (entry *Entry, err error) { return },
 			},
-			test: func(m *MockCache) { m.GetBySha256("") },
+			test: func(m *MockCache) { m.GetBySha256("") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 		},
 		{
 			name:      "test GetBySha256 (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockCache) { m.GetBySha256("") },
+			test:      func(m *MockCache) { m.GetBySha256("") }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 		{
@@ -63,12 +67,12 @@ func TestMockCache(t *testing.T) {
 			fields: fields{
 				CloseMock: func() (err error) { return },
 			},
-			test: func(m *MockCache) { m.Close() },
+			test: func(m *MockCache) { m.Close() }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 		},
 		{
 			name:      "test Close (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockCache) { m.Close() },
+			test:      func(m *MockCache) { m.Close() }, //nolint:errcheck,gosec // we just test that calling the mock panic or not
 			wantPanic: true,
 		},
 	}

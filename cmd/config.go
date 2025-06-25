@@ -39,7 +39,7 @@ type actionsConfig struct {
 	Quarantine bool `mapstructure:"quarantine" yaml:"quarantine" desc:"copy malware files in quarantine folder (locked)"`
 	Print      bool `mapstructure:"print" yaml:"print" desc:"print malware file information"`
 	Log        bool `mapstructure:"log" yaml:"log" desc:"log malware file information"`
-	Move       bool `mapstructure:"moveLegit" yaml:"moveLegit" desc:"move legit files after analysis"`
+	MoveLegit  bool `mapstructure:"moveLegit" yaml:"moveLegit" desc:"move legit files after analysis"`
 }
 
 type monitoringConfig struct {
@@ -79,13 +79,14 @@ type printConfig struct {
 
 type config struct {
 	// global
-	Config      string `yaml:"config" desc:"path to configuration file"`
-	Workers     int    `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
-	Extract     bool   `mapstructure:"extract" yaml:"extract" desc:"extract big archive to send it to gmalware"`
-	MaxFileSize string `mapstructure:"maxFileSize" yaml:"maxFileSize" desc:"max file size to push to gmalware"`
-	Debug       bool   `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`
-	Verbose     bool   `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
-	Quiet       bool   `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`
+	Config      string    `yaml:"config" desc:"path to configuration file"`
+	Workers     int       `mapstructure:"workers" yaml:"workers" validate:"min=1,max=20" desc:"Number of workers to use"`
+	Extract     bool      `mapstructure:"extract" yaml:"extract" desc:"extract big archive to send it to gmalware"`
+	MaxFileSize string    `mapstructure:"maxFileSize" yaml:"maxFileSize" desc:"max file size to push to gmalware"`
+	Debug       bool      `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`
+	Verbose     bool      `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
+	Quiet       bool      `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`
+	S3Config    *s3Config `mapstructure:"s3Config" yaml:"s3Config"`
 
 	Paths []string `yaml:"paths" desc:"Paths to monitor"`
 
@@ -97,4 +98,13 @@ type config struct {
 	Move       moveConfig       `mapstructure:"move" yaml:"move" desc:"move legit files configuration"`
 	Print      printConfig      `mapstructure:"print" yaml:"print" desc:"print report configuration"`
 	Gui        bool
+}
+
+type s3Config struct {
+	Endpoint     string `mapstructure:"endpoint" yaml:"endpoint" validate:"url" desc:"S3 URL"`
+	Region       string `mapstructure:"region" yaml:"region" desc:"region to send requests to"`
+	AccessKey    string `mapstructure:"accessKey" yaml:"accessKey" desc:"S3 access key id"`
+	SecretKey    string `mapstructure:"secretKey" yaml:"secretKey" desc:"S3 secret access key"`
+	Insecure     bool   `mapstructure:"insecure" yaml:"insecure" desc:"do not check S3 certificates"`
+	UsePathStyle bool   `mapstructure:"usePathStyle" yaml:"usePathStyle" desc:"enable the client to use path-style addressing (must be true for minIO)"`
 }

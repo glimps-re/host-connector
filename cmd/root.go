@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"errors"
 	"log/slog"
 	"os"
 
@@ -78,14 +77,7 @@ func GlobalInit(cmd *cobra.Command, args []string) error {
 	if conf.Workers == 0 {
 		conf.Workers = 1
 	}
-	if conf.Quarantine.Location != "" && conf.Actions.Quarantine {
-		_, err := os.Stat(conf.Quarantine.Location)
-		if errors.Is(err, os.ErrNotExist) {
-			if err = os.MkdirAll(conf.Quarantine.Location, 0o755); err != nil {
-				return err
-			}
-		}
-	}
+
 	Logger.Debug("debug activated")
 	if err := initGCtx(); err != nil {
 		Logger.Error("could not init context", slog.String("error", err.Error()))

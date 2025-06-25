@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/filesystem"
+	"github.com/glimps-re/host-connector/pkg/filesystem/mock"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -36,7 +39,7 @@ func TestReportAction_Handle(t *testing.T) {
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
+				result: SummarizedGMalwareResult{Malware: true, SHA256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -83,7 +86,7 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
+				result: SummarizedGMalwareResult{Malware: true, SHA256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -100,10 +103,10 @@ func TestLogAction_Handle(t *testing.T) {
 				result: SummarizedGMalwareResult{
 					Malware:  true,
 					Malwares: []string{"MALWARE-1"},
-					Sha256:   "123456789",
+					SHA256:   "123456789",
 					MaliciousSubfiles: map[string]SummarizedGMalwareResult{
 						"test/test.txt": {
-							Sha256:   "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
+							SHA256:   "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
 							Malware:  true,
 							Malwares: []string{"MALWARE-1"},
 						},
@@ -122,7 +125,7 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test debug false",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
+				result: SummarizedGMalwareResult{Malware: false, SHA256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -135,7 +138,7 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test debug true",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
+				result: SummarizedGMalwareResult{Malware: false, SHA256: "123456789"},
 				report: &Report{
 					FileName: "test",
 					Deleted:  true,
@@ -211,16 +214,19 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			a := &RemoveFileAction{}
+			a := NewRemoveFileAction(filesystem.NewLocalFileSystem())
 			if tt.args.path != "" {
-				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test-action-%s-*", tt.args.path))
+				f, err := os.CreateTemp(t.TempDir(), fmt.Sprintf("test-action-%s-*", tt.args.path))
 				if err != nil {
 					t.Errorf("RemoveFileAction.Handle() could not create tmp file, error = %v", err)
 					return
 				}
-				f.WriteString("test 1234")
-				f.Close()
-				defer os.Remove(f.Name())
+				if _, err = f.WriteString("test 1234"); err != nil {
+					t.Errorf("RemoveFileAction.Handle() could not write content to file: %v", err)
+				}
+				if err = f.Close(); err != nil {
+					t.Errorf("RemoveFileAction.Handle() could not close test file, error = %v", err)
+				}
 				tt.args.path = f.Name()
 			}
 			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
@@ -271,7 +277,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			args: args{
 				path: "test_quarantine",
 				result: SummarizedGMalwareResult{
-					Sha256: "123456789",
+					SHA256: "123456789",
 				},
 			},
 		},
@@ -281,14 +287,14 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				cache: &cache.MockCache{},
 				locker: &MockLock{
 					LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
-						return fmt.Errorf("test")
+						return errors.New("test")
 					},
 				},
 				root: "quarantine",
 			},
 			args: args{
 				path:   "test_quarantine",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
+				result: SummarizedGMalwareResult{Malware: true, SHA256: "123456"},
 			},
 			wantErr: true,
 		},
@@ -297,7 +303,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			fields: fields{
 				cache: &cache.MockCache{
 					SetMock: func(entry *cache.Entry) error {
-						return fmt.Errorf("test")
+						return errors.New("test")
 					},
 				},
 				locker: &MockLock{
@@ -309,7 +315,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
+				result: SummarizedGMalwareResult{Malware: true, SHA256: "123456"},
 			},
 			wantErr: true,
 		},
@@ -339,7 +345,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine1234",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
+				result: SummarizedGMalwareResult{Malware: true, SHA256: "123456"},
 				report: &Report{},
 			},
 		},
@@ -369,7 +375,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			},
 			args: args{
 				path:   "test_quarantine1234",
-				result: SummarizedGMalwareResult{Malware: true, Malwares: []string{"eicar"}, Sha256: "123456"},
+				result: SummarizedGMalwareResult{Malware: true, Malwares: []string{"eicar"}, SHA256: "123456"},
 				report: &Report{},
 			},
 		},
@@ -377,42 +383,28 @@ func TestQuarantineAction_Handle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// do all test in dedicated tmp dir that will be removed after
-			sysTmpDir := os.Getenv("TMPDIR")
-			testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
-			if err != nil {
-				t.Errorf("could not create temp dir, error: %s", err)
-				return
-			}
-			os.Setenv("TMPDIR", testTmpDir)
-			defer func() {
-				os.RemoveAll(testTmpDir)
-				os.Setenv("TMPDIR", sysTmpDir)
-			}()
+			testTmpDir := t.TempDir()
 
 			if tt.args.path != "" {
-				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test-action-%s-*", tt.args.path))
+				f, err := os.CreateTemp(testTmpDir, fmt.Sprintf("test-action-%s-*", tt.args.path))
 				if err != nil {
 					t.Errorf("QuarantineAction.Handle() could not create tmp file, error = %v", err)
 					return
 				}
-				f.WriteString("test 1234")
-				defer f.Close()
-				defer os.Remove(f.Name())
+				if _, err = f.WriteString("test 1234"); err != nil {
+					t.Errorf("could not write content to file: %v", err)
+				}
 				tt.args.path = f.Name()
 			}
 			if tt.fields.root != "" {
-				f, err := os.MkdirTemp(os.TempDir(), fmt.Sprintf("test-action-%s-*", tt.fields.root))
-				if err != nil {
-					t.Errorf("QuarantineAction.Handle() could not create tmp dir, error = %v", err)
-					return
-				}
-				defer os.Remove(f)
+				f := t.TempDir()
 				tt.fields.root = f
 			}
 			a := &QuarantineAction{
-				cache:  tt.fields.cache,
-				root:   tt.fields.root,
-				locker: tt.fields.locker,
+				fs:       filesystem.NewLocalFileSystem(),
+				cache:    tt.fields.cache,
+				location: tt.fields.root,
+				locker:   tt.fields.locker,
 			}
 			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("QuarantineAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
@@ -525,20 +517,18 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "test",
 			test: func(t *testing.T) {
-				tmpDir, err := os.MkdirTemp(os.TempDir(), "test_list_quarantine_*")
-				if err != nil {
-					t.Errorf("could not create test dir, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(tmpDir)
-
+				tmpDir := t.TempDir()
 				a := NewQuarantineAction(
+					filesystem.NewLocalFileSystem(),
 					&cache.MockCache{},
 					tmpDir,
 					&MockLock{
 						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 							var buffer bytes.Buffer
-							io.Copy(&buffer, in)
+							if _, e := io.Copy(&buffer, in); e != nil {
+								t.Errorf("could not copy input to buffer, error: %v", e)
+								return
+							}
 							if buffer.String() != "test_content" {
 								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
 							}
@@ -546,15 +536,23 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 						},
 					},
 				)
-				os.MkdirTemp(tmpDir, "folder")
+				if _, err := os.MkdirTemp(tmpDir, "folder"); err != nil { //nolint:usetesting // we want to create a folder in the tmp dir
+					t.Errorf("could not create test folder, error: %s", err)
+					return
+				}
 				f, err := os.CreateTemp(tmpDir, "test_*.lock")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				f.WriteString("test_content")
-				f.Close()
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+				if _, err = f.WriteString("test_content"); err != nil {
+					t.Errorf("could not write content to file: %v", err)
+				}
+				if err := f.Close(); err != nil {
+					t.Errorf("could not close test file, err: %v", err)
+				}
+
+				ctx, cancel := context.WithTimeout(t.Context(), time.Second*5)
 				defer cancel()
 				qfiles, err := a.ListQuarantinedFiles(ctx)
 				if err != nil {
@@ -578,30 +576,15 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 			},
 		},
 		{
-			name: "test invalid root folder",
-			test: func(t *testing.T) {
-				a := NewQuarantineAction(
-					&cache.MockCache{},
-					"",
-					&MockLock{},
-				)
-
-				_, err := a.ListQuarantinedFiles(context.Background())
-				if err != nil {
-					t.Errorf("QuarantineAction.ListQuarantinedFiles, error not expected")
-					return
-				}
-			},
-		},
-		{
 			name: "test cancelled ctx",
 			test: func(t *testing.T) {
 				a := NewQuarantineAction(
+					filesystem.NewLocalFileSystem(),
 					&cache.MockCache{},
-					os.TempDir(),
+					t.TempDir(),
 					&MockLock{},
 				)
-				ctx, cancel := context.WithCancel(context.Background())
+				ctx, cancel := context.WithCancel(t.Context())
 				cancel()
 
 				_, err := a.ListQuarantinedFiles(ctx)
@@ -625,20 +608,15 @@ func TestQuarantineAction_Restore(t *testing.T) {
 		{
 			name: "test",
 			test: func(t *testing.T) {
-				tmpDir, err := os.MkdirTemp(os.TempDir(), "test_list_quarantine_*")
-				if err != nil {
-					t.Errorf("could not create test dir, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(tmpDir)
-				Now = func() time.Time {
+				tmpDir := t.TempDir()
+				now = func() time.Time {
 					return time.UnixMilli(1707568762557)
 				}
 				defer func() {
-					Now = time.Now
+					now = time.Now
 				}()
 
-				a := NewQuarantineAction(
+				a := NewQuarantineAction(filesystem.NewLocalFileSystem(),
 					&cache.MockCache{
 						GetMock: func(id string) (entry *cache.Entry, err error) {
 							entry = &cache.Entry{
@@ -660,7 +638,10 @@ func TestQuarantineAction_Restore(t *testing.T) {
 					&MockLock{
 						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 							var buffer bytes.Buffer
-							io.Copy(&buffer, in)
+							if _, e := io.Copy(&buffer, in); e != nil {
+								t.Errorf("could not copy input to buffer, error: %v", e)
+								return
+							}
 							if buffer.String() != "test_content" {
 								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
 							}
@@ -682,13 +663,18 @@ func TestQuarantineAction_Restore(t *testing.T) {
 					},
 				)
 				cacheName := cache.ComputeCacheID("test")
-				f, err := os.Create(fmt.Sprintf("%s/%s.lock", tmpDir, cacheName))
+				f, err := os.Create(tmpDir + "/" + cacheName + ".lock") //nolint:gosec // test file only
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				f.WriteString("test_content")
-				f.Close()
+				if _, err = f.WriteString("test_content"); err != nil {
+					t.Errorf("could not write content to file: %v", err)
+				}
+				if err := f.Close(); err != nil {
+					t.Errorf("could not close test file, err: %v", err)
+				}
+
 				err = a.Restore(cacheName)
 				if err != nil {
 					t.Errorf("QuarantineAction.Restore, error: %s", err)
@@ -742,35 +728,38 @@ func TestMoveAction_Handle(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			tempReport, err := os.CreateTemp(os.TempDir(), "report*")
+			tempReport, err := os.CreateTemp(t.TempDir(), "report*")
 			if err != nil {
 				t.Errorf("MoveAction.Handle() could not create temp file for report, error: %s", err)
 				return
 			}
 			defer func() {
-				tempReport.Close()
-				os.Remove(tempReport.Name())
-			}()
-			Rename = func(oldpath, newpath string) error {
-				if oldpath != tt.samplePath {
-					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
+				if err := tempReport.Close(); err != nil && !errors.Is(err, os.ErrClosed) { // file might be already close because we return it instead of Create
+					t.Errorf("MoveAction.Handle() could not close temp file, error: %v", err)
 				}
-				if newpath != tt.wantedReport.MoveTo {
-					return fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MoveTo)
-				}
-				return nil
-			}
-			MkdirAll = func(path string, perm os.FileMode) error {
-				return nil
-			}
-			Create = func(name string) (*os.File, error) {
-				return tempReport, nil
-			}
-			defer func() {
-				Rename = os.Rename
-				MkdirAll = os.MkdirAll
-				Create = os.Create
 			}()
+
+			fs := &mock.FileSystemMock{
+				IsLocalMock: func() bool {
+					return true
+				},
+				RenameMock: func(ctx context.Context, oldpath, newpath string) (err error) {
+					if oldpath != tt.samplePath {
+						t.Errorf("MoveAction.Handle() Rename() invalid oldpath: %s != %s", oldpath, tt.samplePath)
+					}
+					if newpath != tt.wantedReport.MoveTo {
+						t.Errorf("MoveAction.Handle() Rename() invalid newpath: %s != %s", newpath, tt.wantedReport.MoveTo)
+					}
+					return
+				},
+				MkdirAllMock: func(ctx context.Context, path string, perm fs.FileMode) (err error) {
+					return
+				},
+				CreateMock: func(ctx context.Context, name string) (io.WriteCloser, error) {
+					return tempReport, nil
+				},
+			}
+
 			dst := "/path/to/move"
 			src := "/mnt/../media/test"
 			if tt.srcPath != "" {
@@ -779,7 +768,7 @@ func TestMoveAction_Handle(t *testing.T) {
 			if tt.destPath != "" {
 				dst = tt.destPath
 			}
-			a, err := NewMoveAction(dst, src)
+			a, err := NewMoveAction(fs, dst, src)
 			if err != nil {
 				t.Errorf("MoveAction.Handle() could not get new move action, error: %v", err)
 				return

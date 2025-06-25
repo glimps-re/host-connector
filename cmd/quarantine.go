@@ -12,7 +12,7 @@ import (
 
 var quarantineCmd = &cobra.Command{
 	Use:   "quarantine",
-	Short: "Handler GMalware host quarantined files",
+	Short: "Handler GLIMPS Malware host quarantined files",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		if err = cmd.Usage(); err != nil {
 			return
@@ -32,7 +32,7 @@ var quarantineCmd = &cobra.Command{
 
 var quarantineListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List GMalware host quarantined files",
+	Short: "List GLIMPS Malware host quarantined files",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Printf("|%-64s|%-64s|%-64s|\n", "ID", "Reason", "File")
 		qa := scanner.NewQuarantineAction(nil, conf.Quarantine.Location, gctx.lock)

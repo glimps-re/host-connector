@@ -12,7 +12,7 @@ import (
 
 var monitoringCmd = &cobra.Command{
 	Use:               "monitoring",
-	Short:             "start monitoring location with GMalware host",
+	Short:             "Start monitoring location with GLIMPS Malware host",
 	PersistentPreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		Logger.Debug("config", slog.Any("config", conf))

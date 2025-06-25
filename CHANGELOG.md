@@ -1,5 +1,10 @@
 # Changelog
 
+## [v0.4.4] - 2025-06-25
+
+- update go to 1.24.4
+- fix worker dying when error on action handling
+
 ## [v0.4.3] - 2025-03-17
 
 - fix file filtering

@@ -15,6 +15,7 @@ var (
 	DefaultConfigPath         = "/etc/gmhost/config.yml"
 	DefaultCacheLocation      = ""
 	DefaultQuarantineLocation = "/var/lib/gmhost/quarantine"
+	DefaultPluginsLocation    = "/var/lib/gmhost/plugins"
 )
 
 func getConfigFile() (config string) {

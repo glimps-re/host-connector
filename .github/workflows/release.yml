@@ -15,7 +15,7 @@ jobs:
       matrix:
         goos: [linux,windows]
         goarch: [amd64]
-        goversion: ["1.24"]
+        goversion: ["1.25"]
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.53
@@ -35,7 +35,7 @@ jobs:
       matrix:
         goos: [windows]
         goarch: [amd64]
-        goversion: ["1.24"]
+        goversion: ["1.25"]
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.53

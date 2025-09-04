@@ -10,7 +10,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
+	"plugin"
 	"slices"
 	"strings"
 	"sync"
@@ -19,6 +21,7 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/google/uuid"
 	"golift.io/xtractr"
 )
@@ -44,6 +47,8 @@ type Config struct {
 	MaxFileSize      int64
 	MoveTo           string
 	MoveFrom         string
+	Plugins          map[string]string
+	PluginsDir       string
 }
 
 type fileToAnalyze struct {
@@ -72,6 +77,7 @@ type Connector struct {
 	reports        []*Report
 	archivesStatus map[string]archiveStatus
 	archiveMutex   sync.RWMutex
+	loadedPlugins  []plugins.Plugin
 }
 
 var MaxWorkers = 40
@@ -140,6 +146,9 @@ func (c *Connector) Start() error {
 	return nil
 }
 
+// XtractFile could be used to override xtract.ExtractFile method
+var XtractFile = xtractr.ExtractFile
+
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	info, err := os.Lstat(input)
 	if err != nil {
@@ -189,7 +198,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			DirMode:   0o755,
 		}
 
-		_, files, _, extractErr := xtractr.ExtractFile(&xfile)
+		_, files, _, extractErr := XtractFile(&xfile)
 		switch {
 		case extractErr == nil:
 			// OK
@@ -452,6 +461,43 @@ func (c *Connector) addReport(report *Report) {
 func (c *Connector) Close() {
 	c.cancel()
 	c.wg.Wait()
+	for _, x := range c.loadedPlugins {
+		x.Close(context.TODO())
+	}
 }
 
 var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+
+var ErrInvalidPlugin = fmt.Errorf("invalid plugin")
+
+var PluginInitTimeout = time.Minute * 5
+
+func (c *Connector) LoadPlugins(conf Config) error {
+	for pluginName, configPath := range conf.Plugins {
+		pluginPath := path.Join(conf.PluginsDir, pluginName)
+		plug, err := plugin.Open(pluginPath)
+		if err != nil {
+			return err
+		}
+		p, err := plug.Lookup(plugins.PluginExportedName)
+		if err != nil {
+			return err
+		}
+		pp, ok := p.(plugins.Plugin)
+		if !ok {
+			return errors.Join(ErrInvalidPlugin, fmt.Errorf("plugin: %#v", p))
+		}
+
+		configPath = path.Clean(configPath)
+		err = pp.Init(configPath, c)
+		if err != nil {
+			return err
+		}
+		c.loadedPlugins = append(c.loadedPlugins, pp)
+	}
+	return nil
+}
+
+func (c *Connector) SetXTractFile(f plugins.XtractFileFunc) {
+	XtractFile = f
+}

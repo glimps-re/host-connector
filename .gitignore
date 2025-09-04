@@ -5,3 +5,4 @@ vendor/*
 /dist/bin/*
 *.swp
 connecteur-host
+bin/*

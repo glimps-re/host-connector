@@ -1,4 +1,4 @@
-package cmd
+package cli
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/glimps-re/host-connector/pkg/handler"
 	"github.com/spf13/cobra"
 )
 
@@ -16,32 +17,32 @@ var scanCmd = &cobra.Command{
 	Short:   "Scan folders",
 	PreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		if err = gctx.conn.Start(context.Background()); err != nil {
+		if err = gctx.Conn.Start(context.Background()); err != nil {
 			return
 		}
 		if len(args) == 0 {
-			args = conf.Paths
+			args = Conf.Paths
 		}
 		var done context.Context
-		if conf.Gui {
-			done = Gui("", 0)
+		if Conf.Gui {
+			done = handler.Gui("", 0)
 		}
 		for _, arg := range args {
-			if err = gctx.conn.ScanFile(cmd.Context(), arg); err != nil {
+			if err = gctx.Conn.ScanFile(cmd.Context(), arg); err != nil {
 				Logger.Error("error during scan", slog.String("file", arg), slog.String("error", err.Error()))
-				gctx.conn.Close()
+				gctx.Conn.Close()
 				return
 			}
 		}
-		gctx.conn.Close()
-		HandleScanFinished()
-		if conf.Gui {
+		gctx.Conn.Close()
+		handler.HandleScanFinished()
+		if Conf.Gui {
 			<-done.Done()
 		}
 		return
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
-		args = append(args, conf.Paths...)
+		args = append(args, Conf.Paths...)
 		if len(args) < 1 {
 			return errors.New("at least one file is mandatory")
 		}
@@ -53,7 +54,3 @@ var scanCmd = &cobra.Command{
 		return nil
 	},
 }
-
-type GuiHandleResult struct{}
-
-var HandleScanFinished = func() {}

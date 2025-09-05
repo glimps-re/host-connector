@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glimps-re/connector-manager/pkg/shared"
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/glimps-re/host-connector/pkg/report"
 )
@@ -50,10 +51,11 @@ type QuarantineAction struct {
 	cache  cache.Cacher
 	root   string
 	locker Locker
+	events chan<- any
 }
 
-func NewQuarantineAction(cache cache.Cacher, root string, locker Locker) *QuarantineAction {
-	return &QuarantineAction{cache: cache, root: root, locker: locker}
+func NewQuarantineAction(cache cache.Cacher, root string, locker Locker, events chan<- any) *QuarantineAction {
+	return &QuarantineAction{cache: cache, root: root, locker: locker, events: events}
 }
 
 type LogAction struct {
@@ -166,6 +168,13 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result Summa
 	}
 
 	report.QuarantineLocation = entry.QuarantineLocation
+	if a.events != nil {
+		a.events <- shared.QuarantineEvent{
+			ElementID: entry.ID,
+			Name:      entry.Sha256,
+			Date:      time.Now().String(),
+		}
+	}
 
 	return nil
 }

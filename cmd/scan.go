@@ -16,7 +16,7 @@ var scanCmd = &cobra.Command{
 	Short:   "Scan folders",
 	PreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		if err = gctx.conn.Start(); err != nil {
+		if err = gctx.conn.Start(context.Background()); err != nil {
 			return
 		}
 		if len(args) == 0 {

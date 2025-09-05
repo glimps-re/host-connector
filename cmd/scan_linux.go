@@ -13,6 +13,6 @@ func Gui(entryPath string, nbFiles int) context.Context {
 	return nil
 }
 
-func (a *GuiHandleResult) Handle(path string, result scanner.SummarizedGMalwareResult, report *scanner.Report) (err error) {
+func (a *GuiHandleResult) Handle(ctx context.Context, path string, result scanner.SummarizedGMalwareResult, report *scanner.Report) (err error) {
 	return nil
 }

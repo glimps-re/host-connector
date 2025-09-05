@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -35,7 +36,7 @@ var (
 )
 
 type Action interface {
-	Handle(path string, result SummarizedGMalwareResult, report *Report) error
+	Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) error
 }
 
 type NoAction struct{}
@@ -60,7 +61,7 @@ type LogAction struct {
 
 type ReportAction struct{}
 
-func (a *ReportAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *ReportAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	report.FileName = path
 	report.Malicious = result.Malware
 	report.Sha256 = result.Sha256
@@ -68,7 +69,7 @@ func (a *ReportAction) Handle(path string, result SummarizedGMalwareResult, repo
 	return
 }
 
-func (a *LogAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if result.Malware {
 		if len(result.Malwares) == 0 {
 			result.Malwares = []string{}
@@ -88,9 +89,9 @@ type MultiAction struct {
 	Actions []Action
 }
 
-func (a *MultiAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *MultiAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	for _, h := range a.Actions {
-		if err = h.Handle(path, result, report); err != nil {
+		if err = h.Handle(ctx, path, result, report); err != nil {
 			return
 		}
 	}
@@ -103,7 +104,7 @@ func NewMultiAction(actions ...Action) *MultiAction {
 
 type RemoveFileAction struct{}
 
-func (a *RemoveFileAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *RemoveFileAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if !result.Malware {
 		return
 	}
@@ -115,7 +116,7 @@ func (a *RemoveFileAction) Handle(path string, result SummarizedGMalwareResult, 
 	return
 }
 
-func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	// skip legit files
 	if !result.Malware {
 		return
@@ -136,25 +137,30 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 		return
 	}
 
-	entry.QuarantineLocation = filepath.Join(a.root, fmt.Sprintf("%s.lock", entry.ID))
+	entry.QuarantineLocation = filepath.Join(a.root, entry.ID+".lock")
 
 	fout, err := os.Create(entry.QuarantineLocation)
 	if err != nil {
 		return
 	}
-	fin, err := os.Open(path)
+	fin, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return
 	}
-	defer fin.Close()
+	defer func() {
+		errClose := fin.Close()
+		if errClose != nil {
+			Logger.Error("QuarantineAction cannot close file : %s", "error", errClose)
+		}
+	}()
 	malware := "unknown"
 	if len(result.Malwares) > 0 {
 		malware = result.Malwares[0]
 	}
-	if err = a.locker.LockFile(path, fin, stat, fmt.Sprintf("malware: %s", malware), fout); err != nil {
+	if err = a.locker.LockFile(path, fin, stat, "malware: "+malware, fout); err != nil {
 		return
 	}
-	if err = a.cache.Set(entry); err != nil {
+	if err = a.cache.Set(ctx, entry); err != nil {
 		return
 	}
 
@@ -163,15 +169,15 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 	return nil
 }
 
-func (a *QuarantineAction) Restore(id string) (err error) {
+func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	if a.root == "" {
 		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
 		if err != nil {
 			return err
 		}
 	}
-	fpath := filepath.Join(a.root, fmt.Sprintf("%s.lock", id))
-	f, err := os.Open(fpath)
+	fpath := filepath.Join(a.root, id+".lock")
+	f, err := os.Open(filepath.Clean(fpath))
 	if err != nil {
 		return
 	}
@@ -179,9 +185,15 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	// if we correctly restore the file we must delete the lock file
 	deleteLocked := false
 	defer func() {
-		f.Close()
+		err := f.Close()
+		if err != nil {
+			Logger.Error("QuarantineAction cannot close file", "error", err)
+		}
 		if deleteLocked {
-			os.Remove(f.Name())
+			err := os.Remove(f.Name())
+			if err != nil {
+				Logger.Error("QuarantineAction cannot remove file", "error", err)
+			}
 		}
 	}()
 	header, err := a.locker.GetHeader(f)
@@ -192,11 +204,20 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	if err != nil {
 		return
 	}
-	defer out.Close()
+	defer func() {
+		err := out.Close()
+		if err != nil {
+			Logger.Error("QuarantineAction cannot close file", "error", err)
+		}
+	}()
 
 	defer func() {
 		if err != nil {
-			os.Remove(out.Name())
+			e := os.Remove(out.Name())
+			if e != nil {
+				Logger.Error("QuarantineAction cannot remove file", "error", err)
+			}
+
 		}
 	}()
 	_, err = f.Seek(0, io.SeekStart)
@@ -211,11 +232,11 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	if err != nil {
 		return
 	}
-	entry, err := a.cache.Get(id)
+	entry, err := a.cache.Get(ctx, id)
 	if err == nil {
 		entry.QuarantineLocation = ""
 		entry.RestoredAt = Now()
-		err = a.cache.Set(entry)
+		err = a.cache.Set(ctx, entry)
 		if err != nil {
 			Logger.Error("error set cache", slog.String("sha256", entry.Sha256), slog.String("err", err.Error()))
 		}
@@ -267,11 +288,17 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 			if !strings.HasSuffix(path, ".lock") {
 				return nil
 			}
-			file, err := os.Open(path)
+			file, err := os.Open(filepath.Clean(path))
 			if err != nil {
 				return err
 			}
-			defer file.Close()
+			defer func() {
+				err := file.Close()
+				if err != nil {
+					Logger.Error("QuarantineAction cannot close file", "error", err)
+				}
+			}()
+
 			entry, err := a.locker.GetHeader(file)
 			if err != nil {
 				return err
@@ -298,7 +325,7 @@ type InformAction struct {
 	Out     io.Writer
 }
 
-func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *InformAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}
@@ -315,11 +342,20 @@ func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, repo
 		if report.Deleted {
 			fmt.Fprint(&sb, ", it has been deleted")
 		}
-		fmt.Fprintln(a.Out, sb.String())
+		_, err = fmt.Fprintln(a.Out, sb.String())
+		if err != nil {
+			return
+		}
 	case report.MoveTo != "":
-		fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+		_, err = fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+		if err != nil {
+			return
+		}
 	case a.Verbose:
-		fmt.Fprintf(a.Out, "file %s no malware found\n", path)
+		_, err = fmt.Fprintf(a.Out, "file %s no malware found\n", path)
+		if err != nil {
+			return
+		}
 	}
 	return nil
 }
@@ -344,7 +380,7 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 	return a, nil
 }
 
-func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *MoveAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return
@@ -362,8 +398,13 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		// do not move malicious files
 		// write report instead
 		if result.Malware {
-			if f, err := Create(fmt.Sprintf("%s.locked.json", dest)); err == nil {
-				defer f.Close()
+			if f, err := Create(dest + ".locked.json"); err == nil {
+				defer func() {
+					err := f.Close()
+					if err != nil {
+						Logger.Error("MoveAction cannot close file", "error", err)
+					}
+				}()
 				w := json.NewEncoder(f)
 				w.SetIndent("", "  ")
 				if err = w.Encode(report); err != nil {
@@ -380,5 +421,5 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		return
 
 	}
-	return fmt.Errorf("file not in paths")
+	return errors.New("file not in paths")
 }

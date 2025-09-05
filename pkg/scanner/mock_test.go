@@ -29,13 +29,23 @@ func TestMockLock(t *testing.T) {
 					return nil
 				},
 			},
-			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) },
+			test: func(m *MockLock) {
+				err := m.LockFile("", nil, &LockFileInfo{}, "", nil)
+				if err != nil {
+					t.Fatalf("MockLock cannot lock file : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test Lock file (panic)",
-			fields:    fields{},
-			test:      func(m *MockLock) { m.LockFile("", nil, &LockFileInfo{}, "", nil) },
+			name:   "test Lock file (panic)",
+			fields: fields{},
+			test: func(m *MockLock) {
+				err := m.LockFile("", nil, &LockFileInfo{}, "", nil)
+				if err != nil {
+					t.Fatalf("MockLock cannot lock file : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -45,13 +55,23 @@ func TestMockLock(t *testing.T) {
 					return "", &LockFileInfo{}, "", nil
 				},
 			},
-			test:      func(m *MockLock) { m.UnlockFile(nil, nil) },
+			test: func(m *MockLock) {
+				_, _, _, err := m.UnlockFile(nil, nil)
+				if err != nil {
+					t.Fatalf("MockLock cannot unlock file : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test Unlock file (panic)",
-			fields:    fields{},
-			test:      func(m *MockLock) { m.UnlockFile(nil, nil) },
+			name:   "test Unlock file (panic)",
+			fields: fields{},
+			test: func(m *MockLock) {
+				_, _, _, err := m.UnlockFile(nil, nil)
+				if err != nil {
+					t.Fatalf("MockLock cannot unlock file : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -61,13 +81,23 @@ func TestMockLock(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockLock) { m.GetHeader(nil) },
+			test: func(m *MockLock) {
+				_, err := m.GetHeader(nil)
+				if err != nil {
+					t.Fatalf("MockLock cannot get header : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetHeader (panic)",
-			fields:    fields{},
-			test:      func(m *MockLock) { m.GetHeader(nil) },
+			name:   "test GetHeader (panic)",
+			fields: fields{},
+			test: func(m *MockLock) {
+				_, err := m.GetHeader(nil)
+				if err != nil {
+					t.Fatalf("MocLock cannot get header : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 	}
@@ -113,13 +143,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) },
+			test: func(m *MockSubmitter) {
+				_, err := m.ExtractExpertViewURL(nil)
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot extract : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test ExtractExpertViewURL (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.ExtractExpertViewURL(nil) },
+			name:   "test ExtractExpertViewURL (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.ExtractExpertViewURL(nil)
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot extract : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -127,13 +167,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetResultByUUIDMock: func(ctx context.Context, uuid string) (result gdetect.Result, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetResultByUUID(context.TODO(), "") },
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResultByUUID(context.TODO(), "")
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get result : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetResultByUUID (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResultByUUID(context.TODO(), "") },
+			name:   "test GetResultByUUID (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResultByUUID(context.TODO(), "")
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get result : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -141,13 +191,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetResultBySHA256Mock: func(ctx context.Context, sha256 string) (result gdetect.Result, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetResultBySHA256(context.TODO(), "") },
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResultBySHA256(context.TODO(), "")
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get result : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetResultBySHA256 (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResultBySHA256(context.TODO(), "") },
+			name:   "test GetResultBySHA256 (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResultBySHA256(context.TODO(), "")
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get result : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -157,13 +217,23 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.GetResults(context.TODO(), 0, 0) },
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResults(context.TODO(), 0, 0)
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get results : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetResults (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetResults(context.TODO(), 0, 0) },
+			name:   "test GetResults (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.GetResults(context.TODO(), 0, 0)
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get results : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -173,13 +243,23 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{}) },
+			test: func(m *MockSubmitter) {
+				_, err := m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot submit file : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test SubmitFile (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{}) },
+			name:   "test SubmitFile (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.SubmitFile(context.TODO(), "", gdetect.SubmitOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot submit file : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -187,13 +267,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				SubmitReaderMock: func(ctx context.Context, r io.Reader, options gdetect.SubmitOptions) (uuid string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{}) },
+			test: func(m *MockSubmitter) {
+				_, err := m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot submit reader : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test SubmitReader (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{}) },
+			name:   "test SubmitReader (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.SubmitReader(context.TODO(), nil, gdetect.SubmitOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot submit reader : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -203,13 +293,23 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{}) },
+			test: func(m *MockSubmitter) {
+				_, err := m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot wait for file : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test WaitForFile (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{}) },
+			name:   "test WaitForFile (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.WaitForFile(context.TODO(), "", gdetect.WaitForOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot wait for file : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -219,13 +319,23 @@ func TestMockSubmitter(t *testing.T) {
 					return
 				},
 			},
-			test:      func(m *MockSubmitter) { m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{}) },
+			test: func(m *MockSubmitter) {
+				_, err := m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot wait for reader : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test WaitForReader (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{}) },
+			name:   "test WaitForReader (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.WaitForReader(context.TODO(), nil, gdetect.WaitForOptions{})
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot wait for reader : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -233,13 +343,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetProfileStatusMock: func(ctx context.Context) (status gdetect.ProfileStatus, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetProfileStatus(context.TODO()) },
+			test: func(m *MockSubmitter) {
+				_, err := m.GetProfileStatus(context.TODO())
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get profile status : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetProfileStatus (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetProfileStatus(context.TODO()) },
+			name:   "test GetProfileStatus (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.GetProfileStatus(context.TODO())
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get profile status : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -247,13 +367,23 @@ func TestMockSubmitter(t *testing.T) {
 			fields: fields{
 				GetAPIVersionMock: func(ctx context.Context) (version string, err error) { return },
 			},
-			test:      func(m *MockSubmitter) { m.GetAPIVersion(context.TODO()) },
+			test: func(m *MockSubmitter) {
+				_, err := m.GetAPIVersion(context.TODO())
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get api version : %s", err)
+				}
+			},
 			wantPanic: false,
 		},
 		{
-			name:      "test GetAPIVersion (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockSubmitter) { m.GetAPIVersion(context.TODO()) },
+			name:   "test GetAPIVersion (PANIC)",
+			fields: fields{},
+			test: func(m *MockSubmitter) {
+				_, err := m.GetAPIVersion(context.TODO())
+				if err != nil {
+					t.Fatalf("MockSubmitter cannot get api version : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 	}

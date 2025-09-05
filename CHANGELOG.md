@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased] 
+
+### Changed
+
+- AES ciphering now use CTR instead of deprecated OFB
+
 ## [v0.4.4] - 2025-06-25
 
 - update go to 1.24.4

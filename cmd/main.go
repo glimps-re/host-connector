@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -26,7 +27,7 @@ type GContext struct {
 var gctx = GContext{}
 
 func initGCtx() (err error) {
-	cache, err := cache.NewCache(conf.Cache.Location)
+	cache, err := cache.NewCache(context.Background(), conf.Cache.Location)
 	if err != nil {
 		return
 	}
@@ -106,6 +107,12 @@ func initGCtx() (err error) {
 }
 
 func Main() {
+	if err := main_(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func main_() (err error) {
 	initRoot(rootCmd)
 	rootCmd.AddCommand(scanCmd)
 	quarantineCmd.AddCommand(quarantineListCmd)
@@ -114,13 +121,17 @@ func Main() {
 	rootCmd.AddCommand(monitoringCmd)
 	defer func() {
 		if gctx.cache != nil {
-			gctx.cache.Close()
+			if err := gctx.cache.Close(); err == nil {
+				Logger.Error("cannot close cache", "error", err)
+			}
 		}
 	}()
-	if err := rootCmd.Execute(); err != nil {
+	err = rootCmd.Execute()
+	if err != nil {
 		fmt.Println(err)
-		os.Exit(1)
+		return err
 	}
+	return
 }
 
 func init() {

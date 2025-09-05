@@ -1,15 +1,16 @@
 package cache
 
 import (
+	"context"
 	"testing"
 )
 
 func TestMockCache(t *testing.T) {
 	type fields struct {
-		SetMock         func(entry *Entry) error
-		GetMock         func(id string) (entry *Entry, err error)
+		SetMock         func(ctx context.Context, entry *Entry) error
+		GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
 		CloseMock       func() (err error)
-		GetBySha256Mock func(id string) (entry *Entry, err error)
+		GetBySha256Mock func(ctx context.Context, id string) (entry *Entry, err error)
 	}
 	tests := []struct {
 		name      string
@@ -20,42 +21,72 @@ func TestMockCache(t *testing.T) {
 		{
 			name: "test Get",
 			fields: fields{
-				GetMock: func(id string) (entry *Entry, err error) {
+				GetMock: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return nil, nil
 				},
 			},
-			test: func(m *MockCache) { m.Get("") },
+			test: func(m *MockCache) {
+				_, err := m.Get(t.Context(), "")
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 		},
 		{
-			name:      "test Get (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockCache) { m.Get("") },
+			name:   "test Get (PANIC)",
+			fields: fields{},
+			test: func(m *MockCache) {
+				_, err := m.Get(t.Context(), "")
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
 			name: "test Set",
 			fields: fields{
-				SetMock: func(entry *Entry) error { return nil },
+				SetMock: func(ctx context.Context, entry *Entry) error { return nil },
 			},
-			test: func(m *MockCache) { m.Set(nil) },
+			test: func(m *MockCache) {
+				err := m.Set(t.Context(), nil)
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 		},
 		{
-			name:      "test Set (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockCache) { m.Set(nil) },
+			name:   "test Set (PANIC)",
+			fields: fields{},
+			test: func(m *MockCache) {
+				err := m.Set(t.Context(), nil)
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
 			name: "test GetBySha256",
 			fields: fields{
-				GetBySha256Mock: func(id string) (entry *Entry, err error) { return },
+				GetBySha256Mock: func(ctx context.Context, id string) (entry *Entry, err error) { return },
 			},
-			test: func(m *MockCache) { m.GetBySha256("") },
+			test: func(m *MockCache) {
+				_, err := m.GetBySha256(t.Context(), "")
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 		},
 		{
-			name:      "test GetBySha256 (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockCache) { m.GetBySha256("") },
+			name:   "test GetBySha256 (PANIC)",
+			fields: fields{},
+			test: func(m *MockCache) {
+				_, err := m.GetBySha256(t.Context(), "")
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 		{
@@ -63,12 +94,22 @@ func TestMockCache(t *testing.T) {
 			fields: fields{
 				CloseMock: func() (err error) { return },
 			},
-			test: func(m *MockCache) { m.Close() },
+			test: func(m *MockCache) {
+				err := m.Close()
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 		},
 		{
-			name:      "test Close (PANIC)",
-			fields:    fields{},
-			test:      func(m *MockCache) { m.Close() },
+			name:   "test Close (PANIC)",
+			fields: fields{},
+			test: func(m *MockCache) {
+				err := m.Close()
+				if err != nil {
+					t.Fatalf("test mock get error : %s", err)
+				}
+			},
 			wantPanic: true,
 		},
 	}

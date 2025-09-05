@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -24,7 +26,7 @@ var quarantineCmd = &cobra.Command{
 			return err
 		}
 		if conf.Quarantine.Location == "" {
-			return fmt.Errorf("quarantine location is mandatory")
+			return errors.New("quarantine location is mandatory")
 		}
 		return nil
 	},
@@ -62,7 +64,7 @@ var quarantineRestoreCmd = &cobra.Command{
 					id = ts[1]
 				}
 			}
-			if err := qa.Restore(id); err != nil {
+			if err := qa.Restore(context.Background(), id); err != nil {
 				return err
 			}
 		}

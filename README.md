@@ -46,6 +46,7 @@ Usage:
   GMHost [command]
 
 Available Commands:
+  agent       Start monitoring location with GLIMPS Malware host under Connector manager control
   completion  Generate the autocompletion script for the specified shell
   help        Help about any command
   monitoring  Start monitoring location with GLIMPS Malware host
@@ -265,6 +266,26 @@ find cmd/plugins -name "*_test.go" -execdir go test \;
 - **Input Validation**: Plugins should validate all input data
 - **Logging**: Use structured logging for audit trails
 - **Error Handling**: Robust error handling prevents plugin failures from affecting the main application
+
+### Agent
+
+Start monitoring location with GLIMPS Malware host under Connector manager control
+Global config will not be used.
+
+```bash
+GMHost agent [flags]
+
+Flags:
+  -h, --help                     help for agent
+      --manager-api-key string   connector manager API key
+      --manager-insecure         if set, skip certificate check
+      --manager-url string       connector manager url
+```
+
+**Examples**
+```bash
+GMHost agent --manager-url="http://localhost:8080" --manager-api-key=apikey
+```
 
 ## Configuration
 

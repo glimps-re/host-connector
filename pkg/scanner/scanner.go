@@ -26,7 +26,7 @@ import (
 )
 
 type Submitter interface {
-	gdetect.GDetectSubmitter
+	gdetect.ControllerGDetectSubmitter
 	ExtractExpertViewURL(result *gdetect.Result) (urlExpertView string, err error)
 }
 
@@ -48,6 +48,7 @@ type Config struct {
 	MoveFrom         string
 	Plugins          map[string]string
 	PluginsDir       string
+	ConsoleEvents    chan<- any
 }
 
 type fileToAnalyze struct {
@@ -122,6 +123,7 @@ func newAction(config Config) Action {
 			cache:  config.Cache,
 			root:   config.QuarantineFolder,
 			locker: &Lock{Password: config.Password},
+			events: config.ConsoleEvents,
 		})
 	}
 	if config.Actions.Deleted {

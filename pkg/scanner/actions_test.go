@@ -565,6 +565,7 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 							return LockEntry{Filepath: "test.bin", Reason: "malicious"}, nil
 						},
 					},
+					nil,
 				)
 				f, err := os.CreateTemp(tmpDir, "test_*.lock")
 				if err != nil {
@@ -609,6 +610,7 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 					&cache.MockCache{},
 					"",
 					&MockLock{},
+					nil,
 				)
 
 				_, err := a.ListQuarantinedFiles(context.Background())
@@ -625,6 +627,7 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 					&cache.MockCache{},
 					os.TempDir(),
 					&MockLock{},
+					nil,
 				)
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
@@ -703,6 +706,7 @@ func TestQuarantineAction_Restore(t *testing.T) {
 							return
 						},
 					},
+					nil,
 				)
 				cacheName := cache.ComputeCacheID("test")
 				f, err := os.Create(fmt.Sprintf("%s/%s.lock", tmpDir, cacheName))

@@ -1,4 +1,4 @@
-package cmd
+package cli
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/monitor"
 	"github.com/spf13/cobra"
 )
@@ -16,17 +17,17 @@ var monitoringCmd = &cobra.Command{
 	Short:             "Start monitoring location with GLIMPS Malware host",
 	PersistentPreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		Logger.Debug("config", slog.Any("config", conf))
+		Logger.Debug("config", slog.Any("config", Conf))
 		if len(args) == 0 {
-			args = conf.Paths
+			args = Conf.Paths
 		}
-		if err = gctx.conn.Start(context.Background()); err != nil {
+		if err = gctx.Conn.Start(context.Background()); err != nil {
 			return
 		}
-		defer gctx.conn.Close()
+		defer gctx.Conn.Close()
 		mon, err := monitor.NewMonitor(func(file string) error {
-			return gctx.conn.ScanFile(cmd.Context(), file)
-		}, conf.Monitoring.PreScan, conf.Monitoring.Period, conf.Monitoring.ModificationDelay)
+			return gctx.Conn.ScanFile(cmd.Context(), file)
+		}, Conf.Monitoring.PreScan, Conf.Monitoring.Period, Conf.Monitoring.ModificationDelay)
 		if err != nil {
 			return
 		}
@@ -43,7 +44,7 @@ var monitoringCmd = &cobra.Command{
 	},
 	Args: func(cmd *cobra.Command, args []string) error {
 		// append paths from conf
-		args = append(args, conf.Paths...)
+		args = append(args, Conf.Paths...)
 		if len(args) < 1 {
 			return errors.New("at least one file is mandatory")
 		}
@@ -57,7 +58,7 @@ var monitoringCmd = &cobra.Command{
 }
 
 func initMonitoring(cmd *cobra.Command) {
-	cmd.PersistentFlags().BoolVar(&conf.Monitoring.PreScan, "pre-scan", false, "start monitoring with a scan")
-	cmd.PersistentFlags().DurationVar(&conf.Monitoring.Period, "scan-period", conf.Monitoring.Period, "re-scan files every scan-period")
-	cmd.PersistentFlags().DurationVar(&conf.Monitoring.ModificationDelay, "mod-delay", DefaultModificationDelay, "Time waited between two modifications of a file before submitting it")
+	cmd.PersistentFlags().BoolVar(&Conf.Monitoring.PreScan, "pre-scan", false, "start monitoring with a scan")
+	cmd.PersistentFlags().DurationVar(&Conf.Monitoring.Period, "scan-period", Conf.Monitoring.Period, "re-scan files every scan-period")
+	cmd.PersistentFlags().DurationVar(&Conf.Monitoring.ModificationDelay, "mod-delay", config.DefaultModificationDelay, "Time waited between two modifications of a file before submitting it")
 }

@@ -56,7 +56,9 @@ func NewMonitor(onNewFile OnNewFileFunc, prescan bool, period time.Duration, mod
 }
 
 func (m *Monitor) Close() {
-	m.watcher.Close()
+	if err := m.watcher.Close(); err != nil {
+		Logger.Error("cannot close watcher", "error", err)
+	}
 	m.cancel()
 	m.wg.Wait()
 }
@@ -153,14 +155,12 @@ func (m *Monitor) Add(path string) error {
 	m.paths[path] = struct{}{}
 	m.pathsLock.Unlock()
 	if m.preScan {
-		m.wg.Add(1)
-		go func() {
-			defer m.wg.Done()
+		m.wg.Go(func() {
 			err := m.cb(path)
 			if err != nil {
 				Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
 			}
-		}()
+		})
 	}
 	return nil
 }

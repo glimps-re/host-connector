@@ -50,6 +50,9 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	if _, err = out.WriteString("]"); err != nil {
 		return
 	}
-	out.Flush()
+	err = out.Flush()
+	if err != nil {
+		return
+	}
 	return
 }

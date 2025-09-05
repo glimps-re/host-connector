@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
-	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -57,10 +56,10 @@ func TestNewConnector(t *testing.T) {
 						},
 					},
 					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
+						SetMock: func(ctx context.Context, entry *cache.Entry) error {
 							return nil
 						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -81,7 +80,7 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid actions %#v", a.Actions)
 				}
 
-				if err := conn.Start(); err != nil {
+				if err := conn.Start(t.Context()); err != nil {
 					t.Errorf("could not start connector, error: %v", err)
 				}
 
@@ -91,30 +90,40 @@ func TestNewConnector(t *testing.T) {
 				}
 
 				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
+				testDir := t.TempDir()
 				testFile, err := os.CreateTemp(testDir, "ScanFile_test_*")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				testFile.WriteString("test content")
-				testFile.Close()
+				_, err = testFile.WriteString("test content")
+				if err != nil {
+					t.Fatalf("cound not write test string : %s", err)
+				}
+				err = testFile.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 				testFile2, err := os.CreateTemp(testDir, "ScanFile_test2_*")
 				if err != nil {
 					t.Errorf("could not create test file2, error: %s", err)
 					return
 				}
-				testFile2.WriteString("test content2")
-				testFile2.Close()
+				_, err = testFile2.WriteString("test content2")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				err = testFile2.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 				// scan cancelled
 				ctx, cancel := context.WithCancel(context.Background())
 				cancel()
-				conn.ScanFile(ctx, testFile.Name())
+				err = conn.ScanFile(ctx, testFile.Name())
+				if err != nil && err.Error() != "context canceled" {
+					t.Errorf("scan file error : %s", err)
+				}
 
 				ctx, cancel = context.WithTimeout(context.Background(), time.Second*30)
 				defer cancel()
@@ -132,7 +141,7 @@ func TestNewConnector(t *testing.T) {
 
 				conn.Close()
 
-				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile2.Name()))) {
+				if !strings.HasSuffix(buffer.String(), cache.ComputeCacheID(testFile2.Name())+".lock, it has been deleted\n") {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -182,10 +191,10 @@ func TestNewConnector(t *testing.T) {
 						},
 					},
 					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
+						SetMock: func(ctx context.Context, entry *cache.Entry) error {
 							return nil
 						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -206,32 +215,39 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid actions %#v", a.Actions)
 				}
 
-				if err := conn.Start(); err != nil {
+				if err := conn.Start(t.Context()); err != nil {
 					t.Errorf("could not start connector, error: %v", err)
 				}
 
 				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
+				testDir := t.TempDir()
 				testFile, err := os.CreateTemp(testDir, "ScanFile_test_*")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				testFile.WriteString("test content")
-				testFile.Seek(0, io.SeekStart)
+				_, err = testFile.WriteString("test content")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				_, err = testFile.Seek(0, io.SeekStart)
+				if err != nil {
+					t.Fatalf("could not seek test file : %s", err)
+				}
 
 				testFile2, err := os.CreateTemp(testDir, "ScanFile_test2_*")
 				if err != nil {
 					t.Errorf("could not create test file2, error: %s", err)
 					return
 				}
-				testFile2.WriteString("test content2")
-				testFile2.Seek(0, io.SeekStart)
+				_, err = testFile2.WriteString("test content2")
+				if err != nil {
+					t.Fatalf("could not create test file, error : %s", err)
+				}
+				_, err = testFile2.Seek(0, io.SeekStart)
+				if err != nil {
+					t.Fatalf("could not seek test file, error : %s", err)
+				}
 
 				archive, err := os.CreateTemp(os.TempDir(), "archive_*.zip")
 				if err != nil {
@@ -244,37 +260,55 @@ func TestNewConnector(t *testing.T) {
 				if err != nil {
 					panic(err)
 				}
-				io.Copy(f1, testFile)
+				_, err = io.Copy(f1, testFile)
+				if err != nil {
+					t.Fatalf("could not copy test file : %s", err)
+				}
 				f2, err := zipWriter.Create("file2")
 				if err != nil {
 					panic(err)
 				}
-				io.Copy(f2, testFile2)
+				_, err = io.Copy(f2, testFile2)
+				if err != nil {
+					t.Fatalf("could not copy test file : %s", err)
+				}
 
 				f3, err := zipWriter.Create("file3")
 				if err != nil {
 					panic(err)
 				}
-				io.Copy(f3, bytes.NewReader([]byte{}))
+				_, err = io.Copy(f3, bytes.NewReader([]byte{}))
+				if err != nil {
+					t.Fatalf("could not copy test file : %s", err)
+				}
 
-				testFile.Close()
-				testFile2.Close()
-
-				zipWriter.Close()
-				archive.Close()
-
+				err = testFile.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
+				err = testFile2.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
+				err = zipWriter.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
+				err = archive.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 				defer cancel()
 				if err := conn.ScanFile(ctx, archive.Name()); err != nil {
 					t.Errorf("unwanted error: %v", err)
 				}
 				conn.Close()
-
 				if !strings.Contains(buffer.String(), "MALWARE-2") {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 
-				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(archive.Name()))) {
+				if !strings.HasSuffix(buffer.String(), cache.ComputeCacheID(archive.Name())+".lock, it has been deleted\n") {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -324,10 +358,10 @@ func TestNewConnector(t *testing.T) {
 						},
 					},
 					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
+						SetMock: func(ctx context.Context, entry *cache.Entry) error {
 							return nil
 						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -348,32 +382,39 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid actions %#v", a.Actions)
 				}
 
-				if err := conn.Start(); err != nil {
+				if err := conn.Start(t.Context()); err != nil {
 					t.Errorf("could not start connector, error: %v", err)
 				}
 
 				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
+				testDir := t.TempDir()
 				testFile, err := os.CreateTemp(testDir, "ScanFile_test_*")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				testFile.WriteString("test content")
-				testFile.Seek(0, io.SeekStart)
+				_, err = testFile.WriteString("test content")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				_, err = testFile.Seek(0, io.SeekStart)
+				if err != nil {
+					t.Fatalf("could not seek test string : %s", err)
+				}
 
 				testFile2, err := os.CreateTemp(testDir, "ScanFile_test2_*")
 				if err != nil {
 					t.Errorf("could not create test file2, error: %s", err)
 					return
 				}
-				testFile2.WriteString("test content2")
-				testFile2.Seek(0, io.SeekStart)
+				_, err = testFile2.WriteString("test content2")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				_, err = testFile2.Seek(0, io.SeekStart)
+				if err != nil {
+					t.Fatalf("could not seek test file : %s", err)
+				}
 
 				archive, err := os.CreateTemp(os.TempDir(), "archive_*.zip")
 				if err != nil {
@@ -386,18 +427,36 @@ func TestNewConnector(t *testing.T) {
 				if err != nil {
 					panic(err)
 				}
-				io.Copy(f1, testFile)
+				_, err = io.Copy(f1, testFile)
+				if err != nil {
+					t.Fatalf("could not copy test file : %s", err)
+				}
 				f2, err := zipWriter.Create("file2")
 				if err != nil {
 					panic(err)
 				}
-				io.Copy(f2, testFile2)
+				_, err = io.Copy(f2, testFile2)
+				if err != nil {
+					t.Fatalf("could not copy test file : %s", err)
+				}
 
-				testFile.Close()
-				testFile2.Close()
+				err = testFile.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
+				err = testFile2.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 
-				zipWriter.Close()
-				archive.Close()
+				err = zipWriter.Close()
+				if err != nil {
+					t.Fatalf("could not close zip writer : %s", err)
+				}
+				err = archive.Close()
+				if err != nil {
+					t.Fatalf("could not close archive : %s", err)
+				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*60)
 				defer cancel()
@@ -409,7 +468,7 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 
-				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(archive.Name()))) {
+				if !strings.HasSuffix(buffer.String(), cache.ComputeCacheID(archive.Name())+".lock, it has been deleted\n") {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -446,10 +505,10 @@ func TestNewConnector(t *testing.T) {
 						},
 					},
 					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
+						SetMock: func(ctx context.Context, entry *cache.Entry) error {
 							return nil
 						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -470,31 +529,38 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid actions %#v", a.Actions)
 				}
 
-				if err := conn.Start(); err != nil {
+				if err := conn.Start(t.Context()); err != nil {
 					t.Errorf("could not start connector, error: %v", err)
 				}
 
 				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
+				testDir := t.TempDir()
 				testFile, err := os.CreateTemp(testDir, "ScanFile_test_*")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				testFile.WriteString("test content")
-				testFile.Close()
+				_, err = testFile.WriteString("test content")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				err = testFile.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 				testFile2, err := os.CreateTemp(testDir, "ScanFile_test2_*")
 				if err != nil {
 					t.Errorf("could not create test file2, error: %s", err)
 					return
 				}
-				testFile2.WriteString("test content2")
-				testFile2.Close()
+				_, err = testFile2.WriteString("test content2")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				err = testFile2.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 				defer cancel()
@@ -504,7 +570,7 @@ func TestNewConnector(t *testing.T) {
 
 				conn.Close()
 
-				if !strings.HasSuffix(buffer.String(), fmt.Sprintf("%s.lock, it has been deleted\n", cache.ComputeCacheID(testFile2.Name()))) {
+				if !strings.HasSuffix(buffer.String(), cache.ComputeCacheID(testFile2.Name())+".lock, it has been deleted\n") {
 					t.Errorf("invalid output: %v", buffer.String())
 				}
 			},
@@ -530,10 +596,10 @@ func TestNewConnector(t *testing.T) {
 						},
 					},
 					Cache: &cache.MockCache{
-						SetMock: func(entry *cache.Entry) error {
+						SetMock: func(ctx context.Context, entry *cache.Entry) error {
 							return nil
 						},
-						GetBySha256Mock: func(id string) (entry *cache.Entry, err error) {
+						GetBySha256Mock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							if id == "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72" {
 								return &cache.Entry{
 									Sha256: "6ae8a75555209fd6c44157c0aed8016e763ff435a19cf186f76863140143ff72",
@@ -554,31 +620,38 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("invalid actions %#v", a.Actions)
 				}
 
-				if err := conn.Start(); err != nil {
+				if err := conn.Start(t.Context()); err != nil {
 					t.Errorf("could not start connector, error: %v", err)
 				}
 
 				// prepare test files
-				testDir, err := os.MkdirTemp(os.TempDir(), "scanfile_test_folder_*")
-				if err != nil {
-					t.Errorf("could not create test folder, error: %s", err)
-					return
-				}
-				defer os.RemoveAll(testDir)
+				testDir := t.TempDir()
 				testFile, err := os.CreateTemp(testDir, "ScanFile_test_*")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				testFile.WriteString("test content")
-				testFile.Close()
+				_, err = testFile.WriteString("test content")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				err = testFile.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 				testFile2, err := os.CreateTemp(testDir, "ScanFile_test2_*")
 				if err != nil {
 					t.Errorf("could not create test file2, error: %s", err)
 					return
 				}
-				testFile2.WriteString("test content2")
-				testFile2.Close()
+				_, err = testFile2.WriteString("test content2")
+				if err != nil {
+					t.Fatalf("could not write test string : %s", err)
+				}
+				err = testFile2.Close()
+				if err != nil {
+					t.Fatalf("could not close test file : %s", err)
+				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*30)
 				defer cancel()
@@ -596,17 +669,9 @@ func TestNewConnector(t *testing.T) {
 	for _, tt := range tests {
 		// do all test in dedicated tmp dir that will be removed after
 		sysTmpDir := os.Getenv("TMPDIR")
-		testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
-		if err != nil {
-			t.Errorf("could not create temp dir, error: %s", err)
-			return
-		}
-		os.Setenv("TMPDIR", testTmpDir)
-		defer func() {
-			os.RemoveAll(testTmpDir)
-			os.Setenv("TMPDIR", sysTmpDir)
-		}()
-
+		testTmpDir := t.TempDir()
+		t.Setenv("TMPDIR", testTmpDir)
+		defer t.Setenv("TMPDIR", sysTmpDir)
 		t.Run(tt.name, tt.test)
 	}
 }
@@ -752,26 +817,38 @@ func TestConnector_ScanFile(t *testing.T) {
 
 			// do all test in dedicated tmp dir that will be removed after
 			sysTmpDir := os.Getenv("TMPDIR")
-			testTmpDir, err := os.MkdirTemp(os.TempDir(), "test")
-			if err != nil {
-				t.Errorf("could not create temp dir, error: %s", err)
-				return
-			}
-			os.Setenv("TMPDIR", testTmpDir)
+			testTmpDir := t.TempDir()
+			t.Setenv("TMPDIR", testTmpDir)
 			defer func() {
-				os.RemoveAll(testTmpDir)
-				os.Setenv("TMPDIR", sysTmpDir)
+				err := os.RemoveAll(testTmpDir)
+				if err != nil {
+					Logger.Error("could not remove test tmp dir", "error", err)
+				}
+				t.Setenv("TMPDIR", sysTmpDir)
 			}()
 
 			if !tt.fields.unknownFile {
-				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test_*.%s", tt.args.extension))
+				f, err := os.CreateTemp(os.TempDir(), "test_*."+tt.args.extension)
 				if err != nil {
 					t.Errorf("could not create temp file, error: %s", err)
 					return
 				}
-				defer f.Close()
-				f.Write(tt.args.fileContent)
-				defer os.Remove(f.Name())
+				defer func() {
+					err = f.Close()
+					if err != nil {
+						Logger.Error("could not close test file", "error", err)
+					}
+				}()
+				_, err = f.Write(tt.args.fileContent)
+				if err != nil {
+					t.Fatalf("could not write test file : %s", err)
+				}
+				defer func() {
+					err = os.Remove(f.Name())
+					if err != nil {
+						Logger.Error("could not remove file", "file", f.Name(), "error", err)
+					}
+				}()
 				input = f.Name()
 			} else {
 				input = "test_1234"

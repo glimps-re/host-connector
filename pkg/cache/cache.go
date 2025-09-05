@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -29,11 +30,11 @@ type Entry struct {
 
 type Cacher interface {
 	// Set adds or updates a cache entry
-	Set(entry *Entry) error
+	Set(ctx context.Context, entry *Entry) error
 
 	// Get fetch a cache entry
-	Get(id string) (entry *Entry, err error)
-	GetBySha256(sha256 string) (entry *Entry, err error)
+	Get(ctx context.Context, id string) (entry *Entry, err error)
+	GetBySha256(ctx context.Context, sha256 string) (entry *Entry, err error)
 
 	Close() error
 }
@@ -45,6 +46,8 @@ type Cache struct {
 	sync.Mutex
 }
 
+var _ Cacher = &Cache{}
+
 var CreateTable = `CREATE TABLE IF NOT EXISTS entries (
 	id TEXT PRIMARY KEY,
 	sha256 TEXT,
@@ -54,18 +57,18 @@ var CreateTable = `CREATE TABLE IF NOT EXISTS entries (
 	location TEXT,
 	restored_at int);`
 
-func NewCache(location string) (c *Cache, err error) {
+func NewCache(ctx context.Context, location string) (c *Cache, err error) {
 	if location == "" {
 		location = "file::memory:"
 	} else {
 		_, err = os.Stat(location)
 		if errors.Is(err, os.ErrNotExist) {
 			dir, _ := filepath.Split(location)
-			err = os.MkdirAll(dir, 0o755)
+			err = os.MkdirAll(dir, 0o750)
 			if err != nil {
 				return
 			}
-			_, err = os.Create(location)
+			_, err = os.Create(filepath.Clean(location))
 			if err != nil {
 				return
 			}
@@ -76,7 +79,7 @@ func NewCache(location string) (c *Cache, err error) {
 		return
 	}
 
-	result, err := db.Exec(CreateTable)
+	result, err := db.ExecContext(ctx, CreateTable)
 	if err != nil {
 		return
 	}
@@ -89,12 +92,12 @@ func (c *Cache) Close() error {
 	return c.db.Close()
 }
 
-func (c *Cache) Get(id string) (entry *Entry, err error) {
+func (c *Cache) Get(ctx context.Context, id string) (entry *Entry, err error) {
 	c.Lock()
 	defer c.Unlock()
 	entry = &Entry{}
 	var createdAt, updatedAt, restoredAt int64
-	err = c.db.QueryRow("SELECT * FROM entries where id = ?", id).Scan(
+	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where id = ?", id).Scan(
 		&entry.ID,
 		&entry.Sha256,
 		&createdAt,
@@ -115,12 +118,12 @@ func (c *Cache) Get(id string) (entry *Entry, err error) {
 	return
 }
 
-func (c *Cache) GetBySha256(sha256 string) (entry *Entry, err error) {
+func (c *Cache) GetBySha256(ctx context.Context, sha256 string) (entry *Entry, err error) {
 	c.Lock()
 	defer c.Unlock()
 	entry = &Entry{}
 	var createdAt, updatedAt, restoredAt int64
-	err = c.db.QueryRow("SELECT * FROM entries where sha256 = ?", sha256).Scan(
+	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where sha256 = ?", sha256).Scan(
 		&entry.ID,
 		&entry.Sha256,
 		&createdAt,
@@ -143,14 +146,19 @@ func (c *Cache) GetBySha256(sha256 string) (entry *Entry, err error) {
 
 var Now = time.Now
 
-func (c *Cache) Set(entry *Entry) (err error) {
+func (c *Cache) Set(ctx context.Context, entry *Entry) (err error) {
 	c.Lock()
 	defer c.Unlock()
-	tx, err := c.db.Begin()
+	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return
 	}
-	defer tx.Commit() // nolint:errcheck
+	defer func() {
+		err := tx.Commit()
+		if err != nil {
+			Logger.Error("cannot commit cache set transaction", "error", err)
+		}
+	}()
 	sqlStatement := `
 INSERT INTO entries (id, sha256, created_at, updated_at, quarantine, location, restored_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)`
@@ -160,7 +168,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	if entry.UpdatedAt.UnixMilli() <= 0 {
 		entry.UpdatedAt = Now()
 	}
-	_, err = tx.Exec(sqlStatement,
+	_, err = tx.ExecContext(ctx, sqlStatement,
 		entry.ID,
 		entry.Sha256,
 		entry.CreatedAt.UnixMilli(),
@@ -178,7 +186,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)`
 		sqlStatement := `
 		UPDATE entries SET sha256=$2, created_at=$3, updated_at=$4, quarantine=$5, location=$6, restored_at=$7
 		WHERE id = $1`
-		_, err = tx.Exec(sqlStatement,
+		_, err = tx.ExecContext(ctx, sqlStatement,
 			entry.ID,
 			entry.Sha256,
 			entry.CreatedAt.UnixMilli(),

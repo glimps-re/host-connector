@@ -218,9 +218,20 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 					t.Errorf("RemoveFileAction.Handle() could not create tmp file, error = %v", err)
 					return
 				}
-				f.WriteString("test 1234")
-				f.Close()
-				defer os.Remove(f.Name())
+				_, err = f.WriteString("test 1234")
+				if err != nil {
+					panic(fmt.Sprintf("TestRemoveFileAction, cannot write string : %s", err))
+				}
+				err = f.Close()
+				if err != nil {
+					panic(fmt.Sprintf("TestRemoveFileAction, cannot close file : %s", err))
+				}
+				defer func() {
+					err := os.Remove(f.Name())
+					if err != nil {
+						Logger.Error("TestRemoveFileAction, cannot remove file", "error", err)
+					}
+				}()
 				tt.args.path = f.Name()
 			}
 			if err := a.Handle(tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
@@ -383,10 +394,19 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				t.Errorf("could not create temp dir, error: %s", err)
 				return
 			}
-			os.Setenv("TMPDIR", testTmpDir)
+			err = os.Setenv("TMPDIR", testTmpDir)
+			if err != nil {
+				t.Fatalf("TestQuarantineAction cannot set env : %s", err)
+			}
 			defer func() {
-				os.RemoveAll(testTmpDir)
-				os.Setenv("TMPDIR", sysTmpDir)
+				err := os.RemoveAll(testTmpDir)
+				if err != nil {
+					Logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
+				}
+				err = os.Setenv("TMPDIR", sysTmpDir)
+				if err != nil {
+					Logger.Error("TestQuarantineAction cannot reset tmp dir", "error", err)
+				}
 			}()
 
 			if tt.args.path != "" {
@@ -395,9 +415,20 @@ func TestQuarantineAction_Handle(t *testing.T) {
 					t.Errorf("QuarantineAction.Handle() could not create tmp file, error = %v", err)
 					return
 				}
-				f.WriteString("test 1234")
-				defer f.Close()
-				defer os.Remove(f.Name())
+				_, err = f.WriteString("test 1234")
+				if err != nil {
+					t.Fatalf("TestQuarantineAction cannot write string : %s", err)
+				}
+				defer func() {
+					err = f.Close()
+					if err != nil {
+						Logger.Error("TestQuarantineAction cannot close file", "error", err)
+					}
+					err = os.Remove(f.Name())
+					if err != nil {
+						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
+					}
+				}()
 				tt.args.path = f.Name()
 			}
 			if tt.fields.root != "" {
@@ -406,7 +437,12 @@ func TestQuarantineAction_Handle(t *testing.T) {
 					t.Errorf("QuarantineAction.Handle() could not create tmp dir, error = %v", err)
 					return
 				}
-				defer os.Remove(f)
+				defer func() {
+					err = os.Remove(f)
+					if err != nil {
+						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
+					}
+				}()
 				tt.fields.root = f
 			}
 			a := &QuarantineAction{
@@ -530,7 +566,12 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 					t.Errorf("could not create test dir, error: %s", err)
 					return
 				}
-				defer os.RemoveAll(tmpDir)
+				defer func() {
+					err = os.RemoveAll(tmpDir)
+					if err != nil {
+						Logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
+					}
+				}()
 
 				a := NewQuarantineAction(
 					&cache.MockCache{},
@@ -538,7 +579,10 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 					&MockLock{
 						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 							var buffer bytes.Buffer
-							io.Copy(&buffer, in)
+							_, err = io.Copy(&buffer, in)
+							if err != nil {
+								panic(fmt.Sprintf("TestQuarantineAction cannot copy buffer : %s", err))
+							}
 							if buffer.String() != "test_content" {
 								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
 							}
@@ -546,14 +590,23 @@ func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
 						},
 					},
 				)
-				os.MkdirTemp(tmpDir, "folder")
+				_, err = os.MkdirTemp(tmpDir, "folder")
+				if err != nil {
+					panic(fmt.Sprintf("TestQuarantineAction cannot create temp dir : %s", err))
+				}
 				f, err := os.CreateTemp(tmpDir, "test_*.lock")
 				if err != nil {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				f.WriteString("test_content")
-				f.Close()
+				_, err = f.WriteString("test_content")
+				if err != nil {
+					panic(fmt.Sprintf("TestQuarantineAction cannot write string : %s", err))
+				}
+				err = f.Close()
+				if err != nil {
+					panic(fmt.Sprintf("TestQuarantineAction cannot close file : %s", err))
+				}
 				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
 				defer cancel()
 				qfiles, err := a.ListQuarantinedFiles(ctx)
@@ -630,7 +683,12 @@ func TestQuarantineAction_Restore(t *testing.T) {
 					t.Errorf("could not create test dir, error: %s", err)
 					return
 				}
-				defer os.RemoveAll(tmpDir)
+				defer func() {
+					err := os.RemoveAll(tmpDir)
+					if err != nil {
+						Logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
+					}
+				}()
 				Now = func() time.Time {
 					return time.UnixMilli(1707568762557)
 				}
@@ -640,7 +698,7 @@ func TestQuarantineAction_Restore(t *testing.T) {
 
 				a := NewQuarantineAction(
 					&cache.MockCache{
-						GetMock: func(id string) (entry *cache.Entry, err error) {
+						GetMock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
 							entry = &cache.Entry{
 								QuarantineLocation: "/tmp/xxx",
 							}
@@ -660,7 +718,10 @@ func TestQuarantineAction_Restore(t *testing.T) {
 					&MockLock{
 						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 							var buffer bytes.Buffer
-							io.Copy(&buffer, in)
+							_, err = io.Copy(&buffer, in)
+							if err != nil {
+								panic(fmt.Sprintf("TestQuarantineAction cannot copy buffer : %s", err))
+							}
 							if buffer.String() != "test_content" {
 								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
 							}
@@ -687,9 +748,15 @@ func TestQuarantineAction_Restore(t *testing.T) {
 					t.Errorf("could not create test file, error: %s", err)
 					return
 				}
-				f.WriteString("test_content")
-				f.Close()
-				err = a.Restore(cacheName)
+				_, err = f.WriteString("test_content")
+				if err != nil {
+					panic(fmt.Sprintf("TestQuarantineAction cannot write string : %s", err))
+				}
+				err = f.Close()
+				if err != nil {
+					panic(fmt.Sprintf("TestQuarantineAction cannot close file : %s", err))
+				}
+				err = a.Restore(t.Context(), cacheName)
 				if err != nil {
 					t.Errorf("QuarantineAction.Restore, error: %s", err)
 					return
@@ -748,8 +815,14 @@ func TestMoveAction_Handle(t *testing.T) {
 				return
 			}
 			defer func() {
-				tempReport.Close()
-				os.Remove(tempReport.Name())
+				err = tempReport.Close()
+				if err != nil {
+					Logger.Error("TestMoveAction cannot close tmp report", "error", err)
+				}
+				err = os.Remove(tempReport.Name())
+				if err != nil {
+					Logger.Error("TestMoveAction cannot remove tmp report", "error", err)
+				}
 			}()
 			Rename = func(oldpath, newpath string) error {
 				if oldpath != tt.samplePath {

@@ -28,7 +28,7 @@ func getConfigFile() (config string) {
 		return cfg
 	}
 	if _, err := os.Stat(config); err != nil {
-		_, err = os.Create(config)
+		_, err = os.Create(filepath.Clean(config))
 		if err != nil {
 			Logger.Error("could not create config file", slog.String("location", config))
 		}

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,7 +20,7 @@ var monitoringCmd = &cobra.Command{
 		if len(args) == 0 {
 			args = conf.Paths
 		}
-		if err = gctx.conn.Start(); err != nil {
+		if err = gctx.conn.Start(context.Background()); err != nil {
 			return
 		}
 		defer gctx.conn.Close()

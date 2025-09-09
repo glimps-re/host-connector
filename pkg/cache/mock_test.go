@@ -1,15 +1,16 @@
 package cache
 
 import (
+	"context"
 	"testing"
 )
 
 func TestMockCache(t *testing.T) {
 	type fields struct {
 		SetMock         func(entry *Entry) error
-		GetMock         func(id string) (entry *Entry, err error)
+		GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
 		CloseMock       func() (err error)
-		GetBySha256Mock func(id string) (entry *Entry, err error)
+		GetBySha256Mock func(ctx context.Context, id string) (entry *Entry, err error)
 	}
 	tests := []struct {
 		name      string
@@ -20,16 +21,16 @@ func TestMockCache(t *testing.T) {
 		{
 			name: "test Get",
 			fields: fields{
-				GetMock: func(id string) (entry *Entry, err error) {
+				GetMock: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return nil, nil
 				},
 			},
-			test: func(m *MockCache) { m.Get("") },
+			test: func(m *MockCache) { m.Get(t.Context(), "") },
 		},
 		{
 			name:      "test Get (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockCache) { m.Get("") },
+			test:      func(m *MockCache) { m.Get(t.Context(), "") },
 			wantPanic: true,
 		},
 		{
@@ -48,14 +49,14 @@ func TestMockCache(t *testing.T) {
 		{
 			name: "test GetBySha256",
 			fields: fields{
-				GetBySha256Mock: func(id string) (entry *Entry, err error) { return },
+				GetBySha256Mock: func(ctx context.Context, id string) (entry *Entry, err error) { return },
 			},
-			test: func(m *MockCache) { m.GetBySha256("") },
+			test: func(m *MockCache) { m.GetBySha256(t.Context(), "") },
 		},
 		{
 			name:      "test GetBySha256 (PANIC)",
 			fields:    fields{},
-			test:      func(m *MockCache) { m.GetBySha256("") },
+			test:      func(m *MockCache) { m.GetBySha256(t.Context(), "") },
 			wantPanic: true,
 		},
 		{

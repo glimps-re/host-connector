@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -62,7 +63,7 @@ var quarantineRestoreCmd = &cobra.Command{
 					id = ts[1]
 				}
 			}
-			if err := qa.Restore(id); err != nil {
+			if err := qa.Restore(context.Background(), id); err != nil {
 				return err
 			}
 		}

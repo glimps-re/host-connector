@@ -47,8 +47,7 @@ func Test_cipherFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// ensure always the same random
-			rand.Reader = mrand.New(mrand.NewSource(tt.seed))
-
+			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // ok for test
 			out := &bytes.Buffer{}
 			if err := cipherFile(tt.args.password, strings.NewReader(tt.args.input), out); (err != nil) != tt.wantErr {
 				t.Errorf("cipherFile() error = %v, wantErr %v", err, tt.wantErr)
@@ -98,7 +97,7 @@ func Test_decipherFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// ensure always the same random
-			rand.Reader = mrand.New(mrand.NewSource(tt.seed))
+			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // ok for test
 
 			in := hex.NewDecoder(strings.NewReader(tt.args.input))
 			out := &bytes.Buffer{}
@@ -127,15 +126,34 @@ func Test_LockFile(t *testing.T) {
 					t.Errorf("could not create temp file, error: %s", err)
 					return
 				}
-				defer file.Close()
-				defer os.Remove(file.Name())
-				file.WriteString("my funny test content, long enough to require several blocks")
-				file.Sync()
+				defer func() {
+					err := file.Close()
+					if err != nil {
+						t.Fatalf("TestLockFile cannot close file : %s", err)
+					}
+				}()
+				defer func() {
+					err := os.Remove(file.Name())
+					if err != nil {
+						t.Fatalf("TestLockFile cannot remove file : %s", err)
+					}
+				}()
+				_, err = file.WriteString("my funny test content, long enough to require several blocks")
+				if err != nil {
+					t.Fatalf("TestLockFile cannot write string : %s", err)
+				}
+				err = file.Sync()
+				if err != nil {
+					t.Fatalf("TestLockFile cannot sync file : %s", err)
+				}
 				buffer := &bytes.Buffer{}
 
 				locker := Lock{Password: "tst_password"}
 
-				file.Seek(0, io.SeekStart)
+				_, err = file.Seek(0, io.SeekStart)
+				if err != nil {
+					t.Fatalf("TestLockFile cannot seek file : %s", err)
+				}
 				stat, err := os.Stat(file.Name())
 				if err != nil {
 					t.Errorf("could not stat test file, error: %s", err)

@@ -38,10 +38,20 @@ var _ Locker = &Lock{}
 
 func (l *Lock) LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
 	gzw := gzip.NewWriter(out)
-	defer gzw.Close()
+	defer func() {
+		err := gzw.Close()
+		if err != nil {
+			Logger.Error("LockFile cannot close gzip writer", "error", err)
+		}
+	}()
 
 	tw := tar.NewWriter(gzw)
-	defer tw.Close()
+	defer func() {
+		err := tw.Close()
+		if err != nil {
+			Logger.Error("LockFile cannot close tar writer", "error", err)
+		}
+	}()
 
 	// add index entry
 	entry := LockEntry{
@@ -92,7 +102,12 @@ func (l *Lock) UnlockFile(in io.Reader, out io.Writer) (file string, info os.Fil
 	if err != nil {
 		return
 	}
-	defer gr.Close()
+	defer func() {
+		err := gr.Close()
+		if err != nil {
+			Logger.Error("UnlockFile cannot close gzip reader", "error", err)
+		}
+	}()
 	tr := tar.NewReader(gr)
 	var entry LockEntry
 	indexFound := false
@@ -140,7 +155,12 @@ func (l *Lock) GetHeader(in io.Reader) (entry LockEntry, err error) {
 	if err != nil {
 		return
 	}
-	defer gr.Close()
+	defer func() {
+		err := gr.Close()
+		if err != nil {
+			Logger.Error("Lock GetHeader cannot close gzip reader", "error", err)
+		}
+	}()
 	tr := tar.NewReader(gr)
 	for {
 		var hdr *tar.Header

@@ -142,11 +142,16 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 	if err != nil {
 		return
 	}
-	fin, err := os.Open(path)
+	fin, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return
 	}
-	defer fin.Close()
+	defer func() {
+		errClose := fin.Close()
+		if errClose != nil {
+			Logger.Error("QuarantineAction cannot close file : %s", "error", errClose)
+		}
+	}()
 	malware := "unknown"
 	if len(result.Malwares) > 0 {
 		malware = result.Malwares[0]
@@ -163,7 +168,7 @@ func (a *QuarantineAction) Handle(path string, result SummarizedGMalwareResult, 
 	return nil
 }
 
-func (a *QuarantineAction) Restore(id string) (err error) {
+func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	if a.root == "" {
 		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
 		if err != nil {
@@ -171,7 +176,7 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 		}
 	}
 	fpath := filepath.Join(a.root, fmt.Sprintf("%s.lock", id))
-	f, err := os.Open(fpath)
+	f, err := os.Open(filepath.Clean(fpath))
 	if err != nil {
 		return
 	}
@@ -179,9 +184,15 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	// if we correctly restore the file we must delete the lock file
 	deleteLocked := false
 	defer func() {
-		f.Close()
+		err := f.Close()
+		if err != nil {
+			Logger.Error("QuarantineAction cannot close file", "error", err)
+		}
 		if deleteLocked {
-			os.Remove(f.Name())
+			err := os.Remove(f.Name())
+			if err != nil {
+				Logger.Error("QuarantineAction cannot remove file", "error", err)
+			}
 		}
 	}()
 	header, err := a.locker.GetHeader(f)
@@ -192,11 +203,20 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	if err != nil {
 		return
 	}
-	defer out.Close()
+	defer func() {
+		err := out.Close()
+		if err != nil {
+			Logger.Error("QuarantineAction cannot close file", "error", err)
+		}
+	}()
 
 	defer func() {
 		if err != nil {
-			os.Remove(out.Name())
+			e := os.Remove(out.Name())
+			if e != nil {
+				Logger.Error("QuarantineAction cannot remove file", "error", err)
+			}
+
 		}
 	}()
 	_, err = f.Seek(0, io.SeekStart)
@@ -211,7 +231,7 @@ func (a *QuarantineAction) Restore(id string) (err error) {
 	if err != nil {
 		return
 	}
-	entry, err := a.cache.Get(id)
+	entry, err := a.cache.Get(ctx, id)
 	if err == nil {
 		entry.QuarantineLocation = ""
 		entry.RestoredAt = Now()
@@ -267,11 +287,17 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 			if !strings.HasSuffix(path, ".lock") {
 				return nil
 			}
-			file, err := os.Open(path)
+			file, err := os.Open(filepath.Clean(path))
 			if err != nil {
 				return err
 			}
-			defer file.Close()
+			defer func() {
+				err := file.Close()
+				if err != nil {
+					Logger.Error("QuarantineAction cannot close file", "error", err)
+				}
+			}()
+
 			entry, err := a.locker.GetHeader(file)
 			if err != nil {
 				return err
@@ -315,11 +341,20 @@ func (a *InformAction) Handle(path string, result SummarizedGMalwareResult, repo
 		if report.Deleted {
 			fmt.Fprint(&sb, ", it has been deleted")
 		}
-		fmt.Fprintln(a.Out, sb.String())
+		_, err = fmt.Fprintln(a.Out, sb.String())
+		if err != nil {
+			return
+		}
 	case report.MoveTo != "":
-		fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+		_, err = fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+		if err != nil {
+			return
+		}
 	case a.Verbose:
-		fmt.Fprintf(a.Out, "file %s no malware found\n", path)
+		_, err = fmt.Fprintf(a.Out, "file %s no malware found\n", path)
+		if err != nil {
+			return
+		}
 	}
 	return nil
 }
@@ -363,7 +398,12 @@ func (a *MoveAction) Handle(path string, result SummarizedGMalwareResult, report
 		// write report instead
 		if result.Malware {
 			if f, err := Create(fmt.Sprintf("%s.locked.json", dest)); err == nil {
-				defer f.Close()
+				defer func() {
+					err := f.Close()
+					if err != nil {
+						Logger.Error("MoveAction cannot close file", "error", err)
+					}
+				}()
 				w := json.NewEncoder(f)
 				w.SetIndent("", "  ")
 				if err = w.Encode(report); err != nil {

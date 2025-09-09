@@ -64,18 +64,35 @@ func TestReportsWriter_Write(t *testing.T) {
 				t.Errorf("ReportsWriter.Write() error, could not create test tmp file, error: %s", err)
 				return
 			}
-			f.WriteString(tt.initContent)
-			defer f.Close()
-			defer os.Remove(f.Name())
+			_, err = f.WriteString(tt.initContent)
+			if err != nil {
+				t.Fatalf("TestReportsWriter cannot write string : %s", err)
+			}
+			defer func() {
+				err := f.Close()
+				if err != nil {
+					t.Fatalf("TestReportsWriter cannot close file : %s", err)
+				}
+				err = os.Remove(f.Name())
+				if err != nil {
+					t.Fatalf("TestReportsWriter cannot remove file : %s", err)
+				}
+			}()
 			rw := NewReportsWriter(f)
 			for _, r := range tt.args.rs {
 				if err := rw.Write(r); (err != nil) != tt.wantErr {
 					t.Errorf("ReportsWriter.Write() error = %v, wantErr %v", err, tt.wantErr)
 				}
 			}
-			f.Seek(0, io.SeekStart)
+			_, err = f.Seek(0, io.SeekStart)
+			if err != nil {
+				t.Fatalf("TestReportsWriter cannot seek file : %s", err)
+			}
 			buffer := &bytes.Buffer{}
-			io.Copy(buffer, f)
+			_, err = io.Copy(buffer, f)
+			if err != nil {
+				t.Fatalf("TestReportsWriter cannot copy buffer : %s", err)
+			}
 			if buffer.String() != tt.want {
 				t.Errorf("ReportsWriter.Write() got = %v, want %v", buffer.String(), tt.want)
 			}

@@ -1,6 +1,8 @@
 module github.com/glimps-re/host-connector
 
-go 1.25
+go 1.25.1
+
+replace github.com/farmergreg/rfsnotify => github.com/glimps-re/rfsnotify v0.0.0-20250912141529-843f62f1f1a7
 
 require (
 	github.com/glimps-re/go-gdetect v1.4.0
@@ -11,11 +13,13 @@ require (
 
 require (
 	github.com/alecthomas/units v0.0.0-20240626203959-61d1e3462e30
+	github.com/farmergreg/rfsnotify v0.0.0-20240825142021-55bd5f2910f6
 	github.com/gonutz/wui/v2 v2.8.1
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.36.0
 	golift.io/xtractr v0.2.2
+	honnef.co/go/tools v0.6.1
 )
 
 require (
@@ -45,10 +49,11 @@ require (
 	go.uber.org/atomic v1.9.0 // indirect
 	go.uber.org/multierr v1.9.0 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
-	golang.org/x/exp v0.0.0-20230905200255-921286631fa9 // indirect
-	golang.org/x/mod v0.17.0 // indirect
+	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
+	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
+	golang.org/x/mod v0.23.0 // indirect
 	golang.org/x/sync v0.12.0 // indirect
-	golang.org/x/tools v0.21.1-0.20240508182429-e35e4ccd0d2d // indirect
+	golang.org/x/tools v0.30.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	lukechampine.com/uint128 v1.3.0 // indirect
 	modernc.org/cc/v3 v3.41.0 // indirect
@@ -62,7 +67,7 @@ require (
 )
 
 require (
-	github.com/fsnotify/fsnotify v1.6.0
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/hashicorp/hcl v1.0.0 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect

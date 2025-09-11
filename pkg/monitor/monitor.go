@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/farmergreg/rfsnotify"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -22,7 +23,7 @@ type Monitorer interface {
 type OnNewFileFunc func(file string) error
 
 type Monitor struct {
-	watcher        *fsnotify.Watcher
+	watcher        *rfsnotify.RWatcher
 	wg             sync.WaitGroup
 	cb             OnNewFileFunc
 	preScan        bool
@@ -37,7 +38,7 @@ type Monitor struct {
 }
 
 func NewMonitor(onNewFile OnNewFileFunc, prescan bool, period time.Duration, modDelay time.Duration) (*Monitor, error) {
-	watcher, err := fsnotify.NewWatcher()
+	watcher, err := rfsnotify.NewWatcher()
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +147,7 @@ func (m *Monitor) scanFiles() {
 }
 
 func (m *Monitor) Add(path string) error {
-	if err := m.watcher.Add(path); err != nil {
+	if err := m.watcher.AddRecursive(path); err != nil {
 		return err
 	}
 	m.pathsLock.Lock()
@@ -169,5 +170,5 @@ func (m *Monitor) Remove(path string) error {
 	m.pathsLock.Lock()
 	defer m.pathsLock.Unlock()
 	delete(m.paths, path)
-	return m.watcher.Remove(path)
+	return m.watcher.RemoveRecursive(path)
 }

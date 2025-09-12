@@ -95,6 +95,12 @@ func initGCtx() (err error) {
 		MoveTo:        conf.Move.Destination,
 		MoveFrom:      conf.Move.Source,
 	})
+	if err := connector.LoadPlugins(scanner.Config{
+		PluginsDir: conf.PluginConfig.Location,
+		Plugins:    conf.PluginConfig.Plugins,
+	}); err != nil {
+		return err
+	}
 	lock := &scanner.Lock{Password: conf.Quarantine.Password}
 	gctx = GContext{
 		conn:   connector,

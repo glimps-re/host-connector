@@ -32,6 +32,10 @@ var conf = &config{
 		ScanValidity: DefaultScanValidity,
 		Location:     ":file::memory",
 	},
+	PluginConfig: pluginConfig{
+		Location: DefaultPluginsLocation,
+		Plugins:  map[string]string{},
+	},
 }
 
 type actionsConfig struct {
@@ -77,6 +81,11 @@ type printConfig struct {
 	Location string `mapstructure:"location" yaml:"location" desc:"location of the report logs"`
 }
 
+type pluginConfig struct {
+	Location string            `mapstructure:"location" yaml:"location" desc:"location containing plugins"`
+	Plugins  map[string]string `mapstructure:"plugins" yaml:"plugins" desc:"active plugins, PLUGIN_NAME:CONFIG_FILE"`
+}
+
 type config struct {
 	// global
 	Config      string `yaml:"config" desc:"path to configuration file"`
@@ -89,12 +98,13 @@ type config struct {
 
 	Paths []string `yaml:"paths" desc:"Paths to monitor"`
 
-	Actions    actionsConfig    `mapstructure:"actions" yaml:"actions" desc:"actions done when a malware is found"`
-	GDetect    gdetectConfig    `mapstructure:"gdetect" yaml:"gdetect" desc:"GDetect configuration"`
-	Quarantine quarantineConfig `mapstructure:"quarantine" yaml:"quarantine" desc:"quarantine configuration"`
-	Cache      cacheConfig      `mapstructure:"cache" yaml:"cache" desc:"cache configuration"`
-	Monitoring monitoringConfig `mapstructure:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
-	Move       moveConfig       `mapstructure:"move" yaml:"move" desc:"move legit files configuration"`
-	Print      printConfig      `mapstructure:"print" yaml:"print" desc:"print report configuration"`
-	Gui        bool
+	Actions      actionsConfig    `mapstructure:"actions" yaml:"actions" desc:"actions done when a malware is found"`
+	GDetect      gdetectConfig    `mapstructure:"gdetect" yaml:"gdetect" desc:"GDetect configuration"`
+	Quarantine   quarantineConfig `mapstructure:"quarantine" yaml:"quarantine" desc:"quarantine configuration"`
+	Cache        cacheConfig      `mapstructure:"cache" yaml:"cache" desc:"cache configuration"`
+	Monitoring   monitoringConfig `mapstructure:"monitoring" yaml:"monitoring" desc:"monitoring configuration"`
+	Move         moveConfig       `mapstructure:"move" yaml:"move" desc:"move legit files configuration"`
+	Print        printConfig      `mapstructure:"print" yaml:"print" desc:"print report.Report configuration"`
+	PluginConfig pluginConfig     `mapstructure:"plugins" yaml:"plugins" desc:"plugins configuration"`
+	Gui          bool
 }

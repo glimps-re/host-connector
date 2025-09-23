@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -31,6 +32,11 @@ type Handler struct {
 	conf    *config.Config
 }
 
+const (
+	maxFileSizeDetect    = 100 * 1024 * 1024  // 100 MiB
+	maxFileSizeSynDetect = 2048 * 1024 * 1024 // 2 GiB
+)
+
 var _ shared.Connector = &Handler{}
 
 func NewHandler(ctx context.Context, config *config.Config) (h *Handler, err error) {
@@ -46,6 +52,18 @@ func NewHandler(ctx context.Context, config *config.Config) (h *Handler, err err
 
 // only used with new or stopped handler
 func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) {
+	if config.Workers == 0 {
+		config.Workers = 1
+	}
+	if config.Quarantine.Location != "" && config.Actions.Quarantine {
+		_, err = os.Stat(config.Quarantine.Location)
+		if errors.Is(err, os.ErrNotExist) {
+			if err = os.MkdirAll(config.Quarantine.Location, 0o750); err != nil {
+				return
+			}
+		}
+	}
+	// TODO config cache location is never reconfigured
 	if h.Cache == nil {
 		h.Cache, err = cache.NewCache(ctx, config.Cache.Location)
 		if err != nil {
@@ -75,7 +93,7 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 	}
 	customAction := make([]scanner.Action, 0)
 	if config.Gui {
-		customAction = append(customAction, &GuiHandleResult{})
+		customAction = append(customAction, new(GuiHandleResult))
 	}
 
 	maxFileSize, err := units.ParseStrictBytes(config.MaxFileSize)
@@ -83,24 +101,24 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 		err = fmt.Errorf("could not parse max-file-size: %w", err)
 		return
 	}
-	if maxFileSize > 100*1024*1024 && !config.Syndetect {
+
+	switch {
+	case maxFileSize > maxFileSizeDetect && !config.Syndetect:
 		Logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = 100 * 1024 * 1024
-	}
-	if maxFileSize > 2048*1024*1024 {
+		maxFileSize = maxFileSizeDetect
+	case maxFileSize > maxFileSizeSynDetect:
 		Logger.Warn("max file size can't exceed 2GiB, set the value to 2GiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = 2048 * 1024 * 1024
-	}
-	if maxFileSize <= 0 {
+		maxFileSize = maxFileSizeSynDetect
+	case maxFileSize <= 0:
 		Logger.Warn("max file size must be greater than 0, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = 100 * 1024 * 1024
+		maxFileSize = maxFileSizeDetect
 	}
 
 	var informDest io.Writer = os.Stdout
 	if config.Print.Location != "" {
 		informDest, err = os.Create(config.Print.Location)
 		if err != nil {
-			err = fmt.Errorf("could not open report location: %w", err)
+			err = fmt.Errorf("could not open report location, error: %w", err)
 			return
 		}
 	}
@@ -135,12 +153,14 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 		ConsoleEvents: h.events,
 	})
 
-	if err := h.Conn.LoadPlugins(scanner.Config{
+	err = h.Conn.LoadPlugins(scanner.Config{
 		PluginsDir: config.PluginConfig.Location,
 		Plugins:    config.PluginConfig.Plugins,
-	}); err != nil {
-		return err
+	})
+	if err != nil {
+		return
 	}
+
 	h.Lock = &scanner.Lock{Password: config.Quarantine.Password}
 	return
 }
@@ -182,7 +202,7 @@ func (h *Handler) Start(ctx context.Context) (err error) {
 }
 
 func (h *Handler) Stop(ctx context.Context) (err error) {
-	h.stop()
+	h.stop() //nolint:contextcheck // there's no ctx param for stop()
 	h.stopped = true
 	return
 }
@@ -200,7 +220,7 @@ func (h *Handler) Configure(ctx context.Context, config json.RawMessage) (err er
 	if err != nil {
 		return
 	}
-	h.stop()
+	h.stop() //nolint:contextcheck // there's no ctx param for stop()
 	err = h.setup(ctx, h.conf)
 	if err != nil {
 		return

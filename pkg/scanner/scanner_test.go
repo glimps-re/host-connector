@@ -35,6 +35,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -160,6 +161,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -327,6 +329,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -485,6 +488,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -588,6 +592,7 @@ func TestNewConnector(t *testing.T) {
 						Verbose:    true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							return gdetect.Result{

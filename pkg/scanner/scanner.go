@@ -428,7 +428,7 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	if _, err = io.Copy(hash, f); err != nil {
 		errClose := f.Close()
 		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+			Logger.Error("cannot close file", slog.String("file", file), slog.String("error", err.Error()))
 		}
 		return
 	}
@@ -443,7 +443,7 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
 			errClose := f.Close()
 			if errClose != nil {
-				Logger.Error("cannot close file", "file", file, "error", err)
+				Logger.Error("cannot close file", slog.String("file", file), slog.String("error", err.Error()))
 			}
 			return
 		}

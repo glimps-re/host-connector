@@ -5,8 +5,8 @@ go 1.25.1
 replace github.com/farmergreg/rfsnotify => github.com/glimps-re/rfsnotify v0.0.0-20250912141529-843f62f1f1a7
 
 require (
-	github.com/glimps-re/connector-manager v0.1.0-rc6.0.20250923063225-6a16833e7cac
-	github.com/glimps-re/go-gdetect v1.5.0-rc1
+	github.com/glimps-re/connector-manager v0.1.0-rc6.0.20250926062616-437c27ab60f0
+	github.com/glimps-re/go-gdetect v1.4.2-0.20250924121611-245afa268e3e
 	github.com/mitchellh/go-homedir v1.1.0
 	github.com/spf13/cobra v1.10.1
 	modernc.org/sqlite v1.38.2
@@ -20,7 +20,6 @@ require (
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.42.0
 	golift.io/xtractr v0.2.2
-	honnef.co/go/tools v0.6.1
 )
 
 require (
@@ -43,14 +42,10 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/sagikazarmark/locafero v0.11.0 // indirect
 	github.com/sourcegraph/conc v0.3.1-0.20240121214520-5f936abd7ae8 // indirect
-	github.com/ulikunitz/xz v0.5.12 // indirect
+	github.com/ulikunitz/xz v0.5.15 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b // indirect
-	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
-	golang.org/x/mod v0.27.0 // indirect
-	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/tools v0.36.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	modernc.org/libc v1.66.8 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

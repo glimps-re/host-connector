@@ -1,10 +1,16 @@
-package scanner
+package report
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
+	"os"
+	"time"
 )
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 type Report struct {
 	FileName           string   `json:"file-name"`
@@ -20,6 +26,12 @@ type Report struct {
 
 type ReportsWriter struct {
 	dst io.WriteSeeker
+}
+
+type ScanContext struct {
+	ScanID string
+	Start  time.Time
+	End    time.Time
 }
 
 func NewReportsWriter(dst io.WriteSeeker) *ReportsWriter {
@@ -50,9 +62,16 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	if _, err = out.WriteString("]"); err != nil {
 		return
 	}
-	err = out.Flush()
-	if err != nil {
-		return
+	if flushErr := out.Flush(); flushErr != nil {
+		Logger.Error("failed to flush buffer", slog.String("error", flushErr.Error()))
 	}
 	return
+}
+
+func GenerateReport(reportContext ScanContext, reports []Report) (r io.Reader, err error) {
+	buffer := &bytes.Buffer{}
+	out := json.NewEncoder(buffer)
+	out.SetIndent("", "")
+	err = out.Encode(reports)
+	return buffer, err
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/report"
 )
 
 type Actions struct {
@@ -36,12 +37,12 @@ var (
 )
 
 type Action interface {
-	Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) error
+	Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) error
 }
 
 type NoAction struct{}
 
-func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *Report) error {
+func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *report.Report) error {
 	return nil
 }
 
@@ -61,7 +62,7 @@ type LogAction struct {
 
 type ReportAction struct{}
 
-func (a *ReportAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *ReportAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	report.FileName = path
 	report.Malicious = result.Malware
 	report.Sha256 = result.Sha256
@@ -69,7 +70,7 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result Summarize
 	return
 }
 
-func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	if result.Malware {
 		if len(result.Malwares) == 0 {
 			result.Malwares = []string{}
@@ -89,7 +90,7 @@ type MultiAction struct {
 	Actions []Action
 }
 
-func (a *MultiAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *MultiAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	for _, h := range a.Actions {
 		if err = h.Handle(ctx, path, result, report); err != nil {
 			return
@@ -104,7 +105,7 @@ func NewMultiAction(actions ...Action) *MultiAction {
 
 type RemoveFileAction struct{}
 
-func (a *RemoveFileAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *RemoveFileAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	if !result.Malware {
 		return
 	}
@@ -116,7 +117,7 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result Summa
 	return
 }
 
-func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	// skip legit files
 	if !result.Malware {
 		return
@@ -325,7 +326,7 @@ type InformAction struct {
 	Out     io.Writer
 }
 
-func (a *InformAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *InformAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}
@@ -380,7 +381,7 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 	return a, nil
 }
 
-func (a *MoveAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *Report) (err error) {
+func (a *MoveAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return

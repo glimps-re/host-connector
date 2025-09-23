@@ -19,6 +19,7 @@ require (
 	github.com/google/uuid v1.6.0
 	golang.org/x/crypto v0.41.0
 	golift.io/xtractr v0.2.2
+	honnef.co/go/tools v0.6.1
 )
 
 require (
@@ -43,6 +44,10 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20250819193227-8b4c13bb791b // indirect
+	golang.org/x/exp/typeparams v0.0.0-20231108232855-2478ac86f678 // indirect
+	golang.org/x/mod v0.27.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/tools v0.36.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	modernc.org/libc v1.66.8 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

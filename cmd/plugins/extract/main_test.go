@@ -168,7 +168,9 @@ func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
 
 				// Clean up if temporary file was created
 				for _, pathToRemove := range plugin.pathToRemove {
-					os.RemoveAll(pathToRemove)
+					if err := os.RemoveAll(pathToRemove); err != nil {
+					t.Logf("Warning: failed to remove temporary path %s: %v", pathToRemove, err)
+				}
 				}
 			}
 		})
@@ -181,7 +183,11 @@ func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	// Create a test file to archive
 	testFile := filepath.Join(tmpDir, "test.txt")
@@ -218,7 +224,11 @@ func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Failed to initialize plugin: %v", err)
 			}
-			defer plugin.Close(context.Background())
+			defer func() {
+				if err := plugin.Close(context.Background()); err != nil {
+					t.Logf("Warning: failed to close plugin: %v", err)
+				}
+			}()
 
 			archivePath := tt.setupArchive()
 			xFile := &xtractr.XFile{
@@ -295,7 +305,11 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SevenZipExtractPlugin.Init() with defaults error = %v", err)
 	}
-	defer plugin.Close(context.Background())
+	defer func() {
+		if err := plugin.Close(context.Background()); err != nil {
+			t.Logf("Warning: failed to close plugin: %v", err)
+		}
+	}()
 
 	// Verify that the extraction engine was created with defaults
 	if plugin.sze == nil {
@@ -341,6 +355,8 @@ func TestSevenZipExtractPlugin_BinaryManagement(t *testing.T) {
 
 	// Clean up any temporary files
 	for _, path := range plugin.pathToRemove {
-		os.RemoveAll(path)
+		if err := os.RemoveAll(path); err != nil {
+			t.Logf("Warning: failed to remove temporary path %s: %v", path, err)
+		}
 	}
 }

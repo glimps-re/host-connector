@@ -5,7 +5,7 @@
 ### Changed
 
 - AES ciphering now use CTR instead of deprecated OFB
-- Add plugin capability
+- Add plugin capability with extract, filetype filter, session, and report plugins
 
 ### Fixed
 

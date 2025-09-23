@@ -219,7 +219,11 @@ func (p *SevenZipExtractPlugin) get7zzs() (string, error) {
 
 	// Track temporary file for cleanup
 	p.pathToRemove = append(p.pathToRemove, f.Name())
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			p.logger.Warn("Failed to close temporary file", "error", err)
+		}
+	}()
 
 	// Write embedded binary data
 	_, err = f.Write(SevenZip)
@@ -308,7 +312,9 @@ func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (size int64, fi
 func (p *SevenZipExtractPlugin) Close(_ context.Context) error { //nolint:unparam // interface requirement
 	// Clean up all temporary paths created during plugin operation
 	for _, path := range p.pathToRemove {
-		os.RemoveAll(path)
+		if err := os.RemoveAll(path); err != nil {
+			p.logger.Warn("Failed to remove temporary path", "path", path, "error", err)
+		}
 	}
 	return nil
 }

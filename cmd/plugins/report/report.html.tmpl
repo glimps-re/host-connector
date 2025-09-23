@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rapport d'analyse - {{ .ScanID }}</title>
+    <style>
+        :root {
+            --color-bg: #ffffff;
+            --color-text: #000000;
+            --color-accent: #EA5B0C;
+            --gradient-start: #E52321;
+            --gradient-end: #F9C105;
+            --max-width: 900px;
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --section-padding: 1.5rem;
+            --section-radius: 8px;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --table-header-bg: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 2rem 1rem;
+            font-family: var(--font-family);
+            color: var(--color-text);
+            background-color: var(--color-bg);
+            line-height: 1.6;
+        }
+
+        header {
+            max-width: var(--max-width);
+            margin: 0 auto 2rem;
+            padding: var(--section-padding);
+            background: var(--table-header-bg);
+            border-radius: var(--section-radius);
+            box-shadow: var(--shadow);
+            text-align: center;
+            color: #fff;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+        }
+
+        section {
+            max-width: var(--max-width);
+            margin: 1rem auto;
+            padding: var(--section-padding);
+            background: #fdfdfd;
+            border-radius: var(--section-radius);
+            box-shadow: var(--shadow);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--color-accent);
+            border-bottom: 2px solid var(--color-accent);
+            padding-bottom: 0.5rem;
+            font-size: 1.5rem;
+        }
+
+        ul.details {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        ul.details li {
+            margin: 0.5rem 0;
+        }
+
+        .table-container {
+            overflow: auto;
+            margin-top: 1rem;
+        }
+
+        .table-container table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0;
+            border-radius: var(--section-radius);
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            /* Ensures cells don't expand too much */
+            table-layout: fixed;
+            /* Wrap long words */
+            word-wrap: break-word;
+            line-height: 1.1;
+        }
+
+        thead tr {
+            background: var(--table-header-bg);
+        }
+
+        thead th {
+            color: #fff;
+            padding: 0.5rem;
+            /* Reduced padding */
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85rem;
+            /* Slightly smaller font */
+            word-wrap: break-word;
+        }
+
+        tbody td {
+            padding: 0.5rem;
+            /* Reduced padding */
+            border-bottom: 1px solid #eee;
+            font-size: 0.85rem;
+            /* Smaller text */
+            word-wrap: break-word;
+        }
+
+        tbody tr:hover {
+            background: #fff8f0;
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.3rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>Rapport d'analyse - {{ .ScanID }}</h1>
+    </header>
+
+    <section id="analysis-details">
+        <h2>Détails de l'analyse</h2>
+        <ul class="details">
+            <li><strong>Fichiers soumis : </strong>{{ .NbFileSubmitted }}</li>
+            <li><strong>Fichiers analysés : </strong>{{ .NbFileAnalyzed }}</li>
+            <li><strong>Volume analysé : </strong>{{ .VolumeAnalyzed }}</li>
+            <li><strong>Erreurs : </strong>{{ len .FilesInError }}</li>
+            <li><strong>Ignorés : </strong>{{ len .FilesIgnored }}</li>
+            <li><strong>Sains : </strong>{{ len .FilesSafe }}</li>
+            <li><strong>Malveillants : </strong>{{ len .FilesMalware }}</li>
+            <li><strong>Partiels : </strong>{{ len .FilesPartial }}</li>
+            <li><strong>Date de début : </strong>{{ .ScanStartTime }}</li>
+            <li><strong>Durée : </strong>{{ .Duration }}</li>
+        </ul>
+    </section>
+
+    <section id="conclusion">
+        <h2>Conclusion</h2>
+        {{ if gt (len .FilesMalware) 0}}
+        <p>
+            Un ou plusieurs fichiers ont été catégorisés comme malveillants par les moteurs d’analyse.
+            Nous recommandons :
+            <li>De ne pas les ouvrir ni les transférer</li>
+            <li>Isoler et conserver le support pour analyse ultérieure</li>
+            <li>D'informer votre référent sécurité</li>
+        </p>
+        {{ else if gt (len .FilesInError) 0 }}
+        <p>
+            L'analyse n'a pas pu être menée à terme pour tous les fichiers.
+            Si vous avez des doutes sur son origine ou son usage, contactez votre référent sécurité avant toute
+            ouverture.
+            Il est recommandé de :
+            <li>Ne pas l'utiliser immédiatement</li>
+            <li>Vérifier s'il existe une version légitime ou alternative</li>
+            <li>Relancer l'analyse ou en demander une manuelle à votre référent sécurité</li>
+        </p>
+        {{ else }}
+        <p>
+            Aucun comportement suspect ou malveillant n'a été détecté dans les fichiers soumis.
+            Vous pouvez l'utiliser en toute confiance dans un environnement standard.
+        </p>
+        {{ end }}
+        <p>Seuls les fichiers analysés comme sains ont pu être déplacés par l'application sur le support de destination.</p>
+    </section>
+
+    {{ if gt (len .FilesMalware) 0 }}
+    <section id="threat-files">
+        <h2>Fichiers malveillants détectés</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>Menace(s)</th>
+                        <th>SHA-256</th>
+                        <th>Taille</th>
+                        <th>Sous fichier malveillant</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .FilesMalware}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ range $i, $malware := .Malwares}}
+                            * {{ $malware }}<br>
+                            {{ end }}
+                        </td>
+                        <td>{{ .Sha256 }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .MalwareChildName }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .FilesInError) 0 }}
+    <section id="error-files">
+        <h2>Fichiers en erreur</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>SHA-256</th>
+                        <th>Erreur</th>
+                        <th>Taille</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .FilesInError}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Sha256 }}</td>
+                        <td>{{ .Error }}</td>
+                        <td>{{ .Size }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .FilesPartial) 0 }}
+    <section id="error-files">
+        <h2>Fichiers analysés partiellement</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>SHA-256</th>
+                        <th>Taille</th>
+                        <th>Erreur</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .FilesPartial}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Sha256 }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .Warning }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .FilesSafe) 0 }}
+    <section id="no-threat">
+        <h2>Fichiers sans menace détectée</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>SHA-256</th>
+                        <th>Taille</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .FilesSafe}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Sha256 }}</td>
+                        <td>{{ .Size }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .FilesIgnored) 0 }}
+    <section id="error-files">
+        <h2>Fichiers ignorés</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>SHA-256</th>
+                        <th>Taille</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .FilesIgnored}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Sha256 }}</td>
+                        <td>{{ .Size }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+</body>
+
+</html>

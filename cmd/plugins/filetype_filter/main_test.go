@@ -95,7 +95,11 @@ skipped_types:
 				if err != nil {
 					t.Fatalf("Failed to create temp dir: %v", err)
 				}
-				defer os.RemoveAll(tmpDir)
+				defer func() {
+				if err := os.RemoveAll(tmpDir); err != nil {
+					t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+				}
+			}()
 
 				configPath = filepath.Join(tmpDir, tt.configPath)
 				if err := os.WriteFile(configPath, []byte(tt.configData), 0o644); err != nil {
@@ -166,7 +170,11 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	// Create a text file
 	textFile := filepath.Join(tmpDir, "test.txt")
@@ -329,7 +337,11 @@ func TestFTFilterPlugin_Integration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	configContent := `forbidden_types:
   - application/x-executable

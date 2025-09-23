@@ -587,7 +587,11 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePath string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			p.logger.Warn("Failed to close file", "file", filePath, "error", err)
+		}
+	}()
 
 	_, err = io.Copy(file, reader)
 	return err

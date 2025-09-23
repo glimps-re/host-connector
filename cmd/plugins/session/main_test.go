@@ -181,7 +181,11 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	plugin := &SessionPlugin{
 		config: Config{
@@ -253,7 +257,11 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	plugin := &SessionPlugin{
 		config: Config{
@@ -311,7 +319,11 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	plugin := &SessionPlugin{
 		config: Config{
@@ -351,7 +363,11 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	plugin := &SessionPlugin{
 		config: Config{
@@ -395,7 +411,11 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() {
+		if err := os.RemoveAll(tmpDir); err != nil {
+			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+		}
+	}()
 
 	plugin := &SessionPlugin{}
 	mockContext := newMockHCContext()

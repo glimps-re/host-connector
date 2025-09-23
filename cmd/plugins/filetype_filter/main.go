@@ -150,7 +150,11 @@ func (p *FTFilterPlugin) Init(configPath string, hcc plugins.HCContext) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			p.logger.Warn("Failed to close config file", "error", err)
+		}
+	}()
 
 	var conf Config
 	if err = yaml.NewDecoder(f).Decode(&conf); err != nil {

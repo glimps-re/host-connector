@@ -9,9 +9,9 @@ import (
 	_ "embed"
 	"strconv"
 
+	"github.com/glimps-re/host-connector/pkg/report"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/gonutz/wui/v2"
-	"honnef.co/go/tools/analysis/report"
 )
 
 //go:embed Glimps.ico
@@ -93,6 +93,6 @@ var HandleResultCB = func(path string, result scanner.SummarizedGMalwareResult, 
 	return nil
 }
 
-func (a *GuiHandleResult) Handle(path string, result scanner.SummarizedGMalwareResult, report *report.Report) (err error) {
+func (a *GuiHandleResult) Handle(ctx context.Context, path string, result scanner.SummarizedGMalwareResult, report *report.Report) (err error) {
 	return HandleResultCB(path, result, report)
 }

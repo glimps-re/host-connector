@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"errors"
 	"log/slog"
 	"os"
 
@@ -69,9 +68,9 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().StringVar(&Conf.Cache.Location, "cache", config.DefaultCacheLocation, "location of the cache DB")
 	rootCmd.PersistentFlags().StringVar(&Conf.Quarantine.Location, "quarantine", config.DefaultQuarantineLocation, "location of the quarantine folder")
 	rootCmd.PersistentFlags().StringVar(&Conf.MaxFileSize, "max-file-size", config.DefaultMaxFileSize, "max file size to push to GLIMPS Malware")
-	rootCmd.PersistentFlags().BoolVarP(&Conf.Debug, "debug", Conf.Debug, "print debug strings")
-	rootCmd.PersistentFlags().BoolVarP(&Conf.Verbose, "verbose", Conf.Verbose, "print more information")
-	rootCmd.PersistentFlags().BoolVarP(&Conf.Quiet, "quiet", Conf.Quiet, "print no information")
+	rootCmd.PersistentFlags().BoolVarP(&Conf.Debug, "debug", "d", Conf.Debug, "print debug strings")
+	rootCmd.PersistentFlags().BoolVarP(&Conf.Verbose, "verbose", "v", Conf.Verbose, "print more information")
+	rootCmd.PersistentFlags().BoolVarP(&Conf.Quiet, "quiet", "q", Conf.Quiet, "print no information")
 	rootCmd.PersistentFlags().BoolVar(&Conf.Extract, "extract", Conf.Extract, "extract archive and scan inner files")
 	rootCmd.PersistentFlags().BoolVar(&Conf.GMalwareNoCertCheck, "insecure", Conf.GMalwareNoCertCheck, "do not check certificates")
 	rootCmd.PersistentFlags().StringVar(&Conf.Move.Source, "move-source", "", "root folder from where to move files")
@@ -106,17 +105,7 @@ func GlobalInit(cmd *cobra.Command, args []string) (err error) {
 		cache.Logger = Logger
 		handler.Logger = Logger
 	}
-	if Conf.Workers == 0 {
-		Conf.Workers = 1
-	}
-	if Conf.Quarantine.Location != "" && Conf.Actions.Quarantine {
-		_, err := os.Stat(Conf.Quarantine.Location)
-		if errors.Is(err, os.ErrNotExist) {
-			if err = os.MkdirAll(Conf.Quarantine.Location, 0o750); err != nil {
-				return err
-			}
-		}
-	}
+
 	Logger.Debug("debug activated")
 	gctx, err = handler.NewHandler(cmd.Context(), Conf)
 	if err != nil {

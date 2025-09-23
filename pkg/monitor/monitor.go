@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -58,7 +59,7 @@ func NewMonitor(onNewFile OnNewFileFunc, prescan bool, period time.Duration, mod
 
 func (m *Monitor) Close() {
 	if err := m.watcher.Close(); err != nil {
-		Logger.Error("cannot close watcher", "error", err)
+		Logger.Error("cannot close watcher", slog.String("error", err.Error()))
 	}
 	m.cancel()
 	m.wg.Wait()
@@ -150,7 +151,7 @@ func (m *Monitor) scanFiles() {
 
 func (m *Monitor) Add(path string) error {
 	if err := m.watcher.AddRecursive(path); err != nil {
-		return err
+		return fmt.Errorf("error watching %s: %w", path, err)
 	}
 	m.pathsLock.Lock()
 	m.paths[path] = struct{}{}

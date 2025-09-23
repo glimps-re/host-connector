@@ -21,22 +21,22 @@ var agentCmd = &cobra.Command{
 			Config: managedConfig,
 		}
 
-		registerCtx, registerCancel := context.WithTimeout(cmd.Context(), 3*time.Second)
+		registerCtx, registerCancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 		defer registerCancel()
 		err = console.Register(registerCtx, "v1.0.0", info)
 		if err != nil {
-			panic(err)
+			return
 		}
 		Conf.HostConfig = *managedConfig
 		gctx, err = handler.NewHandler(cmd.Context(), Conf)
 		if err != nil {
-			panic(err)
+			return
 		}
 		defer gctx.Close()
 		if !info.Stopped {
 			err = gctx.Start(context.Background())
 			if err != nil {
-				panic(err)
+				return
 			}
 		}
 		go console.Start(context.Background(), gctx)

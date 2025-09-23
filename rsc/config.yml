@@ -1,25 +1,29 @@
-workers: 4
+# workers: 4
 paths: []
 # extract: false
-# maxFileSize: 100MiB
+# extract_workers: 2
+# max_file_size: 100MiB
 actions:
   delete: true
   quarantine: true
-  moveLegit: false
+  move: false
 monitoring:
-  preScan: true
-  reScan: true
+  prescan: true
+  rescan: true
   period: 1h
-  modificationDelay: 30s
-gdetect:
-  url: https://gmalware.ggp.glimps.re
-  token: 00000000-00000000-00000000-00000000-00000000
-  timeout: 5m
-  tags: ["Server1"]
-  insecure: false
+  modification_delay: 30s
+gmalware_api_url: https://gmalware.ggp.glimps.re
+gmalware_api_token: 00000000-00000000-00000000-00000000-00000000
+gmalware_timeout: 5m
+gmalware_user_tags: ["Server1"]
+gmalware_no_cert_check: false
+# gmalware_syndetect: false
+# gmalware_bypass_cache: false
 quarantine:
   # location: "C:\\Program Files\\GMHost\\quarantine"
   password: infected
 cache:
   # location: "C:\\Program Files\\GMHost\\cache.db"
-  scanValidity: 168h
+  scan_validity: 168h
+# plugins_config: /etc/gmhost/plugins.yml
+# debug: false

@@ -9,13 +9,13 @@ on:
 
 jobs:
   release-matrix:
-    name: Release binary for linux and windows (console mode)
+    name: Release binary for linux and windows
     runs-on: ubuntu-latest
     strategy:
       matrix:
         goos: [linux,windows]
         goarch: [amd64]
-        goversion: ["1.24"]
+        goversion: ["1.25"]
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.53
@@ -28,6 +28,40 @@ jobs:
           ldflags: "-s -w"
           extra_files: README.md LICENSE
           goversion: ${{ matrix.goversion }}
+  release-plugins-matrix:
+    name: Release plugins
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        goos: [linux]
+        goarch: [amd64]
+        goversion: ["1.25"]
+        plugins: 
+          - path: "./cmd/plugins/error_filter"
+            name: "error_filter.so"
+          - path: "./cmd/plugins/extract"
+            name: "extract.so"
+          - path: "./cmd/plugins/filetype_filter"
+            name: "filetype_filter.so"
+          - path: "./cmd/plugins/report"
+            name: "report.so"
+          - path: "./cmd/plugins/filesize_filter"
+            name: "filesize_filter.so"
+          - path: "./cmd/plugins/session"
+            name: "session.so"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: wangyoucao577/go-release-action@v1.53
+        with:
+          build_flags: "-buildmode=plugin"
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          goos: ${{ matrix.goos }}
+          goarch: ${{ matrix.goarch }}
+          project_path: ${{ matrix.plugins.path }}
+          binary_name: ${{ matrix.plugins.name }}
+          ldflags: "-s -w"
+          extra_files: README.md LICENSE
+          goversion: ${{ matrix.goversion }}
   release-binary-msi:
     name: Release msi file
     runs-on: ubuntu-latest
@@ -35,7 +69,7 @@ jobs:
       matrix:
         goos: [windows]
         goarch: [amd64]
-        goversion: ["1.24"]
+        goversion: ["1.25"]
     steps:
       - uses: actions/checkout@v4
       - uses: wangyoucao577/go-release-action@v1.53

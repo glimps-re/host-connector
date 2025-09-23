@@ -1,12 +1,10 @@
 package scanner
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,38 +13,42 @@ import (
 	"testing"
 	"time"
 
-	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/quarantine/mock"
 	"github.com/google/go-cmp/cmp"
 )
 
 func TestReportAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		result SummarizedGMalwareResult
-		report *Report
+		result datamodel.Result
+		report *datamodel.Report
 	}
 	tests := []struct {
 		name       string
 		a          *ReportAction
 		args       args
 		wantErr    bool
-		wantReport Report
+		wantReport datamodel.Report
 	}{
 		{
 			name: "test",
 			args: args{
-				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
-				report: &Report{
-					FileName: "test",
+				path: "/tmp/test1",
+				result: datamodel.Result{
+					Malware: true,
+					SHA256:  "123456789",
+				},
+				report: &datamodel.Report{
+					Filename: "test",
 					Deleted:  true,
 				},
 			},
 			a:       &ReportAction{},
 			wantErr: false,
-			wantReport: Report{
-				FileName:  "/tmp/test1",
-				Sha256:    "123456789",
+			wantReport: datamodel.Report{
+				Filename:  "/tmp/test1",
+				SHA256:    "123456789",
 				Deleted:   true,
 				Malicious: true,
 			},
@@ -69,8 +71,8 @@ func TestReportAction_Handle(t *testing.T) {
 func TestLogAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		result SummarizedGMalwareResult
-		report *Report
+		result datamodel.Result
+		report *datamodel.Report
 	}
 	tests := []struct {
 		name     string
@@ -83,9 +85,9 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
-				report: &Report{
-					FileName: "test",
+				result: datamodel.Result{Malware: true, SHA256: "123456789"},
+				report: &datamodel.Report{
+					Filename: "test",
 					Deleted:  true,
 				},
 			},
@@ -97,34 +99,35 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test subfiles",
 			args: args{
 				path: "/tmp/test1",
-				result: SummarizedGMalwareResult{
+				result: datamodel.Result{
 					Malware:  true,
 					Malwares: []string{"MALWARE-1"},
-					Sha256:   "123456789",
-					MaliciousSubfiles: map[string]SummarizedGMalwareResult{
+					SHA256:   "123456789",
+					MaliciousSubfiles: map[string]datamodel.Result{
 						"test/test.txt": {
-							Sha256:   "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
-							Malware:  true,
-							Malwares: []string{"MALWARE-1"},
+							SHA256:        "8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc",
+							Malware:       true,
+							Malwares:      []string{"MALWARE-1"},
+							MalwareReason: datamodel.MalwareDetected,
 						},
 					},
+					MalwareReason: datamodel.MalwareDetected,
 				},
-				report: &Report{
-					FileName: "test",
+				report: &datamodel.Report{
+					Filename: "test",
 					Deleted:  true,
 				},
 			},
 			logLevel: slog.LevelDebug,
-			wantLog: `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/test1","sha256":"123456789","malware":true,"malwares":["MALWARE-1"],"malicious-subfiles":{"test/test.txt":{"sha256":"8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc","malware":true,"malwares":["MALWARE-1"]}}}
-`,
+			wantLog:  `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/test1","sha256":"123456789","malware":true,"malwares":["MALWARE-1"],"reason":"malware-detected","malicious-subfiles":{"sha256":"8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc","malwares":["MALWARE-1"]}}` + "\n",
 		},
 		{
 			name: "test debug false",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
-				report: &Report{
-					FileName: "test",
+				result: datamodel.Result{Malware: false, SHA256: "123456789"},
+				report: &datamodel.Report{
+					Filename: "test",
 					Deleted:  true,
 				},
 			},
@@ -135,9 +138,9 @@ func TestLogAction_Handle(t *testing.T) {
 			name: "test debug true",
 			args: args{
 				path:   "/tmp/test1",
-				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
-				report: &Report{
-					FileName: "test",
+				result: datamodel.Result{Malware: false, SHA256: "123456789"},
+				report: &datamodel.Report{
+					Filename: "test",
 					Deleted:  true,
 				},
 			},
@@ -174,8 +177,8 @@ func TestLogAction_Handle(t *testing.T) {
 				return
 			}
 			result := buffer.String()
-			if result != tt.wantLog {
-				t.Errorf("LogAction.Handle() log = %v, want %v", result, tt.wantLog)
+			if diff := cmp.Diff(result, tt.wantLog); diff != "" {
+				t.Errorf("LogAction.Handle() log(got-want) = %s", diff)
 			}
 		})
 	}
@@ -184,8 +187,8 @@ func TestLogAction_Handle(t *testing.T) {
 func TestRemoveFileAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
-		result SummarizedGMalwareResult
-		report *Report
+		result datamodel.Result
+		report *datamodel.Report
 	}
 	tests := []struct {
 		name    string
@@ -196,16 +199,16 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 			name: "test malware",
 			args: args{
 				path:   "test_malware",
-				result: SummarizedGMalwareResult{Malware: true},
-				report: &Report{},
+				result: datamodel.Result{Malware: true},
+				report: &datamodel.Report{},
 			},
 		},
 		{
 			name: "test not malware",
 			args: args{
 				path:   "test_malware",
-				result: SummarizedGMalwareResult{Malware: false},
-				report: &Report{},
+				result: datamodel.Result{Malware: false},
+				report: &datamodel.Report{},
 			},
 		},
 	}
@@ -229,7 +232,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 				defer func() {
 					err := os.Remove(f.Name())
 					if err != nil {
-						Logger.Error("TestRemoveFileAction, cannot remove file", "error", err)
+						logger.Error("TestRemoveFileAction, cannot remove file", "error", err)
 					}
 				}()
 				tt.args.path = f.Name()
@@ -255,202 +258,14 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 	}
 }
 
-func TestQuarantineAction_Handle(t *testing.T) {
-	type fields struct {
-		cache  cache.Cacher
-		root   string
-		locker Locker
-	}
-	type args struct {
-		path   string
-		result SummarizedGMalwareResult
-		report *Report
-	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		{
-			name: "test legit",
-			fields: fields{
-				cache:  &cache.MockCache{},
-				locker: &MockLock{},
-				root:   "quarantine",
-			},
-			args: args{
-				path: "test_quarantine",
-				result: SummarizedGMalwareResult{
-					Sha256: "123456789",
-				},
-			},
-		},
-		{
-			name: "test error",
-			fields: fields{
-				cache: &cache.MockCache{},
-				locker: &MockLock{
-					LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
-						return errors.New("test")
-					},
-				},
-				root: "quarantine",
-			},
-			args: args{
-				path:   "test_quarantine",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "test error 2",
-			fields: fields{
-				cache: &cache.MockCache{
-					SetMock: func(ctx context.Context, entry *cache.Entry) error {
-						return errors.New("test")
-					},
-				},
-				locker: &MockLock{
-					LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
-						return nil
-					},
-				},
-				root: "quarantine",
-			},
-			args: args{
-				path:   "test_quarantine",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
-			},
-			wantErr: true,
-		},
-		{
-			name: "test malware",
-			fields: fields{
-				cache: &cache.MockCache{
-					SetMock: func(ctx context.Context, entry *cache.Entry) error {
-						if entry.Sha256 != "123456" {
-							return fmt.Errorf("invalid sha256: %s", entry.Sha256)
-						}
-						return nil
-					},
-				},
-				locker: &MockLock{
-					LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
-						if !strings.Contains(file, "test_quarantine1234") {
-							return fmt.Errorf("invalid file: %s", file)
-						}
-						if reason != "malware: unknown" {
-							return fmt.Errorf("invalid reason: %s", reason)
-						}
-						return nil
-					},
-				},
-				root: "quarantine",
-			},
-			args: args{
-				path:   "test_quarantine1234",
-				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
-				report: &Report{},
-			},
-		},
-		{
-			name: "test malware 2",
-			fields: fields{
-				cache: &cache.MockCache{
-					SetMock: func(ctx context.Context, entry *cache.Entry) error {
-						if entry.Sha256 != "123456" {
-							return fmt.Errorf("invalid sha256: %s", entry.Sha256)
-						}
-						return nil
-					},
-				},
-				locker: &MockLock{
-					LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
-						if !strings.Contains(file, "test_quarantine1234") {
-							return fmt.Errorf("invalid file: %s", file)
-						}
-						if reason != "malware: eicar" {
-							return fmt.Errorf("invalid reason: %s", reason)
-						}
-						return nil
-					},
-				},
-				root: "quarantine",
-			},
-			args: args{
-				path:   "test_quarantine1234",
-				result: SummarizedGMalwareResult{Malware: true, Malwares: []string{"eicar"}, Sha256: "123456"},
-				report: &Report{},
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// do all test in dedicated tmp dir that will be removed after
-			sysTmpDir := os.Getenv("TMPDIR")
-			testTmpDir := t.TempDir()
-			t.Setenv("TMPDIR", testTmpDir)
-			defer func() {
-				err := os.RemoveAll(testTmpDir)
-				if err != nil {
-					Logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
-				}
-				t.Setenv("TMPDIR", sysTmpDir)
-			}()
-
-			if tt.args.path != "" {
-				f, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("test-action-%s-*", tt.args.path))
-				if err != nil {
-					t.Errorf("QuarantineAction.Handle() could not create tmp file, error = %v", err)
-					return
-				}
-				_, err = f.WriteString("test 1234")
-				if err != nil {
-					t.Fatalf("TestQuarantineAction cannot write string : %s", err)
-				}
-				defer func() {
-					err = f.Close()
-					if err != nil {
-						Logger.Error("TestQuarantineAction cannot close file", "error", err)
-					}
-					err = os.Remove(f.Name())
-					if err != nil {
-						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
-					}
-				}()
-				tt.args.path = f.Name()
-			}
-			if tt.fields.root != "" {
-				f := t.TempDir()
-				defer func() {
-					err := os.Remove(f)
-					if err != nil {
-						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
-					}
-				}()
-				tt.fields.root = f
-			}
-			a := &QuarantineAction{
-				cache:  tt.fields.cache,
-				root:   tt.fields.root,
-				locker: tt.fields.locker,
-			}
-			if err := a.Handle(t.Context(), tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
-				t.Errorf("QuarantineAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
-}
-
 func TestInformAction_Handle(t *testing.T) {
 	type fields struct {
 		Verbose bool
 	}
 	type args struct {
 		path   string
-		result SummarizedGMalwareResult
-		report *Report
+		result datamodel.Result
+		report *datamodel.Report
 	}
 	tests := []struct {
 		name    string
@@ -465,10 +280,10 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: false,
 			},
 			args: args{
-				result: SummarizedGMalwareResult{
+				result: datamodel.Result{
 					Malware: false,
 				},
-				report: &Report{},
+				report: &datamodel.Report{},
 			},
 			wantOut: ``,
 		},
@@ -478,11 +293,11 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: SummarizedGMalwareResult{
+				result: datamodel.Result{
 					Malware: false,
 				},
 				path:   "test_file.bin",
-				report: &Report{},
+				report: &datamodel.Report{},
 			},
 			wantOut: `file test_file.bin no malware found`,
 		},
@@ -492,11 +307,11 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: SummarizedGMalwareResult{
+				result: datamodel.Result{
 					Malware: true,
 				},
 				path:   "test_file.bin",
-				report: &Report{},
+				report: &datamodel.Report{},
 			},
 			wantOut: `file test_file.bin seems malicious`,
 		},
@@ -506,12 +321,12 @@ func TestInformAction_Handle(t *testing.T) {
 				Verbose: true,
 			},
 			args: args{
-				result: SummarizedGMalwareResult{
+				result: datamodel.Result{
 					Malware:  true,
 					Malwares: []string{"eicar", "test_eicar"},
 				},
 				path: "test_file.bin",
-				report: &Report{
+				report: &datamodel.Report{
 					Deleted:            true,
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
@@ -522,7 +337,7 @@ func TestInformAction_Handle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var out bytes.Buffer
-			a := &InformAction{
+			a := &PrintAction{
 				Verbose: tt.fields.Verbose,
 				Out:     &out,
 			}
@@ -539,197 +354,6 @@ func TestInformAction_Handle(t *testing.T) {
 	}
 }
 
-func TestQuarantineAction_ListQuarantinedFiles(t *testing.T) {
-	tests := []struct {
-		name string
-		test func(t *testing.T)
-	}{
-		{
-			name: "test",
-			test: func(t *testing.T) {
-				tmpDir := t.TempDir()
-				a := NewQuarantineAction(
-					&cache.MockCache{},
-					tmpDir,
-					&MockLock{
-						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-							var buffer bytes.Buffer
-							_, err = io.Copy(&buffer, in)
-							if err != nil {
-								panic(fmt.Sprintf("TestQuarantineAction cannot copy buffer : %s", err))
-							}
-							if buffer.String() != "test_content" {
-								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
-							}
-							return LockEntry{Filepath: "test.bin", Reason: "malicious"}, nil
-						},
-					},
-				)
-				f, err := os.CreateTemp(tmpDir, "test_*.lock")
-				if err != nil {
-					t.Errorf("could not create test file, error: %s", err)
-					return
-				}
-				_, err = f.WriteString("test_content")
-				if err != nil {
-					panic(fmt.Sprintf("TestQuarantineAction cannot write string : %s", err))
-				}
-				err = f.Close()
-				if err != nil {
-					panic(fmt.Sprintf("TestQuarantineAction cannot close file : %s", err))
-				}
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
-				defer cancel()
-				qfiles, err := a.ListQuarantinedFiles(ctx)
-				if err != nil {
-					t.Errorf("QuarantineAction.ListQuarantinedFiles, error: %s", err)
-					return
-				}
-				select {
-				case e := <-qfiles:
-					if e.Filepath != "test.bin" {
-						t.Errorf("QuarantineAction.ListQuarantinedFiles, invalid filepath. got: %v want %v", e.Filepath, "test.bin")
-					}
-					if e.Reason != "malicious" {
-						t.Errorf("QuarantineAction.ListQuarantinedFiles, invalid reason. got: %v want %v", e.Reason, "malicious")
-					}
-					if !strings.Contains(f.Name(), e.ID) {
-						t.Errorf("QuarantineAction.ListQuarantinedFiles, invalid ID. got: %v", e.ID)
-					}
-				case <-ctx.Done():
-					t.Errorf("QuarantineAction.ListQuarantinedFiles, not files returned before timeout")
-				}
-			},
-		},
-		{
-			name: "test invalid root folder",
-			test: func(t *testing.T) {
-				a := NewQuarantineAction(
-					&cache.MockCache{},
-					"",
-					&MockLock{},
-				)
-
-				_, err := a.ListQuarantinedFiles(context.Background())
-				if err != nil {
-					t.Errorf("QuarantineAction.ListQuarantinedFiles, error not expected")
-					return
-				}
-			},
-		},
-		{
-			name: "test cancelled ctx",
-			test: func(t *testing.T) {
-				a := NewQuarantineAction(
-					&cache.MockCache{},
-					os.TempDir(),
-					&MockLock{},
-				)
-				ctx, cancel := context.WithCancel(context.Background())
-				cancel()
-
-				_, err := a.ListQuarantinedFiles(ctx)
-				if err != nil {
-					t.Errorf("QuarantineAction.ListQuarantinedFiles, error not expected")
-					return
-				}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.test)
-	}
-}
-
-func TestQuarantineAction_Restore(t *testing.T) {
-	tests := []struct {
-		name string
-		test func(t *testing.T)
-	}{
-		{
-			name: "test",
-			test: func(t *testing.T) {
-				tmpDir := t.TempDir()
-				Now = func() time.Time {
-					return time.UnixMilli(1707568762557)
-				}
-				defer func() {
-					Now = time.Now
-				}()
-
-				a := NewQuarantineAction(
-					&cache.MockCache{
-						GetMock: func(ctx context.Context, id string) (entry *cache.Entry, err error) {
-							entry = &cache.Entry{
-								QuarantineLocation: "/tmp/xxx",
-							}
-							return
-						},
-						SetMock: func(ctx context.Context, entry *cache.Entry) error {
-							if entry.QuarantineLocation != "" {
-								return fmt.Errorf("invalid quarantine location, %v", entry.QuarantineLocation)
-							}
-							if entry.RestoredAt != time.UnixMilli(1707568762557) {
-								return fmt.Errorf("invalid restored at, %v", entry.RestoredAt)
-							}
-							return nil
-						},
-					},
-					tmpDir,
-					&MockLock{
-						GetHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-							var buffer bytes.Buffer
-							_, err = io.Copy(&buffer, in)
-							if err != nil {
-								panic(fmt.Sprintf("TestQuarantineAction cannot copy buffer : %s", err))
-							}
-							if buffer.String() != "test_content" {
-								return entry, fmt.Errorf("invalid locked content: %s", buffer.String())
-							}
-							return LockEntry{Filepath: filepath.Join(tmpDir, "test.bin"), Reason: "malicious"}, nil
-						},
-						UnlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-							if _, err = out.Write([]byte("test")); err != nil {
-								return
-							}
-							h := &tar.Header{
-								Name:       "test",
-								Mode:       0o752,
-								ModTime:    time.UnixMilli(1707568762557),
-								AccessTime: time.UnixMilli(1707568763557),
-							}
-							info = h.FileInfo()
-							return
-						},
-					},
-				)
-				cacheName := cache.ComputeCacheID("test")
-				f, err := os.Create(fmt.Sprintf("%s/%s.lock", tmpDir, cacheName))
-				if err != nil {
-					t.Errorf("could not create test file, error: %s", err)
-					return
-				}
-				_, err = f.WriteString("test_content")
-				if err != nil {
-					panic(fmt.Sprintf("TestQuarantineAction cannot write string : %s", err))
-				}
-				err = f.Close()
-				if err != nil {
-					panic(fmt.Sprintf("TestQuarantineAction cannot close file : %s", err))
-				}
-				err = a.Restore(t.Context(), cacheName)
-				if err != nil {
-					t.Errorf("QuarantineAction.Restore, error: %s", err)
-					return
-				}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.test)
-	}
-}
-
 func TestMoveAction_Handle(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -738,13 +362,13 @@ func TestMoveAction_Handle(t *testing.T) {
 		wantErr      bool
 		srcPath      string
 		destPath     string
-		wantedReport Report
+		wantedReport datamodel.Report
 	}{
 		{
 			name:         "malware",
 			isMalware:    true,
 			samplePath:   "/media/test/e/test.txt",
-			wantedReport: Report{},
+			wantedReport: datamodel.Report{},
 		},
 		{
 			name:       "unexpected path",
@@ -754,15 +378,15 @@ func TestMoveAction_Handle(t *testing.T) {
 		{
 			name:       "move legit",
 			samplePath: "/media/test/e/test.txt",
-			wantedReport: Report{
-				MoveTo: "/path/to/move/e/test.txt",
+			wantedReport: datamodel.Report{
+				MovedTo: "/path/to/move/e/test.txt",
 			},
 		},
 		{
 			name:       "move legit /",
 			samplePath: "/media/test/e/test.txt",
-			wantedReport: Report{
-				MoveTo: "/legit/media/test/e/test.txt",
+			wantedReport: datamodel.Report{
+				MovedTo: "/legit/media/test/e/test.txt",
 			},
 			srcPath:  "/",
 			destPath: "/legit",
@@ -778,19 +402,19 @@ func TestMoveAction_Handle(t *testing.T) {
 			defer func() {
 				err = tempReport.Close()
 				if err != nil {
-					Logger.Error("TestMoveAction cannot close tmp report", "error", err)
+					logger.Error("TestMoveAction cannot close tmp report", "error", err)
 				}
 				err = os.Remove(tempReport.Name())
 				if err != nil {
-					Logger.Error("TestMoveAction cannot remove tmp report", "error", err)
+					logger.Error("TestMoveAction cannot remove tmp report", "error", err)
 				}
 			}()
 			Rename = func(oldpath, newpath string) error {
 				if oldpath != tt.samplePath {
 					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
 				}
-				if newpath != tt.wantedReport.MoveTo {
-					return fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MoveTo)
+				if newpath != tt.wantedReport.MovedTo {
+					return fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MovedTo)
 				}
 				return nil
 			}
@@ -818,14 +442,210 @@ func TestMoveAction_Handle(t *testing.T) {
 				t.Errorf("MoveAction.Handle() could not get new move action, error: %v", err)
 				return
 			}
-			report := Report{}
-			if err := a.Handle(t.Context(), tt.samplePath, SummarizedGMalwareResult{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
+			report := datamodel.Report{}
+			if err := a.Handle(t.Context(), tt.samplePath, datamodel.Result{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
 				t.Errorf("MoveAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if !cmp.Equal(report, tt.wantedReport) {
 				t.Errorf("MoveAction.Handle() report = %v, want report %v, %s", report, tt.wantedReport, cmp.Diff(report, tt.wantedReport))
 				return
+			}
+		})
+	}
+}
+
+func Test_moveFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) (src, dst string)
+		wantErr bool
+	}{
+		{
+			name: "successful move within same filesystem",
+			setup: func(t *testing.T) (string, string) {
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+
+				if err := os.WriteFile(src, []byte("test content"), 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			wantErr: false,
+		},
+		{
+			name: "source file does not exist",
+			setup: func(t *testing.T) (string, string) {
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "nonexistent.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+				return src, dst
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := tt.setup(t)
+			err := moveFile(src, dst)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("moveFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr {
+				// Verify destination exists and source doesn't
+				if _, err := os.Stat(dst); err != nil {
+					t.Errorf("destination file should exist: %v", err)
+				}
+				if _, err := os.Stat(src); !os.IsNotExist(err) {
+					t.Errorf("source file should not exist after move")
+				}
+			}
+		})
+	}
+}
+
+func Test_copyAndDelete(t *testing.T) {
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T) (src, dst string)
+		wantErr     bool
+		checkResult func(t *testing.T, src, dst string)
+	}{
+		{
+			name: "successful copy and delete",
+			setup: func(t *testing.T) (string, string) {
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+
+				content := []byte("test file content")
+				if err := os.WriteFile(src, content, 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, src, dst string) {
+				// Verify destination exists with correct content
+				// #nosec G304 - dst is controlled by test code
+				content, err := os.ReadFile(dst)
+				if err != nil {
+					t.Errorf("failed to read destination file: %v", err)
+				}
+				if string(content) != "test file content" {
+					t.Errorf("content mismatch: got %s, want 'test file content'", string(content))
+				}
+
+				// Verify source was deleted
+				if _, err := os.Stat(src); !os.IsNotExist(err) {
+					t.Errorf("source file should not exist after copyAndDelete")
+				}
+
+				// Verify permissions were preserved
+				info, err := os.Stat(dst)
+				if err != nil {
+					t.Errorf("failed to stat destination: %v", err)
+				}
+				if info.Mode().Perm() != 0o600 {
+					t.Errorf("permissions not preserved: got %o, want 0600", info.Mode().Perm())
+				}
+			},
+		},
+		{
+			name: "source file does not exist",
+			setup: func(t *testing.T) (string, string) {
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "nonexistent.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+				return src, dst
+			},
+			wantErr: true,
+		},
+		{
+			name: "destination directory does not exist",
+			setup: func(t *testing.T) (string, string) {
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "nonexistent", "dest.txt")
+
+				if err := os.WriteFile(src, []byte("content"), 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := tt.setup(t)
+			err := copyAndDelete(src, dst)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("copyAndDelete() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && tt.checkResult != nil {
+				tt.checkResult(t, src, dst)
+			}
+		})
+	}
+}
+
+func TestQuarantineAction_Handle(t *testing.T) {
+	tests := []struct {
+		name          string
+		malware       bool
+		quarantineErr bool
+		path          string
+		wantErr       bool
+	}{
+		{
+			name: "ok not malware",
+			path: "toto",
+		},
+		{
+			name: "ok malware",
+			path: "toto",
+		},
+		{
+			name:          "error quarantine",
+			malware:       true,
+			quarantineErr: true,
+			wantErr:       true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			quarantiner := mock.QuarantineMock{
+				QuarantineMock: func(ctx context.Context, file, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
+					if !tt.malware {
+						t.Fatal("unexpected Quarantine() call")
+					}
+					if tt.quarantineErr {
+						err = errors.New("error")
+					}
+					return
+				},
+			}
+			a := NewQuarantineAction(&quarantiner)
+			gotErr := a.Handle(t.Context(), tt.path, datamodel.Result{Malware: tt.malware}, &datamodel.Report{})
+			if gotErr != nil {
+				if !tt.wantErr {
+					t.Errorf("Handle() failed: %v", gotErr)
+				}
+				return
+			}
+			if tt.wantErr {
+				t.Fatal("Handle() succeeded unexpectedly")
 			}
 		})
 	}

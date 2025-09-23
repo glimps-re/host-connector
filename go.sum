@@ -46,6 +46,8 @@ github.com/fsnotify/fsnotify v1.9.0 h1:2Ml+OJNzbYCTzsxtv8vKSFD9PbJjmhYF14k/jKC7S
 github.com/fsnotify/fsnotify v1.9.0/go.mod h1:8jBTzvmWwFyi3Pb8djgCCO5IBqzKJ/Jwo8TRcHyHii0=
 github.com/glimps-re/go-gdetect v1.4.0 h1:X4P/Gz9+Kx3v9TSdIgA7Vkgf5d4MguR5tHR6mdgtsT4=
 github.com/glimps-re/go-gdetect v1.4.0/go.mod h1:4vKKXHJ4Nw1rR/eyGsJ623c8JSiuV61n+vt+OTSSpF4=
+github.com/glimps-re/rfsnotify v0.0.0-20250912141529-843f62f1f1a7 h1:UbJ/9LXZ/A0MwEdL27PAZpxxs1rSd9j3f/WfqDtAMPk=
+github.com/glimps-re/rfsnotify v0.0.0-20250912141529-843f62f1f1a7/go.mod h1:7yV21euZmMnmCzQGTTWU/39T+lWlzR08hCGFDz8NIoc=
 github.com/go-gl/glfw v0.0.0-20190409004039-e6da0acd62b1/go.mod h1:vR7hzQXu2zJy9AVAgeJqvqgH9Q5CA+iKCZ2gyEVpxRU=
 github.com/go-gl/glfw/v3.3/glfw v0.0.0-20191125211704-12ad95a8df72/go.mod h1:tQ2UAYgL5IevRw8kRxooKSPJfGvJ9fJQFa0TUsXzTg8=
 github.com/go-viper/mapstructure/v2 v2.4.0 h1:EBsztssimR/CONLSZZ04E8qAkxNYq4Qp9LvH92wZUgs=

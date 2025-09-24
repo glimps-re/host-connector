@@ -177,10 +177,7 @@ func TestSessionPlugin_getSessionID(t *testing.T) {
 
 func TestSessionPlugin_SessionManagement(t *testing.T) {
 	// Create temporary directory for testing
-	tmpDir, err := os.MkdirTemp("", "session_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -253,10 +250,7 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 }
 
 func TestSessionPlugin_OnStartScanFile(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "session_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -315,10 +309,7 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 }
 
 func TestSessionPlugin_OnFileScanned(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "session_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -359,10 +350,7 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 }
 
 func TestSessionPlugin_OnReport(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "session_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -407,10 +395,7 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 }
 
 func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "session_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -442,17 +427,17 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 
 	// Create test files
 	userDir := filepath.Join(tmpDir, "user_a", "batch1")
-	if err := os.MkdirAll(userDir, 0o755); err != nil {
+	if err := os.MkdirAll(userDir, 0o750); err != nil {
 		t.Fatalf("Failed to create user dir: %v", err)
 	}
 
 	file1 := filepath.Join(userDir, "test1.txt")
 	file2 := filepath.Join(userDir, "test2.txt")
 
-	if err := os.WriteFile(file1, []byte("test content 1"), 0o644); err != nil {
+	if err := os.WriteFile(file1, []byte("test content 1"), 0o600); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
-	if err := os.WriteFile(file2, []byte("test content 2"), 0o644); err != nil {
+	if err := os.WriteFile(file2, []byte("test content 2"), 0o600); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 

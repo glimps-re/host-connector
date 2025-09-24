@@ -91,18 +91,15 @@ skipped_types:
 			// Create temporary config file if needed
 			var configPath string
 			if tt.configPath != "" && tt.configData != "" {
-				tmpDir, err := os.MkdirTemp("", "ftfilter_test")
-				if err != nil {
-					t.Fatalf("Failed to create temp dir: %v", err)
-				}
+				tmpDir := t.TempDir()
 				defer func() {
-				if err := os.RemoveAll(tmpDir); err != nil {
-					t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
-				}
-			}()
+					if err := os.RemoveAll(tmpDir); err != nil {
+						t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
+					}
+				}()
 
 				configPath = filepath.Join(tmpDir, tt.configPath)
-				if err := os.WriteFile(configPath, []byte(tt.configData), 0o644); err != nil {
+				if err := os.WriteFile(configPath, []byte(tt.configData), 0o600); err != nil {
 					t.Fatalf("Failed to write config file: %v", err)
 				}
 			} else {
@@ -166,10 +163,7 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 	}
 
 	// Create temporary test files with different content types
-	tmpDir, err := os.MkdirTemp("", "ftfilter_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -178,7 +172,7 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 
 	// Create a text file
 	textFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(textFile, []byte("Hello, World!"), 0o644); err != nil {
+	if err := os.WriteFile(textFile, []byte("Hello, World!"), 0o600); err != nil {
 		t.Fatalf("Failed to create text file: %v", err)
 	}
 
@@ -199,7 +193,7 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 	for len(binaryContent) < 64 {
 		binaryContent = append(binaryContent, 0x00)
 	}
-	if err := os.WriteFile(binaryFile, binaryContent, 0o755); err != nil {
+	if err := os.WriteFile(binaryFile, binaryContent, 0o600); err != nil {
 		t.Fatalf("Failed to create binary file: %v", err)
 	}
 
@@ -333,10 +327,7 @@ func TestFTFilterPlugin_OnStartScanFile_NonExistentFile(t *testing.T) {
 
 func TestFTFilterPlugin_Integration(t *testing.T) {
 	// Create temporary config file
-	tmpDir, err := os.MkdirTemp("", "ftfilter_integration_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -349,13 +340,13 @@ skipped_types:
   - text/plain`
 
 	configPath := filepath.Join(tmpDir, "config.yml")
-	if err := os.WriteFile(configPath, []byte(configContent), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
 	// Create test files
 	textFile := filepath.Join(tmpDir, "test.txt")
-	if err := os.WriteFile(textFile, []byte("Hello, World!"), 0o644); err != nil {
+	if err := os.WriteFile(textFile, []byte("Hello, World!"), 0o600); err != nil {
 		t.Fatalf("Failed to create text file: %v", err)
 	}
 
@@ -363,7 +354,7 @@ skipped_types:
 	mockContext := newMockHCContext()
 
 	// Test initialization
-	err = plugin.Init(configPath, mockContext)
+	err := plugin.Init(configPath, mockContext)
 	if err != nil {
 		t.Fatalf("FTFilterPlugin.Init() error = %v", err)
 	}

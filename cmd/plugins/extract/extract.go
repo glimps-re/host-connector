@@ -5,7 +5,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -87,9 +86,9 @@ type sevenZipExtract struct {
 }
 
 var (
-	ErrInvalidPassword   = fmt.Errorf("invalid password")
-	ErrUnsupportedFormat = fmt.Errorf("unsupported format")
-	ErrFileNotFound      = fmt.Errorf("file not found")
+	ErrInvalidPassword   = errors.New("invalid password")
+	ErrUnsupportedFormat = errors.New("unsupported format")
+	ErrFileNotFound      = errors.New("file not found")
 )
 
 const timeFormat = time.RFC3339
@@ -103,11 +102,11 @@ func newSevenZipExtract(config extractorConfig, sevenZipPath string, tOption boo
 	}
 }
 
-func (sze *sevenZipExtract) name() (name string) { //nolint unused // we will use it later
+func (sze *sevenZipExtract) name() (name string) { //nolint:unused // we will use it later
 	return "SevenZip"
 }
 
-func (sze *sevenZipExtract) supportType(_ string) (supported bool) { //nolint unused // we will use it later
+func (sze *sevenZipExtract) supportType(_ string) (supported bool) { //nolint:unused // we will use it later
 	return true
 }
 

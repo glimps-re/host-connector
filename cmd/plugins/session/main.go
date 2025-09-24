@@ -227,6 +227,8 @@ func (p *SessionPlugin) Init(configPath string, hcc plugins.HCContext) error {
 	}
 
 	if configPath != "" {
+		// Clean the path to prevent directory traversal
+		configPath = filepath.Clean(configPath)
 		data, err := os.ReadFile(configPath)
 		if err != nil {
 			return fmt.Errorf("failed to read config file: %w", err)
@@ -578,8 +580,11 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 
 // saveReport saves a report reader to a file
 func (p *SessionPlugin) saveReport(reader io.Reader, filePath string) error {
+	// Clean the path to prevent directory traversal
+	filePath = filepath.Clean(filePath)
+
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
 		return err
 	}
 

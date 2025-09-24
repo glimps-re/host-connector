@@ -96,10 +96,7 @@ func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	}
 
 	// Add some fake paths to cleanup list
-	tmpDir, err := os.MkdirTemp("", "extract_test_cleanup")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	plugin.pathToRemove = append(plugin.pathToRemove, tmpDir)
 
 	// Test close
@@ -169,8 +166,8 @@ func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
 				// Clean up if temporary file was created
 				for _, pathToRemove := range plugin.pathToRemove {
 					if err := os.RemoveAll(pathToRemove); err != nil {
-					t.Logf("Warning: failed to remove temporary path %s: %v", pathToRemove, err)
-				}
+						t.Logf("Warning: failed to remove temporary path %s: %v", pathToRemove, err)
+					}
 				}
 			}
 		})
@@ -179,10 +176,7 @@ func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
 
 func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 	// Create a simple test archive
-	tmpDir, err := os.MkdirTemp("", "extract_test")
-	if err != nil {
-		t.Fatalf("Failed to create temp dir: %v", err)
-	}
+	tmpDir := t.TempDir()
 	defer func() {
 		if err := os.RemoveAll(tmpDir); err != nil {
 			t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
@@ -192,7 +186,7 @@ func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 	// Create a test file to archive
 	testFile := filepath.Join(tmpDir, "test.txt")
 	testContent := "Hello, World!"
-	if err := os.WriteFile(testFile, []byte(testContent), 0o644); err != nil {
+	if err := os.WriteFile(testFile, []byte(testContent), 0o600); err != nil {
 		t.Fatalf("Failed to create test file: %v", err)
 	}
 

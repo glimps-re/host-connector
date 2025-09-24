@@ -267,11 +267,11 @@ func (p *SevenZipExtractPlugin) get7zzs() (string, error) {
 //   - files: List of absolute paths to extracted files
 //   - volumes: Volume information (delegated to xtractr)
 //   - err: Error if extraction fails or security limits are exceeded
-func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (size int64, files []string, volumes []string, err error) {
+func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (int64, []string, []string, error) {
 	// Create secure temporary directory for extraction
 	dest, err := os.MkdirTemp(os.TempDir(), "extracted*")
 	if err != nil {
-		return
+		return 0, nil, nil, err
 	}
 
 	// Track temporary directory for cleanup
@@ -280,16 +280,24 @@ func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (size int64, fi
 	// Perform secure extraction with configured limits
 	result, err := p.sze.extract(xFile.FilePath, dest, []string{}, []string{})
 	if err != nil {
-		return
+		return 0, nil, nil, err
 	}
 
 	// Collect paths of successfully extracted files
+	var files []string
 	for _, ep := range result.extractedFiles {
 		files = append(files, ep.Path)
 	}
 
 	// Delegate to xtractr library for additional processing
-	return xtractr.ExtractFile(xFile)
+	size, xtractFiles, volumes, err := xtractr.ExtractFile(xFile)
+	if err != nil {
+		return 0, files, nil, err
+	}
+
+	// Combine our extraction results with xtractr results
+	files = append(files, xtractFiles...)
+	return size, files, volumes, nil
 }
 
 // Close implements the plugins.Plugin interface, performing cleanup when the plugin is shut down.

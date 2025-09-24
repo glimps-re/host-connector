@@ -5,6 +5,7 @@
 ### Changed
 
 - AES ciphering now use CTR instead of deprecated OFB
+- Add plugin capability
 
 ### Fixed
 

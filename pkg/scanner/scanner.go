@@ -19,6 +19,8 @@ import (
 	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/plugins"
+	"github.com/glimps-re/host-connector/pkg/report"
 	"github.com/google/uuid"
 	"golift.io/xtractr"
 )
@@ -44,6 +46,8 @@ type Config struct {
 	MaxFileSize      int64
 	MoveTo           string
 	MoveFrom         string
+	Plugins          map[string]string
+	PluginsDir       string
 }
 
 type fileToAnalyze struct {
@@ -62,16 +66,21 @@ type archiveStatus struct {
 }
 
 type Connector struct {
-	done           context.Context
-	cancel         context.CancelFunc
-	config         Config
-	wg             sync.WaitGroup
-	fileChan       chan fileToAnalyze
-	action         Action
-	reportMutex    sync.Mutex
-	reports        []*Report
-	archivesStatus map[string]archiveStatus
-	archiveMutex   sync.RWMutex
+	done               context.Context
+	cancel             context.CancelFunc
+	config             Config
+	wg                 sync.WaitGroup
+	fileChan           chan fileToAnalyze
+	action             Action
+	reportMutex        sync.Mutex
+	reports            []*report.Report
+	archivesStatus     map[string]archiveStatus
+	archiveMutex       sync.RWMutex
+	loadedPlugins      []plugins.Plugin
+	onStartScanFileCbs []plugins.OnStartScanFile
+	onFileScannedCbs   []plugins.OnFileScanned
+	onReportCbs        []plugins.OnReport
+	generateReport     plugins.GenerateReport
 }
 
 var MaxWorkers = 40
@@ -99,6 +108,7 @@ func NewConnector(config Config) *Connector {
 		config:         config,
 		archivesStatus: make(map[string]archiveStatus),
 		action:         newAction(config),
+		generateReport: report.GenerateReport,
 	}
 }
 
@@ -139,6 +149,9 @@ func (c *Connector) Start(ctx context.Context) error {
 	}
 	return nil
 }
+
+// XtractFile could be used to override xtract.ExtractFile method
+var XtractFile = xtractr.ExtractFile
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	info, err := os.Lstat(input)
@@ -192,7 +205,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 			DirMode:   0o755,
 		}
 
-		_, files, _, extractErr := xtractr.ExtractFile(&xfile)
+		_, files, _, extractErr := XtractFile(&xfile)
 		switch {
 		case extractErr == nil:
 			// OK
@@ -329,7 +342,7 @@ func (c *Connector) worker(ctx context.Context) {
 				if err != nil {
 					Logger.Error("could not handle file", slog.String("file", input.filename), slog.String("error", err.Error()))
 				}
-				report := &Report{}
+				report := &report.Report{}
 				if err = c.action.Handle(ctx, input.location, result, report); err != nil {
 					Logger.Error("could not handle file action", slog.String("file", input.filename), slog.String("error", err.Error()))
 				}
@@ -362,7 +375,7 @@ func (c *Connector) handleArchive(ctx context.Context, input fileToAnalyze) (err
 	status.result = mergeResult(status.result, result, input.filename)
 	if (c.config.Extract && status.analyzed == status.total) || (!c.config.Extract && result.Malware) {
 		status.finished = true
-		report := &Report{}
+		report := &report.Report{}
 		if err = c.action.Handle(ctx, status.archiveName, status.result, report); err != nil {
 			return
 		}
@@ -380,9 +393,9 @@ var Since = time.Since
 
 type SummarizedGMalwareResult struct {
 	MaliciousSubfiles map[string]SummarizedGMalwareResult `json:"malicious-subfiles,omitempty"`
-	Sha256            string                              `json:"sha256"`
-	Malware           bool                                `json:"malware"`
-	Malwares          []string                            `json:"malwares"`
+	Sha256            string                              `json:"sha256,omitempty"`
+	Malware           bool                                `json:"malware,omitempty"`
+	Malwares          []string                            `json:"malwares,omitempty"`
 }
 
 func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename string) (result SummarizedGMalwareResult) {
@@ -449,9 +462,15 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	if _, err = f.Seek(0, io.SeekStart); err != nil {
 		return
 	}
-	opts := c.config.WaitOpts
-	opts.Filename = file
-	result, err := c.config.Submitter.WaitForReader(submitCtx, f, opts)
+	var result gdetect.Result
+	if res := c.onStartScanFile(file, fileSHA256); res != nil {
+		result = *res
+	} else {
+		opts := c.config.WaitOpts
+		opts.Filename = file
+		result, err = c.config.Submitter.WaitForReader(submitCtx, f, opts)
+	}
+	c.onFileScanned(file, fileSHA256, result, err)
 	if err != nil {
 		errClose := f.Close()
 		if errClose != nil {
@@ -473,7 +492,8 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	return
 }
 
-func (c *Connector) addReport(report *Report) {
+func (c *Connector) addReport(report *report.Report) {
+	c.onReport(report)
 	c.reportMutex.Lock()
 	defer c.reportMutex.Unlock()
 	c.reports = append(c.reports, report)
@@ -482,6 +502,13 @@ func (c *Connector) addReport(report *Report) {
 func (c *Connector) Close() {
 	c.cancel()
 	c.wg.Wait()
+	for _, x := range c.loadedPlugins {
+		if closeErr := x.Close(context.TODO()); closeErr != nil {
+			Logger.Error("failed to close plugin", slog.String("error", closeErr.Error()))
+		}
+	}
 }
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+func (c *Connector) GetLogger() *slog.Logger {
+	return Logger
+}

@@ -1,6 +1,7 @@
 package monitor
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,8 +21,10 @@ func TestMonitor_work(t *testing.T) {
 				// temp dir
 				tmpDir := t.TempDir()
 				sb := &strings.Builder{}
+				ctx, cancel := context.WithCancel(context.Background())
 				cb := func(path string) error {
 					fmt.Fprintf(sb, "event %s\n", filepath.Base(path))
+					cancel() // Signal that callback was called
 					return nil
 				}
 				monitor, err := NewMonitor(cb, false, 0, 0)
@@ -48,7 +51,15 @@ func TestMonitor_work(t *testing.T) {
 				if err != nil {
 					t.Fatalf("test monitor, could not close file : %s", err)
 				}
-				time.Sleep(time.Millisecond * 100)
+
+				// Wait for callback or timeout
+				select {
+				case <-ctx.Done():
+					// Callback was called, continue
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for callback")
+				}
+
 				monitor.Close()
 				got := sb.String()
 				want := "event test1\n"
@@ -63,8 +74,10 @@ func TestMonitor_work(t *testing.T) {
 				// temp dir
 				tmpDir := t.TempDir()
 				sb := &strings.Builder{}
+				ctx, cancel := context.WithCancel(context.Background())
 				cb := func(path string) error {
 					fmt.Fprintf(sb, "event %s\n", filepath.Base(path))
+					cancel() // Signal that callback was called
 					return nil
 				}
 				monitor, err := NewMonitor(cb, false, 0, 0)
@@ -95,7 +108,15 @@ func TestMonitor_work(t *testing.T) {
 				if err != nil {
 					t.Fatalf("test monitor, could not rename file : %s", err)
 				}
-				time.Sleep(time.Millisecond * 300)
+
+				// Wait for callback or timeout
+				select {
+				case <-ctx.Done():
+					// Callback was called, continue
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for callback")
+				}
+
 				monitor.Close()
 				got := sb.String()
 				want := "event test11\n"
@@ -110,8 +131,10 @@ func TestMonitor_work(t *testing.T) {
 				// temp dir
 				tmpDir := t.TempDir()
 				sb := &strings.Builder{}
+				ctx, cancel := context.WithCancel(context.Background())
 				cb := func(path string) error {
 					fmt.Fprintf(sb, "event %s\n", filepath.Base(path))
+					cancel() // Signal that callback was called
 					return nil
 				}
 				monitor, err := NewMonitor(cb, false, 0, 0)
@@ -138,7 +161,15 @@ func TestMonitor_work(t *testing.T) {
 				if err != nil {
 					t.Fatalf("test monitor, could not add path : %s", err)
 				}
-				time.Sleep(time.Millisecond * 100)
+
+				// Wait for first callback or timeout
+				select {
+				case <-ctx.Done():
+					// Callback was called, continue
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for first callback")
+				}
+
 				err = monitor.Remove(tmpDir)
 				if err != nil {
 					t.Fatalf("test monitor, could not remove tmp dir : %s", err)
@@ -156,6 +187,8 @@ func TestMonitor_work(t *testing.T) {
 				if err != nil {
 					t.Fatalf("test monitor, could not close file : %s", err)
 				}
+
+				// Give some time to ensure test2 would be processed if monitoring was still active
 				time.Sleep(time.Millisecond * 100)
 				monitor.Close()
 				got := sb.String()
@@ -185,8 +218,10 @@ func TestMonitor_work(t *testing.T) {
 				}
 
 				sb := &strings.Builder{}
+				ctx, cancel := context.WithCancel(context.Background())
 				cb := func(path string) error {
 					fmt.Fprintf(sb, "event %s\n", filepath.Base(path))
+					cancel() // Signal that callback was called
 					return nil
 				}
 				monitor, err := NewMonitor(cb, true, 0, 0)
@@ -201,7 +236,14 @@ func TestMonitor_work(t *testing.T) {
 					t.Fatalf("test monitor, could not add path : %s", err)
 				}
 
-				time.Sleep(time.Millisecond * 100)
+				// Wait for callback or timeout
+				select {
+				case <-ctx.Done():
+					// Callback was called, continue
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for callback")
+				}
+
 				monitor.Close()
 				got := sb.String()
 				want := "event 001"
@@ -230,8 +272,10 @@ func TestMonitor_work(t *testing.T) {
 				}
 
 				sb := &strings.Builder{}
+				ctx, cancel := context.WithCancel(context.Background())
 				cb := func(path string) error {
 					fmt.Fprintf(sb, "event %s\n", filepath.Base(path))
+					cancel() // Signal that callback was called
 					return nil
 				}
 				monitor, err := NewMonitor(cb, false, time.Millisecond*60, 0)
@@ -246,7 +290,14 @@ func TestMonitor_work(t *testing.T) {
 					t.Fatalf("test monitor, could not add path : %s", err)
 				}
 
-				time.Sleep(time.Millisecond * 100)
+				// Wait for callback or timeout
+				select {
+				case <-ctx.Done():
+					// Callback was called, continue
+				case <-time.After(time.Second):
+					t.Fatal("timeout waiting for callback")
+				}
+
 				monitor.Close()
 				got := sb.String()
 				want := "event 001"

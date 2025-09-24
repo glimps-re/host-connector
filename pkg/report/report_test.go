@@ -1,10 +1,12 @@
-package scanner
+package report
 
 import (
 	"bytes"
 	"io"
 	"os"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestReportsWriter_Write(t *testing.T) {
@@ -64,18 +66,17 @@ func TestReportsWriter_Write(t *testing.T) {
 				t.Errorf("ReportsWriter.Write() error, could not create test tmp file, error: %s", err)
 				return
 			}
-			_, err = f.WriteString(tt.initContent)
-			if err != nil {
-				t.Fatalf("TestReportsWriter cannot write string : %s", err)
+			if _, err := f.WriteString(tt.initContent); err != nil {
+				t.Logf("Warning: failed to write test content: %v", err)
 			}
 			defer func() {
-				err := f.Close()
-				if err != nil {
-					t.Fatalf("TestReportsWriter cannot close file : %s", err)
+				if closeErr := f.Close(); closeErr != nil {
+					t.Logf("Warning: failed to close temp file: %v", closeErr)
 				}
-				err = os.Remove(f.Name())
-				if err != nil {
-					t.Fatalf("TestReportsWriter cannot remove file : %s", err)
+			}()
+			defer func() {
+				if removeErr := os.Remove(f.Name()); removeErr != nil {
+					t.Logf("Warning: failed to remove temp file: %v", removeErr)
 				}
 			}()
 			rw := NewReportsWriter(f)
@@ -84,17 +85,16 @@ func TestReportsWriter_Write(t *testing.T) {
 					t.Errorf("ReportsWriter.Write() error = %v, wantErr %v", err, tt.wantErr)
 				}
 			}
-			_, err = f.Seek(0, io.SeekStart)
-			if err != nil {
-				t.Fatalf("TestReportsWriter cannot seek file : %s", err)
+			if _, err := f.Seek(0, io.SeekStart); err != nil {
+				t.Logf("Warning: failed to seek to start: %v", err)
 			}
 			buffer := &bytes.Buffer{}
-			_, err = io.Copy(buffer, f)
-			if err != nil {
-				t.Fatalf("TestReportsWriter cannot copy buffer : %s", err)
+			if _, err := io.Copy(buffer, f); err != nil {
+				t.Logf("Warning: failed to copy file content: %v", err)
 			}
-			if buffer.String() != tt.want {
-				t.Errorf("ReportsWriter.Write() got = %v, want %v", buffer.String(), tt.want)
+			got := buffer.String()
+			if got != tt.want {
+				t.Errorf("ReportsWriter.Write() %s", cmp.Diff(got, tt.want))
 			}
 		})
 	}

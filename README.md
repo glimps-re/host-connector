@@ -15,6 +15,26 @@ A security agent tool to scan files and folders for malware using GLIMPS Malware
 - **Quarantine management**: Automatically quarantine malicious files with encryption
 - **Cache system**: Avoid re-scanning files that haven't changed
 - **Multiple actions**: Configurable actions when malware is detected (quarantine, delete, move, log)
+- **Plugin system**: Extensible architecture with built-in plugins for specialized processing (**ONLY FOR GNU/Linux**)
+
+## Architecture
+
+GMHost is built on a modular plugin architecture that enables extensible file processing capabilities:
+
+
+**Processing Flow**:
+1. **File Detection**: Files are discovered through scan or monitoring commands
+2. **Plugin Pipeline**: Files pass through registered plugins in sequence
+3. **Analysis**: Clean files are sent to GLIMPS Malware Detect for analysis
+4. **Action Processing**: Results trigger configured actions (quarantine, delete, move, etc.)
+5. **Reporting**: Session and report plugins generate consolidated output
+
+**Plugin Integration Points**:
+- **OnStartScanFile**: Intercept files before analysis (filtering, preprocessing)
+- **OnFileScanned**: Process analysis results (logging, custom actions)
+- **OnReport**: Handle generated reports (consolidation, forwarding)
+- **XtractFile**: Custom archive extraction logic
+- **GenerateReport**: Custom report generation and formatting
 
 ## Usage
 
@@ -121,6 +141,130 @@ GMHost quarantine list
 # Restore a specific file by ID
 GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c26933f1becb
 ```
+
+## Plugin System
+
+GMHost features an extensible plugin architecture that allows for specialized processing of files during the scanning pipeline. Plugins can intercept files at various stages, perform custom analysis, generate reports, and integrate with external systems.
+
+### Plugin Development
+
+#### Plugin Interface
+
+All plugins must implement the `plugins.Plugin` interface:
+
+```go
+type Plugin interface {
+    Init(configPath string, hcc HCContext) error
+    Close(ctx context.Context) error
+}
+```
+
+#### HCContext Interface
+
+Plugins interact with the host connector through the `HCContext` interface:
+
+```go
+type HCContext interface {
+    SetXTractFile(f XtractFileFunc)
+    RegisterOnStartScanFile(f OnStartScanFile)
+    RegisterOnFileScanned(f OnFileScanned)
+    RegisterOnReport(f OnReport)
+    RegisterGenerateReport(f GenerateReport)
+    GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error)
+    GetLogger() *slog.Logger
+}
+```
+
+#### Callback Types
+
+Plugins can register callbacks for different stages of the scanning pipeline:
+
+- **`OnStartScanFile`**: Called before a file begins scanning
+- **`OnFileScanned`**: Called after a file completes scanning
+- **`OnReport`**: Called when a scan report is generated
+- **`GenerateReport`**: Custom report generation function
+- **`XtractFileFunc`**: Custom file extraction function
+
+#### Example Plugin Structure
+
+```go
+package main
+
+import (
+    "context"
+    "log/slog"
+    "github.com/glimps-re/host-connector/pkg/plugins"
+)
+
+type MyPlugin struct {
+    logger *slog.Logger
+    config MyConfig
+}
+
+type MyConfig struct {
+    Setting1 string `yaml:"setting1"`
+    Setting2 int    `yaml:"setting2"`
+}
+
+var HCPlugin MyPlugin
+
+func (p *MyPlugin) Init(configPath string, hcc plugins.HCContext) error {
+    p.logger = hcc.GetLogger()
+    // Load configuration and register callbacks
+    hcc.RegisterOnStartScanFile(p.OnStartScanFile)
+    return nil
+}
+
+func (p *MyPlugin) Close(ctx context.Context) error {
+    // Cleanup plugin resources
+    return nil
+}
+
+func (p *MyPlugin) OnStartScanFile(file string, sha256 string) *gdetect.Result {
+    // Custom file processing logic
+    return nil
+}
+
+func main() {}
+```
+
+#### Plugin Compilation
+
+Plugins are compiled as Go modules and loaded dynamically:
+
+```bash
+go build -buildmode=plugin -o myplugin.so main.go
+```
+
+#### Testing
+
+GMHost includes comprehensive unit tests for all built-in plugins:
+
+- **Extract Plugin**: 24.9% coverage (focused on main plugin interface)
+- **Filetype Filter Plugin**: 96.7% coverage
+- **Session Plugin**: Coverage for all major functionality
+- **Report Plugin**: 87.8% coverage
+- **Plugin Interface**: Complete interface compliance testing
+
+Run plugin tests:
+```bash
+# Test specific plugin
+cd cmd/plugins/session && go test -v
+
+# Test with coverage
+go test -cover
+
+# Test all plugins
+find cmd/plugins -name "*_test.go" -execdir go test \;
+```
+
+### Security Considerations
+
+- **Sandboxing**: Plugins run in the same process space as GMHost
+- **Resource Limits**: Configure appropriate limits to prevent resource exhaustion
+- **Input Validation**: Plugins should validate all input data
+- **Logging**: Use structured logging for audit trails
+- **Error Handling**: Robust error handling prevents plugin failures from affecting the main application
 
 ## Configuration
 

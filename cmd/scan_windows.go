@@ -11,6 +11,7 @@ import (
 
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/gonutz/wui/v2"
+	"honnef.co/go/tools/analysis/report"
 )
 
 //go:embed Glimps.ico
@@ -76,7 +77,7 @@ func Gui(entryPath string, nbFiles int) context.Context {
 	fileLabel := wui.NewLabel()
 	nbFilesLabel := wui.NewLabel()
 	nbFileScanned := 0
-	HandleResultCB = func(path string, result scanner.SummarizedGMalwareResult, report *scanner.Report) (err error) {
+	HandleResultCB = func(path string, result scanner.SummarizedGMalwareResult, report *report.Report) (err error) {
 		nbFileScanned++
 		nbFilesLabel.SetText(strconv.Itoa(nbFileScanned))
 		fileLabel.SetText(path)
@@ -88,10 +89,10 @@ func Gui(entryPath string, nbFiles int) context.Context {
 	return createWindow(progressBar1, xLabel, fileLabel, entryPath, nbFilesLabel)
 }
 
-var HandleResultCB = func(path string, result scanner.SummarizedGMalwareResult, report *scanner.Report) (err error) {
+var HandleResultCB = func(path string, result scanner.SummarizedGMalwareResult, report *report.Report) (err error) {
 	return nil
 }
 
-func (a *GuiHandleResult) Handle(path string, result scanner.SummarizedGMalwareResult, report *scanner.Report) (err error) {
+func (a *GuiHandleResult) Handle(path string, result scanner.SummarizedGMalwareResult, report *report.Report) (err error) {
 	return HandleResultCB(path, result, report)
 }

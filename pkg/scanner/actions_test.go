@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/report"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -23,28 +24,28 @@ func TestReportAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
 		result SummarizedGMalwareResult
-		report *Report
+		report *report.Report
 	}
 	tests := []struct {
 		name       string
 		a          *ReportAction
 		args       args
 		wantErr    bool
-		wantReport Report
+		wantReport report.Report
 	}{
 		{
 			name: "test",
 			args: args{
 				path:   "/tmp/test1",
 				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
-				report: &Report{
+				report: &report.Report{
 					FileName: "test",
 					Deleted:  true,
 				},
 			},
 			a:       &ReportAction{},
 			wantErr: false,
-			wantReport: Report{
+			wantReport: report.Report{
 				FileName:  "/tmp/test1",
 				Sha256:    "123456789",
 				Deleted:   true,
@@ -70,7 +71,7 @@ func TestLogAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
 		result SummarizedGMalwareResult
-		report *Report
+		report *report.Report
 	}
 	tests := []struct {
 		name     string
@@ -84,7 +85,7 @@ func TestLogAction_Handle(t *testing.T) {
 			args: args{
 				path:   "/tmp/test1",
 				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456789"},
-				report: &Report{
+				report: &report.Report{
 					FileName: "test",
 					Deleted:  true,
 				},
@@ -109,7 +110,7 @@ func TestLogAction_Handle(t *testing.T) {
 						},
 					},
 				},
-				report: &Report{
+				report: &report.Report{
 					FileName: "test",
 					Deleted:  true,
 				},
@@ -123,7 +124,7 @@ func TestLogAction_Handle(t *testing.T) {
 			args: args{
 				path:   "/tmp/test1",
 				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
-				report: &Report{
+				report: &report.Report{
 					FileName: "test",
 					Deleted:  true,
 				},
@@ -136,7 +137,7 @@ func TestLogAction_Handle(t *testing.T) {
 			args: args{
 				path:   "/tmp/test1",
 				result: SummarizedGMalwareResult{Malware: false, Sha256: "123456789"},
-				report: &Report{
+				report: &report.Report{
 					FileName: "test",
 					Deleted:  true,
 				},
@@ -185,7 +186,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
 		result SummarizedGMalwareResult
-		report *Report
+		report *report.Report
 	}
 	tests := []struct {
 		name    string
@@ -197,7 +198,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 			args: args{
 				path:   "test_malware",
 				result: SummarizedGMalwareResult{Malware: true},
-				report: &Report{},
+				report: &report.Report{},
 			},
 		},
 		{
@@ -205,7 +206,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 			args: args{
 				path:   "test_malware",
 				result: SummarizedGMalwareResult{Malware: false},
-				report: &Report{},
+				report: &report.Report{},
 			},
 		},
 	}
@@ -264,7 +265,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
 		result SummarizedGMalwareResult
-		report *Report
+		report *report.Report
 	}
 	tests := []struct {
 		name    string
@@ -351,7 +352,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			args: args{
 				path:   "test_quarantine1234",
 				result: SummarizedGMalwareResult{Malware: true, Sha256: "123456"},
-				report: &Report{},
+				report: &report.Report{},
 			},
 		},
 		{
@@ -381,7 +382,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			args: args{
 				path:   "test_quarantine1234",
 				result: SummarizedGMalwareResult{Malware: true, Malwares: []string{"eicar"}, Sha256: "123456"},
-				report: &Report{},
+				report: &report.Report{},
 			},
 		},
 	}
@@ -450,7 +451,7 @@ func TestInformAction_Handle(t *testing.T) {
 	type args struct {
 		path   string
 		result SummarizedGMalwareResult
-		report *Report
+		report *report.Report
 	}
 	tests := []struct {
 		name    string
@@ -468,7 +469,7 @@ func TestInformAction_Handle(t *testing.T) {
 				result: SummarizedGMalwareResult{
 					Malware: false,
 				},
-				report: &Report{},
+				report: &report.Report{},
 			},
 			wantOut: ``,
 		},
@@ -482,7 +483,7 @@ func TestInformAction_Handle(t *testing.T) {
 					Malware: false,
 				},
 				path:   "test_file.bin",
-				report: &Report{},
+				report: &report.Report{},
 			},
 			wantOut: `file test_file.bin no malware found`,
 		},
@@ -496,7 +497,7 @@ func TestInformAction_Handle(t *testing.T) {
 					Malware: true,
 				},
 				path:   "test_file.bin",
-				report: &Report{},
+				report: &report.Report{},
 			},
 			wantOut: `file test_file.bin seems malicious`,
 		},
@@ -511,7 +512,7 @@ func TestInformAction_Handle(t *testing.T) {
 					Malwares: []string{"eicar", "test_eicar"},
 				},
 				path: "test_file.bin",
-				report: &Report{
+				report: &report.Report{
 					Deleted:            true,
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
@@ -738,13 +739,13 @@ func TestMoveAction_Handle(t *testing.T) {
 		wantErr      bool
 		srcPath      string
 		destPath     string
-		wantedReport Report
+		wantedReport report.Report
 	}{
 		{
 			name:         "malware",
 			isMalware:    true,
 			samplePath:   "/media/test/e/test.txt",
-			wantedReport: Report{},
+			wantedReport: report.Report{},
 		},
 		{
 			name:       "unexpected path",
@@ -754,14 +755,14 @@ func TestMoveAction_Handle(t *testing.T) {
 		{
 			name:       "move legit",
 			samplePath: "/media/test/e/test.txt",
-			wantedReport: Report{
+			wantedReport: report.Report{
 				MoveTo: "/path/to/move/e/test.txt",
 			},
 		},
 		{
 			name:       "move legit /",
 			samplePath: "/media/test/e/test.txt",
-			wantedReport: Report{
+			wantedReport: report.Report{
 				MoveTo: "/legit/media/test/e/test.txt",
 			},
 			srcPath:  "/",
@@ -818,7 +819,7 @@ func TestMoveAction_Handle(t *testing.T) {
 				t.Errorf("MoveAction.Handle() could not get new move action, error: %v", err)
 				return
 			}
-			report := Report{}
+			report := report.Report{}
 			if err := a.Handle(t.Context(), tt.samplePath, SummarizedGMalwareResult{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
 				t.Errorf("MoveAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return

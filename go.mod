@@ -1,6 +1,8 @@
 module github.com/glimps-re/host-connector
 
-go 1.25
+go 1.25.1
+
+replace github.com/farmergreg/rfsnotify => github.com/glimps-re/rfsnotify v0.0.0-20250912141529-843f62f1f1a7
 
 require (
 	github.com/glimps-re/go-gdetect v1.4.0
@@ -11,6 +13,7 @@ require (
 
 require (
 	github.com/alecthomas/units v0.0.0-20240927000941-0f3dac36c52b
+	github.com/farmergreg/rfsnotify v0.0.0-00010101000000-000000000000
 	github.com/gonutz/wui/v2 v2.8.2
 	github.com/google/go-cmp v0.6.0
 	github.com/google/uuid v1.6.0

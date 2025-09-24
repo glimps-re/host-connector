@@ -6,6 +6,10 @@
 
 - AES ciphering now use CTR instead of deprecated OFB
 
+### Fixed
+
+- monitoring handle recursive fsnotify
+
 ## [v0.4.4] - 2025-06-25
 
 - update go to 1.24.4

@@ -95,7 +95,7 @@ func TestMonitor_work(t *testing.T) {
 				if err != nil {
 					t.Fatalf("test monitor, could not rename file : %s", err)
 				}
-				time.Sleep(time.Millisecond * 100)
+				time.Sleep(time.Millisecond * 300)
 				monitor.Close()
 				got := sb.String()
 				want := "event test11\n"

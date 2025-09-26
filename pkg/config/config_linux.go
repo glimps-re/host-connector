@@ -1,10 +1,9 @@
 //go:build linux
 // +build linux
 
-package cmd
+package config
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -18,7 +17,7 @@ var (
 	DefaultPluginsLocation    = "/var/lib/gmhost/plugins"
 )
 
-func getConfigFile() (config string) {
+func GetConfigFile() (config string, err error) {
 	config = DefaultConfigPath
 	home, err := homedir.Dir()
 	if err != nil {
@@ -26,12 +25,12 @@ func getConfigFile() (config string) {
 	}
 	cfg := filepath.Join(home, ".config", "gmhost", "config.yml")
 	if _, err := os.Stat(cfg); err == nil {
-		return cfg
+		return cfg, nil
 	}
 	if _, err := os.Stat(config); err != nil {
 		_, err = os.Create(filepath.Clean(config))
 		if err != nil {
-			Logger.Error("could not create config file", slog.String("location", config))
+			return config, err
 		}
 	}
 	return

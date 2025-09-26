@@ -1,4 +1,4 @@
-package cmd
+package cli
 
 import (
 	"context"
@@ -25,7 +25,7 @@ var quarantineCmd = &cobra.Command{
 		if err := GlobalInit(cmd, args); err != nil {
 			return err
 		}
-		if conf.Quarantine.Location == "" {
+		if Conf.Quarantine.Location == "" {
 			return errors.New("quarantine location is mandatory")
 		}
 		return nil
@@ -37,7 +37,7 @@ var quarantineListCmd = &cobra.Command{
 	Short: "List GLIMPS Malware host quarantined files",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		fmt.Printf("|%-64s|%-64s|%-64s|\n", "ID", "Reason", "File")
-		qa := scanner.NewQuarantineAction(nil, conf.Quarantine.Location, gctx.lock)
+		qa := scanner.NewQuarantineAction(nil, Conf.Quarantine.Location, gctx.Lock, nil)
 		files, err := qa.ListQuarantinedFiles(cmd.Context())
 		if err != nil {
 			return err
@@ -56,7 +56,7 @@ var quarantineRestoreCmd = &cobra.Command{
 	Short: "Restore quarantined files",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		qa := scanner.NewQuarantineAction(gctx.cache, conf.Quarantine.Location, gctx.lock)
+		qa := scanner.NewQuarantineAction(gctx.Cache, Conf.Quarantine.Location, gctx.Lock, nil)
 		for _, id := range args {
 			if strings.HasSuffix(id, ".lock") {
 				ts := restorePattern.FindStringSubmatch(id)

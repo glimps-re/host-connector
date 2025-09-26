@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glimps-re/connector-manager/pkg/shared"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/report"
 )
 
@@ -46,16 +48,6 @@ func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *re
 	return nil
 }
 
-type QuarantineAction struct {
-	cache  cache.Cacher
-	root   string
-	locker Locker
-}
-
-func NewQuarantineAction(cache cache.Cacher, root string, locker Locker) *QuarantineAction {
-	return &QuarantineAction{cache: cache, root: root, locker: locker}
-}
-
 type LogAction struct {
 	logger *slog.Logger
 }
@@ -71,19 +63,19 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result Summarize
 }
 
 func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
-	if result.Malware {
-		if len(result.Malwares) == 0 {
-			result.Malwares = []string{}
-		}
-		if len(result.MaliciousSubfiles) == 0 {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
-		} else {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
-		}
-	} else {
+	if !result.Malware {
 		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", false))
+		return
 	}
-	return nil
+	if len(result.Malwares) == 0 {
+		result.Malwares = []string{}
+	}
+	if len(result.MaliciousSubfiles) == 0 {
+		a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
+		return
+	}
+	a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
+	return
 }
 
 type MultiAction struct {
@@ -117,16 +109,24 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result Summa
 	return
 }
 
+type QuarantineAction struct {
+	cache  cache.Cacher
+	root   string
+	locker Locker
+	events chan<- any
+}
+
+func NewQuarantineAction(cache cache.Cacher, root string, locker Locker, events chan<- any) *QuarantineAction {
+	return &QuarantineAction{cache: cache, root: root, locker: locker, events: events}
+}
+
 func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	// skip legit files
 	if !result.Malware {
 		return
 	}
 	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
+		a.root = config.DefaultQuarantineLocation
 	}
 	entry := &cache.Entry{
 		ID:              cache.ComputeCacheID(path),
@@ -166,16 +166,20 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result Summa
 	}
 
 	report.QuarantineLocation = entry.QuarantineLocation
+	if a.events != nil {
+		a.events <- shared.QuarantineEvent{
+			ElementID: entry.ID,
+			Name:      entry.Sha256,
+			Date:      time.Now().String(),
+		}
+	}
 
 	return nil
 }
 
 func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
+		a.root = config.DefaultQuarantineLocation
 	}
 	fpath := filepath.Join(a.root, id+".lock")
 	f, err := os.Open(filepath.Clean(fpath))

@@ -26,7 +26,7 @@ import (
 )
 
 type Submitter interface {
-	gdetect.GDetectSubmitter
+	gdetect.ControllerGDetectSubmitter
 	ExtractExpertViewURL(result *gdetect.Result) (urlExpertView string, err error)
 }
 
@@ -48,6 +48,7 @@ type Config struct {
 	MoveFrom         string
 	Plugins          map[string]string
 	PluginsDir       string
+	ConsoleEvents    chan<- any
 }
 
 type fileToAnalyze struct {
@@ -122,6 +123,7 @@ func newAction(config Config) Action {
 			cache:  config.Cache,
 			root:   config.QuarantineFolder,
 			locker: &Lock{Password: config.Password},
+			events: config.ConsoleEvents,
 		})
 	}
 	if config.Actions.Deleted {
@@ -426,7 +428,7 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	if _, err = io.Copy(hash, f); err != nil {
 		errClose := f.Close()
 		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+			Logger.Error("cannot close file", slog.String("file", file), slog.String("error", err.Error()))
 		}
 		return
 	}
@@ -441,7 +443,7 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
 			errClose := f.Close()
 			if errClose != nil {
-				Logger.Error("cannot close file", "file", file, "error", err)
+				Logger.Error("cannot close file", slog.String("file", file), slog.String("error", err.Error()))
 			}
 			return
 		}

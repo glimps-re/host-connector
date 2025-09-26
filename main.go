@@ -1,7 +1,7 @@
 package main
 
-import "github.com/glimps-re/host-connector/cmd"
+import "github.com/glimps-re/host-connector/cmd/cli"
 
 func main() {
-	cmd.Main()
+	cli.Main()
 }

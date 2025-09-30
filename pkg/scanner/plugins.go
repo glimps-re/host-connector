@@ -3,8 +3,6 @@ package scanner
 import (
 	"errors"
 	"io"
-	"log/slog"
-	"os"
 	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
@@ -12,7 +10,10 @@ import (
 	"github.com/glimps-re/host-connector/pkg/report"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+type PluginConfig struct {
+	File   string         `yaml:"file"`
+	Config map[string]any `yaml:"config"`
+}
 
 var ErrInvalidPlugin = errors.New("invalid plugin")
 

@@ -2,92 +2,73 @@ package main
 
 import (
 	"context"
-	"io"
-	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/plugins"
+	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/glimps-re/host-connector/pkg/report"
+	"github.com/google/go-cmp/cmp"
 )
-
-// mockHCContext is a mock implementation of plugins.HCContext for testing
-type mockHCContext struct {
-	onStartScanFile    plugins.OnStartScanFile
-	onFileScanned      plugins.OnFileScanned
-	onReport           plugins.OnReport
-	generateReportFunc plugins.GenerateReport
-	logger             *slog.Logger
-}
-
-func newMockHCContext() *mockHCContext {
-	return &mockHCContext{
-		logger: slog.Default(),
-	}
-}
-
-func (m *mockHCContext) SetXTractFile(f plugins.XtractFileFunc)            {}
-func (m *mockHCContext) RegisterOnStartScanFile(f plugins.OnStartScanFile) { m.onStartScanFile = f }
-func (m *mockHCContext) RegisterOnFileScanned(f plugins.OnFileScanned)     { m.onFileScanned = f }
-func (m *mockHCContext) RegisterOnReport(f plugins.OnReport)               { m.onReport = f }
-func (m *mockHCContext) RegisterGenerateReport(f plugins.GenerateReport)   { m.generateReportFunc = f }
-func (m *mockHCContext) GetLogger() *slog.Logger                           { return m.logger }
-func (m *mockHCContext) GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
-	if m.generateReportFunc != nil {
-		return m.generateReportFunc(reportContext, reports)
-	}
-	return strings.NewReader("mock report content"), nil
-}
 
 func TestSessionPlugin_Init(t *testing.T) {
 	tests := []struct {
-		name        string
-		configPath  string
-		wantErr     bool
-		expectDepth int
+		name       string
+		config     any
+		wantConfig Config
+		wantErr    bool
 	}{
 		{
-			name:        "init with default config",
-			configPath:  "",
-			wantErr:     false,
-			expectDepth: 2,
+			name: "init config",
+			config: &Config{
+				Depth:        2,
+				Delay:        time.Second,
+				RemoveInputs: true,
+				RootFolder:   "/tmp",
+			},
+			wantErr: false,
+			wantConfig: Config{
+				Depth:        2,
+				Delay:        time.Second,
+				RemoveInputs: true,
+				RootFolder:   "/tmp",
+			},
 		},
 		{
-			name:       "init with invalid config path",
-			configPath: "/invalid/path/config.yml",
-			wantErr:    true,
+			name:    "bad config struct",
+			config:  struct{}{},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SessionPlugin{}
-			mockContext := newMockHCContext()
-
-			err := plugin.Init(tt.configPath, mockContext)
+			mockContext := mock.NewMockHCContext()
+			err := plugin.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SessionPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr {
-				if plugin.config.Depth != tt.expectDepth {
-					t.Errorf("SessionPlugin.Init() depth = %v, want %v", plugin.config.Depth, tt.expectDepth)
+				if diff := cmp.Diff(plugin.config, tt.wantConfig); diff != "" {
+					t.Errorf("SessionPlugin.Init() config diff(got-want)=%s", diff)
 				}
 				if plugin.sessions == nil {
 					t.Error("SessionPlugin.Init() sessions map should be initialized")
 				}
-				if mockContext.onStartScanFile == nil {
+				if mockContext.OnStartScanFile == nil {
 					t.Error("SessionPlugin.Init() should register OnStartScanFile callback")
 				}
-				if mockContext.onFileScanned == nil {
+				if mockContext.OnFileScanned == nil {
 					t.Error("SessionPlugin.Init() should register OnFileScanned callback")
 				}
-				if mockContext.onReport == nil {
+				if mockContext.OnReport == nil {
 					t.Error("SessionPlugin.Init() should register OnReport callback")
 				}
 			}
@@ -102,10 +83,10 @@ func TestSessionPlugin_Init(t *testing.T) {
 
 func TestSessionPlugin_Close(t *testing.T) {
 	plugin := &SessionPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
 
 	// Initialize plugin
-	err := plugin.Init("", mockContext)
+	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -114,64 +95,6 @@ func TestSessionPlugin_Close(t *testing.T) {
 	err = plugin.Close(context.Background())
 	if err != nil {
 		t.Errorf("SessionPlugin.Close() error = %v, want nil", err)
-	}
-}
-
-func TestSessionPlugin_getSessionID(t *testing.T) {
-	plugin := &SessionPlugin{
-		config: Config{
-			RootFolder: "/tmp/samples",
-			Depth:      2,
-		},
-	}
-
-	tests := []struct {
-		name     string
-		filePath string
-		want     string
-	}{
-		{
-			name:     "valid session path depth 2",
-			filePath: "/tmp/samples/user_a/subdir/file.txt",
-			want:     "user_a/subdir",
-		},
-		{
-			name:     "insufficient depth - only 2 parts",
-			filePath: "/tmp/samples/user_a/file.txt",
-			want:     "",
-		},
-		{
-			name:     "file outside root folder",
-			filePath: "/other/path/file.txt",
-			want:     "",
-		},
-		{
-			name:     "file directly in root folder",
-			filePath: "/tmp/samples/file.txt",
-			want:     "",
-		},
-		{
-			name:     "insufficient depth",
-			filePath: "/tmp/samples/user_a",
-			want:     "",
-		},
-	}
-
-	// Test with depth 1
-	plugin.config.Depth = 1
-	if got := plugin.getSessionID("/tmp/samples/user_a/file.txt"); got != "user_a" {
-		t.Errorf("getSessionID() with depth 1 = %v, want user_a", got)
-	}
-
-	// Test with depth 2
-	plugin.config.Depth = 2
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := plugin.getSessionID(tt.filePath)
-			if got != tt.want {
-				t.Errorf("SessionPlugin.getSessionID() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }
 
@@ -191,14 +114,13 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 			Delay:      100 * time.Millisecond,
 		},
 		sessions: make(map[string]*Session),
-		logger:   slog.Default(),
 	}
 
 	// Test creating session
 	sessionID := "user_a/subdir"
 	filePath := filepath.Join(tmpDir, "user_a/subdir/test.txt")
 
-	session := plugin.getOrCreateSession(sessionID, filePath)
+	session := plugin.getSession(filePath, true)
 	if session == nil {
 		t.Fatal("getOrCreateSession should return a session")
 	}
@@ -263,7 +185,6 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 			Depth:      2,
 		},
 		sessions: make(map[string]*Session),
-		logger:   slog.Default(),
 	}
 
 	tests := []struct {
@@ -295,10 +216,13 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 			}
 
 			if tt.expectSession {
-				session := plugin.getSession(tt.expectedSessID)
+				session := plugin.getSession(tt.filePath, false)
 				if session == nil {
 					t.Error("Session should be created")
 				} else {
+					if session.ID != tt.expectedSessID {
+						t.Errorf("want session ID %s, got %s", tt.expectedSessID, session.ID)
+					}
 					if _, exists := session.PendingFiles[tt.filePath]; !exists {
 						t.Error("File should be added to session")
 					}
@@ -322,11 +246,9 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 			Depth:      2,
 		},
 		sessions: make(map[string]*Session),
-		logger:   slog.Default(),
 	}
 
 	filePath := filepath.Join(tmpDir, "user_a/subdir/test.txt")
-	sessionID := "user_a/subdir"
 
 	// First add the file to a session
 	plugin.OnStartScanFile(filePath, "sha256hash")
@@ -334,7 +256,7 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 	// Test OnFileScanned
 	plugin.OnFileScanned(filePath, "sha256hash", gdetect.Result{}, nil)
 
-	session := plugin.getSession(sessionID)
+	session := plugin.getSession(filePath, false)
 	if session == nil {
 		t.Fatal("Session should exist")
 	}
@@ -363,11 +285,9 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 			Depth:      2,
 		},
 		sessions: make(map[string]*Session),
-		logger:   slog.Default(),
 	}
 
 	filePath := filepath.Join(tmpDir, "user_a/subdir/test.txt")
-	sessionID := "user_a/subdir"
 
 	// First add the file to a session
 	plugin.OnStartScanFile(filePath, "sha256hash")
@@ -380,9 +300,9 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 	}
 	plugin.OnReport(rep)
 
-	session := plugin.getSession(sessionID)
+	session := plugin.getSession(filePath, false)
 	if session == nil {
-		t.Fatal("Session should exist")
+		t.Fatal("session should exist")
 	}
 
 	if len(session.CompletedReports) != 1 {
@@ -403,7 +323,7 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	}()
 
 	plugin := &SessionPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
 
 	// Override config for testing
 	config := Config{
@@ -417,7 +337,6 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	plugin.config = config
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = mockContext
-	plugin.logger = mockContext.GetLogger()
 	plugin.ctx, plugin.cancel = context.WithCancel(context.Background())
 	defer plugin.cancel()
 
@@ -447,8 +366,7 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	plugin.OnStartScanFile(file2, "hash2")
 
 	// Verify session was created
-	sessionID := "user_a/batch1"
-	session := plugin.getSession(sessionID)
+	session := plugin.getSession(file1, false)
 	if session == nil {
 		t.Fatal("Session should be created")
 	}
@@ -497,4 +415,129 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 func TestSessionPlugin_Interface(t *testing.T) {
 	// Test that SessionPlugin implements the Plugin interface
 	var _ plugins.Plugin = &SessionPlugin{}
+}
+
+func TestSessionPlugin_getSession(t *testing.T) {
+	type fields struct {
+		storedSessions map[string]*Session
+		config         *Config
+	}
+	tests := []struct {
+		name   string // description of this test case
+		fields fields
+
+		// Named input parameters for target function.
+		filePath    string
+		ensure      bool
+		wantSession bool
+		wantID      string
+	}{
+		{
+			name: "ok insufficient depth",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/folder/",
+					Depth:      4,
+					Delay:      time.Second,
+				},
+			},
+			filePath:    "/root/folder/user_a/file2",
+			ensure:      true,
+			wantSession: false,
+		},
+		{
+			name: "ok different root",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/other_folder/",
+					Depth:      2,
+					Delay:      time.Second,
+				},
+			},
+			filePath:    "/root/folder/user_a/file2",
+			ensure:      true,
+			wantSession: false,
+		},
+		{
+			name: "ok different root 2",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/folder/",
+					Depth:      2,
+					Delay:      time.Second,
+				},
+			},
+			filePath:    "/root/folder_2/user_a/file2",
+			ensure:      true,
+			wantSession: false,
+		},
+		{
+			name: "ok create",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/folder/",
+					Depth:      1,
+					Delay:      time.Second,
+				},
+			},
+			filePath:    "/root/folder/user_a/file2",
+			ensure:      true,
+			wantSession: true,
+			wantID:      "user_a",
+		},
+		{
+			name: "ok no session",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/folder/",
+					Depth:      1,
+					Delay:      time.Second,
+				},
+			},
+			filePath:    "/root/folder/user_a/file2",
+			ensure:      false,
+			wantSession: false,
+		},
+		{
+			name: "ok present session",
+			fields: fields{
+				config: &Config{
+					RootFolder: "/root/folder/",
+					Depth:      1,
+					Delay:      time.Second,
+				},
+				storedSessions: map[string]*Session{
+					"user_a": {
+						ID: "user_a",
+					},
+				},
+			},
+			filePath:    "/root/folder/user_a/file2",
+			ensure:      false,
+			wantSession: true,
+			wantID:      "user_a",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := &SessionPlugin{}
+			mockContext := mock.NewMockHCContext()
+			err := plugin.Init(tt.fields.config, mockContext)
+			if err != nil {
+				t.Fatalf("could not init plugin")
+			}
+			maps.Copy(plugin.sessions, tt.fields.storedSessions)
+
+			got := plugin.getSession(tt.filePath, tt.ensure)
+			if tt.wantSession != (got != nil) {
+				t.Errorf("getSession() want session = %v, got=%v", tt.wantSession, got)
+			}
+			if got == nil {
+				return
+			}
+			if got.ID != tt.wantID {
+				t.Errorf("getSession() want session ID %s, got %s", tt.wantID, got.ID)
+			}
+		})
+	}
 }

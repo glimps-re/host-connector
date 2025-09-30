@@ -10,7 +10,11 @@ import (
 	"time"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+var LogLevel = &slog.LevelVar{}
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 type Report struct {
 	FileName           string   `json:"file-name"`
@@ -22,6 +26,7 @@ type Report struct {
 	HasBeenRestored    bool     `json:"has-been-restored,omitempty"`
 	MoveTo             string   `json:"move-to,omitempty"`
 	Malware            []string `json:"malware,omitempty"`
+	Size               int64    `json:"size,omitempty"`
 }
 
 type ReportsWriter struct {

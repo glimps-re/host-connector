@@ -2,147 +2,95 @@ package main
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/report"
+	"github.com/glimps-re/host-connector/pkg/plugins/mock"
+	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/vimeo/go-magic/magic"
 )
 
-// mockHCContext is a mock implementation of plugins.HCContext for testing
-type mockHCContext struct {
-	onStartScanFile    plugins.OnStartScanFile
-	onFileScanned      plugins.OnFileScanned
-	onReport           plugins.OnReport
-	generateReportFunc plugins.GenerateReport
-	logger             *slog.Logger
-}
-
-func newMockHCContext() *mockHCContext {
-	return &mockHCContext{
-		logger: slog.Default(),
-	}
-}
-
-func (m *mockHCContext) SetXTractFile(f plugins.XtractFileFunc)            {}
-func (m *mockHCContext) RegisterOnStartScanFile(f plugins.OnStartScanFile) { m.onStartScanFile = f }
-func (m *mockHCContext) RegisterOnFileScanned(f plugins.OnFileScanned)     { m.onFileScanned = f }
-func (m *mockHCContext) RegisterOnReport(f plugins.OnReport)               { m.onReport = f }
-func (m *mockHCContext) RegisterGenerateReport(f plugins.GenerateReport)   { m.generateReportFunc = f }
-func (m *mockHCContext) GetLogger() *slog.Logger                           { return m.logger }
-func (m *mockHCContext) GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
-	if m.generateReportFunc != nil {
-		return m.generateReportFunc(reportContext, reports)
-	}
-	return strings.NewReader("mock report content"), nil
-}
-
 func TestFTFilterPlugin_Init(t *testing.T) {
 	tests := []struct {
-		name         string
-		configPath   string
-		configData   string
-		wantErr      bool
-		expectConfig bool
+		name       string
+		config     any
+		wantErr    bool
+		wantConfig Config
 	}{
 		{
-			name:         "init with empty config path",
-			configPath:   "",
-			wantErr:      false,
-			expectConfig: false,
+			name:    "init with empty config path",
+			config:  &Config{},
+			wantErr: false,
 		},
 		{
-			name:       "init with invalid config path",
-			configPath: "/invalid/path/config.yml",
-			wantErr:    true,
-		},
-		{
-			name:       "init with valid config",
-			configPath: "test_config.yml",
-			configData: `forbidden_types:
-  - application/x-executable
-  - application/x-msdos-program
-skipped_types:
-  - text/plain
-  - image/jpeg`,
-			wantErr:      false,
-			expectConfig: true,
-		},
-		{
-			name:       "init with invalid yaml",
-			configPath: "invalid_config.yml",
-			configData: `invalid: yaml: content:
-  - not properly formatted`,
+			name:    "init with invalid config",
+			config:  struct{}{},
 			wantErr: true,
+		},
+		{
+			name: "init with valid config",
+			config: &Config{
+				ForbiddenTypes: []string{
+					"application/x-executable",
+					"application/x-msdos-program",
+				},
+				SkippedTypes: []string{
+					"text/plain",
+					"image/jpeg",
+				},
+			},
+			wantErr: false,
+			wantConfig: Config{
+				ForbiddenTypes: []string{
+					"application/x-executable",
+					"application/x-msdos-program",
+				},
+				SkippedTypes: []string{
+					"text/plain",
+					"image/jpeg",
+				},
+			},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &FTFilterPlugin{}
-			mockContext := newMockHCContext()
+			mockContext := mock.NewMockHCContext()
 
-			// Create temporary config file if needed
-			var configPath string
-			if tt.configPath != "" && tt.configData != "" {
-				tmpDir := t.TempDir()
-				defer func() {
-					if err := os.RemoveAll(tmpDir); err != nil {
-						t.Logf("Warning: failed to remove temp dir %s: %v", tmpDir, err)
-					}
-				}()
-
-				configPath = filepath.Join(tmpDir, tt.configPath)
-				if err := os.WriteFile(configPath, []byte(tt.configData), 0o600); err != nil {
-					t.Fatalf("Failed to write config file: %v", err)
-				}
-			} else {
-				configPath = tt.configPath
-			}
-
-			err := plugin.Init(configPath, mockContext)
+			err := plugin.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("FTFilterPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr {
-				if plugin.logger == nil {
-					t.Error("FTFilterPlugin.Init() logger should be set")
-				}
-				if mockContext.onStartScanFile == nil && tt.expectConfig {
+				if mockContext.OnStartScanFile == nil {
 					t.Error("FTFilterPlugin.Init() should register OnStartScanFile callback when config is provided")
 				}
 
-				if tt.expectConfig {
-					if plugin.ForbiddenTypes == nil {
-						t.Error("FTFilterPlugin.Init() ForbiddenTypes should be initialized")
-					}
-					if plugin.SkippedTypes == nil {
-						t.Error("FTFilterPlugin.Init() SkippedTypes should be initialized")
-					}
+				forbidden := make([]string, 0, len(plugin.ForbiddenTypes))
+				skipped := make([]string, 0, len(plugin.SkippedTypes))
 
-					// Check specific configuration
-					if len(plugin.ForbiddenTypes) != 2 {
-						t.Errorf("FTFilterPlugin.Init() expected 2 forbidden types, got %d", len(plugin.ForbiddenTypes))
-					}
-					if len(plugin.SkippedTypes) != 2 {
-						t.Errorf("FTFilterPlugin.Init() expected 2 skipped types, got %d", len(plugin.SkippedTypes))
-					}
-
-					if _, exists := plugin.ForbiddenTypes["application/x-executable"]; !exists {
-						t.Error("FTFilterPlugin.Init() should contain application/x-executable in forbidden types")
-					}
-					if _, exists := plugin.SkippedTypes["text/plain"]; !exists {
-						t.Error("FTFilterPlugin.Init() should contain text/plain in skipped types")
-					}
+				for k := range plugin.ForbiddenTypes {
+					forbidden = append(forbidden, k)
 				}
+
+				for k := range plugin.SkippedTypes {
+					skipped = append(skipped, k)
+				}
+				less := func(a, b string) bool { return a < b }
+				if diff := cmp.Diff(forbidden, tt.wantConfig.ForbiddenTypes, cmpopts.SortSlices(less), cmpopts.EquateEmpty()); diff != "" {
+					t.Errorf("FTFilterPlugin.Init() forbidden types diff(got-want)=%s", diff)
+				}
+				if diff := cmp.Diff(skipped, tt.wantConfig.SkippedTypes, cmpopts.SortSlices(less), cmpopts.EquateEmpty()); diff != "" {
+					t.Errorf("FTFilterPlugin.Init() skipped types diff(got-want)=%s", diff)
+				}
+
 			}
 		})
 	}
@@ -216,7 +164,6 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 						actualMime: {},
 					},
 					SkippedTypes: map[string]struct{}{},
-					logger:       slog.Default(),
 				}
 			}(),
 			filePath: binaryFile,
@@ -235,7 +182,6 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 				SkippedTypes: map[string]struct{}{
 					"text/plain": {},
 				},
-				logger: slog.Default(),
 			},
 			filePath: textFile,
 			sha256:   "test_sha256",
@@ -250,7 +196,6 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 			plugin: &FTFilterPlugin{
 				ForbiddenTypes: map[string]struct{}{},
 				SkippedTypes:   map[string]struct{}{},
-				logger:         slog.Default(),
 			},
 			filePath:  textFile,
 			sha256:    "test_sha256",
@@ -265,7 +210,6 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 				SkippedTypes: map[string]struct{}{
 					"image/jpeg": {},
 				},
-				logger: slog.Default(),
 			},
 			filePath:  textFile,
 			sha256:    "test_sha256",
@@ -313,7 +257,6 @@ func TestFTFilterPlugin_OnStartScanFile_NonExistentFile(t *testing.T) {
 			"application/x-executable": {},
 		},
 		SkippedTypes: map[string]struct{}{},
-		logger:       slog.Default(),
 	}
 
 	// Test with non-existent file
@@ -334,14 +277,13 @@ func TestFTFilterPlugin_Integration(t *testing.T) {
 		}
 	}()
 
-	configContent := `forbidden_types:
-  - application/x-executable
-skipped_types:
-  - text/plain`
-
-	configPath := filepath.Join(tmpDir, "config.yml")
-	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
-		t.Fatalf("Failed to write config file: %v", err)
+	config := &Config{
+		ForbiddenTypes: []string{
+			"application/x-executable",
+		},
+		SkippedTypes: []string{
+			"text/plain",
+		},
 	}
 
 	// Create test files
@@ -351,21 +293,21 @@ skipped_types:
 	}
 
 	plugin := &FTFilterPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
 
 	// Test initialization
-	err := plugin.Init(configPath, mockContext)
+	err := plugin.Init(config, mockContext)
 	if err != nil {
 		t.Fatalf("FTFilterPlugin.Init() error = %v", err)
 	}
 
 	// Test that callback was registered
-	if mockContext.onStartScanFile == nil {
+	if mockContext.OnStartScanFile == nil {
 		t.Fatal("OnStartScanFile callback should be registered")
 	}
 
 	// Test the callback functionality
-	result := mockContext.onStartScanFile(textFile, "test_sha256")
+	result := mockContext.OnStartScanFile(textFile, "test_sha256")
 	if result == nil {
 		t.Fatal("Expected result for text file, got nil")
 	}

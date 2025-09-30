@@ -3,32 +3,14 @@ package main
 import (
 	"context"
 	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
+	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/glimps-re/host-connector/pkg/report"
 )
-
-// mockHCContext is a mock implementation of plugins.HCContext for testing
-type mockHCContext struct {
-	generateReportFunc plugins.GenerateReport
-}
-
-func (m *mockHCContext) SetXTractFile(f plugins.XtractFileFunc)            {}
-func (m *mockHCContext) RegisterOnStartScanFile(f plugins.OnStartScanFile) {}
-func (m *mockHCContext) RegisterOnFileScanned(f plugins.OnFileScanned)     {}
-func (m *mockHCContext) RegisterOnReport(f plugins.OnReport)               {}
-func (m *mockHCContext) RegisterGenerateReport(f plugins.GenerateReport)   { m.generateReportFunc = f }
-func (m *mockHCContext) GetLogger() *slog.Logger                           { return slog.Default() }
-func (m *mockHCContext) GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
-	if m.generateReportFunc != nil {
-		return m.generateReportFunc(reportContext, reports)
-	}
-	return nil, nil
-}
 
 func TestMergeArgsIntoSlice(t *testing.T) {
 	tests := []struct {
@@ -113,28 +95,34 @@ func TestFormatDuration(t *testing.T) {
 
 func TestReportPlugin_Init(t *testing.T) {
 	tests := []struct {
-		name       string
-		configPath string
-		wantErr    bool
+		name    string
+		config  any
+		wantErr bool
 	}{
 		{
-			name:       "init with default template",
-			configPath: "",
-			wantErr:    false,
+			name:    "init with default template",
+			config:  &Config{},
+			wantErr: false,
 		},
 		{
-			name:       "init with invalid config path",
-			configPath: "/invalid/path/template.html",
-			wantErr:    true,
+			name: "init with invalid template path",
+			config: &Config{
+				TemplatePath: "/invalid/path/template.html",
+			},
+			wantErr: true,
+		},
+		{
+			name:    "init with bad config",
+			config:  struct{}{},
+			wantErr: true,
 		},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &ReportPlugin{}
-			mockContext := &mockHCContext{}
+			mockContext := mock.NewMockHCContext()
 
-			err := p.Init(tt.configPath, mockContext)
+			err := p.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ReportPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -144,7 +132,7 @@ func TestReportPlugin_Init(t *testing.T) {
 				if p.templ == nil {
 					t.Error("ReportPlugin.Init() template should not be nil after successful init")
 				}
-				if mockContext.generateReportFunc == nil {
+				if mockContext.GenerateReportFunc == nil {
 					t.Error("ReportPlugin.Init() should register GenerateReport function")
 				}
 			}
@@ -161,8 +149,6 @@ func TestReportPlugin_Close(t *testing.T) {
 }
 
 func TestReportPlugin_scanResToReportData(t *testing.T) {
-	p := &ReportPlugin{}
-
 	startTime := time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC)
 	endTime := startTime.Add(2*time.Minute + 30*time.Second)
 
@@ -193,7 +179,7 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 		},
 	}
 
-	reportData := p.scanResToReportData(reportContext, reports)
+	reportData := scanResToReportData(reportContext, reports)
 
 	// Check basic fields
 	if reportData.NbFileSubmitted != 3 {
@@ -245,8 +231,8 @@ func TestReportPlugin_GenerateHTMLReport(t *testing.T) {
 	p := &ReportPlugin{}
 
 	// Initialize with default template
-	mockContext := &mockHCContext{}
-	err := p.Init("", mockContext)
+	mockContext := mock.NewMockHCContext()
+	err := p.Init(p.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -269,7 +255,7 @@ func TestReportPlugin_GenerateHTMLReport(t *testing.T) {
 		Duration:      "2m30s",
 	}
 
-	htmlBuf, err := p.GenerateHTMLReport(testData)
+	htmlBuf, err := p.generateHTMLReport(testData)
 	if err != nil {
 		t.Errorf("ReportPlugin.GenerateHTMLReport() error = %v", err)
 		return
@@ -310,8 +296,8 @@ func TestReportPlugin_GeneratePdfReport_Mock(t *testing.T) {
 	p := &ReportPlugin{}
 
 	// Initialize with default template
-	mockContext := &mockHCContext{}
-	err := p.Init("", mockContext)
+	mockContext := mock.NewMockHCContext()
+	err := p.Init(p.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -331,10 +317,10 @@ func TestReportPlugin_GeneratePdfReport_Mock(t *testing.T) {
 	}
 
 	// Test data preparation part (this will work without chromedp)
-	reportData := p.scanResToReportData(reportContext, reports)
+	reportData := scanResToReportData(reportContext, reports)
 
 	// Test HTML generation part
-	htmlBuf, err := p.GenerateHTMLReport(reportData)
+	htmlBuf, err := p.generateHTMLReport(reportData)
 	if err != nil {
 		t.Errorf("ReportPlugin.GeneratePdfReport() HTML generation error = %v", err)
 		return
@@ -354,8 +340,8 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 	p := &ReportPlugin{}
 
 	// Initialize with default template
-	mockContext := &mockHCContext{}
-	err := p.Init("", mockContext)
+	mockContext := mock.NewMockHCContext()
+	err := p.Init(p.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -390,7 +376,7 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 		t.Logf("GenerateReport failed as expected without browser environment: %v", err)
 
 		// We can still test that the data preparation works
-		reportData := p.scanResToReportData(reportContext, reports)
+		reportData := scanResToReportData(reportContext, reports)
 
 		// Verify the data was prepared correctly
 		if reportData.ScanID != reportContext.ScanID {

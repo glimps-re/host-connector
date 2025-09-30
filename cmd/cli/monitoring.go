@@ -17,7 +17,7 @@ var monitoringCmd = &cobra.Command{
 	Short:             "Start monitoring location with GLIMPS Malware host",
 	PersistentPreRunE: GlobalInit,
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
-		Logger.Debug("config", slog.Any("config", Conf))
+		logger.Debug("config", slog.Any("config", Conf))
 		if len(args) == 0 {
 			args = Conf.Paths
 		}

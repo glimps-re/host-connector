@@ -4,9 +4,13 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
 	"html/template"
 	"io"
+	"log/slog"
+	"math"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -15,6 +19,8 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/report"
 )
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 // ReportPlugin implements the Plugin interface for generating PDF and HTML reports
 // from scan results using HTML templates and chromedp for PDF conversion.
@@ -26,12 +32,52 @@ var (
 	_ plugins.Plugin = &ReportPlugin{}
 	// HCPlugin is the exported plugin instance required by the plugin loader
 	HCPlugin ReportPlugin
+
+	// defaultTemplate contains the embedded HTML template for report generation
+	//
+	//go:embed report.html.tmpl
+	defaultTemplate string
 )
 
-// DefaultTemplate contains the embedded HTML template for report generation
-//
-//go:embed report.html.tmpl
-var DefaultTemplate string
+type Config struct {
+	TemplatePath string `mapstructure:"templatePath"`
+}
+
+func (p *ReportPlugin) GetDefaultConfig() (config any) {
+	config = new(Config)
+	return
+}
+
+// Init implements the Plugin interface, initializing the report plugin with the given configuration.
+// If configPath is empty, uses the embedded default template. Otherwise, loads template from the file path.
+// Registers the GenerateReport function with the host connector context.
+func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
+	templ := template.New("report").Funcs(template.FuncMap{
+		"mergeArgsIntoSlice": mergeArgsIntoSlice,
+		"formatDuration":     formatDuration,
+	})
+
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		err = errors.New("bad config passed to report")
+		return
+	}
+	logger = hcc.GetLogger()
+
+	if config.TemplatePath != "" {
+		if p.templ, err = templ.ParseFiles(filepath.Clean(config.TemplatePath)); err != nil {
+			return
+		}
+		logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
+		hcc.RegisterGenerateReport(p.GenerateReport)
+	}
+	if p.templ, err = templ.Parse(defaultTemplate); err != nil {
+		return
+	}
+	logger.Info("plugin initialized", slog.String("template", "default"))
+	hcc.RegisterGenerateReport(p.GenerateReport)
+	return nil
+}
 
 // Close implements the Plugin interface, performing cleanup when the plugin is shut down.
 // Currently no cleanup is required for the report plugin.
@@ -41,8 +87,23 @@ func (p *ReportPlugin) Close(context.Context) error {
 
 // mergeArgsIntoSlice is a template function that merges multiple arguments into a slice.
 // Used within HTML templates to combine template variables.
-func mergeArgsIntoSlice(args ...interface{}) []interface{} {
+func mergeArgsIntoSlice(args ...any) []any {
 	return args
+}
+
+func humanizeFileSize(size int64) string {
+	sizes := []string{"o", "Ko", "Mo", "Go", "To", "Po", "Eo"}
+	if size < 10 {
+		return fmt.Sprintf("%d o", size)
+	}
+	e := math.Floor(math.Log(float64(size)) / math.Log(1000)) // number of Ko
+	suffix := sizes[int(e)]
+	val := math.Floor(float64(size)/math.Pow(1000, e)*10+0.5) / 10
+	f := "%.0f %s"
+	if val < 10 {
+		f = "%.1f %s"
+	}
+	return fmt.Sprintf(f, val, suffix)
 }
 
 // formatDuration is a template function that formats a time.Duration into a human-readable string.
@@ -55,27 +116,6 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%ds", seconds)
 	}
 	return fmt.Sprintf("%dm%ds", minutes, seconds)
-}
-
-// Init implements the Plugin interface, initializing the report plugin with the given configuration.
-// If configPath is empty, uses the embedded default template. Otherwise, loads template from the file path.
-// Registers the GenerateReport function with the host connector context.
-func (p *ReportPlugin) Init(configPath string, hcc plugins.HCContext) (err error) {
-	templ := template.New("report").Funcs(template.FuncMap{
-		"mergeArgsIntoSlice": mergeArgsIntoSlice,
-		"formatDuration":     formatDuration,
-	})
-	if configPath == "" {
-		if p.templ, err = templ.Parse(DefaultTemplate); err != nil {
-			return
-		}
-	} else {
-		if p.templ, err = templ.ParseFiles(filepath.Clean(configPath)); err != nil {
-			return
-		}
-	}
-	hcc.RegisterGenerateReport(p.GenerateReport)
-	return nil
 }
 
 // FileReportData represents the data structure for individual file information in reports.
@@ -109,69 +149,60 @@ type ReportData struct {
 // GenerateReport implements the GenerateReport function for the plugin interface.
 // Generates a PDF report from the scan context and results by delegating to GeneratePdfReport.
 func (p *ReportPlugin) GenerateReport(reportContext report.ScanContext, reports []report.Report) (o io.Reader, err error) {
-	buffer, err := p.GeneratePdfReport(reportContext, reports)
+	buffer, err := p.generatePDFReport(reportContext, reports)
 	o = buffer
 	return
 }
 
 // scanResToReportData converts scan results into the ReportData structure for template rendering.
 // Categorizes files into safe, malware, error, ignored, and partial result groups.
-func (p *ReportPlugin) scanResToReportData(reportContext report.ScanContext, reports []report.Report) (reportData ReportData) {
+func scanResToReportData(reportContext report.ScanContext, reports []report.Report) (reportData ReportData) {
 	reportData = ReportData{
 		ScanID:          reportContext.ScanID,
 		ScanStartTime:   reportContext.Start.Format(time.RFC3339),
 		Duration:        reportContext.End.Sub(reportContext.Start).String(),
 		NbFileSubmitted: len(reports),
 	}
-	// var totalSizeAnalyzed int64 = 0
+	var totalSizeAnalyzed int64 = 0
 	for _, r := range reports {
-		// childName := ""
-		// if r.FRes.Name != r.FRes.MalwareFname { // if they are equal it means it's not a subfile that triggered verdict but the file itself
-		// 	childName = r.FRes.MalwareFname
-		// }
 		fReport := FileReportData{
-			Name:   r.FileName,
-			Sha256: r.Sha256,
-			// Size:             HumanizeBytes(r.Size),
+			Name:     r.FileName,
+			Sha256:   r.Sha256,
+			Size:     humanizeFileSize(r.Size),
 			Malwares: r.Malware,
-			// MalwareChildName: childName,
-			// Warning:          r.FRes.Warning,
-		}
-		if r.Malicious {
-			reportData.FilesMalware = append(reportData.FilesMalware, fReport)
-		} else {
-			reportData.FilesSafe = append(reportData.FilesSafe, fReport)
 		}
 		reportData.NbFileAnalyzed++
-		// totalSizeAnalyzed += r.FRes.Size
+		totalSizeAnalyzed += r.Size
+		if r.Malicious {
+			reportData.FilesMalware = append(reportData.FilesMalware, fReport)
+			continue
+		}
+		reportData.FilesSafe = append(reportData.FilesSafe, fReport)
 	}
-
-	// reportData.VolumeAnalyzed = HumanizeBytes(totalSizeAnalyzed)
+	reportData.VolumeAnalyzed = humanizeFileSize(totalSizeAnalyzed)
 	return
 }
 
-// GenerateHTMLReport builds an HTML report from the provided ReportData using the configured template.
+// generateHTMLReport builds an HTML report from the provided ReportData using the configured template.
 // Returns a buffer containing the rendered HTML content.
-func (p *ReportPlugin) GenerateHTMLReport(data ReportData) (htmlBuf *bytes.Buffer, err error) {
+func (p *ReportPlugin) generateHTMLReport(data ReportData) (htmlBuf *bytes.Buffer, err error) {
 	htmlBuf = new(bytes.Buffer)
-
 	err = p.templ.Execute(htmlBuf, data)
 	if err != nil {
 		return nil, err
 	}
-
 	return
 }
 
-// GeneratePdfReport builds a PDF report from scan results using chromedp for HTML-to-PDF conversion.
+// generatePDFReport builds a PDF report from scan results using chromedp for HTML-to-PDF conversion.
 // First generates HTML content, then uses a headless browser to convert it to PDF format.
 // Returns a buffer containing the PDF content.
-func (p *ReportPlugin) GeneratePdfReport(reportContext report.ScanContext, reports []report.Report) (pdfBuf *bytes.Buffer, err error) {
+func (p *ReportPlugin) generatePDFReport(reportContext report.ScanContext, reports []report.Report) (pdfBuf *bytes.Buffer, err error) {
 	pdfBuf = new(bytes.Buffer)
 
-	data := p.scanResToReportData(reportContext, reports)
+	data := scanResToReportData(reportContext, reports)
 	// Fill in html buffer with template
-	htmlBuf, err := p.GenerateHTMLReport(data)
+	htmlBuf, err := p.generateHTMLReport(data)
 	if err != nil {
 		return
 	}

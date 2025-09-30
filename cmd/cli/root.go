@@ -8,6 +8,8 @@ import (
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/handler"
+	"github.com/glimps-re/host-connector/pkg/monitor"
+	"github.com/glimps-re/host-connector/pkg/report"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -41,7 +43,7 @@ func initRoot(rootCmd *cobra.Command) {
 		if Conf.Config == "" {
 			conf, err := config.GetConfigFile()
 			if err != nil {
-				Logger.Error("could not create config file", slog.String("location", conf))
+				logger.Error("could not create config file", slog.String("location", conf))
 			}
 			Conf.Config = conf
 		}
@@ -49,11 +51,11 @@ func initRoot(rootCmd *cobra.Command) {
 		viper.SetConfigType("yaml")
 
 		if err := viper.ReadInConfig(); err != nil {
-			Logger.Error("Can't read config", slog.String("error", err.Error()))
+			logger.Error("Can't read config", slog.String("error", err.Error()))
 			return
 		}
 		if err := viper.Unmarshal(Conf); err != nil {
-			Logger.Error("Can't unmarshal config", slog.String("error", err.Error()))
+			logger.Error("Can't unmarshal config", slog.String("error", err.Error()))
 		}
 	}
 	cobra.OnInitialize(initConfig)
@@ -88,7 +90,7 @@ var rootCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		err = yaml.NewEncoder(os.Stdout).Encode(Conf)
 		if err != nil {
-			Logger.Error("error encode yaml conf", slog.String("err", err.Error()))
+			logger.Error("error encode yaml conf", slog.String("err", err.Error()))
 			return
 		}
 		if err = cmd.Usage(); err != nil {
@@ -100,16 +102,18 @@ var rootCmd = &cobra.Command{
 
 func GlobalInit(cmd *cobra.Command, args []string) (err error) {
 	if Conf.Debug {
-		Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))
-		scanner.Logger = Logger
-		cache.Logger = Logger
-		handler.Logger = Logger
+		LogLevel.Set(slog.LevelDebug)
+		scanner.LogLevel.Set(slog.LevelDebug)
+		cache.LogLevel.Set(slog.LevelDebug)
+		handler.LogLevel.Set(slog.LevelDebug)
+		monitor.LogLevel.Set(slog.LevelDebug)
+		report.LogLevel.Set(slog.LevelDebug)
 	}
 
-	Logger.Debug("debug activated")
+	logger.Debug("debug activated")
 	gctx, err = handler.NewHandler(cmd.Context(), Conf)
 	if err != nil {
-		Logger.Error("could not init context", slog.String("error", err.Error()))
+		logger.Error("could not init context", slog.String("error", err.Error()))
 		return
 	}
 	return nil

@@ -15,7 +15,11 @@ import (
 	"modernc.org/sqlite"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{}))
+var LogLevel = &slog.LevelVar{}
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 type Entry struct {
 	ID        string    `gorm:"primarykey" field:"id"`

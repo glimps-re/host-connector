@@ -27,16 +27,9 @@ type Config struct {
 	// global
 	Config string `yaml:"config" desc:"path to configuration file"`
 	shared.HostConfig
-	Console      shared.ConnectorManagerClientConfig `mapstructure:"console" desc:"connector manager configuration"`
-	Debug        bool                                `mapstructure:"debug" yaml:"debug" desc:"print debug strings"`
-	Verbose      bool                                `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
-	Quiet        bool                                `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`
-	Print        PrintConfig                         `mapstructure:"print" yaml:"print" desc:"print report configuration"`
-	PluginConfig HostPluginConfig                    `mapstructure:"plugins" yaml:"plugins" desc:"plugins configuration"`
-	Gui          bool
-}
-
-type HostPluginConfig struct {
-	Location string            `mapstructure:"location" yaml:"location" desc:"location containing plugins"`
-	Plugins  map[string]string `mapstructure:"plugins" yaml:"plugins" desc:"active plugins, PLUGIN_NAME:CONFIG_FILE"`
+	Console shared.ConnectorManagerClientConfig `mapstructure:"console" desc:"connector manager configuration"`
+	Verbose bool                                `mapstructure:"verbose" yaml:"verbose" desc:"print information strings"`
+	Quiet   bool                                `mapstructure:"quiet" yaml:"quiet" desc:"print no information strings"`
+	Print   PrintConfig                         `mapstructure:"print" yaml:"print" desc:"print report configuration"`
+	Gui     bool
 }

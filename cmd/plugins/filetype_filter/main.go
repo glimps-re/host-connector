@@ -41,15 +41,17 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
+	"strings"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/vimeo/go-magic/magic"
-	"gopkg.in/yaml.v3"
 )
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 // FTFilterPlugin implements the plugins.Plugin interface to provide MIME type-based file filtering.
 //
@@ -60,11 +62,9 @@ import (
 // Fields:
 //   - ForbiddenTypes: Set of MIME types to immediately flag as malicious
 //   - SkippedTypes: Set of MIME types to mark as safe and skip further analysis
-//   - logger: Structured logger for audit trails and debugging
 type FTFilterPlugin struct {
 	ForbiddenTypes map[string]struct{} // MIME types to flag as malicious
 	SkippedTypes   map[string]struct{} // MIME types to mark as safe
-	logger         *slog.Logger        // Structured logger instance
 }
 
 // Config represents the YAML configuration structure for the filetype filter plugin.
@@ -76,8 +76,8 @@ type FTFilterPlugin struct {
 //   - ForbiddenTypes: MIME types that should be immediately flagged as malicious
 //   - SkippedTypes: MIME types that should be marked as safe without analysis
 type Config struct {
-	ForbiddenTypes []string `yaml:"forbidden_types,omitempty"` // MIME types to flag as malicious
-	SkippedTypes   []string `yaml:"skipped_types,omitempty"`   // MIME types to mark as safe
+	ForbiddenTypes []string `mapstructure:"forbidden_types,omitempty"` // MIME types to flag as malicious
+	SkippedTypes   []string `mapstructure:"skipped_types,omitempty"`   // MIME types to mark as safe
 }
 
 var (
@@ -90,18 +90,8 @@ var (
 	HCPlugin FTFilterPlugin
 )
 
-// Close implements the plugins.Plugin interface, performing cleanup when the plugin is shut down.
-//
-// For the filetype filter plugin, no cleanup is required as it doesn't maintain
-// persistent resources or background processes. This method always returns nil.
-//
-// Parameters:
-//   - ctx: Context for cancellation (unused)
-//
-// Returns:
-//   - error: Always nil for this plugin
-func (p *FTFilterPlugin) Close(context.Context) error {
-	return nil
+func (p *FTFilterPlugin) GetDefaultConfig() (config any) {
+	return new(Config)
 }
 
 // Init implements the plugins.Plugin interface, initializing the filetype filter plugin.
@@ -130,53 +120,55 @@ func (p *FTFilterPlugin) Close(context.Context) error {
 //
 // Returns:
 //   - error: Error if libmagic initialization fails or config file is invalid
-func (p *FTFilterPlugin) Init(configPath string, hcc plugins.HCContext) error {
+func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	// Initialize structured logger from host connector context
-	p.logger = hcc.GetLogger()
+	logger = hcc.GetLogger().With(slog.String("plugin", "FTFilter"))
 
 	// Initialize libmagic library for MIME type detection
 	if err := magic.AddMagicDir(magic.GetDefaultDir()); err != nil {
 		return err
 	}
 
-	// Handle case where no configuration is provided - plugin remains inactive
-	if configPath == "" {
-		p.logger.Warn("[FTFilter]no configuration provided, plugin will be disabled")
-		return nil
-	}
-
-	// Load and parse YAML configuration file
-	f, err := os.Open(filepath.Clean(configPath))
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			p.logger.Warn("Failed to close config file", "error", err)
-		}
-	}()
-
-	var conf Config
-	if err = yaml.NewDecoder(f).Decode(&conf); err != nil {
-		return err
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("invalid config passed")
 	}
 
 	// Initialize lookup tables for O(1) MIME type checking
-	p.ForbiddenTypes = make(map[string]struct{}, len(conf.ForbiddenTypes))
-	p.SkippedTypes = make(map[string]struct{}, len(conf.SkippedTypes))
+	p.ForbiddenTypes = make(map[string]struct{}, len(config.ForbiddenTypes))
+	p.SkippedTypes = make(map[string]struct{}, len(config.SkippedTypes))
 
 	// Populate forbidden MIME types lookup table
-	for _, mime := range conf.ForbiddenTypes {
+	for _, mime := range config.ForbiddenTypes {
 		p.ForbiddenTypes[mime] = struct{}{}
 	}
 
 	// Populate skipped MIME types lookup table
-	for _, mime := range conf.SkippedTypes {
+	for _, mime := range config.SkippedTypes {
 		p.SkippedTypes[mime] = struct{}{}
 	}
 
 	// Register callback to intercept file scanning events
 	hcc.RegisterOnStartScanFile(p.OnStartScanFile)
+
+	logger.Info("plugin initialized",
+		slog.String("forbidden_types", strings.Join(config.ForbiddenTypes, ", ")),
+		slog.String("skipped_types", strings.Join(config.SkippedTypes, ", ")),
+	)
+	return nil
+}
+
+// Close implements the plugins.Plugin interface, performing cleanup when the plugin is shut down.
+//
+// For the filetype filter plugin, no cleanup is required as it doesn't maintain
+// persistent resources or background processes. This method always returns nil.
+//
+// Parameters:
+//   - ctx: Context for cancellation (unused)
+//
+// Returns:
+//   - error: Always nil for this plugin
+func (p *FTFilterPlugin) Close(context.Context) error {
 	return nil
 }
 
@@ -214,7 +206,7 @@ func (p *FTFilterPlugin) OnStartScanFile(file string, sha256 string) *gdetect.Re
 
 	// Check if file type is forbidden - immediately flag as malicious
 	if _, ok := p.ForbiddenTypes[mime]; ok {
-		p.logger.Debug("[FTFilter]set file as malware",
+		logger.Debug("set file as malware",
 			slog.String("file", file),
 			slog.String("sha256", sha256),
 			slog.String("mime", mime))
@@ -228,7 +220,7 @@ func (p *FTFilterPlugin) OnStartScanFile(file string, sha256 string) *gdetect.Re
 
 	// Check if file type should be skipped - mark as safe
 	if _, ok := p.SkippedTypes[mime]; ok {
-		p.logger.Debug("[FTFilter]set file as legit",
+		logger.Debug("set file as legit",
 			slog.String("file", file),
 			slog.String("sha256", sha256),
 			slog.String("mime", mime))

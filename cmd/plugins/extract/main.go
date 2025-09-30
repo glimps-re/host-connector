@@ -57,14 +57,18 @@ package main
 import (
 	"context"
 	_ "embed"
+	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"golift.io/xtractr"
 )
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 // SevenZipExtractPlugin implements the plugins.Plugin interface to provide archive extraction
 // capabilities using the 7-Zip command-line tool.
@@ -76,11 +80,9 @@ import (
 // Fields:
 //   - sze: Internal 7-Zip extraction engine with configured security limits
 //   - pathToRemove: List of temporary paths created during extraction for cleanup
-//   - logger: Structured logger for audit trails and debugging
 type SevenZipExtractPlugin struct {
 	sze          *sevenZipExtract // 7-Zip extraction engine
 	pathToRemove []string         // Temporary paths to clean up on shutdown
-	logger       *slog.Logger     // Structured logger instance
 }
 
 // Config represents the YAML configuration structure for the extract plugin.
@@ -100,14 +102,14 @@ type SevenZipExtractPlugin struct {
 //   - SevenZipPath: Custom path to 7-Zip binary (auto-detected if empty)
 //   - TOption: Enable 7-Zip type detection mode for better format support
 type Config struct {
-	MaxFileSize          int      `yaml:"max_file_size,omitempty"`          // Max size per extracted file in bytes
-	MaxExtractedElements int      `yaml:"max_extracted_elements,omitempty"` // Max number of files to extract
-	DefaultPasswords     []string `yaml:"default_passwords,omitempty"`      // Default passwords for encrypted archives
-	SevenZipPath         string   `yaml:"seven_zip_path,omitempty"`         // Custom 7-Zip binary path
-	TOption              bool     `yaml:"t_option,omitempty"`               // Enable type detection mode
+	extractorConfig
+	SevenZipPath string `mapstructure:"seven_zip_path,omitempty"` // Custom 7-Zip binary path
+	TOption      bool   `mapstructure:"t_option,omitempty"`       // Enable type detection mode
 }
 
 var (
+	// Compile-time check to ensure SevenZipExtractPlugin implements plugins.Plugin interface
+	_ plugins.Plugin = &SevenZipExtractPlugin{}
 	// HCPlugin is the exported plugin instance required by the plugin loader.
 	// This variable must be named exactly "HCPlugin" as it's looked up by name
 	// during the dynamic plugin loading process.
@@ -120,6 +122,17 @@ var (
 	//go:embed 7zzs
 	SevenZip []byte
 )
+
+func (p *SevenZipExtractPlugin) GetDefaultConfig() (config any) {
+	config = &Config{
+		extractorConfig: extractorConfig{
+			MaxFileSize:          1024 * 1024, // 1MB limit per file
+			MaxExtractedElements: 1000,        // Max 1000 files per archive
+			DefaultPasswords:     []string{"infected"},
+		},
+	}
+	return
+}
 
 // Init implements the plugins.Plugin interface, initializing the extract plugin.
 //
@@ -147,37 +160,41 @@ var (
 //
 // Returns:
 //   - error: Error if 7-Zip binary setup fails or configuration is invalid
-func (p *SevenZipExtractPlugin) Init(configPath string, hcc plugins.HCContext) error {
+func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	// Initialize structured logger from host connector context
-	p.logger = hcc.GetLogger()
+	logger = hcc.GetLogger().With(slog.String("plugin", "7z"))
 
-	// Load configuration or use secure defaults
-	var conf Config
-	if configPath == "" {
-		conf = Config{
-			MaxFileSize:          1024 * 1024, // 1MB limit per file
-			MaxExtractedElements: 1000,        // Max 1000 files per archive
-			DefaultPasswords:     []string{"infected"},
-		}
+	// Load configuration
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("error bad config passed")
 	}
 
 	// Set up 7-Zip binary path (embedded or system)
-	if conf.SevenZipPath == "" {
-		var err error
-		if conf.SevenZipPath, err = p.get7zzs(); err != nil {
+	if config.SevenZipPath == "" {
+		szPath, err := p.get7zzs()
+		if err != nil {
 			return err
 		}
+		config.SevenZipPath = szPath
 	}
 
 	// Create extraction engine with security configuration
 	p.sze = newSevenZipExtract(extractorConfig{
-		MaxFileSize:          conf.MaxFileSize,
-		MaxExtractedElements: conf.MaxExtractedElements,
-		DefaultPasswords:     conf.DefaultPasswords,
-	}, conf.SevenZipPath, conf.TOption, p.logger)
+		MaxFileSize:          config.MaxFileSize,
+		MaxExtractedElements: config.MaxExtractedElements,
+		DefaultPasswords:     config.DefaultPasswords,
+	}, config.SevenZipPath, config.TOption)
 
 	// Register extraction callback with host connector
 	hcc.SetXTractFile(p.XtractFile)
+	logger.Info("plugin initialized",
+		slog.Int("max_file_size", config.MaxFileSize),
+		slog.Int("max_extracted_elements", config.MaxExtractedElements),
+		slog.String("default_passwords", strings.Join(config.DefaultPasswords, ", ")),
+		slog.String("seven_zip_path", config.SevenZipPath),
+		slog.Bool("t_option", config.TOption),
+	)
 	return nil
 }
 
@@ -200,44 +217,44 @@ func (p *SevenZipExtractPlugin) Init(configPath string, hcc plugins.HCContext) e
 // Returns:
 //   - string: Absolute path to the 7-Zip binary
 //   - error: Error if binary location fails or deployment fails
-func (p *SevenZipExtractPlugin) get7zzs() (string, error) {
+func (p *SevenZipExtractPlugin) get7zzs() (path string, err error) {
 	// Try to find 7zzs in system PATH first
 	fname, err := exec.LookPath("7zzs")
 	if err == nil {
-		path, e := filepath.Abs(fname)
-		if e != nil {
-			return "", e
+		path, err = filepath.Abs(fname)
+		if err != nil {
+			return
 		}
-		return path, nil
+		return
 	}
 
 	// Deploy embedded binary to temporary location
 	f, err := os.CreateTemp(os.TempDir(), "7zzs")
 	if err != nil {
-		return "", err
+		return
 	}
 
 	// Track temporary file for cleanup
 	p.pathToRemove = append(p.pathToRemove, f.Name())
 	defer func() {
 		if err := f.Close(); err != nil {
-			p.logger.Warn("Failed to close temporary file", "error", err)
+			logger.Warn("failed to close temporary file", slog.String("error", err.Error()))
 		}
 	}()
 
 	// Write embedded binary data
 	_, err = f.Write(SevenZip)
 	if err != nil {
-		return "", err
+		return
 	}
 
 	// Set executable permissions
 	err = f.Chmod(0o755)
 	if err != nil {
-		return "", err
+		return
 	}
-
-	return f.Name(), nil
+	path = f.Name()
+	return
 }
 
 // XtractFile implements the extraction callback for the host connector pipeline.
@@ -267,11 +284,11 @@ func (p *SevenZipExtractPlugin) get7zzs() (string, error) {
 //   - files: List of absolute paths to extracted files
 //   - volumes: Volume information (delegated to xtractr)
 //   - err: Error if extraction fails or security limits are exceeded
-func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (int64, []string, []string, error) {
+func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (size int64, files []string, volumes []string, err error) {
 	// Create secure temporary directory for extraction
 	dest, err := os.MkdirTemp(os.TempDir(), "extracted*")
 	if err != nil {
-		return 0, nil, nil, err
+		return
 	}
 
 	// Track temporary directory for cleanup
@@ -280,11 +297,10 @@ func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (int64, []strin
 	// Perform secure extraction with configured limits
 	result, err := p.sze.extract(xFile.FilePath, dest, []string{}, []string{})
 	if err != nil {
-		return 0, nil, nil, err
+		return
 	}
 
 	// Collect paths of successfully extracted files
-	var files []string
 	for _, ep := range result.extractedFiles {
 		files = append(files, ep.Path)
 	}
@@ -292,12 +308,12 @@ func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (int64, []strin
 	// Delegate to xtractr library for additional processing
 	size, xtractFiles, volumes, err := xtractr.ExtractFile(xFile)
 	if err != nil {
-		return 0, files, nil, err
+		return
 	}
 
 	// Combine our extraction results with xtractr results
 	files = append(files, xtractFiles...)
-	return size, files, volumes, nil
+	return
 }
 
 // Close implements the plugins.Plugin interface, performing cleanup when the plugin is shut down.
@@ -317,14 +333,17 @@ func (p *SevenZipExtractPlugin) XtractFile(xFile *xtractr.XFile) (int64, []strin
 //
 // Returns:
 //   - error: Always nil for this implementation
-func (p *SevenZipExtractPlugin) Close(_ context.Context) error { //nolint:unparam // interface requirement
+func (p *SevenZipExtractPlugin) Close(_ context.Context) (err error) { //nolint:unparam // interface requirement
 	// Clean up all temporary paths created during plugin operation
 	for _, path := range p.pathToRemove {
-		if err := os.RemoveAll(path); err != nil {
-			p.logger.Warn("Failed to remove temporary path", "path", path, "error", err)
+		if e := os.RemoveAll(path); e != nil {
+			logger.Warn("failed to remove temporary path",
+				slog.String("path", path),
+				slog.String("error", e.Error()),
+			)
 		}
 	}
-	return nil
+	return
 }
 
 // main is the entry point required for Go plugin compilation.

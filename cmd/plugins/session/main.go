@@ -42,8 +42,9 @@ import (
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/report"
-	"gopkg.in/yaml.v3"
 )
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
 
 // SessionPlugin implements the plugins.Plugin interface to provide session-based file processing.
 //
@@ -63,7 +64,6 @@ type SessionPlugin struct {
 	sessions map[string]*Session // Active sessions mapped by session ID
 	mutex    sync.RWMutex        // Protects the sessions map
 	hcc      plugins.HCContext   // Host connector context for callbacks
-	logger   *slog.Logger        // Logger instance from host connector
 	ctx      context.Context     // Context for background operations
 	cancel   context.CancelFunc  // Cancellation function for graceful shutdown
 }
@@ -71,35 +71,27 @@ type SessionPlugin struct {
 // Config defines the configuration parameters for the session plugin.
 //
 // These settings control how sessions are created, managed, and cleaned up.
-// Configuration can be loaded from YAML files or use built-in defaults.
-//
-// Example YAML configuration:
-//
-//	depth: 2
-//	delay: 30s
-//	remove_inputs: true
-//	root_folder: "/tmp/samples"
 type Config struct {
 	// Depth specifies how many directory levels under RootFolder define a session.
 	// For example, with depth=2 and root="/tmp/samples":
 	//   - "/tmp/samples/user_a/batch1/file.txt" creates session "user_a/batch1"
 	//   - "/tmp/samples/user_a/file.txt" is ignored (insufficient depth)
-	Depth int `yaml:"depth" desc:"number of subdirectory levels that define a session"`
+	Depth int `mapstructure:"depth" desc:"number of subdirectory levels that define a session"`
 
 	// Delay is the minimum time to wait after a session becomes inactive before closing it.
 	// A session is considered inactive when all its files have been processed.
 	// This prevents premature closure if new files arrive shortly after the last file completes.
-	Delay time.Duration `yaml:"delay" desc:"delay before closing inactive sessions"`
+	Delay time.Duration `mapstructure:"delay" desc:"delay before closing inactive sessions"`
 
 	// RemoveInputs determines whether to delete processed files when closing a session.
 	// When true, all files tracked by the session will be deleted from the filesystem.
 	// When false, files remain in place after session closure.
-	RemoveInputs bool `yaml:"remove_inputs" desc:"remove input files after session completion"`
+	RemoveInputs bool `mapstructure:"remove_inputs" desc:"remove input files after session completion"`
 
 	// RootFolder is the base directory path to monitor for session creation.
 	// Only files within subdirectories of this path will be considered for sessions.
 	// The path should be absolute for reliable operation.
-	RootFolder string `yaml:"root_folder" desc:"root folder to monitor for sessions"`
+	RootFolder string `mapstructure:"root_folder" desc:"root folder to monitor for sessions"`
 }
 
 // Session represents an active scanning session for files in a specific subdirectory.
@@ -155,34 +147,19 @@ var (
 	HCPlugin SessionPlugin
 )
 
-// Close implements the plugins.Plugin interface for graceful shutdown.
-//
-// This method performs the following cleanup operations:
-//  1. Cancels the background session monitoring goroutine
-//  2. Waits briefly for ongoing operations to complete
-//  3. Returns without forcing closure of active sessions
-//
-// Active sessions are not forcibly closed during shutdown to avoid data loss.
-// The background monitor will stop checking for session closures, but existing
-// sessions will remain in memory until the process terminates.
-//
-// Parameters:
-//   - ctx: Context for controlling shutdown timeout (currently not used for early termination)
-//
-// Returns:
-//   - Always returns nil as the shutdown process cannot fail
-func (p *SessionPlugin) Close(ctx context.Context) error {
-	if p.cancel != nil {
-		p.cancel()
-	}
+const (
+	sessionIDLogKey = "session_id"
+	filepathLogKey  = "file_path"
+)
 
-	// Wait a bit for cleanup to complete
-	select {
-	case <-time.After(1 * time.Second):
-	case <-ctx.Done():
+func (p *SessionPlugin) GetDefaultConfig() (config any) {
+	config = &Config{
+		Depth:        2,                // Default depth
+		Delay:        30 * time.Second, // Default delay
+		RemoveInputs: true,             // Default remove inputs
+		RootFolder:   "/tmp/samples/",  // Default root folder
 	}
-
-	return nil
+	return
 }
 
 // Init implements the plugins.Plugin interface for plugin initialization.
@@ -217,33 +194,18 @@ func (p *SessionPlugin) Close(ctx context.Context) error {
 //
 // Returns:
 //   - error: Non-nil if configuration loading fails or initialization encounters errors
-func (p *SessionPlugin) Init(configPath string, hcc plugins.HCContext) error {
+func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	// Load configuration
-	config := Config{
-		Depth:        2,                // Default depth
-		Delay:        30 * time.Second, // Default delay
-		RemoveInputs: true,             // Default remove inputs
-		RootFolder:   "/tmp/samples",   // Default root folder
-	}
-
-	if configPath != "" {
-		// Clean the path to prevent directory traversal
-		configPath = filepath.Clean(configPath)
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return fmt.Errorf("failed to read config file: %w", err)
-		}
-
-		if err := yaml.Unmarshal(data, &config); err != nil {
-			return fmt.Errorf("failed to parse config file: %w", err)
-		}
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return fmt.Errorf("bad config passed to session plugin: %v", config)
 	}
 
 	// Initialize plugin
-	p.config = config
+	p.config = *config
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc
-	p.logger = hcc.GetLogger()
+	logger = hcc.GetLogger().With(slog.String("plugin", "session"))
 	p.ctx, p.cancel = context.WithCancel(context.Background())
 
 	// Register callbacks
@@ -254,10 +216,41 @@ func (p *SessionPlugin) Init(configPath string, hcc plugins.HCContext) error {
 	// Start background session monitor
 	go p.sessionMonitor()
 
-	p.logger.Info("Session plugin initialized",
-		"depth", config.Depth,
-		"delay", config.Delay,
-		"root_folder", config.RootFolder)
+	logger.Info("plugin initialized",
+		slog.Int("depth", config.Depth),
+		slog.String("delay", config.Delay.String()),
+		slog.String("root_folder", config.RootFolder),
+		slog.Bool("remove_inputs", config.RemoveInputs),
+	)
+	return nil
+}
+
+// Close implements the plugins.Plugin interface for graceful shutdown.
+//
+// This method performs the following cleanup operations:
+//  1. Cancels the background session monitoring goroutine
+//  2. Waits briefly for ongoing operations to complete
+//  3. Returns without forcing closure of active sessions
+//
+// Active sessions are not forcibly closed during shutdown to avoid data loss.
+// The background monitor will stop checking for session closures, but existing
+// sessions will remain in memory until the process terminates.
+//
+// Parameters:
+//   - ctx: Context for controlling shutdown timeout (currently not used for early termination)
+//
+// Returns:
+//   - Always returns nil as the shutdown process cannot fail
+func (p *SessionPlugin) Close(ctx context.Context) error {
+	if p.cancel != nil {
+		p.cancel()
+	}
+
+	// Wait a bit for cleanup to complete
+	select {
+	case <-time.After(1 * time.Second):
+	case <-ctx.Done():
+	}
 
 	return nil
 }
@@ -286,21 +279,16 @@ func (p *SessionPlugin) Init(configPath string, hcc plugins.HCContext) error {
 // Returns:
 //   - *gdetect.Result: Always returns nil (no scan result override)
 func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) *gdetect.Result {
-	sessionID := p.getSessionID(file)
-	if sessionID == "" {
-		// File is not within a session directory
-		return nil
-	}
-
-	session := p.getOrCreateSession(sessionID, file)
+	logger.Debug("start scan", slog.String("rep filename", file))
+	session := p.getSession(file, true)
 	if session != nil {
 		session.addFile(file, sha256)
-		p.logger.Debug("File added to session",
-			"file_path", file,
-			"session_id", sessionID,
-			"sha256", sha256)
+		logger.Debug("file added to session",
+			slog.String(filepathLogKey, file),
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("sha256", sha256),
+		)
 	}
-
 	return nil
 }
 
@@ -328,25 +316,24 @@ func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) *gdetect.Res
 //   - result: Scan result from the detection engine (currently unused)
 //   - err: Any error that occurred during scanning (nil if successful)
 func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result gdetect.Result, err error) {
-	sessionID := p.getSessionID(file)
-	if sessionID == "" {
+	session := p.getSession(file, false)
+	if session == nil {
 		return
 	}
 
-	session := p.getSession(sessionID)
-	if session != nil {
-		session.markFileCompleted(file, err)
-		if err != nil {
-			p.logger.Warn("File scan completed with error",
-				"file_path", file,
-				"session_id", sessionID,
-				"error", err)
-		} else {
-			p.logger.Debug("File scan completed successfully",
-				"file_path", file,
-				"session_id", sessionID)
-		}
+	session.markFileCompleted(file, err)
+	if err != nil {
+		logger.Warn("file scan completed with error",
+			slog.String(filepathLogKey, file),
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("error", err.Error()),
+		)
+		return
 	}
+	logger.Debug("file scan completed successfully",
+		slog.String(filepathLogKey, file),
+		slog.String(sessionIDLogKey, session.ID),
+	)
 }
 
 // OnReport implements the plugins.OnReport callback interface.
@@ -375,51 +362,48 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result gdetect
 // Parameters:
 //   - rep: Pointer to the scan report containing results and metadata
 func (p *SessionPlugin) OnReport(rep *report.Report) {
-	sessionID := p.getSessionID(rep.FileName)
-	if sessionID == "" {
+	logger.Debug("report filename", slog.String("rep filename", rep.FileName))
+	session := p.getSession(rep.FileName, false)
+	if session == nil {
 		return
 	}
 
-	session := p.getSession(sessionID)
-	if session != nil {
-		session.addReport(*rep)
-		p.logger.Debug("Report added to session",
-			"file_name", rep.FileName,
-			"session_id", sessionID,
-			"malicious", rep.Malicious,
-			"sha256", rep.Sha256)
-	}
+	session.addReport(*rep)
+	logger.Debug("report added to session",
+		slog.String(filepathLogKey, rep.FileName),
+		slog.String(sessionIDLogKey, session.ID),
+		slog.Bool("malicious", rep.Malicious),
+		slog.String("sha256", rep.Sha256),
+	)
 }
 
-// getSessionID extracts the session ID from a file path based on the configured depth
-func (p *SessionPlugin) getSessionID(filePath string) string {
+func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session) {
 	if !strings.HasPrefix(filePath, p.config.RootFolder) {
-		return ""
+		return
 	}
 
 	relPath, err := filepath.Rel(p.config.RootFolder, filePath)
 	if err != nil {
-		return ""
+		return
 	}
 
 	parts := strings.Split(relPath, string(filepath.Separator))
 	// Remove the filename (last part) to get only directory parts
 	if len(parts) <= p.config.Depth {
-		return ""
+		return
 	}
 
 	// Build session ID from the first 'depth' directory parts (excluding filename)
 	sessionParts := parts[:p.config.Depth]
-	return strings.Join(sessionParts, "/")
-}
+	sessionID := strings.Join(sessionParts, "/")
 
-// getOrCreateSession retrieves an existing session or creates a new one
-func (p *SessionPlugin) getOrCreateSession(sessionID, _ string) *Session {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-
 	session, exists := p.sessions[sessionID]
-	if !exists {
+	switch {
+	case exists:
+		return
+	case ensure:
 		sessionPath := filepath.Join(p.config.RootFolder, sessionID)
 		session = &Session{
 			ID:               sessionID,
@@ -430,20 +414,15 @@ func (p *SessionPlugin) getOrCreateSession(sessionID, _ string) *Session {
 			CompletedReports: make([]report.Report, 0),
 		}
 		p.sessions[sessionID] = session
-		p.logger.Info("New session created",
-			"session_id", sessionID,
-			"session_path", sessionPath,
-			"start_time", session.StartTime)
+		logger.Info("new session created",
+			slog.String(sessionIDLogKey, sessionID),
+			slog.String("session_path", sessionPath),
+			slog.String("start_time", session.StartTime.Format(time.RFC3339)),
+		)
+	default:
+		return
 	}
-
-	return session
-}
-
-// getSession retrieves an existing session
-func (p *SessionPlugin) getSession(sessionID string) *Session {
-	p.mutex.RLock()
-	defer p.mutex.RUnlock()
-	return p.sessions[sessionID]
+	return
 }
 
 // addFile adds a file to the session's pending list
@@ -527,11 +506,11 @@ func (p *SessionPlugin) checkAndCloseSessions() {
 
 // closeSession closes a session by generating a report and cleaning up files
 func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
-	p.logger.Info("Closing session",
-		"session_id", sessionID,
-		"completed_reports", len(session.CompletedReports),
-		"pending_files", len(session.PendingFiles),
-		"duration", time.Since(session.StartTime))
+	logger.Info("closing session",
+		slog.String(sessionIDLogKey, sessionID),
+		slog.Int("completed_reports", len(session.CompletedReports)),
+		slog.Int("pending_files", len(session.PendingFiles)),
+		slog.String("duration", time.Since(session.StartTime).String()))
 
 	// Generate session report
 	if len(session.CompletedReports) > 0 {
@@ -558,48 +537,53 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 
 	reader, err := p.hcc.GenerateReport(reportContext, session.CompletedReports)
 	if err != nil {
-		p.logger.Error("Failed to generate session report",
-			"session_id", session.ID,
-			"error", err)
+		logger.Error("failed to generate session report",
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("error", err.Error()))
 		return
 	}
 
 	// Save report to session directory
 	reportPath := filepath.Join(session.Path, fmt.Sprintf("session-report-%d.pdf", time.Now().Unix()))
 	if err := p.saveReport(reader, reportPath); err != nil {
-		p.logger.Error("Failed to save session report",
-			"session_id", session.ID,
-			"report_path", reportPath,
-			"error", err)
-	} else {
-		p.logger.Info("Session report saved",
-			"session_id", session.ID,
-			"report_path", reportPath)
+		logger.Error("failed to save session report",
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("report_path", reportPath),
+			slog.String("error", err.Error()))
+		return
 	}
+	logger.Info("session report saved",
+		slog.String(sessionIDLogKey, session.ID),
+		slog.String("report_path", reportPath))
 }
 
 // saveReport saves a report reader to a file
-func (p *SessionPlugin) saveReport(reader io.Reader, filePath string) error {
+func (p *SessionPlugin) saveReport(reader io.Reader, filePath string) (err error) {
 	// Clean the path to prevent directory traversal
 	filePath = filepath.Clean(filePath)
 
 	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
-		return err
+	if err = os.MkdirAll(filepath.Dir(filePath), 0o750); err != nil {
+		return
 	}
 
 	file, err := os.Create(filePath)
 	if err != nil {
-		return err
+		return
 	}
 	defer func() {
-		if err := file.Close(); err != nil {
-			p.logger.Warn("Failed to close file", "file", filePath, "error", err)
+		if e := file.Close(); e != nil {
+			logger.Warn("failed to close file",
+				slog.String(filepathLogKey, filePath),
+				slog.String("error", e.Error()),
+			)
 		}
 	}()
-
 	_, err = io.Copy(file, reader)
-	return err
+	if err != nil {
+		return
+	}
+	return
 }
 
 // cleanupSessionFiles removes files from the session directory
@@ -609,28 +593,32 @@ func (p *SessionPlugin) cleanupSessionFiles(session *Session) {
 
 	for filePath := range session.PendingFiles {
 		if err := os.Remove(filePath); err != nil {
-			p.logger.Warn("Failed to remove session file",
-				"file_path", filePath,
-				"session_id", session.ID,
-				"error", err)
-		} else {
-			p.logger.Debug("Removed session file",
-				"file_path", filePath,
-				"session_id", session.ID)
+			logger.Warn("failed to remove session file",
+				slog.String(filepathLogKey, filePath),
+				slog.String(sessionIDLogKey, session.ID),
+				slog.String("error", err.Error()),
+			)
+			continue
 		}
+		logger.Debug("removed session file",
+			slog.String(filepathLogKey, filePath),
+			slog.String(sessionIDLogKey, session.ID),
+		)
 	}
 
 	// Try to remove the session directory if it's empty
 	if err := os.Remove(session.Path); err != nil {
-		p.logger.Debug("Failed to remove session directory",
-			"session_path", session.Path,
-			"session_id", session.ID,
-			"error", err)
-	} else {
-		p.logger.Debug("Removed session directory",
-			"session_path", session.Path,
-			"session_id", session.ID)
+		logger.Debug("failed to remove session directory",
+			slog.String("session_path", session.Path),
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("error", err.Error()),
+		)
+		return
 	}
+	logger.Debug("removed session directory",
+		slog.String("session_path", session.Path),
+		slog.String(sessionIDLogKey, session.ID),
+	)
 }
 
 func main() {}

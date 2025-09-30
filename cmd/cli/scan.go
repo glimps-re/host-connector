@@ -29,7 +29,7 @@ var scanCmd = &cobra.Command{
 		}
 		for _, arg := range args {
 			if err = gctx.Conn.ScanFile(cmd.Context(), arg); err != nil {
-				Logger.Error("error during scan", slog.String("file", arg), slog.String("error", err.Error()))
+				logger.Error("error during scan", slog.String("file", arg), slog.String("error", err.Error()))
 				gctx.Conn.Close()
 				return
 			}

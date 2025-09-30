@@ -9,7 +9,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+var LogLevel = &slog.LevelVar{}
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 var gctx = &handler.Handler{}
 
@@ -29,8 +33,8 @@ func main_() (err error) {
 	rootCmd.AddCommand(agentCmd)
 	defer func() {
 		if gctx.Cache != nil {
-			if err := gctx.Cache.Close(); err == nil {
-				Logger.Error("cannot close cache", "error", err)
+			if err := gctx.Cache.Close(); err != nil {
+				logger.Error("cannot close cache", slog.String("error", err.Error()))
 			}
 		}
 	}()

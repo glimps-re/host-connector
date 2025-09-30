@@ -230,7 +230,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 				defer func() {
 					err := os.Remove(f.Name())
 					if err != nil {
-						Logger.Error("TestRemoveFileAction, cannot remove file", "error", err)
+						logger.Error("TestRemoveFileAction, cannot remove file", "error", err)
 					}
 				}()
 				tt.args.path = f.Name()
@@ -395,7 +395,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 			defer func() {
 				err := os.RemoveAll(testTmpDir)
 				if err != nil {
-					Logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
+					logger.Error("TestQuarantineAction cannot remove tmp dir", "error", err)
 				}
 				t.Setenv("TMPDIR", sysTmpDir)
 			}()
@@ -413,11 +413,11 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				defer func() {
 					err = f.Close()
 					if err != nil {
-						Logger.Error("TestQuarantineAction cannot close file", "error", err)
+						logger.Error("TestQuarantineAction cannot close file", "error", err)
 					}
 					err = os.Remove(f.Name())
 					if err != nil {
-						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
+						logger.Error("TestQuarantineAction cannot remove file", "error", err)
 					}
 				}()
 				tt.args.path = f.Name()
@@ -427,7 +427,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				defer func() {
 					err := os.Remove(f)
 					if err != nil {
-						Logger.Error("TestQuarantineAction cannot remove file", "error", err)
+						logger.Error("TestQuarantineAction cannot remove file", "error", err)
 					}
 				}()
 				tt.fields.root = f
@@ -783,11 +783,11 @@ func TestMoveAction_Handle(t *testing.T) {
 			defer func() {
 				err = tempReport.Close()
 				if err != nil {
-					Logger.Error("TestMoveAction cannot close tmp report", "error", err)
+					logger.Error("TestMoveAction cannot close tmp report", "error", err)
 				}
 				err = os.Remove(tempReport.Name())
 				if err != nil {
-					Logger.Error("TestMoveAction cannot remove tmp report", "error", err)
+					logger.Error("TestMoveAction cannot remove tmp report", "error", err)
 				}
 			}()
 			Rename = func(oldpath, newpath string) error {

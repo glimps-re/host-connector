@@ -2,79 +2,56 @@ package main
 
 import (
 	"context"
-	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/report"
+	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"golift.io/xtractr"
 )
 
-// mockHCContext is a mock implementation of plugins.HCContext for testing
-type mockHCContext struct {
-	onStartScanFile    plugins.OnStartScanFile
-	onFileScanned      plugins.OnFileScanned
-	onReport           plugins.OnReport
-	generateReportFunc plugins.GenerateReport
-	xtractFileFunc     plugins.XtractFileFunc
-	logger             *slog.Logger
-}
-
-func newMockHCContext() *mockHCContext {
-	return &mockHCContext{
-		logger: slog.Default(),
-	}
-}
-
-func (m *mockHCContext) SetXTractFile(f plugins.XtractFileFunc)            { m.xtractFileFunc = f }
-func (m *mockHCContext) RegisterOnStartScanFile(f plugins.OnStartScanFile) { m.onStartScanFile = f }
-func (m *mockHCContext) RegisterOnFileScanned(f plugins.OnFileScanned)     { m.onFileScanned = f }
-func (m *mockHCContext) RegisterOnReport(f plugins.OnReport)               { m.onReport = f }
-func (m *mockHCContext) RegisterGenerateReport(f plugins.GenerateReport)   { m.generateReportFunc = f }
-func (m *mockHCContext) GetLogger() *slog.Logger                           { return m.logger }
-func (m *mockHCContext) GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
-	if m.generateReportFunc != nil {
-		return m.generateReportFunc(reportContext, reports)
-	}
-	return strings.NewReader("mock report content"), nil
-}
-
 func TestSevenZipExtractPlugin_Init(t *testing.T) {
 	tests := []struct {
-		name       string
-		configPath string
-		wantErr    bool
+		name    string
+		config  any
+		wantErr bool
 	}{
 		{
-			name:       "init with empty config path (use defaults)",
-			configPath: "",
-			wantErr:    false,
+			name: "ok",
+			config: &Config{
+				extractorConfig: extractorConfig{
+					MaxFileSize:          1024 * 1024, // 1MB limit per file
+					MaxExtractedElements: 1000,        // Max 1000 files per archive
+					DefaultPasswords:     []string{"infected"},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name:    "error bad config",
+			config:  struct{}{},
+			wantErr: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SevenZipExtractPlugin{}
-			mockContext := newMockHCContext()
+			mockContext := mock.NewMockHCContext()
 
-			err := plugin.Init(tt.configPath, mockContext)
+			err := plugin.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SevenZipExtractPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr {
-				if plugin.logger == nil {
-					t.Error("SevenZipExtractPlugin.Init() logger should be set")
-				}
 				if plugin.sze == nil {
 					t.Error("SevenZipExtractPlugin.Init() sze should be initialized")
 				}
-				if mockContext.xtractFileFunc == nil {
+				if mockContext.XtractFileFunc == nil {
 					t.Error("SevenZipExtractPlugin.Init() should register XtractFile callback")
 				}
 				if plugin.pathToRemove == nil {
@@ -87,10 +64,12 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 
 func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
+
+	config := plugin.GetDefaultConfig()
 
 	// Initialize plugin
-	err := plugin.Init("", mockContext)
+	err := plugin.Init(config, mockContext)
 	if err != nil {
 		t.Fatalf("Failed to initialize plugin: %v", err)
 	}
@@ -126,7 +105,6 @@ func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SevenZipExtractPlugin{
 				pathToRemove: []string{},
-				logger:       slog.Default(),
 			}
 
 			path, err := plugin.get7zzs()
@@ -211,10 +189,10 @@ func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SevenZipExtractPlugin{}
-			mockContext := newMockHCContext()
+			mockContext := mock.NewMockHCContext()
 
 			// Initialize plugin
-			err := plugin.Init("", mockContext)
+			err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
 			if err != nil {
 				t.Fatalf("Failed to initialize plugin: %v", err)
 			}
@@ -257,23 +235,19 @@ func TestSevenZipExtractPlugin_XtractFile(t *testing.T) {
 
 func TestSevenZipExtractPlugin_Integration(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
 
 	// Test initialization
-	err := plugin.Init("", mockContext)
+	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("SevenZipExtractPlugin.Init() error = %v", err)
 	}
 
 	// Verify callback was registered
-	if mockContext.xtractFileFunc == nil {
+	if mockContext.XtractFileFunc == nil {
 		t.Fatal("XtractFile callback should be registered")
 	}
 
-	// Verify plugin state
-	if plugin.logger == nil {
-		t.Error("Plugin logger should be initialized")
-	}
 	if plugin.sze == nil {
 		t.Error("Plugin extraction engine should be initialized")
 	}
@@ -292,10 +266,10 @@ func TestSevenZipExtractPlugin_Interface(t *testing.T) {
 
 func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := newMockHCContext()
+	mockContext := mock.NewMockHCContext()
 
 	// Initialize with empty config path to test defaults
-	err := plugin.Init("", mockContext)
+	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
 	if err != nil {
 		t.Fatalf("SevenZipExtractPlugin.Init() with defaults error = %v", err)
 	}
@@ -326,7 +300,6 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 func TestSevenZipExtractPlugin_BinaryManagement(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{
 		pathToRemove: []string{},
-		logger:       slog.Default(),
 	}
 
 	// Test binary location/deployment

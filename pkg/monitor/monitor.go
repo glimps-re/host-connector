@@ -12,7 +12,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+var LogLevel = &slog.LevelVar{}
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 type Monitorer interface {
 	Start()
@@ -89,7 +93,7 @@ func (m *Monitor) scan() {
 			for path := range m.paths {
 				err := m.cb(path)
 				if err != nil {
-					Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+					Logger.Error("error action on new file", slog.String("path", path), slog.String("error", err.Error()))
 				}
 			}
 			m.pathsLock.Unlock()
@@ -105,7 +109,6 @@ func (m *Monitor) work() {
 			if !ok {
 				return
 			}
-			Logger.Debug("new event", slog.Any("event", event))
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				m.fileToScanLock.Lock()
 				m.fileToScan[event.Name] = struct{}{}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -16,10 +17,16 @@ import (
 	"github.com/glimps-re/host-connector/pkg/cache"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/monitor"
+	"github.com/glimps-re/host-connector/pkg/report"
 	"github.com/glimps-re/host-connector/pkg/scanner"
+	"go.yaml.in/yaml/v3"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+var LogLevel = &slog.LevelVar{}
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 type Handler struct {
 	Conn    *scanner.Connector
@@ -40,9 +47,7 @@ const (
 var _ shared.Connector = &Handler{}
 
 func NewHandler(ctx context.Context, config *config.Config) (h *Handler, err error) {
-	h = &Handler{
-		conf: config,
-	}
+	h = &Handler{}
 	err = h.setup(ctx, config)
 	if err != nil {
 		return
@@ -55,6 +60,18 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 	if config.Workers == 0 {
 		config.Workers = 1
 	}
+	if config.Debug {
+		scanner.LogLevel.Set(slog.LevelDebug)
+		report.LogLevel.Set(slog.LevelDebug)
+		monitor.LogLevel.Set(slog.LevelDebug)
+		LogLevel.Set(slog.LevelDebug)
+	} else {
+		scanner.LogLevel.Set(slog.LevelInfo)
+		report.LogLevel.Set(slog.LevelInfo)
+		monitor.LogLevel.Set(slog.LevelInfo)
+		LogLevel.Set(slog.LevelInfo)
+	}
+
 	if config.Quarantine.Location != "" && config.Actions.Quarantine {
 		_, err = os.Stat(config.Quarantine.Location)
 		if errors.Is(err, os.ErrNotExist) {
@@ -155,15 +172,31 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 		ConsoleEvents: h.events,
 	})
 
-	err = h.Conn.LoadPlugins(scanner.Config{
-		PluginsDir: config.PluginConfig.Location,
-		Plugins:    config.PluginConfig.Plugins,
-	})
-	if err != nil {
-		return
+	if h.conf == nil || h.conf.PluginsConfig != config.PluginsConfig {
+		configFile, openErr := os.Open(filepath.Clean(config.PluginsConfig))
+		if openErr != nil {
+			err = openErr
+			return
+		}
+		defer func() {
+			if e := configFile.Close(); e != nil {
+				Logger.Warn("error closing plugin config file", slog.String("file", config.PluginsConfig), slog.String("error", e.Error()))
+			}
+		}()
+
+		pluginsConfig := make(map[string]scanner.PluginConfig)
+		err = yaml.NewDecoder(configFile).Decode(pluginsConfig)
+		if err != nil {
+			return
+		}
+		err = h.Conn.LoadPlugins(pluginsConfig)
+		if err != nil {
+			return
+		}
 	}
 
 	h.Lock = &scanner.Lock{Password: config.Quarantine.Password}
+	h.conf = config
 	return
 }
 

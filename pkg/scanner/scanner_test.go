@@ -35,6 +35,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -160,6 +161,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -327,6 +329,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -485,6 +488,7 @@ func TestNewConnector(t *testing.T) {
 						Inform:     true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							hash := sha256.New()
@@ -588,6 +592,7 @@ func TestNewConnector(t *testing.T) {
 						Verbose:    true,
 						InformDest: &buffer,
 					},
+					QuarantineFolder: t.TempDir(),
 					Submitter: &MockSubmitter{
 						WaitForReaderMock: func(ctx context.Context, r io.Reader, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 							return gdetect.Result{
@@ -676,13 +681,13 @@ func TestNewConnector(t *testing.T) {
 	}
 }
 
-//go:embed test_rsc/test.zip
+//go:embed testdata/test.zip
 var zipFile []byte
 
-//go:embed test_rsc/test.txt
+//go:embed testdata/test.txt
 var txtFile []byte
 
-//go:embed test_rsc/test_big_file.zip
+//go:embed testdata/test_big_file.zip
 var bigZipFile []byte
 
 func TestConnector_ScanFile(t *testing.T) {
@@ -822,7 +827,7 @@ func TestConnector_ScanFile(t *testing.T) {
 			defer func() {
 				err := os.RemoveAll(testTmpDir)
 				if err != nil {
-					Logger.Error("could not remove test tmp dir", "error", err)
+					logger.Error("could not remove test tmp dir", "error", err)
 				}
 				t.Setenv("TMPDIR", sysTmpDir)
 			}()
@@ -836,7 +841,7 @@ func TestConnector_ScanFile(t *testing.T) {
 				defer func() {
 					err = f.Close()
 					if err != nil {
-						Logger.Error("could not close test file", "error", err)
+						logger.Error("could not close test file", "error", err)
 					}
 				}()
 				_, err = f.Write(tt.args.fileContent)
@@ -846,7 +851,7 @@ func TestConnector_ScanFile(t *testing.T) {
 				defer func() {
 					err = os.Remove(f.Name())
 					if err != nil {
-						Logger.Error("could not remove file", "file", f.Name(), "error", err)
+						logger.Error("could not remove file", "file", f.Name(), "error", err)
 					}
 				}()
 				input = f.Name()

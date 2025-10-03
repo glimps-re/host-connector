@@ -11,7 +11,7 @@ import (
 	"golift.io/xtractr"
 )
 
-type XtractFileFunc = func(xFile *xtractr.XFile) (int64, []string, []string, error)
+type XtractFileFunc = func(xFile *xtractr.XFile) (size int64, files []string, volumes []string, err error)
 
 type (
 	OnStartScanFile = func(file string, sha256 string) *gdetect.Result
@@ -23,7 +23,9 @@ type GenerateReport = func(reportConntext report.ScanContext, reports []report.R
 
 // Plugin interface must be implemented by host-connector plugins
 type Plugin interface {
-	Init(configPath string, hcc HCContext) error
+	// GetDefaultConfig MUST be used to get a default config, where we can unmarshall read yaml config, and pass it to Init
+	GetDefaultConfig() (config any)
+	Init(config any, hcc HCContext) error
 	Close(ctx context.Context) error
 }
 

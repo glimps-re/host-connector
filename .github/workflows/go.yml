@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: install deps
+        run: sudo apt install -y libmagic-dev
       
       - uses: glimps-re/go-actions@v0.1.0
         with:

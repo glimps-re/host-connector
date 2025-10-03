@@ -1,7 +1,7 @@
 //go:build linux
 // +build linux
 
-package cmd
+package handler
 
 import (
 	"context"

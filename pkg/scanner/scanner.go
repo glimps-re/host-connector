@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -25,8 +24,20 @@ import (
 	"golift.io/xtractr"
 )
 
+var LogLevel = &slog.LevelVar{}
+
+var logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
+
+const (
+	logReasonKey = "reason"
+	logSizeKey   = "size"
+	logErrorKey  = "error"
+)
+
 type Submitter interface {
-	gdetect.GDetectSubmitter
+	gdetect.ControllerGDetectSubmitter
 	ExtractExpertViewURL(result *gdetect.Result) (urlExpertView string, err error)
 }
 
@@ -46,8 +57,9 @@ type Config struct {
 	MaxFileSize      int64
 	MoveTo           string
 	MoveFrom         string
-	Plugins          map[string]string
-	PluginsDir       string
+	// Plugins          map[string]string
+	PluginsConfigPath string
+	ConsoleEvents     chan<- any
 }
 
 type fileToAnalyze struct {
@@ -115,13 +127,14 @@ func NewConnector(config Config) *Connector {
 func newAction(config Config) Action {
 	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
-		action.Actions = append(action.Actions, &LogAction{logger: Logger})
+		action.Actions = append(action.Actions, &LogAction{logger: logger})
 	}
 	if config.Actions.Quarantine {
 		action.Actions = append(action.Actions, &QuarantineAction{
 			cache:  config.Cache,
 			root:   config.QuarantineFolder,
 			locker: &Lock{Password: config.Password},
+			events: config.ConsoleEvents,
 		})
 	}
 	if config.Actions.Deleted {
@@ -132,7 +145,7 @@ func newAction(config Config) Action {
 		if err == nil {
 			action.Actions = append(action.Actions, move)
 		} else {
-			Logger.Error("could not add move legit action", slog.String("error", err.Error()))
+			logger.Error("could not add move legit action", slog.String(logErrorKey, err.Error()))
 		}
 	}
 	if config.Actions.Inform {
@@ -154,6 +167,7 @@ func (c *Connector) Start(ctx context.Context) error {
 var XtractFile = xtractr.ExtractFile
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
+	inputLogger := logger.With(slog.String("input file", input))
 	info, err := os.Lstat(input)
 	if err != nil {
 		return
@@ -162,19 +176,18 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		return c.scanDir(ctx, input)
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
-		Logger.Debug("skip file", slog.String("file", input), slog.String("reason", "size 0"))
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "size 0"))
 		return
 	}
 	if info.Size() == 0 {
-		Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size 0"))
+		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
 		return
 	}
 	if info.Size() > c.config.MaxFileSize {
 		if !c.config.Extract {
-			Logger.Warn("skip file",
-				slog.String("file", input),
-				slog.String("reason", "file too large"),
-				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
+			inputLogger.Warn("skip file",
+				slog.String(logReasonKey, "file too large"),
+				slog.String(logSizeKey, units.Base2Bytes(info.Size()).Round(1).String()),
 			)
 			return
 		}
@@ -210,18 +223,17 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		case extractErr == nil:
 			// OK
 		case errors.Is(extractErr, xtractr.ErrUnknownArchiveType):
-			Logger.Warn("skip file",
-				slog.String("file", input),
-				slog.String("reason", "file too large (not an archive)"),
-				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
+			inputLogger.Warn("skip file",
+				slog.String(logReasonKey, "file too large (not an archive)"),
+				slog.String(logSizeKey, units.Base2Bytes(info.Size()).Round(1).String()),
 			)
 			return
 		default:
-			Logger.Warn("failed extraction", slog.String("archive", input), slog.String("reason", extractErr.Error()))
+			inputLogger.Warn("failed extraction", slog.String(logReasonKey, extractErr.Error()))
 			return
 		}
 
-		Logger.Info("extract files from archive", slog.String("archive", input), slog.Int("files", len(files)))
+		inputLogger.Info("extract files from archive", slog.Int("files", len(files)))
 
 		id := uuid.New()
 
@@ -241,15 +253,16 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		// Filter files
 		filteredFiles := []string{}
 		for _, f := range files {
+			fileLogger := inputLogger.With(slog.String("subfile", f))
 			info, infoErr := os.Stat(f)
 			if infoErr != nil {
 				eStatus.total--
 				c.archivesStatus[id.String()] = eStatus
 				errRemove := os.Remove(f)
 				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
+					fileLogger.Warn("could not remove inner file", slog.String(logErrorKey, errRemove.Error()))
 				}
-				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
+				fileLogger.Warn("could not stat archive inner file", slog.String(logErrorKey, infoErr.Error()))
 				continue
 			}
 			if info.Size() > c.config.MaxFileSize {
@@ -257,14 +270,11 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				c.archivesStatus[id.String()] = eStatus
 				errRemove := os.Remove(f)
 				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
+					fileLogger.Warn("could not remove inner file", slog.String(logErrorKey, errRemove.Error()))
 				}
-				Logger.Warn(
-					"skip archive inner file",
-					slog.String("archive", input),
-					slog.String("file", f),
-					slog.String("reason", "file too large"),
-					slog.String("size", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
+				fileLogger.Warn("skip archive inner file",
+					slog.String(logReasonKey, "file too large"),
+					slog.String(logSizeKey, units.Base2Bytes(info.Size()).Round(1).String()),
 				)
 				continue
 			}
@@ -273,13 +283,13 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 				c.archivesStatus[id.String()] = eStatus
 				errRemove := os.Remove(f)
 				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
+					logger.Warn("could not remove inner file",
+						slog.String(logErrorKey, errRemove.Error()),
+					)
 				}
-				Logger.Warn(
+				logger.Warn(
 					"skip archive inner file",
-					slog.String("archive", input),
-					slog.String("file", f),
-					slog.String("reason", "size 0"),
+					slog.String(logReasonKey, "size 0"),
 				)
 				continue
 			}
@@ -320,7 +330,7 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 		if !d.IsDir() {
 			err = c.ScanFile(ctx, path)
 			if err != nil {
-				Logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
+				logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
 				return
 			}
 		}
@@ -336,23 +346,24 @@ func (c *Connector) worker(ctx context.Context) {
 		case <-c.done.Done():
 			return
 		case input := <-c.fileChan:
-			switch input.archiveID {
-			case "":
-				result, err := c.handleFile(ctx, input.location)
-				if err != nil {
-					Logger.Error("could not handle file", slog.String("file", input.filename), slog.String("error", err.Error()))
-				}
-				report := &report.Report{}
-				if err = c.action.Handle(ctx, input.location, result, report); err != nil {
-					Logger.Error("could not handle file action", slog.String("file", input.filename), slog.String("error", err.Error()))
-				}
-				c.addReport(report)
-			default:
+			inputLogger := logger.With(slog.String("input", input.filename))
+
+			if input.archiveID != "" {
 				err := c.handleArchive(ctx, input)
 				if err != nil {
-					Logger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("file", input.filename), slog.String("error", err.Error()))
+					inputLogger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String(logErrorKey, err.Error()))
 				}
+				continue
 			}
+			result, err := c.handleFile(ctx, input)
+			if err != nil {
+				inputLogger.Error("could not handle file", slog.String(logErrorKey, err.Error()))
+			}
+			report := &report.Report{}
+			if err = c.action.Handle(ctx, input.location, result, report); err != nil {
+				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
+			}
+			c.addReport(report)
 		}
 	}
 }
@@ -362,10 +373,10 @@ func (c *Connector) handleArchive(ctx context.Context, input fileToAnalyze) (err
 	defer c.archiveMutex.Unlock()
 	status := c.archivesStatus[input.archiveID]
 	if status.finished {
-		Logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
+		logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
 		return
 	}
-	result, err := c.handleFile(ctx, input.location)
+	result, err := c.handleFile(ctx, input)
 	if err != nil {
 		status.total--
 		c.archivesStatus[input.archiveID] = status
@@ -382,7 +393,11 @@ func (c *Connector) handleArchive(ctx context.Context, input fileToAnalyze) (err
 		c.addReport(report)
 		removeErr := os.RemoveAll(status.tmpFolder)
 		if removeErr != nil {
-			Logger.Error("could not remove temp folder", "archive", input.archiveID, "folder", status.tmpFolder, "error", err)
+			logger.Error("could not remove temp folder",
+				slog.String("archive", input.archiveID),
+				slog.String("folder", status.tmpFolder),
+				slog.String(logErrorKey, err.Error()),
+			)
 		}
 	}
 	c.archivesStatus[input.archiveID] = status
@@ -396,6 +411,7 @@ type SummarizedGMalwareResult struct {
 	Sha256            string                              `json:"sha256,omitempty"`
 	Malware           bool                                `json:"malware,omitempty"`
 	Malwares          []string                            `json:"malwares,omitempty"`
+	Size              int64                               `json:"size,omitempty"`
 }
 
 func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename string) (result SummarizedGMalwareResult) {
@@ -417,16 +433,18 @@ func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename st
 	return
 }
 
-func (c *Connector) handleFile(ctx context.Context, file string) (sumResult SummarizedGMalwareResult, err error) {
+func (c *Connector) handleFile(ctx context.Context, input fileToAnalyze) (sumResult SummarizedGMalwareResult, err error) {
+	fileLoger := logger.With(slog.String("file", input.location))
+
 	hash := sha256.New()
-	f, err := os.Open(filepath.Clean(file))
+	f, err := os.Open(filepath.Clean(input.location))
 	if err != nil {
 		return
 	}
 	if _, err = io.Copy(hash, f); err != nil {
 		errClose := f.Close()
 		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+			fileLoger.Error("cannot close file", slog.String(logErrorKey, err.Error()))
 		}
 		return
 	}
@@ -438,20 +456,22 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	switch {
 	case err == nil:
 		if entry.RestoredAt.UnixMilli() > 0 {
-			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
+			fileLoger.Debug("skip file", slog.String(logReasonKey, "restored"))
 			errClose := f.Close()
 			if errClose != nil {
-				Logger.Error("cannot close file", "file", file, "error", err)
+				fileLoger.Error("cannot close file", slog.String(logErrorKey, err.Error()))
 			}
 			return
 		}
-		Logger.Warn("file cached but not restored correctly, analyzing it again", slog.String("file", file), slog.String("reason", " not restored"))
+		fileLoger.Warn("file cached but not restored correctly, analyzing it again", slog.String(logReasonKey, "not restored"))
 	case errors.Is(err, cache.ErrEntryNotFound):
 		// ok
 	default:
 		errClose := f.Close()
 		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+			fileLoger.Error("cannot close file",
+				slog.String(logErrorKey, err.Error()),
+			)
 		}
 		return
 	}
@@ -463,18 +483,20 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 		return
 	}
 	var result gdetect.Result
-	if res := c.onStartScanFile(file, fileSHA256); res != nil {
+	if res := c.onStartScanFile(input.filename, fileSHA256); res != nil {
 		result = *res
 	} else {
 		opts := c.config.WaitOpts
-		opts.Filename = file
+		opts.Filename = input.location
 		result, err = c.config.Submitter.WaitForReader(submitCtx, f, opts)
 	}
-	c.onFileScanned(file, fileSHA256, result, err)
+	c.onFileScanned(input.location, fileSHA256, result, err)
 	if err != nil {
 		errClose := f.Close()
 		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+			fileLoger.Error("cannot close file",
+				slog.String(logErrorKey, err.Error()),
+			)
 		}
 		return
 	}
@@ -482,12 +504,16 @@ func (c *Connector) handleFile(ctx context.Context, file string) (sumResult Summ
 	// f need to be closed before action, to allow deletion
 	errClose := f.Close()
 	if errClose != nil {
-		Logger.Error("cannot close file", "file", file, "error", err)
+		fileLoger.Error("cannot close file",
+			slog.String(logErrorKey, err.Error()),
+		)
 	}
+
 	sumResult = SummarizedGMalwareResult{
 		Sha256:   fileSHA256,
 		Malware:  result.Malware,
 		Malwares: result.Malwares,
+		Size:     result.FileSize,
 	}
 	return
 }
@@ -504,11 +530,11 @@ func (c *Connector) Close() {
 	c.wg.Wait()
 	for _, x := range c.loadedPlugins {
 		if closeErr := x.Close(context.TODO()); closeErr != nil {
-			Logger.Error("failed to close plugin", slog.String("error", closeErr.Error()))
+			logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
 		}
 	}
 }
 
 func (c *Connector) GetLogger() *slog.Logger {
-	return Logger
+	return logger
 }

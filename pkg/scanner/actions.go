@@ -14,7 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/glimps-re/connector-manager/pkg/shared"
 	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/report"
 )
 
@@ -46,16 +48,6 @@ func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *re
 	return nil
 }
 
-type QuarantineAction struct {
-	cache  cache.Cacher
-	root   string
-	locker Locker
-}
-
-func NewQuarantineAction(cache cache.Cacher, root string, locker Locker) *QuarantineAction {
-	return &QuarantineAction{cache: cache, root: root, locker: locker}
-}
-
 type LogAction struct {
 	logger *slog.Logger
 }
@@ -67,23 +59,24 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result Summarize
 	report.Malicious = result.Malware
 	report.Sha256 = result.Sha256
 	report.Malware = result.Malwares
+	report.Size = result.Size
 	return
 }
 
 func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
-	if result.Malware {
-		if len(result.Malwares) == 0 {
-			result.Malwares = []string{}
-		}
-		if len(result.MaliciousSubfiles) == 0 {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
-		} else {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
-		}
-	} else {
+	if !result.Malware {
 		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", false))
+		return
 	}
-	return nil
+	if len(result.Malwares) == 0 {
+		result.Malwares = []string{}
+	}
+	if len(result.MaliciousSubfiles) == 0 {
+		a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
+		return
+	}
+	a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
+	return
 }
 
 type MultiAction struct {
@@ -117,16 +110,24 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result Summa
 	return
 }
 
+type QuarantineAction struct {
+	cache  cache.Cacher
+	root   string
+	locker Locker
+	events chan<- any
+}
+
+func NewQuarantineAction(cache cache.Cacher, root string, locker Locker, events chan<- any) *QuarantineAction {
+	return &QuarantineAction{cache: cache, root: root, locker: locker, events: events}
+}
+
 func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
 	// skip legit files
 	if !result.Malware {
 		return
 	}
 	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
+		a.root = config.DefaultQuarantineLocation
 	}
 	entry := &cache.Entry{
 		ID:              cache.ComputeCacheID(path),
@@ -151,7 +152,7 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result Summa
 	defer func() {
 		errClose := fin.Close()
 		if errClose != nil {
-			Logger.Error("QuarantineAction cannot close file : %s", "error", errClose)
+			logger.Error("QuarantineAction cannot close file", slog.String("file", path), slog.String(logErrorKey, errClose.Error()))
 		}
 	}()
 	malware := "unknown"
@@ -166,16 +167,20 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result Summa
 	}
 
 	report.QuarantineLocation = entry.QuarantineLocation
+	if a.events != nil {
+		a.events <- shared.QuarantineEvent{
+			ElementID: entry.ID,
+			Name:      entry.Sha256,
+			Date:      time.Now().String(),
+		}
+	}
 
 	return nil
 }
 
 func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
+		a.root = config.DefaultQuarantineLocation
 	}
 	fpath := filepath.Join(a.root, id+".lock")
 	f, err := os.Open(filepath.Clean(fpath))
@@ -188,12 +193,12 @@ func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	defer func() {
 		err := f.Close()
 		if err != nil {
-			Logger.Error("QuarantineAction cannot close file", "error", err)
+			logger.Error("QuarantineAction cannot close file", slog.String(logErrorKey, err.Error()))
 		}
 		if deleteLocked {
 			err := os.Remove(f.Name())
 			if err != nil {
-				Logger.Error("QuarantineAction cannot remove file", "error", err)
+				logger.Error("QuarantineAction cannot remove file", slog.String(logErrorKey, err.Error()))
 			}
 		}
 	}()
@@ -208,7 +213,7 @@ func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 	defer func() {
 		err := out.Close()
 		if err != nil {
-			Logger.Error("QuarantineAction cannot close file", "error", err)
+			logger.Error("QuarantineAction cannot close file", slog.String(logErrorKey, err.Error()))
 		}
 	}()
 
@@ -216,7 +221,7 @@ func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 		if err != nil {
 			e := os.Remove(out.Name())
 			if e != nil {
-				Logger.Error("QuarantineAction cannot remove file", "error", err)
+				logger.Error("QuarantineAction cannot remove file", slog.String(logErrorKey, err.Error()))
 			}
 
 		}
@@ -239,10 +244,10 @@ func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
 		entry.RestoredAt = Now()
 		err = a.cache.Set(ctx, entry)
 		if err != nil {
-			Logger.Error("error set cache", slog.String("sha256", entry.Sha256), slog.String("err", err.Error()))
+			logger.Error("error set cache", slog.String("sha256", entry.Sha256), slog.String(logErrorKey, err.Error()))
 		}
 	}
-	Logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
+	logger.Info("file restored", slog.String("file", file), slog.String(logReasonKey, reason))
 	// from here we want the lock file to be deleted
 	deleteLocked = true
 
@@ -257,11 +262,11 @@ func restoreFileInfo(path string, info os.FileInfo) (err error) {
 	if stat, ok := info.Sys().(*tar.Header); ok {
 		err = os.Chown(path, stat.Uid, stat.Gid)
 		if err != nil {
-			Logger.Error("error chown file", slog.String("path", path), slog.String("err", err.Error()))
+			logger.Error("error chown file", slog.String("path", path), slog.String(logErrorKey, err.Error()))
 		}
 		err = os.Chtimes(path, stat.AccessTime, stat.ModTime)
 		if err != nil {
-			Logger.Error("error chtimes file", slog.String("path", path), slog.String("err", err.Error()))
+			logger.Error("error chtimes file", slog.String("path", path), slog.String(logErrorKey, err.Error()))
 		}
 	}
 	return
@@ -277,7 +282,7 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 	go func() {
 		err := filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				Logger.Warn("list quarantined error", slog.String("error", err.Error()))
+				logger.Warn("list quarantined error", slog.String(logErrorKey, err.Error()))
 				return nil
 			}
 			if ctx.Err() != nil {
@@ -296,7 +301,7 @@ func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles cha
 			defer func() {
 				err := file.Close()
 				if err != nil {
-					Logger.Error("QuarantineAction cannot close file", "error", err)
+					logger.Error("QuarantineAction cannot close file", slog.String(logErrorKey, err.Error()))
 				}
 			}()
 
@@ -403,7 +408,7 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result SummarizedG
 				defer func() {
 					err := f.Close()
 					if err != nil {
-						Logger.Error("MoveAction cannot close file", "error", err)
+						logger.Error("MoveAction cannot close file", slog.String(logErrorKey, err.Error()))
 					}
 				}()
 				w := json.NewEncoder(f)

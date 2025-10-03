@@ -1,10 +1,9 @@
 //go:build windows
 // +build windows
 
-package cmd
+package config
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -16,17 +15,17 @@ var (
 	DefaultPluginsLocation    = filepath.Join(os.Getenv("AppData"), "gmhost", "plugins")
 )
 
-func getConfigFile() (config string) {
+func GetConfigFile() (config string, err error) {
 	config = DefaultConfigPath
 	home := os.Getenv("APPDATA")
 	cfg := filepath.Join(home, "gmhost", "config.yml")
 	if _, err := os.Stat(cfg); err == nil {
-		return cfg
+		return cfg, nil
 	}
 	if _, err := os.Stat(config); err != nil {
-		_, err = os.Create(config)
+		_, err = os.Create(filepath.Clean(config))
 		if err != nil {
-			Logger.Error("could not create config file", slog.String("location", config))
+			return config, err
 		}
 	}
 	return

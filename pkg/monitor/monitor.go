@@ -2,6 +2,7 @@ package monitor
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -11,7 +12,11 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+var LogLevel = &slog.LevelVar{}
+
+var Logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+	Level: LogLevel,
+}))
 
 type Monitorer interface {
 	Start()
@@ -58,7 +63,7 @@ func NewMonitor(onNewFile OnNewFileFunc, prescan bool, period time.Duration, mod
 
 func (m *Monitor) Close() {
 	if err := m.watcher.Close(); err != nil {
-		Logger.Error("cannot close watcher", "error", err)
+		Logger.Error("cannot close watcher", slog.String("error", err.Error()))
 	}
 	m.cancel()
 	m.wg.Wait()
@@ -88,7 +93,7 @@ func (m *Monitor) scan() {
 			for path := range m.paths {
 				err := m.cb(path)
 				if err != nil {
-					Logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+					Logger.Error("error action on new file", slog.String("path", path), slog.String("error", err.Error()))
 				}
 			}
 			m.pathsLock.Unlock()
@@ -104,7 +109,6 @@ func (m *Monitor) work() {
 			if !ok {
 				return
 			}
-			Logger.Debug("new event", slog.Any("event", event))
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				m.fileToScanLock.Lock()
 				m.fileToScan[event.Name] = struct{}{}
@@ -150,7 +154,7 @@ func (m *Monitor) scanFiles() {
 
 func (m *Monitor) Add(path string) error {
 	if err := m.watcher.AddRecursive(path); err != nil {
-		return err
+		return fmt.Errorf("error watching %s: %w", path, err)
 	}
 	m.pathsLock.Lock()
 	m.paths[path] = struct{}{}

@@ -1,21 +1,21 @@
 package scanner
 
 import (
-	"archive/tar"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
-	"github.com/glimps-re/host-connector/pkg/cache"
-	"github.com/glimps-re/host-connector/pkg/report"
+	"github.com/glimps-re/connector-integration/sdk/events"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
 type Actions struct {
@@ -37,77 +37,145 @@ var (
 )
 
 type Action interface {
-	Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) error
+	Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) error
 }
 
-type NoAction struct{}
+type ReportAction struct{}
 
-func (*NoAction) Handle(path string, result SummarizedGMalwareResult, report *report.Report) error {
-	return nil
+func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+	analysisReport.Filename = path
+	analysisReport.Malicious = result.Malware
+	analysisReport.SHA256 = result.SHA256
+	analysisReport.Malwares = result.Malwares
+	analysisReport.FileSize = result.FileSize
+	analysisReport.FileType = result.FileType
+	analysisReport.AnalyzedVolume = result.AnalyzedVolume
+	analysisReport.FilteredVolume = result.FilteredVolume
+	analysisReport.MalwareReason = result.MalwareReason
+	analysisReport.TotalExtractedFile = result.TotalExtractedFile
+	analysisReport.GMalwareURL = result.GMalwareURL
+	for _, subfile := range result.MaliciousSubfiles {
+		analysisReport.MaliciousExtractedFiles = append(analysisReport.MaliciousExtractedFiles, datamodel.ExtractedFile{
+			FileName:      subfile.Filename,
+			SHA256:        subfile.SHA256,
+			Malicious:     true,
+			Malwares:      subfile.Malwares,
+			Size:          subfile.FileSize,
+			MalwareReason: subfile.MalwareReason,
+			GMalwareURL:   subfile.GMalwareURL,
+		})
+	}
+	return
 }
 
-type QuarantineAction struct {
-	cache  cache.Cacher
-	root   string
-	locker Locker
+func getMitigationReason(malwareReason datamodel.MalwareReason) (mitigationReason events.MitigationReason) {
+	switch malwareReason {
+	case datamodel.TooBig:
+		mitigationReason = events.ReasonTooBig
+	case datamodel.AnalysisError:
+		mitigationReason = events.ReasonError
+	case datamodel.MalwareDetected:
+		mitigationReason = events.ReasonMalware
+	case datamodel.FilteredFileType:
+		mitigationReason = events.ReasonFileType
+	}
+	return
 }
 
-func NewQuarantineAction(cache cache.Cacher, root string, locker Locker) *QuarantineAction {
-	return &QuarantineAction{cache: cache, root: root, locker: locker}
+func getMitigationAction(action datamodel.Action) (mitigationAction events.MitigationAction) {
+	switch action {
+	case datamodel.Removed:
+		mitigationAction = events.ActionRemove
+	case datamodel.Logged:
+		mitigationAction = events.ActionLog
+	case datamodel.Quarantined:
+		mitigationAction = events.ActionQuarantine
+	}
+	return
 }
 
 type LogAction struct {
 	logger *slog.Logger
 }
 
-type ReportAction struct{}
-
-func (a *ReportAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
-	report.FileName = path
-	report.Malicious = result.Malware
-	report.Sha256 = result.Sha256
-	report.Malware = result.Malwares
-	return
-}
-
-func (a *LogAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
-	if result.Malware {
-		if len(result.Malwares) == 0 {
-			result.Malwares = []string{}
-		}
-		if len(result.MaliciousSubfiles) == 0 {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
-		} else {
-			a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.Any("malicious-subfiles", result.MaliciousSubfiles))
-		}
-	} else {
-		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.Sha256), slog.Bool("malware", false))
+func (a *LogAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	if !result.Malware {
+		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", false))
+		return
 	}
-	return nil
+	report.Action = datamodel.Logged
+	if len(result.Malwares) == 0 {
+		result.Malwares = []string{}
+	}
+	if len(result.MaliciousSubfiles) == 0 {
+		a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
+		return
+	}
+	attrs := []slog.Attr{}
+	for _, v := range result.MaliciousSubfiles {
+		attrs = append(attrs, slog.GroupAttrs(v.Filename, slog.String("sha256", v.SHA256), slog.Any("malwares", v.Malwares)))
+	}
+	a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.String("reason", string(result.MalwareReason)), slog.GroupAttrs("malicious-subfiles", attrs...))
+	return
 }
 
 type MultiAction struct {
 	Actions []Action
 }
 
-func (a *MultiAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
+func NewMultiAction(eventHandler events.EventHandler, actions ...Action) *MultiAction {
+	return &MultiAction{Actions: actions}
+}
+
+func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
 	for _, h := range a.Actions {
 		if err = h.Handle(ctx, path, result, report); err != nil {
 			return
 		}
 	}
-	return
-}
 
-func NewMultiAction(actions ...Action) *MultiAction {
-	return &MultiAction{Actions: actions}
+	if report.Action == "" {
+		return
+	}
+
+	gmalwareURLs := []string{}
+	if result.GMalwareURL != "" {
+		gmalwareURLs = append(gmalwareURLs, result.GMalwareURL)
+	}
+	for _, subFile := range result.MaliciousSubfiles {
+		if subFile.GMalwareURL != "" {
+			gmalwareURLs = append(gmalwareURLs, subFile.GMalwareURL)
+		}
+	}
+	if result.Malwares == nil {
+		result.Malwares = make([]string, 0)
+	}
+
+	if e := EventHandler.NotifyFileMitigation(ctx, getMitigationAction(report.Action), report.MitigationID, getMitigationReason(report.MalwareReason), events.FileInfos{
+		CommonDetails: events.CommonDetails{
+			Malwares:           result.Malwares,
+			GmalwareURLs:       gmalwareURLs,
+			QuarantineLocation: report.QuarantineLocation,
+		},
+		Filename: path,
+		Size:     report.FileSize,
+		Filetype: report.FileType,
+	}); e != nil {
+		logger.Warn("could not push quarantine event to console", slog.String("error", e.Error()))
+	}
+	return
 }
 
 type RemoveFileAction struct{}
 
-func (a *RemoveFileAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
+func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
 	if !result.Malware {
 		return
+	}
+	// We don't want to overwrite mitigation action
+	if report.Action != datamodel.Quarantined {
+		report.Action = datamodel.Removed
+		report.MitigationID = result.SHA256
 	}
 	err = os.Remove(path)
 	if err != nil {
@@ -117,216 +185,38 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result Summa
 	return
 }
 
-func (a *QuarantineAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
+type QuarantineAction struct {
+	quarantiner quarantine.Quarantiner
+}
+
+func NewQuarantineAction(quarantiner quarantine.Quarantiner) *QuarantineAction {
+	return &QuarantineAction{quarantiner: quarantiner}
+}
+
+func (a *QuarantineAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	if a.quarantiner == nil {
+		return
+	}
 	// skip legit files
 	if !result.Malware {
 		return
 	}
-	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
-	}
-	entry := &cache.Entry{
-		ID:              cache.ComputeCacheID(path),
-		Sha256:          result.Sha256,
-		InitialLocation: path,
-	}
-	stat, err := os.Stat(path)
+	quarantineLocation, quarantineID, err := a.quarantiner.Quarantine(ctx, path, report.SHA256, result.Malwares)
 	if err != nil {
 		return
 	}
-
-	entry.QuarantineLocation = filepath.Join(a.root, entry.ID+".lock")
-
-	fout, err := os.Create(entry.QuarantineLocation)
-	if err != nil {
-		return
-	}
-	fin, err := os.Open(filepath.Clean(path))
-	if err != nil {
-		return
-	}
-	defer func() {
-		errClose := fin.Close()
-		if errClose != nil {
-			Logger.Error("QuarantineAction cannot close file : %s", "error", errClose)
-		}
-	}()
-	malware := "unknown"
-	if len(result.Malwares) > 0 {
-		malware = result.Malwares[0]
-	}
-	if err = a.locker.LockFile(path, fin, stat, "malware: "+malware, fout); err != nil {
-		return
-	}
-	if err = a.cache.Set(ctx, entry); err != nil {
-		return
-	}
-
-	report.QuarantineLocation = entry.QuarantineLocation
-
+	report.QuarantineLocation = quarantineLocation
+	report.MitigationID = quarantineID
+	report.Action = datamodel.Quarantined
 	return nil
 }
 
-func (a *QuarantineAction) Restore(ctx context.Context, id string) (err error) {
-	if a.root == "" {
-		a.root, err = os.MkdirTemp(os.TempDir(), "quarantine")
-		if err != nil {
-			return err
-		}
-	}
-	fpath := filepath.Join(a.root, id+".lock")
-	f, err := os.Open(filepath.Clean(fpath))
-	if err != nil {
-		return
-	}
-	// prepare file handle to be closed
-	// if we correctly restore the file we must delete the lock file
-	deleteLocked := false
-	defer func() {
-		err := f.Close()
-		if err != nil {
-			Logger.Error("QuarantineAction cannot close file", "error", err)
-		}
-		if deleteLocked {
-			err := os.Remove(f.Name())
-			if err != nil {
-				Logger.Error("QuarantineAction cannot remove file", "error", err)
-			}
-		}
-	}()
-	header, err := a.locker.GetHeader(f)
-	if err != nil {
-		return
-	}
-	out, err := os.Create(header.Filepath)
-	if err != nil {
-		return
-	}
-	defer func() {
-		err := out.Close()
-		if err != nil {
-			Logger.Error("QuarantineAction cannot close file", "error", err)
-		}
-	}()
-
-	defer func() {
-		if err != nil {
-			e := os.Remove(out.Name())
-			if e != nil {
-				Logger.Error("QuarantineAction cannot remove file", "error", err)
-			}
-
-		}
-	}()
-	_, err = f.Seek(0, io.SeekStart)
-	if err != nil {
-		return
-	}
-	file, info, reason, err := a.locker.UnlockFile(f, out)
-	if err != nil {
-		return
-	}
-	err = restoreFileInfo(out.Name(), info)
-	if err != nil {
-		return
-	}
-	entry, err := a.cache.Get(ctx, id)
-	if err == nil {
-		entry.QuarantineLocation = ""
-		entry.RestoredAt = Now()
-		err = a.cache.Set(ctx, entry)
-		if err != nil {
-			Logger.Error("error set cache", slog.String("sha256", entry.Sha256), slog.String("err", err.Error()))
-		}
-	}
-	Logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
-	// from here we want the lock file to be deleted
-	deleteLocked = true
-
-	return err
-}
-
-func restoreFileInfo(path string, info os.FileInfo) (err error) {
-	err = os.Chmod(path, info.Mode())
-	if err != nil {
-		return
-	}
-	if stat, ok := info.Sys().(*tar.Header); ok {
-		err = os.Chown(path, stat.Uid, stat.Gid)
-		if err != nil {
-			Logger.Error("error chown file", slog.String("path", path), slog.String("err", err.Error()))
-		}
-		err = os.Chtimes(path, stat.AccessTime, stat.ModTime)
-		if err != nil {
-			Logger.Error("error chtimes file", slog.String("path", path), slog.String("err", err.Error()))
-		}
-	}
-	return
-}
-
-type QuarantinedFile struct {
-	LockEntry
-	ID string
-}
-
-func (a *QuarantineAction) ListQuarantinedFiles(ctx context.Context) (qfiles chan QuarantinedFile, err error) {
-	qfiles = make(chan QuarantinedFile)
-	go func() {
-		err := filepath.WalkDir(a.root, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				Logger.Warn("list quarantined error", slog.String("error", err.Error()))
-				return nil
-			}
-			if ctx.Err() != nil {
-				return filepath.SkipAll
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if !strings.HasSuffix(path, ".lock") {
-				return nil
-			}
-			file, err := os.Open(filepath.Clean(path))
-			if err != nil {
-				return err
-			}
-			defer func() {
-				err := file.Close()
-				if err != nil {
-					Logger.Error("QuarantineAction cannot close file", "error", err)
-				}
-			}()
-
-			entry, err := a.locker.GetHeader(file)
-			if err != nil {
-				return err
-			}
-			ID := strings.TrimSuffix(filepath.Base(path), ".lock")
-			select {
-			case <-ctx.Done():
-				return filepath.SkipAll
-			case qfiles <- QuarantinedFile{LockEntry: entry, ID: ID}:
-				// push entry
-				return nil
-			}
-		})
-		if err != nil {
-			return
-		}
-		close(qfiles)
-	}()
-	return qfiles, nil
-}
-
-type InformAction struct {
+type PrintAction struct {
 	Verbose bool
 	Out     io.Writer
 }
 
-func (a *InformAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
+func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}
@@ -347,8 +237,8 @@ func (a *InformAction) Handle(ctx context.Context, path string, result Summarize
 		if err != nil {
 			return
 		}
-	case report.MoveTo != "":
-		_, err = fmt.Fprintf(a.Out, "file %s has been move to %s\n", path, report.MoveTo)
+	case report.MovedTo != "":
+		_, err = fmt.Fprintf(a.Out, "file %s has been moved to %s\n", path, report.MovedTo)
 		if err != nil {
 			return
 		}
@@ -381,46 +271,109 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 	return a, nil
 }
 
-func (a *MoveAction) Handle(ctx context.Context, path string, result SummarizedGMalwareResult, report *report.Report) (err error) {
+func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return
 	}
-	if strings.HasPrefix(path, a.Src) {
-		destSubpath, ok := strings.CutPrefix(path, a.Src)
-		if !ok {
-			destSubpath = path
-		}
-		dest := filepath.Join(a.Dest, destSubpath)
-		err = MkdirAll(filepath.Dir(dest), 0o755)
-		if err != nil {
-			return
-		}
-		// do not move malicious files
-		// write report instead
-		if result.Malware {
-			if f, err := Create(dest + ".locked.json"); err == nil {
-				defer func() {
-					err := f.Close()
-					if err != nil {
-						Logger.Error("MoveAction cannot close file", "error", err)
-					}
-				}()
-				w := json.NewEncoder(f)
-				w.SetIndent("", "  ")
-				if err = w.Encode(report); err != nil {
-					return err
-				}
-			}
-			return
-		}
-		err = Rename(path, dest)
+
+	if !strings.HasPrefix(path, a.Src) {
+		return errors.New("file not in paths")
+	}
+
+	destSubpath, ok := strings.CutPrefix(path, a.Src)
+	if !ok {
+		destSubpath = path
+	}
+	dest := filepath.Join(a.Dest, destSubpath)
+	err = MkdirAll(filepath.Dir(dest), 0o755)
+	if err != nil {
+		return
+	}
+	// move safe file
+	if !result.Malware && result.Error == nil {
+		err = moveFile(path, dest)
 		if err != nil {
 			return err
 		}
-		report.MoveTo = dest
+		report.MovedTo = dest
+		ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))
 		return
-
 	}
-	return errors.New("file not in paths")
+	f, err := Create(dest + ".locked.json")
+	if err != nil {
+		return
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			logger.Error("MoveAction cannot close file", slog.String(logErrorKey, e.Error()))
+		}
+	}()
+	w := json.NewEncoder(f)
+	w.SetIndent("", "  ")
+	if err = w.Encode(report); err != nil {
+		return
+	}
+	return
+}
+
+func moveFile(src, dst string) (err error) {
+	err = Rename(src, dst)
+	if err == nil {
+		return //nolint:nilerr // made on purpose
+	}
+
+	var linkErr *os.LinkError
+	// cross-device link error, happen when src and dst file are on different FS
+	if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
+		// Fall back to copy + delete for cross-device moves
+		return copyAndDelete(src, dst)
+	}
+	return
+}
+
+func copyAndDelete(src, dst string) (err error) {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+
+	srcFile, err := os.Open(filepath.Clean(src))
+	if err != nil {
+		return
+	}
+	defer func() {
+		if e := srcFile.Close(); e != nil {
+			logger.Error("copyAndDelete cannot close source file", slog.String("file", src), slog.String(logErrorKey, e.Error()))
+		}
+	}()
+
+	dstFile, err := Create(dst)
+	if err != nil {
+		return
+	}
+
+	success := false
+	defer func() {
+		if e := dstFile.Close(); e != nil {
+			logger.Error("copyAndDelete cannot close destination file", slog.String("file", dst), slog.String(logErrorKey, e.Error()))
+		}
+		if !success {
+			if e := os.Remove(dst); e != nil {
+				logger.Error("copyAndDelete cannot remove destination file after failed copy", slog.String("file", dst), slog.String(logErrorKey, e.Error()))
+			}
+		}
+	}()
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
+		return
+	}
+	if err = os.Chmod(dst, srcInfo.Mode()); err != nil {
+		return
+	}
+	success = true
+	err = os.Remove(src)
+	if err != nil {
+		return
+	}
+	return
 }

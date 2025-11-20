@@ -3,41 +3,50 @@ package scanner
 import (
 	"errors"
 	"io"
-	"log/slog"
-	"os"
 	"time"
 
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/report"
 )
 
-var Logger = slog.New(slog.NewJSONHandler(os.Stderr, nil))
+type PluginConfig struct {
+	File   string         `yaml:"file"`
+	Config map[string]any `yaml:"config"`
+}
 
 var ErrInvalidPlugin = errors.New("invalid plugin")
 
 var PluginInitTimeout = time.Minute * 5
 
-func (c *Connector) SetXTractFile(f plugins.XtractFileFunc) {
-	XtractFile = f
+func (c *Connector) SetExtractFile(f plugins.ExtractFile) {
+	ExtractFile = f
 }
 
-func (c *Connector) onStartScanFile(file string, sha256 string) *gdetect.Result {
+func (c *Connector) onStartScanFile(filepath string, sha256 string) {
 	for _, cb := range c.onStartScanFileCbs {
-		if r := cb(file, sha256); r != nil {
+		cb(filepath, sha256)
+	}
+}
+
+func (c *Connector) onScanFile(filename string, filepath string, sha256 string, isArchive bool) *datamodel.Result {
+	for _, cb := range c.onScanFileCbs {
+		if r := cb(filename, filepath, sha256, isArchive); r != nil {
 			return r
 		}
 	}
 	return nil
 }
 
-func (c *Connector) onFileScanned(file string, sha256 string, result gdetect.Result, err error) {
+func (c *Connector) onFileScanned(filepath string, sha256 string, result datamodel.Result) (newResult *datamodel.Result) {
 	for _, cb := range c.onFileScannedCbs {
-		cb(file, sha256, result, err)
+		if res := cb(filepath, sha256, result); res != nil {
+			return res
+		}
 	}
+	return
 }
 
-func (c *Connector) onReport(report *report.Report) {
+func (c *Connector) onReport(report *datamodel.Report) {
 	for _, cb := range c.onReportCbs {
 		cb(report)
 	}
@@ -51,6 +60,10 @@ func (c *Connector) RegisterOnFileScanned(f plugins.OnFileScanned) {
 	c.onFileScannedCbs = append(c.onFileScannedCbs, f)
 }
 
+func (c *Connector) RegisterOnScanFile(f plugins.OnScanFile) {
+	c.onScanFileCbs = append(c.onScanFileCbs, f)
+}
+
 func (c *Connector) RegisterOnReport(f plugins.OnReport) {
 	c.onReportCbs = append(c.onReportCbs, f)
 }
@@ -59,6 +72,6 @@ func (c *Connector) RegisterGenerateReport(f plugins.GenerateReport) {
 	c.generateReport = f
 }
 
-func (c *Connector) GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
+func (c *Connector) GenerateReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 	return c.generateReport(reportContext, reports)
 }

@@ -17,7 +17,7 @@
 
         <DirectoryRef Id="APPLICATIONCONFIGDIRECTORY">
             <Component Id="config.yml" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="config.yml" Source="../rsc/config.yml" />
+                <File Id="config.yml" Source="rsc/config.yml" />
             </Component>
         </DirectoryRef>
 
@@ -31,10 +31,10 @@
                 <File Id="gmhost.exe" Source="gmhost.exe" />
             </Component>
             <Component Id="README.md" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="README.md" Source="../README.md" />
+                <File Id="README.md" Source="README.md" />
             </Component>
             <Component Id="Glimps.ico" Guid="508eaf53-83e2-46df-8717-0643c997e094">
-                <File Id="Glimps.ico" Source="../rsc/Glimps.ico" />
+                <File Id="Glimps.ico" Source="rsc/Glimps.ico" />
             </Component>
             <Component Id="RegistryEntries" Guid="508eaf53-83e2-46df-8717-0643c997e094">
                 <RegistryKey Root="HKLM"

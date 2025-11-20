@@ -22,7 +22,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/vimeo/go-magic v1.0.0
 	go.yaml.in/yaml/v3 v3.0.4
-	golang.org/x/crypto v0.42.0
+	golang.org/x/crypto v0.45.0
 	golift.io/xtractr v0.2.2
 )
 
@@ -62,7 +62,7 @@ require (
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9 // indirect
-	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/net v0.47.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
@@ -77,7 +77,7 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/spf13/viper v1.21.0
 	github.com/subosito/gotenv v1.6.0 // indirect
-	golang.org/x/sys v0.37.0 // indirect
-	golang.org/x/text v0.29.0 // indirect
+	golang.org/x/sys v0.38.0 // indirect
+	golang.org/x/text v0.31.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )

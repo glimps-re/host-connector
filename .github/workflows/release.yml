@@ -8,92 +8,57 @@ on:
     types: [created]
 
 jobs:
-  release-matrix:
-    name: Release binary for linux and windows
+  release:
+    name: Release
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux,windows]
-        goarch: [amd64]
-        goversion: ["1.25"]
     steps:
       - uses: actions/checkout@v4
-      - uses: wangyoucao577/go-release-action@v1.53
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          project_path: "."
-          binary_name: "gmhost"
-          ldflags: "-s -w"
-          extra_files: README.md LICENSE
-          goversion: ${{ matrix.goversion }}
-  release-plugins-matrix:
-    name: Release plugins
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [linux]
-        goarch: [amd64]
-        goversion: ["1.25"]
-        plugins: 
-          - path: "./cmd/plugins/error_filter"
-            name: "error_filter.so"
-          - path: "./cmd/plugins/extract"
-            name: "extract.so"
-          - path: "./cmd/plugins/filetype_filter"
-            name: "filetype_filter.so"
-          - path: "./cmd/plugins/report"
-            name: "report.so"
-          - path: "./cmd/plugins/filesize_filter"
-            name: "filesize_filter.so"
-          - path: "./cmd/plugins/session"
-            name: "session.so"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: wangyoucao577/go-release-action@v1.53
+          go-version: '1.25'
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmagic-dev
+
+      - name: GoReleaser
+        uses: goreleaser/goreleaser-action@v6
         with:
-          build_flags: "-buildmode=plugin"
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          project_path: ${{ matrix.plugins.path }}
-          binary_name: ${{ matrix.plugins.name }}
-          ldflags: "-s -w"
-          extra_files: README.md LICENSE
-          goversion: ${{ matrix.goversion }}
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   release-binary-msi:
-    name: Release msi file
+    name: Release MSI file
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        goos: [windows]
-        goarch: [amd64]
-        goversion: ["1.25"]
+    if: github.event_name == 'release'
     steps:
       - uses: actions/checkout@v4
-      - uses: wangyoucao577/go-release-action@v1.53
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          goos: ${{ matrix.goos }}
-          goarch: ${{ matrix.goarch }}
-          project_path: "."
-          binary_name: "gmhostgui"
-          ldflags: "-s -w -H windowsgui"
-          extra_files: README.md LICENSE
-          goversion: ${{ matrix.goversion }}
-          pre_command: apt-get update && apt-get install -y wixl
-          post_command: 
-              GOOS=windows go build -o gmhost.exe -ldflags "-s -w" ../main.go
-              && wixl -a x64
-              -o "${INPUT_BINARY_NAME}-${GITHUB_REF_NAME}-${INPUT_GOARCH}-${INPUT_GOOS}.msi"
-              ../setup.wxs
-              && github-assets-uploader
-              -logtostderr
-              -f "${INPUT_BINARY_NAME}-${GITHUB_REF_NAME}-${INPUT_GOARCH}-${INPUT_GOOS}.msi"
-              -mediatype text/plain
-              -repo glimps-re/host-connector
-              -token "${INPUT_GITHUB_TOKEN}"
-              -tag="${GITHUB_REF_NAME}"
-              -releasename="${INPUT_RELEASE_NAME}"
-              -retry 3
+          go-version: '1.25'
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y wixl
+
+      - name: Build Windows GUI binary
+        run: GOOS=windows GOARCH=amd64 go build -o gmhostgui.exe -ldflags "-s -w -H windowsgui" ./main.go
+
+      - name: Build Windows CLI binary
+        run: GOOS=windows GOARCH=amd64 go build -o gmhost.exe -ldflags "-s -w" ./main.go
+
+      - name: Create MSI package
+        run: |
+          wixl -a x64 -o gmhostgui-${{ github.ref_name }}-amd64-windows.msi setup.wxs
+
+      - name: Upload MSI to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: gmhostgui-${{ github.ref_name }}-amd64-windows.msi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

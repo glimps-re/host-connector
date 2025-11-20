@@ -1,0 +1,137 @@
+version: 2
+
+builds:
+  - id: gmhost
+    main: ./main.go
+    binary: gmhost
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+
+  - id: gmhostgui
+    main: ./main.go
+    binary: gmhostgui
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w -H windowsgui
+
+  - id: plugin-error-filter
+    main: ./cmd/plugins/error_filter
+    binary: error_filter.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+  - id: plugin-extract
+    main: ./cmd/plugins/extract
+    binary: extract.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+  - id: plugin-filetype-filter
+    main: ./cmd/plugins/filetype_filter
+    binary: filetype_filter.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+  - id: plugin-report
+    main: ./cmd/plugins/report
+    binary: report.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+  - id: plugin-filesize-filter
+    main: ./cmd/plugins/filesize_filter
+    binary: filesize_filter.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+  - id: plugin-session
+    main: ./cmd/plugins/session
+    binary: session.so
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
+archives:
+  - id: gmhost
+    ids:
+      - gmhost
+    name_template: "gmhost_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - tar.gz
+      - zip
+    files:
+      - README.md
+      - LICENSE
+
+  - id: gmhostgui
+    ids:
+      - gmhostgui
+    name_template: "gmhostgui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats:
+      - zip
+    files:
+      - README.md
+      - LICENSE
+
+  - id: plugins
+    ids:
+      - plugin-error-filter
+      - plugin-extract
+      - plugin-filetype-filter
+      - plugin-report
+      - plugin-filesize-filter
+      - plugin-session
+    formats: 
+      - binary
+    name_template: "{{ .Binary }}"
+
+checksum:
+  name_template: 'checksums.txt'
+
+release:
+  github:
+    owner: glimps-re
+    name: host-connector

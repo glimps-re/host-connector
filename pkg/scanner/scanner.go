@@ -9,120 +9,151 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/alecthomas/units"
+	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
-	"github.com/glimps-re/host-connector/pkg/cache"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/report"
-	"github.com/google/uuid"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"golift.io/xtractr"
 )
 
+const (
+	actionTimeout = 30 * time.Second
+)
+
+var (
+	LogLevel                          = &slog.LevelVar{}
+	logger                            = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: LogLevel}))
+	EventHandler  events.EventHandler = events.NoopEventHandler{}
+	ConsoleLogger                     = slog.New(slog.DiscardHandler)
+)
+
+const (
+	logReasonKey = "reason"
+	logErrorKey  = "error"
+)
+
 type Submitter interface {
-	gdetect.GDetectSubmitter
+	gdetect.ControllerGDetectSubmitter
 	ExtractExpertViewURL(result *gdetect.Result) (urlExpertView string, err error)
 }
 
 type Config struct {
-	// Path             string
-	QuarantineFolder string
-	Workers          int
-	Password         string
-	Cache            cache.Cacher
-	Submitter        Submitter
-	Timeout          time.Duration
-	WaitOpts         gdetect.WaitForOptions
-	Actions          Actions
-	CustomActions    []Action
-	ScanPeriod       time.Duration
-	Extract          bool
-	MaxFileSize      int64
-	MoveTo           string
-	MoveFrom         string
-	Plugins          map[string]string
-	PluginsDir       string
+	QuarantineFolder  string
+	Workers           int
+	ExtractWorkers    int
+	Password          string
+	Timeout           sdk.Duration
+	WaitOpts          gdetect.WaitForOptions
+	Actions           Actions
+	CustomActions     []Action
+	ScanPeriod        sdk.Duration
+	Extract           bool
+	MaxFileSize       int64
+	MoveTo            string
+	MoveFrom          string
+	PluginsConfigPath string
+	FollowSymlinks    bool
 }
 
 type fileToAnalyze struct {
-	location  string
-	filename  string
-	archiveID string
+	sha256          string
+	location        string
+	filename        string
+	size            int64
+	archiveID       string
+	archiveLocation string
+	archiveSHA256   string
+	archiveSize     int64
 }
 
-type archiveStatus struct {
-	finished    bool
-	archiveName string
-	result      SummarizedGMalwareResult
-	analyzed    int
-	total       int
-	tmpFolder   string
+type archiveToAnalyze struct {
+	sha256   string
+	location string
+	size     int64
 }
 
 type Connector struct {
-	done               context.Context
-	cancel             context.CancelFunc
+	submitter   Submitter
+	quarantiner quarantine.Quarantiner
+
+	started bool
+
+	stopExtract chan struct{}
+	stopWorker  chan struct{}
+
+	// workerCtx     context.Context
+	// cancelWorker  context.CancelFunc
+	// archiveCtx    context.Context
+	// cancelArchive context.CancelFunc
+
 	config             Config
-	wg                 sync.WaitGroup
+	workerWg           sync.WaitGroup
+	extractWg          sync.WaitGroup
 	fileChan           chan fileToAnalyze
+	archiveChan        chan archiveToAnalyze
 	action             Action
 	reportMutex        sync.Mutex
-	reports            []*report.Report
-	archivesStatus     map[string]archiveStatus
-	archiveMutex       sync.RWMutex
+	reports            []*datamodel.Report
+	archiveStatus      *archiveStatusHandler
 	loadedPlugins      []plugins.Plugin
 	onStartScanFileCbs []plugins.OnStartScanFile
+	onScanFileCbs      []plugins.OnScanFile
 	onFileScannedCbs   []plugins.OnFileScanned
 	onReportCbs        []plugins.OnReport
 	generateReport     plugins.GenerateReport
+	ongoingAnalysis    *sync.Map
 }
 
-var MaxWorkers = 40
+const (
+	defaultMaxFileSize    int64 = 100 * 1024 * 1024
+	defaultWorkers              = 4
+	defaultExtractWorkers       = 2
+)
 
-var MaxFileSize int64 = 100 * 1024 * 1024
-
-func NewConnector(config Config) *Connector {
-	ctx, cancel := context.WithCancel(context.Background())
-
+func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter Submitter) *Connector {
 	if config.Workers < 1 {
-		config.Workers = 1
+		config.Workers = defaultWorkers
 	}
-	if config.Workers > MaxWorkers {
-		config.Workers = MaxWorkers
+
+	if config.ExtractWorkers < 1 {
+		config.ExtractWorkers = defaultExtractWorkers
 	}
 
 	if config.MaxFileSize <= 0 {
-		config.MaxFileSize = MaxFileSize
+		config.MaxFileSize = defaultMaxFileSize
 	}
 
 	return &Connector{
-		done:           ctx,
-		cancel:         cancel,
-		fileChan:       make(chan fileToAnalyze),
-		config:         config,
-		archivesStatus: make(map[string]archiveStatus),
-		action:         newAction(config),
-		generateReport: report.GenerateReport,
+		submitter:       submitter,
+		quarantiner:     quarantiner,
+		fileChan:        make(chan fileToAnalyze),
+		archiveChan:     make(chan archiveToAnalyze),
+		config:          config,
+		archiveStatus:   newArchiveStatusHandler(),
+		action:          newAction(config, quarantiner, EventHandler),
+		generateReport:  datamodel.GenerateReport,
+		ongoingAnalysis: new(sync.Map),
+		stopExtract:     make(chan struct{}),
+		stopWorker:      make(chan struct{}),
 	}
 }
 
-func newAction(config Config) Action {
-	action := NewMultiAction(&ReportAction{})
+func newAction(config Config, quarantiner quarantine.Quarantiner, eventHandler events.EventHandler) *MultiAction {
+	action := NewMultiAction(eventHandler, &ReportAction{})
 	if config.Actions.Log {
-		action.Actions = append(action.Actions, &LogAction{logger: Logger})
+		action.Actions = append(action.Actions, &LogAction{logger: logger})
 	}
 	if config.Actions.Quarantine {
-		action.Actions = append(action.Actions, &QuarantineAction{
-			cache:  config.Cache,
-			root:   config.QuarantineFolder,
-			locker: &Lock{Password: config.Password},
-		})
+		action.Actions = append(action.Actions, NewQuarantineAction(quarantiner))
 	}
 	if config.Actions.Deleted {
 		action.Actions = append(action.Actions, &RemoveFileAction{})
@@ -132,181 +163,169 @@ func newAction(config Config) Action {
 		if err == nil {
 			action.Actions = append(action.Actions, move)
 		} else {
-			Logger.Error("could not add move legit action", slog.String("error", err.Error()))
+			logger.Error("could not add move legit action", slog.String(logErrorKey, err.Error()))
 		}
 	}
 	if config.Actions.Inform {
-		action.Actions = append(action.Actions, &InformAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
+		action.Actions = append(action.Actions, &PrintAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
 	}
 	action.Actions = append(action.Actions, config.CustomActions...)
 	return action
 }
 
-func (c *Connector) Start(ctx context.Context) error {
-	for i := 0; i < c.config.Workers; i++ {
-		c.wg.Add(1)
-		go c.worker(ctx)
+func (c *Connector) Start() (err error) {
+	c.started = true
+	for range c.config.Workers {
+		c.workerWg.Go(func() { c.worker() })
 	}
-	return nil
+	for range c.config.ExtractWorkers {
+		c.extractWg.Go(func() { c.extractWorker() })
+	}
+	return
 }
 
-// XtractFile could be used to override xtract.ExtractFile method
-var XtractFile = xtractr.ExtractFile
+// ExtractFile could be used to override xtract.ExtractFile method
+var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error) {
+	xFile := &xtractr.XFile{
+		FilePath:  archiveLocation,
+		OutputDir: outputDir,
+		FileMode:  0o755,
+		DirMode:   0o755,
+	}
+	return xtractr.ExtractFile(xFile)
+}
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	info, err := os.Lstat(input)
+	if !c.started {
+		err = errors.New("connector is stopped")
+		return
+	}
+
+	input = filepath.Clean(input)
+	inputLogger := logger.With(slog.String("input file", input))
+
+	// Use Lstat to check if it's a symlink without following it
+	linfo, err := os.Lstat(input)
 	if err != nil {
 		return
 	}
+
+	// Handle symbolic links
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		if !c.config.FollowSymlinks {
+			inputLogger.Debug("skip file", slog.String(logReasonKey, "symbolic link"))
+			return
+		}
+	}
+
+	// Now get info about the actual file (following symlink if needed)
+	info, err := os.Stat(input)
+	if err != nil {
+		return
+	}
+
 	if info.IsDir() {
 		return c.scanDir(ctx, input)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		Logger.Debug("skip file", slog.String("file", input), slog.String("reason", "size 0"))
-		return
-	}
+
 	if info.Size() == 0 {
-		Logger.Warn("skip file", slog.String("file", input), slog.String("reason", "size 0"))
+		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
 		return
 	}
-	if info.Size() > c.config.MaxFileSize {
-		if !c.config.Extract {
-			Logger.Warn("skip file",
-				slog.String("file", input),
-				slog.String("reason", "file too large"),
-				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
-			)
-			return
-		}
-		hash := sha256.New()
-		f, openErr := os.Open(filepath.Clean(input))
-		if openErr != nil {
-			err = openErr
-			return
-		}
-		if _, err = io.Copy(hash, f); err != nil {
-			e := f.Close()
-			if e != nil {
-				return e
-			}
-			return
-		}
-		archiveSha256 := hex.EncodeToString(hash.Sum(nil))
-		outputDir, outputDirErr := os.MkdirTemp(os.TempDir(), archiveSha256)
-		if outputDirErr != nil {
-			err = outputDirErr
-			return
-		}
 
-		xfile := xtractr.XFile{
-			FilePath:  input,
-			OutputDir: outputDir,
-			FileMode:  0o755,
-			DirMode:   0o755,
-		}
-
-		_, files, _, extractErr := XtractFile(&xfile)
-		switch {
-		case extractErr == nil:
-			// OK
-		case errors.Is(extractErr, xtractr.ErrUnknownArchiveType):
-			Logger.Warn("skip file",
-				slog.String("file", input),
-				slog.String("reason", "file too large (not an archive)"),
-				slog.String("size", units.Base2Bytes(info.Size()).Round(1).String()),
-			)
-			return
-		default:
-			Logger.Warn("failed extraction", slog.String("archive", input), slog.String("reason", extractErr.Error()))
-			return
-		}
-
-		Logger.Info("extract files from archive", slog.String("archive", input), slog.Int("files", len(files)))
-
-		id := uuid.New()
-
-		eStatus := archiveStatus{
-			archiveName: input,
-			result: SummarizedGMalwareResult{
-				Sha256:            archiveSha256,
-				MaliciousSubfiles: make(map[string]SummarizedGMalwareResult),
-				Malware:           false,
-				Malwares:          []string{},
-			},
-			analyzed:  0,
-			total:     len(files),
-			tmpFolder: outputDir,
-		}
-
-		// Filter files
-		filteredFiles := []string{}
-		for _, f := range files {
-			info, infoErr := os.Stat(f)
-			if infoErr != nil {
-				eStatus.total--
-				c.archivesStatus[id.String()] = eStatus
-				errRemove := os.Remove(f)
-				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
-				}
-				Logger.Warn("could not stat archive inner file", slog.String("archive", input), slog.String("file", f), slog.String("error", infoErr.Error()))
-				continue
-			}
-			if info.Size() > c.config.MaxFileSize {
-				eStatus.total--
-				c.archivesStatus[id.String()] = eStatus
-				errRemove := os.Remove(f)
-				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
-				}
-				Logger.Warn(
-					"skip archive inner file",
-					slog.String("archive", input),
-					slog.String("file", f),
-					slog.String("reason", "file too large"),
-					slog.String("size", fmt.Sprintf("file too large [%s]", units.Base2Bytes(info.Size()).Round(1).String())),
-				)
-				continue
-			}
-			if info.Size() <= 0 {
-				eStatus.total--
-				c.archivesStatus[id.String()] = eStatus
-				errRemove := os.Remove(f)
-				if errRemove != nil {
-					Logger.Warn("could not remove inner file", "archive", input, "file", f, "error", errRemove)
-				}
-				Logger.Warn(
-					"skip archive inner file",
-					slog.String("archive", input),
-					slog.String("file", f),
-					slog.String("reason", "size 0"),
-				)
-				continue
-			}
-			filteredFiles = append(filteredFiles, f)
-		}
-		files = filteredFiles
-		c.archivesStatus[id.String()] = eStatus
-		for _, f := range files {
-			dir, file := filepath.Split(f)
-			bef, _ := strings.CutPrefix(dir, outputDir)
-			realPath := filepath.Join(bef, file)
-			select {
-			case <-ctx.Done():
-				return context.Canceled
-			case c.fileChan <- fileToAnalyze{location: f, archiveID: id.String(), filename: realPath}:
-				continue
-			}
-		}
+	if _, loaded := c.ongoingAnalysis.LoadOrStore(input, struct{}{}); loaded {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "ongoing analysis"))
 		return
+	}
+
+	defer func() {
+		if err != nil {
+			c.ongoingAnalysis.Delete(input)
+		}
+	}()
+
+	fileSHA256, err := getFileSHA256(input)
+	if err != nil {
+		return
+	}
+
+	restored, err := c.checkFileRestored(ctx, input, fileSHA256, info.Size())
+	if err != nil {
+		return
+	}
+	if restored {
+		logger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
+		return
+	}
+
+	if info.Size() > c.config.MaxFileSize && c.config.Extract {
+		select {
+		case <-ctx.Done():
+			return context.Canceled
+		case c.archiveChan <- archiveToAnalyze{location: input, sha256: fileSHA256, size: info.Size()}:
+			return
+		}
 	}
 
 	select {
 	case <-ctx.Done():
 		return context.Canceled
-	case c.fileChan <- fileToAnalyze{location: input}:
+	case c.fileChan <- fileToAnalyze{
+		filename: input,
+		location: input,
+		sha256:   fileSHA256,
+		size:     info.Size(),
+	}:
 		return
 	}
+}
+
+func (c *Connector) checkFileRestored(ctx context.Context, location string, sha256 string, size int64) (restored bool, err error) {
+	if c.quarantiner == nil {
+		return
+	}
+	restored, err = c.quarantiner.IsRestored(ctx, sha256)
+	if err != nil {
+		return
+	}
+	if !restored {
+		return
+	}
+
+	res := datamodel.Result{
+		Filename: filepath.Base(location),
+		Location: location,
+		SHA256:   sha256,
+		FileSize: size,
+		Restored: true,
+	}
+	if newres := c.onFileScanned(location, sha256, res); newres != nil {
+		res = *newres
+	}
+	report := &datamodel.Report{}
+	if err = c.action.Handle(ctx, location, res, report); err != nil {
+		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
+		return
+	}
+	c.addReport(report)
+	return
+}
+
+func (c *Connector) checkExtractedFile(location string) (fileSHA256 string, fileSize int64, err error) {
+	info, err := os.Stat(location)
+	if err != nil {
+		return
+	}
+	fileSize = info.Size()
+	if info.Size() <= 0 {
+		err = errors.New("file is empty")
+		return
+	}
+	fileSHA256, err = getFileSHA256(location)
+	if err != nil {
+		return
+	}
+	return
 }
 
 func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
@@ -317,198 +336,422 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 		if walkErr != nil {
 			return walkErr
 		}
-		if !d.IsDir() {
-			err = c.ScanFile(ctx, path)
-			if err != nil {
-				Logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
-				return
-			}
+		if d.IsDir() {
+			return
+		}
+
+		err = c.ScanFile(ctx, path)
+		if err != nil {
+			logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
+			return
 		}
 		return
 	})
 	return
 }
 
-func (c *Connector) worker(ctx context.Context) {
-	defer c.wg.Done()
+func (c *Connector) worker() {
 	for {
 		select {
-		case <-c.done.Done():
+		case <-c.stopWorker:
 			return
 		case input := <-c.fileChan:
-			switch input.archiveID {
-			case "":
-				result, err := c.handleFile(ctx, input.location)
+			inputLogger := logger.With(slog.String("input", input.filename))
+			if input.archiveID != "" {
+				err := c.handleArchive(input)
 				if err != nil {
-					Logger.Error("could not handle file", slog.String("file", input.filename), slog.String("error", err.Error()))
+					inputLogger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String(logErrorKey, err.Error()))
 				}
-				report := &report.Report{}
-				if err = c.action.Handle(ctx, input.location, result, report); err != nil {
-					Logger.Error("could not handle file action", slog.String("file", input.filename), slog.String("error", err.Error()))
-				}
-				c.addReport(report)
-			default:
-				err := c.handleArchive(ctx, input)
-				if err != nil {
-					Logger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("file", input.filename), slog.String("error", err.Error()))
-				}
+				continue
+			}
+			c.onStartScanFile(input.location, input.sha256)
+			result := c.handleFile(input)
+			c.ongoingAnalysis.Delete(input.location)
+			actualSHA256, err := getFileSHA256(input.location)
+			if err != nil {
+				inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
+				continue
+			}
+			if actualSHA256 != input.sha256 {
+				inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
+				ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
+				continue
+			}
+
+			if result.Error != nil {
+				inputLogger.Error("could not handle file", slog.Any(logErrorKey, result.Error.Error()))
+			}
+			if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
+				result = *newres
+			}
+			report := &datamodel.Report{}
+			ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+			if err := c.action.Handle(ctx, input.location, result, report); err != nil {
+				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
+			}
+			cancel()
+			c.addReport(report)
+		}
+	}
+}
+
+func (c *Connector) extractWorker() {
+	for {
+		select {
+		case <-c.stopExtract:
+			return
+		case archive := <-c.archiveChan:
+			if err := c.tryExtract(archive); err != nil {
+				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
 			}
 		}
 	}
 }
 
-func (c *Connector) handleArchive(ctx context.Context, input fileToAnalyze) (err error) {
-	c.archiveMutex.Lock()
-	defer c.archiveMutex.Unlock()
-	status := c.archivesStatus[input.archiveID]
-	if status.finished {
-		Logger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
+func (c *Connector) tryExtract(archive archiveToAnalyze) (err error) {
+	archiveLogger := logger.With(slog.String("input file", archive.location), slog.String("sha256", archive.sha256))
+
+	outputDir, outputDirErr := os.MkdirTemp(os.TempDir(), archive.sha256)
+	if outputDirErr != nil {
+		err = outputDirErr
 		return
 	}
-	result, err := c.handleFile(ctx, input.location)
-	if err != nil {
-		status.total--
-		c.archivesStatus[input.archiveID] = status
-		return
-	}
-	status.analyzed++
-	status.result = mergeResult(status.result, result, input.filename)
-	if (c.config.Extract && status.analyzed == status.total) || (!c.config.Extract && result.Malware) {
-		status.finished = true
-		report := &report.Report{}
-		if err = c.action.Handle(ctx, status.archiveName, status.result, report); err != nil {
+
+	needCleanUp := true
+	defer func() {
+		if needCleanUp {
+			if e := os.RemoveAll(outputDir); e != nil {
+				archiveLogger.Error("could not remove temp folder after error", slog.String("folder", outputDir), slog.String(logErrorKey, e.Error()))
+			}
+		}
+	}()
+
+	_, files, _, extractErr := ExtractFile(archive.location, outputDir)
+	if extractErr != nil {
+		select {
+		case <-c.stopWorker:
+			return context.Canceled
+		case c.fileChan <- fileToAnalyze{sha256: archive.sha256, location: archive.location, filename: archive.location, size: archive.size}:
 			return
 		}
-		c.addReport(report)
-		removeErr := os.RemoveAll(status.tmpFolder)
-		if removeErr != nil {
-			Logger.Error("could not remove temp folder", "archive", input.archiveID, "folder", status.tmpFolder, "error", err)
+	}
+
+	archiveLogger.Info("extract files from archive", slog.Int("files", len(files)))
+	eStatus := archiveStatus{
+		archiveName: archive.location,
+		result: datamodel.Result{
+			SHA256:            archive.sha256,
+			MaliciousSubfiles: make(map[string]datamodel.Result),
+			Malware:           false,
+			Malwares:          []string{},
+			FileSize:          archive.size,
+		},
+		analyzed:  0,
+		total:     len(files),
+		tmpFolder: outputDir,
+	}
+
+	archiveID := c.archiveStatus.addStatus(eStatus)
+	needCleanUp = false
+
+	// Stream files directly to channel instead of accumulating in memory
+	for _, f := range files {
+		fileLogger := archiveLogger.With(slog.String("subfile", f))
+		fileSHA256, fileSize, err := c.checkExtractedFile(f)
+		if err != nil {
+			fileLogger.Warn("skip archive inner file", slog.String("file", f), slog.String(logReasonKey, err.Error()))
+			if e := os.Remove(f); e != nil {
+				fileLogger.Warn("could not remove archive inner file", slog.String("file", f))
+			}
+			finished, ok := c.archiveStatus.decreaseTotal(archiveID)
+			if !ok {
+				continue
+			}
+			if finished {
+				archiveLogger.Warn("all files from archive were skipped")
+				return nil
+			}
+			continue
+		}
+		relPath, relErr := filepath.Rel(outputDir, f)
+		if relErr != nil {
+			relPath = f
+		}
+		fileToSend := fileToAnalyze{
+			location:        f,
+			archiveID:       archiveID,
+			filename:        relPath,
+			archiveLocation: archive.location,
+			sha256:          fileSHA256,
+			archiveSHA256:   archive.sha256,
+			size:            fileSize,
+			archiveSize:     archive.size,
+		}
+		select {
+		case <-c.stopWorker:
+			return context.Canceled
+		case c.fileChan <- fileToSend:
+			continue
 		}
 	}
-	c.archivesStatus[input.archiveID] = status
 	return
 }
 
-var Since = time.Since
-
-type SummarizedGMalwareResult struct {
-	MaliciousSubfiles map[string]SummarizedGMalwareResult `json:"malicious-subfiles,omitempty"`
-	Sha256            string                              `json:"sha256,omitempty"`
-	Malware           bool                                `json:"malware,omitempty"`
-	Malwares          []string                            `json:"malwares,omitempty"`
+var sha256BufferPool = sync.Pool{
+	New: func() any {
+		// Buffer de 128KB (au lieu de 32KB par défaut)
+		buf := make([]byte, 128*1024)
+		return &buf
+	},
 }
 
-func mergeResult(baseResult, resultToMerge SummarizedGMalwareResult, filename string) (result SummarizedGMalwareResult) {
-	result = baseResult
-	for _, m := range resultToMerge.Malwares {
-		if !slices.Contains(result.Malwares, m) {
-			result.Malwares = append(result.Malwares, m)
-		}
-	}
-	result.Malware = baseResult.Malware || resultToMerge.Malware
-
-	result.MaliciousSubfiles = make(map[string]SummarizedGMalwareResult)
-	if baseResult.MaliciousSubfiles != nil {
-		result.MaliciousSubfiles = baseResult.MaliciousSubfiles
-	}
-	if resultToMerge.Malware {
-		result.MaliciousSubfiles[filename] = resultToMerge
-	}
-	return
-}
-
-func (c *Connector) handleFile(ctx context.Context, file string) (sumResult SummarizedGMalwareResult, err error) {
+func getFileSHA256(location string) (fileSHA256 string, err error) {
 	hash := sha256.New()
-	f, err := os.Open(filepath.Clean(file))
+	f, err := os.Open(filepath.Clean(location))
 	if err != nil {
 		return
 	}
-	if _, err = io.Copy(hash, f); err != nil {
-		errClose := f.Close()
-		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+	defer func() {
+		if e := f.Close(); e != nil {
+			logger.Warn("could not close file correctly", slog.String("file", location), slog.String("error", e.Error()))
 		}
+	}()
+
+	sha256Buf, ok := sha256BufferPool.Get().(*[]byte)
+	if !ok {
+		err = errors.New("error with sha256 computing, could not get correct buffer type from pool")
 		return
 	}
-	fileSHA256 := hex.EncodeToString(hash.Sum(nil))
+	defer sha256BufferPool.Put(sha256Buf)
 
-	// check if file has already been handle
-	// get result by sha instead of id because same files may have different ids (if different names)
-	entry, err := c.config.Cache.GetBySha256(ctx, fileSHA256)
-	switch {
-	case err == nil:
-		if entry.RestoredAt.UnixMilli() > 0 {
-			Logger.Debug("skip file", slog.String("file", file), slog.String("reason", "restored"))
-			errClose := f.Close()
-			if errClose != nil {
-				Logger.Error("cannot close file", "file", file, "error", err)
+	if _, err = io.CopyBuffer(hash, f, *sha256Buf); err != nil {
+		return
+	}
+	fileSHA256 = hex.EncodeToString(hash.Sum(nil))
+	return
+}
+
+func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
+	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
+	status, started, ok := c.archiveStatus.getArchiveStatus(input.archiveID, true)
+	if status.finished {
+		archiveLogger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
+		return
+	}
+	if !ok {
+		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		return
+	}
+	if started {
+		c.onStartScanFile(input.archiveLocation, input.archiveSHA256)
+		if archiveResult := c.onScanFile(input.archiveLocation, input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
+			ok := c.archiveStatus.addArchiveResult(input.archiveID, *archiveResult)
+			if !ok {
+				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+				return
 			}
 			return
 		}
-		Logger.Warn("file cached but not restored correctly, analyzing it again", slog.String("file", file), slog.String("reason", " not restored"))
-	case errors.Is(err, cache.ErrEntryNotFound):
-		// ok
-	default:
-		errClose := f.Close()
-		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
-		}
+	}
+	result := c.handleFile(input)
+	finished, archiveFound := c.archiveStatus.addInnerFileResult(input.archiveID, input.filename, result)
+	if !archiveFound {
+		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
 		return
 	}
-	// GDetect cache
-	submitCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
+
+	if finished {
+		err = c.finishArchiveAnalysis(input)
+		if err != nil {
+			return
+		}
+	}
+	return
+}
+
+func (c *Connector) finishArchiveAnalysis(input fileToAnalyze) (err error) {
+	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
+	defer func() {
+		c.ongoingAnalysis.Delete(input.archiveLocation)
+	}()
+	status, _, ok := c.archiveStatus.getArchiveStatus(input.archiveID, false)
+	if !ok {
+		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		return
+	}
+	actualSHA256, getSHAErr := getFileSHA256(input.archiveLocation)
+	if getSHAErr != nil {
+		err = fmt.Errorf("could not compute archive sha256, err: %w", getSHAErr)
+		return
+	}
+	if actualSHA256 != input.archiveSHA256 {
+		archiveLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
+		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
+	}
+	if newres := c.onFileScanned(input.archiveLocation, input.archiveSHA256, status.result); newres != nil {
+		status.result = *newres
+	}
+	report := &datamodel.Report{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 	defer cancel()
 
-	if _, err = f.Seek(0, io.SeekStart); err != nil {
+	err = c.action.Handle(ctx, status.archiveName, status.result, report)
+	if err != nil {
 		return
 	}
-	var result gdetect.Result
-	if res := c.onStartScanFile(file, fileSHA256); res != nil {
-		result = *res
-	} else {
-		opts := c.config.WaitOpts
-		opts.Filename = file
-		result, err = c.config.Submitter.WaitForReader(submitCtx, f, opts)
+
+	c.addReport(report)
+	removeErr := os.RemoveAll(status.tmpFolder)
+	if removeErr != nil {
+		archiveLogger.Error("could not remove temp folder",
+			slog.String("archive", input.archiveID),
+			slog.String("folder", status.tmpFolder),
+			slog.String(logErrorKey, removeErr.Error()),
+		)
 	}
-	c.onFileScanned(file, fileSHA256, result, err)
-	if err != nil {
-		errClose := f.Close()
-		if errClose != nil {
-			Logger.Error("cannot close file", "file", file, "error", err)
+	c.archiveStatus.deleteStatus(input.archiveID)
+	return
+}
+
+func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
+	fileLogger := logger.With(slog.String("file", input.location))
+	// GDetect cache
+	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.config.Timeout))
+	defer cancel()
+
+	opts := c.config.WaitOpts
+	opts.Filename = input.location
+
+	res := c.onScanFile(input.filename, input.location, input.sha256, false)
+	if res != nil {
+		result = *res
+		return
+	}
+
+	if input.size > c.config.MaxFileSize {
+		result = datamodel.Result{
+			Filename: input.filename,
+			Location: input.location,
+			SHA256:   input.sha256,
+			FileSize: input.size,
+			Error:    errors.New("file is too big to be analyzed"),
 		}
 		return
 	}
 
-	// f need to be closed before action, to allow deletion
-	errClose := f.Close()
-	if errClose != nil {
-		Logger.Error("cannot close file", "file", file, "error", err)
+	gdetectResult, err := c.submitter.WaitForFile(ctx, input.location, opts)
+	httpError := new(gdetect.HTTPError)
+	urlError := new(url.Error)
+	switch {
+
+	case err == nil:
+		if errEvent := EventHandler.NotifyResolution(ctx, "last analysis succeeded", events.GMalwareConfigError, events.GMalwareError); errEvent != nil {
+			fileLogger.Error("cannot push resolution event", slog.String("error", errEvent.Error()))
+		}
+
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, gdetect.ErrTimeout):
+		ConsoleLogger.Error(fmt.Sprintf("could not analyze file %s, error: %s", input.location, err.Error()))
+
+	case errors.As(err, httpError):
+		err := fmt.Errorf("%d: %s : %s", httpError.Code, httpError.Status, httpError.Body)
+		if errEvent := EventHandler.NotifyError(ctx, events.GMalwareError, err); errEvent != nil {
+			fileLogger.Error("cannot push error event", slog.String("error", errEvent.Error()))
+		}
+
+	case errors.As(err, &urlError):
+		err := fmt.Errorf("error %s: %w", urlError.Op, urlError.Err)
+		if errEvent := EventHandler.NotifyError(ctx, events.GMalwareError, err); errEvent != nil {
+			fileLogger.Error("cannot push error event", slog.String("error", errEvent.Error()))
+		}
+
+	default:
+		if errEvent := EventHandler.NotifyError(ctx, events.GMalwareError, err); errEvent != nil {
+			fileLogger.Error("cannot push error event", slog.String("error", errEvent.Error()))
+		}
+
 	}
-	sumResult = SummarizedGMalwareResult{
-		Sha256:   fileSHA256,
-		Malware:  result.Malware,
-		Malwares: result.Malwares,
+	if err != nil {
+		result = datamodel.Result{
+			Filename: input.filename,
+			FileType: gdetectResult.FileType,
+			Location: input.location,
+			SHA256:   input.sha256,
+			FileSize: input.size,
+			Error:    err,
+		}
+		return
+	}
+
+	urlExpertView, urlExpertErr := c.submitter.ExtractExpertViewURL(&gdetectResult)
+	if urlExpertErr != nil {
+		urlExpertView = ""
+	}
+
+	result = datamodel.Result{
+		Filename:    input.filename,
+		FileType:    gdetectResult.FileType,
+		Location:    input.location,
+		SHA256:      input.sha256,
+		Malware:     gdetectResult.Malware,
+		Malwares:    gdetectResult.Malwares,
+		FileSize:    gdetectResult.FileSize,
+		GMalwareURL: urlExpertView,
+	}
+
+	for _, f := range gdetectResult.Files {
+		result.AnalyzedVolume += f.Size
+	}
+
+	switch {
+	case gdetectResult.Error != "":
+		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, gdetectResult.Error))
+		result.AnalysisError = gdetectResult.Error
+	case len(gdetectResult.Errors) > 0:
+		errors := make([]string, 0, len(gdetectResult.Errors))
+		for k, v := range gdetectResult.Errors {
+			errors = append(errors, fmt.Sprintf("%s: %s", k, v))
+		}
+		analysisError := strings.Join(errors, ",")
+		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, gdetectResult.Error))
+		result.AnalysisError = analysisError
+	case gdetectResult.Malware:
+		result.MalwareReason = datamodel.MalwareDetected
 	}
 	return
 }
 
-func (c *Connector) addReport(report *report.Report) {
+func (c *Connector) addReport(report *datamodel.Report) {
 	c.onReport(report)
 	c.reportMutex.Lock()
 	defer c.reportMutex.Unlock()
 	c.reports = append(c.reports, report)
 }
 
-func (c *Connector) Close() {
-	c.cancel()
-	c.wg.Wait()
-	for _, x := range c.loadedPlugins {
-		if closeErr := x.Close(context.TODO()); closeErr != nil {
-			Logger.Error("failed to close plugin", slog.String("error", closeErr.Error()))
+func (c *Connector) Close(ctx context.Context) {
+	c.started = false
+
+	close(c.stopExtract)
+	c.extractWg.Wait()
+
+	close(c.stopWorker)
+	c.workerWg.Wait()
+
+	for _, plugin := range c.loadedPlugins {
+		if closeErr := plugin.Close(ctx); closeErr != nil {
+			logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
 		}
 	}
 }
 
 func (c *Connector) GetLogger() *slog.Logger {
-	return Logger
+	return logger
+}
+
+func (c *Connector) GetLogLevel() *slog.LevelVar {
+	return LogLevel
+}
+
+func (c *Connector) GetConsoleLogger() *slog.Logger {
+	return ConsoleLogger
 }

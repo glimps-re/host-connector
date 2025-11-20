@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/report"
+	quarantinermock "github.com/glimps-re/host-connector/pkg/quarantine/mock"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -19,24 +19,24 @@ func TestConnector_GenerateReport(t *testing.T) {
 		// Named input parameters for receiver constructor.
 		config Config
 		// Named input parameters for target function.
-		reports   []report.Report
+		reports   []datamodel.Report
 		generator plugins.GenerateReport
 		want      string
 		wantErr   bool
 	}{
 		{
 			name:    "default",
-			reports: []report.Report{{FileName: "test", Sha256: "123456"}},
-			want:    `[{"file-name":"test","sha256":"123456","malicious":false}]`,
+			reports: []datamodel.Report{{Filename: "test", SHA256: "123456"}},
+			want:    `[{"filename":"test","sha256":"123456","malicious":false}]`,
 		},
 		{
 			name:    "csv",
-			reports: []report.Report{{FileName: "test", Sha256: "123456"}, {FileName: "test2", Sha256: "123457", Malicious: true}},
-			generator: func(reportContext report.ScanContext, reports []report.Report) (io.Reader, error) {
+			reports: []datamodel.Report{{Filename: "test", SHA256: "123456"}, {Filename: "test2", SHA256: "123457", Malicious: true}},
+			generator: func(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 				buffer := &bytes.Buffer{}
 				fmt.Fprintf(buffer, "file,sha256,malicious\n")
 				for _, r := range reports {
-					fmt.Fprintf(buffer, "%s,%s,%v\n", r.FileName, r.Sha256, r.Malicious)
+					fmt.Fprintf(buffer, "%s,%s,%v\n", r.Filename, r.SHA256, r.Malicious)
 				}
 				return buffer, nil
 			},
@@ -47,11 +47,11 @@ test2,123457,true`,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := NewConnector(tt.config)
+			c := NewConnector(tt.config, &quarantinermock.QuarantineMock{}, &mockSubmitter{})
 			if tt.generator != nil {
 				c.RegisterGenerateReport(tt.generator)
 			}
-			got, gotErr := c.GenerateReport(report.ScanContext{}, tt.reports)
+			got, gotErr := c.GenerateReport(datamodel.ScanContext{}, tt.reports)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("GenerateReport() failed: %v", gotErr)
@@ -77,18 +77,11 @@ func TestOnStartScanfile(t *testing.T) {
 	c := Connector{}
 	c.onStartScanFile("test", "testsha256")
 	calls := []string{}
-	c.RegisterOnStartScanFile(func(n, s string) *gdetect.Result {
+	c.RegisterOnStartScanFile(func(n, s string) {
 		calls = append(calls, fmt.Sprintf("func1(%v, %v)", n, s))
-		return nil
 	})
-	c.RegisterOnStartScanFile(func(n, s string) *gdetect.Result {
+	c.RegisterOnStartScanFile(func(n, s string) {
 		calls = append(calls, fmt.Sprintf("func2(%v, %v)", n, s))
-		return &gdetect.Result{}
-	})
-	c.RegisterOnStartScanFile(func(n, s string) *gdetect.Result {
-		// func3 must not be called due to func2 return
-		calls = append(calls, fmt.Sprintf("func3(%v, %v)", n, s))
-		return nil
 	})
 	c.onStartScanFile("test_2", "testsha256_2")
 	want := []string{"func1(test_2, testsha256_2)", "func2(test_2, testsha256_2)"}
@@ -99,18 +92,21 @@ func TestOnStartScanfile(t *testing.T) {
 
 func TestOnFileScanned(t *testing.T) {
 	c := Connector{}
-	c.onFileScanned("test", "testsha256", gdetect.Result{}, nil)
+	c.onFileScanned("test", "testsha256", datamodel.Result{})
 	calls := []string{}
-	c.RegisterOnFileScanned(func(n, s string, _ gdetect.Result, _ error) {
+	c.RegisterOnFileScanned(func(n, s string, _ datamodel.Result) (newRes *datamodel.Result) {
 		calls = append(calls, fmt.Sprintf("func1(%v, %v)", n, s))
+		return
 	})
-	c.RegisterOnFileScanned(func(n, s string, _ gdetect.Result, _ error) {
+	c.RegisterOnFileScanned(func(n, s string, _ datamodel.Result) (newRes *datamodel.Result) {
 		calls = append(calls, fmt.Sprintf("func2(%v, %v)", n, s))
+		return
 	})
-	c.RegisterOnFileScanned(func(n, s string, _ gdetect.Result, _ error) {
+	c.RegisterOnFileScanned(func(n, s string, _ datamodel.Result) (newRes *datamodel.Result) {
 		calls = append(calls, fmt.Sprintf("func3(%v, %v)", n, s))
+		return
 	})
-	c.onFileScanned("test_2", "testsha256_2", gdetect.Result{}, nil)
+	c.onFileScanned("test_2", "testsha256_2", datamodel.Result{})
 	want := []string{"func1(test_2, testsha256_2)", "func2(test_2, testsha256_2)", "func3(test_2, testsha256_2)"}
 	if !cmp.Equal(calls, want) {
 		t.Errorf("Connector.onFileScanned() got %v instead of %v,\n%s", calls, want, cmp.Diff(calls, want))
@@ -121,13 +117,13 @@ func TestOnReport(t *testing.T) {
 	c := Connector{}
 	c.onReport(nil)
 	calls := []string{}
-	c.RegisterOnReport(func(*report.Report) {
+	c.RegisterOnReport(func(*datamodel.Report) {
 		calls = append(calls, "func1()")
 	})
-	c.RegisterOnReport(func(*report.Report) {
+	c.RegisterOnReport(func(*datamodel.Report) {
 		calls = append(calls, "func2()")
 	})
-	c.RegisterOnReport(func(*report.Report) {
+	c.RegisterOnReport(func(*datamodel.Report) {
 		calls = append(calls, "func3()")
 	})
 	c.onReport(nil)

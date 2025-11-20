@@ -1,11 +1,16 @@
 # Changelog
 
-## [Unreleased] 
+## [v1.0.0] - 2025-11-20
+
+### Added
+
+- Add agent cli that handles connector manager integration
 
 ### Changed
 
 - AES ciphering now use CTR instead of deprecated OFB
-- Add plugin capability
+- Add plugin capability with extract, filetype filter, session, and report plugins
+- Config fields
 
 ### Fixed
 

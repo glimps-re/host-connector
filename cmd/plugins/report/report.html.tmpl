@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Rapport d'analyse - {{ .ScanID }}</title>
+    <style>
+        :root {
+            --color-bg: #ffffff;
+            --color-text: #000000;
+            --color-accent: #EA5B0C;
+            --gradient-start: #E52321;
+            --gradient-end: #F9C105;
+            --max-width: 900px;
+            --font-family: 'Segoe UI', Arial, sans-serif;
+            --section-padding: 1.5rem;
+            --section-radius: 8px;
+            --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            --table-header-bg: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 2rem 1rem;
+            font-family: var(--font-family);
+            color: var(--color-text);
+            background-color: var(--color-bg);
+            line-height: 1.6;
+        }
+
+        header {
+            max-width: var(--max-width);
+            margin: 0 auto 2rem;
+            padding: var(--section-padding);
+            background: var(--table-header-bg);
+            border-radius: var(--section-radius);
+            box-shadow: var(--shadow);
+            text-align: center;
+            color: #fff;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 1.5rem;
+            letter-spacing: 0.05em;
+        }
+
+        section {
+            max-width: var(--max-width);
+            margin: 1rem auto;
+            padding: var(--section-padding);
+            background: #fdfdfd;
+            border-radius: var(--section-radius);
+            box-shadow: var(--shadow);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--color-accent);
+            border-bottom: 2px solid var(--color-accent);
+            padding-bottom: 0.5rem;
+            font-size: 1.5rem;
+        }
+
+        h3 {
+            margin-top: 0;
+            color: var(--color-accent);
+            border-bottom: 2px solid var(--color-accent);
+            padding-bottom: 0.5rem;
+            font-size: 1.3rem;
+        }
+
+        ul.details {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        ul.details li {
+            margin: 0.5rem 0;
+        }
+
+        .table-container {
+            overflow: auto;
+            margin-top: 1rem;
+        }
+
+        .table-container table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 0;
+            border-radius: var(--section-radius);
+            overflow: hidden;
+            box-shadow: var(--shadow);
+            /* Ensures cells don't expand too much */
+            table-layout: fixed;
+            /* Wrap long words */
+            word-wrap: break-word;
+            line-height: 1.1;
+        }
+
+        thead tr {
+            background: var(--table-header-bg);
+        }
+
+        thead th {
+            color: #fff;
+            padding: 0.5rem;
+            /* Reduced padding */
+            text-align: left;
+            font-weight: 600;
+            font-size: 0.85rem;
+            /* Slightly smaller font */
+            word-wrap: break-word;
+        }
+
+        tbody td {
+            padding: 0.5rem;
+            /* Reduced padding */
+            border-bottom: 1px solid #eee;
+            font-size: 0.85rem;
+            /* Smaller text */
+            word-wrap: break-word;
+        }
+
+        tbody tr:hover {
+            background: #fff8f0;
+        }
+
+        @media (max-width: 600px) {
+            body {
+                padding: 1rem;
+            }
+
+            header h1 {
+                font-size: 1.3rem;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <header>
+        <h1>Rapport d'analyse - {{ .ScanID }}</h1>
+    </header>
+
+    <section id="analysis-details">
+        <h2>Détails de l'analyse</h2>
+        <ul class="details">
+            <li><strong>Fichiers listés : </strong>{{ .NbFileSubmitted }}</li>
+            <li><strong>Fichiers analysés : </strong>{{ .NbFileAnalyzed }}</li>
+            <li><strong>Taille totale des fichiers (avant extraction) : </strong>{{ .FileVolume }}</li>
+            <li><strong>Volume analysé : </strong>{{ .AnalyzedVolume }}</li>
+            <li><strong>Volume filtré : </strong>{{ .FilteredVolume }}</li>
+            <li><strong>Bloqués : </strong>{{ .TotalMitigated }}, dont fichiers détéctés comme malveillants: {{ .TotalMalware }}</li>
+            <li><strong>Date de début : </strong>{{ .ScanStartTime }}</li>
+            <li><strong>Durée : </strong>{{ .Duration }}</li>
+        </ul>
+    </section>
+
+    <section id="conclusion">
+        <h2>Conclusion</h2>
+        {{ if gt .TotalMitigated  0 }}
+        <p>
+            Un ou plusieurs fichiers ont été bloqués par les moteurs d'analyse.
+        </p>
+        {{ else }}
+        <p>
+            Aucun comportement suspect ou malveillant n'a été détecté dans les fichiers soumis.
+        </p>
+        {{ end }}
+        <p>Seuls les fichiers analysés comme sains ont pu être déplacés par l'application sur le support de destination.</p>
+    </section>
+
+    {{ if gt (len .MitigatedFiles) 0 }}
+    <section id="threat-files">
+        <h2>Fichiers bloqués</h2>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Chemin</th>
+                        <th>Menace(s)</th>
+                        <th>SHA-256</th>
+                        <th>Taille</th>
+                        <th>Raison</th>
+                        <th>Analyse</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .MitigatedFiles}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ range $i, $malware := .Malwares}}
+                            * {{ $malware }}<br>
+                            {{ end }}
+                        </td>
+                        <td>{{ .SHA256 }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .MitigationReason }}</td>
+                        {{ if eq .GMalwareURL "" }}
+                        <td>Pas d'analyse GLIMPS Malware</td>
+                        {{ else }}
+                        <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
+                        {{ end }}
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .MitigatedArchives) 0 }}
+    <section id="threat-archive">
+        <h2>Archives bloquées</h2>
+        {{ range $index, $file := .MitigatedArchives}}
+            <section id="threat-archive-{{ $index }}">
+                <div id="archive-details-{{ $index }}">
+                    <h3>Archive {{ .Name }}</h3>
+                    <ul class="details">
+                        <li><strong>Nombre de sous-fichier extrait : </strong>{{ .FileCount }}</li>
+                        <li><strong>SHA-256 : </strong>{{ .SHA256 }}</li>
+                        <li><strong>Taille : </strong>{{ .Size }}</li>
+                        <li><strong>Quarantaine : </strong>{{ .QuarantineLocation }}</li>
+                    </ul>
+                </div>
+                <div class="table-container">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Nom</th>
+                                <th>SHA-256</th>
+                                <th>Taille</th>
+                                <th>Menace(s)</th>
+                                <th>Raison</th>
+                                <th>URL de l'analyse</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {{ range $index, $file := .ExtractedFiles}}
+                            <tr>
+                                <td>{{ .Name }}</td>
+                                <td>{{ .SHA256 }}</td>
+                                <td>{{ .Size }}</td>
+                                <td>{{ range $i, $malware := .Malwares}}
+                                    * {{ $malware }}<br>
+                                    {{ end }}
+                                </td>
+                                <td>{{ .MitigationReason }}</td>
+                                {{ if eq .GMalwareURL "" }}
+                                <td>Pas d'analyse GLIMPS Malware</td>
+                                {{ else }}
+                                <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
+                                {{ end }}
+                            </tr>
+                            {{ end }}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        {{ end }}
+    </section>
+    {{ end }}
+</body>
+
+</html>

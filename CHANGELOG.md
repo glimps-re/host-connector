@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.0.1] - 2025-11-20
+
+### Fixed
+
+- Release CI
+- Update crypto deps
+
 ## [v1.0.0] - 2025-11-20
 
 ### Added

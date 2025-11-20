@@ -98,7 +98,7 @@ archives:
   - id: gmhost
     ids:
       - gmhost
-    name_template: "gmhost_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "gmhost-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - tar.gz
       - zip
@@ -109,7 +109,7 @@ archives:
   - id: gmhostgui
     ids:
       - gmhostgui
-    name_template: "gmhostgui_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "gmhostgui-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - zip
     files:
@@ -126,7 +126,7 @@ archives:
       - plugin-session
     formats: 
       - binary
-    name_template: "{{ .Binary }}"
+    name_template: "{{ .Binary }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
 
 checksum:
   name_template: 'checksums.txt'

@@ -26,6 +26,7 @@ func Main() {
 func main_() (err error) {
 	initRoot(rootCmd)
 	rootCmd.AddCommand(scanCmd)
+	rootCmd.AddCommand(versionCmd)
 	quarantineCmd.AddCommand(quarantineListCmd)
 	quarantineCmd.AddCommand(quarantineRestoreCmd)
 	rootCmd.AddCommand(quarantineCmd)

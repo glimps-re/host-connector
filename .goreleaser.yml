@@ -10,7 +10,7 @@ builds:
     goarch:
       - amd64
     ldflags:
-      - -s -w
+      - -s -w -X github.com/glimps-re/host-connector/pkg/config.Version=v{{ .Version }}
 
   - id: gmhostgui
     main: ./main.go
@@ -20,7 +20,7 @@ builds:
     goarch:
       - amd64
     ldflags:
-      - -s -w -H windowsgui
+      - -s -w -H windowsgui -X github.com/glimps-re/host-connector/pkg/config.Version=v{{ .Version }}
 
   - id: plugin-error-filter
     main: ./cmd/plugins/error_filter
@@ -98,7 +98,7 @@ archives:
   - id: gmhost
     ids:
       - gmhost
-    name_template: "gmhost-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "gmhost-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - tar.gz
       - zip
@@ -109,7 +109,7 @@ archives:
   - id: gmhostgui
     ids:
       - gmhostgui
-    name_template: "gmhostgui-{{ .Tag }}-{{ .Os }}-{{ .Arch }}"
+    name_template: "gmhostgui-v{{ .Version }}-{{ .Os }}-{{ .Arch }}"
     formats:
       - zip
     files:
@@ -126,7 +126,7 @@ archives:
       - plugin-session
     formats: 
       - binary
-    name_template: "{{ .Binary }}-{{ .Tag }}-{{ .Os }}-{{ .Arch }}.so"
+    name_template: "{{ .Binary }}-v{{ .Version }}-{{ .Os }}-{{ .Arch }}.so"
 
 checksum:
   name_template: 'checksums.txt'

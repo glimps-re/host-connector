@@ -717,6 +717,7 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 		result.AnalysisError = analysisError
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected
+		ConsoleLogger.Info("malware detected", slog.String("file", input.location), slog.Any("malwares", gdetectResult.Malwares))
 	}
 	return
 }

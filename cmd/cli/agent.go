@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/spf13/cobra"
 )
 
@@ -22,7 +23,7 @@ var agentCmd = &cobra.Command{
 
 		registerCtx, registerCancel := context.WithTimeout(cmd.Context(), 30*time.Second)
 		defer registerCancel()
-		err = console.Register(registerCtx, "v1.0.0", info)
+		err = console.Register(registerCtx, config.Version, info)
 		if err != nil {
 			return
 		}

@@ -13,6 +13,7 @@ var (
 	DefaultScanValidity      = sdk.Duration(time.Hour * 24 * 7)
 	DefaultModificationDelay = sdk.Duration(time.Second * 30)
 	DefaultMaxFileSize       = "100MiB"
+	Version                  = "dev"
 )
 
 type Config struct {

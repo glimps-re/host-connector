@@ -49,8 +49,8 @@ func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	logger = hcc.GetLogger().With(slog.String("plugin", "FTFilter"))
 	consoleLogger = hcc.GetConsoleLogger()
 
-	if err := magic.AddMagicDir(magic.GetDefaultDir()); err != nil {
-		return err
+	if addMagicErr := magic.AddMagicDir(magic.GetDefaultDir()); addMagicErr != nil {
+		logger.Warn("could not add default magic dir", slog.String("dir", magic.GetDefaultDir()), slog.String("error", addMagicErr.Error()))
 	}
 
 	config, ok := rawConfig.(*Config)

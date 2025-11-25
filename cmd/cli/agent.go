@@ -37,7 +37,7 @@ var agentCmd = &cobra.Command{
 			logger.Error("error setting up host connector, wait for a reconfigure from connector manager...", slog.String("error", err.Error()))
 		}
 
-		if !info.Stopped {
+		if !info.Stopped && err == nil {
 			err = hostHandler.Start(cmd.Context())
 			if err != nil {
 				logger.Error("error starting host connector, wait for a reconfigure from connector manager...", slog.String("error", err.Error()))

@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.0.2] - 2025-11-25
+
+### Fixed
+
+- Filesize plugin's logger
+- Don't start connector after error at setup
+- Filetype magic default dir loading is optional
+
 ## [v1.0.1] - 2025-11-20
 
 ### Fixed

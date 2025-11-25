@@ -48,7 +48,7 @@ func (c *Connector) LoadPlugins(pluginsConfig map[string]PluginConfig) (err erro
 		err = pp.Init(config, c)
 		if err != nil {
 			logger.Error("could not load plugin", slog.String("plugin", pluginName), slog.Any("config", config), slog.String("error", err.Error()))
-			return err
+			return fmt.Errorf("error loading plugin %s: %w", pluginName, err)
 		}
 		c.loadedPlugins = append(c.loadedPlugins, pp)
 	}

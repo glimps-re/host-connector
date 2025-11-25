@@ -48,7 +48,7 @@ func (p *FileSizePlugin) GetDefaultConfig() (config any) {
 
 // Init parses configuration and registers callbacks.
 func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
-	logger = logger.With(slog.String("plugin", "FileSize"))
+	logger = hcc.GetLogger().With(slog.String("plugin", "FileSize"))
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		return errors.New("invalid config passed")

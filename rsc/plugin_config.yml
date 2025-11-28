@@ -5,148 +5,127 @@
 # Extract Plugin - Archive extraction and scanning
 # Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.)
 extract:
-  # Maximum size in bytes for individual extracted files (default: 524288000 = 500MB)
-  # Files exceeding this size will not be extracted
-  max_file_size: 524288000
+  file: extract.so
+  config:
+    # Maximum size in bytes for individual extracted files (default: 524288000 = 500MB)
+    # Files exceeding this size will not be extracted
+    max_file_size: 524288000
 
-  # Maximum number of files to extract from a single archive (default: 1000)
-  # Prevents extraction bombs by limiting the total number of extracted files
-  max_extracted_elements: 1000
+    # Maximum number of files to extract from a single archive (default: 1000)
+    # Prevents extraction bombs by limiting the total number of extracted files
+    max_extracted_elements: 1000
 
-  # List of passwords to try when extracting password-protected archives
-  # Default: ["infected"] - commonly used password for malware samples
-  default_passwords:
-    - infected
-    - password
-    - 123456
+    # List of passwords to try when extracting password-protected archives
+    # Default: ["infected"] - commonly used password for malware samples
+    default_passwords:
+      - infected
+      - password
+      - 123456
 
-  # Custom path to 7-Zip binary (optional)
-  # If not specified, the plugin will auto-detect system 7-Zip or use the embedded binary
-  # seven_zip_path: /usr/bin/7z
+    # Custom path to 7-Zip binary (optional)
+    # If not specified, the plugin will auto-detect system 7-Zip or use the embedded binary
+    # seven_zip_path: /usr/bin/7z
 
-  # Enable type detection mode (optional, default: false)
-  # When enabled, uses 7-Zip's -t option to force archive type detection
-  # t_option: false
+    # Enable type detection mode (optional, default: false)
+    # When enabled, uses 7-Zip's -t option to force archive type detection
+    # t_option: false
 
 # FileType Filter Plugin - MIME type-based file filtering
 # Filters files based on their detected MIME types using libmagic
 filetype_filter:
-  # List of MIME types to flag as malicious (Score=1000)
-  # Files with these types will be immediately marked as threats without further analysis
-  forbidden_types:
-    - application/x-executable
-    - application/x-msdos-program
-    - application/x-msdownload
-    - application/x-dosexec
-    - application/vnd.microsoft.portable-executable
+  file: filetype_filter.so
+  config:
+    # List of MIME types to flag as malicious (Score=1000)
+    # Files with these types will be immediately marked as threats without further analysis
+    forbidden_types:
+      - application/x-executable
+      - application/x-msdos-program
+      - application/x-msdownload
+      - application/x-dosexec
+      - application/vnd.microsoft.portable-executable
 
-  # List of MIME types to mark as safe (Score=-500)
-  # Files with these types will be skipped from expensive analysis
-  skipped_types:
-    - text/plain
-    - text/html
-    - text/xml
-    - image/jpeg
-    - image/png
-    - image/gif
-    - image/svg+xml
-    - application/json
-    - application/pdf
+    # List of MIME types to mark as safe (Score=-500)
+    # Files with these types will be skipped from expensive analysis
+    skipped_types:
+      - text/plain
+      - text/html
+      - text/xml
+      - image/jpeg
+      - image/png
+      - image/gif
+      - image/svg+xml
+      - application/json
+      - application/pdf
 
 # FileSize Filter Plugin - File size-based filtering
 # Filters files exceeding a maximum size threshold
 filesize_filter:
-  # Maximum file size (human-readable format)
-  # Files exceeding this size are treated as threats (Score=1000)
-  # Supported units: B, KB, MB, GB, TB
-  # Default: 100MB
-  max_size: "100MB"
+  file: filesize_filter.so
+  config:
+    # Maximum file size (human-readable format)
+    # Files exceeding this size are treated as threats (Score=1000)
+    # Supported units: B, KB, MB, GB, TB
+    # Default: 100MB
+    max_size: "100MB"
 
 # Error Filter Plugin - Analysis error handling
 # Marks files with analysis errors as malicious for proper handling
 # This plugin requires no configuration - it automatically flags files that encounter
 # errors during analysis to ensure they are properly reviewed
-error_filter: {}
+error_filter:
+  file: error_filter.so
 
 # Session Plugin - Session-based file grouping and tracking
 # Manages scanning sessions by grouping files based on directory structure
 session:
-  # Directory depth for session grouping (default: 2)
-  # Determines how many directory levels to use for creating session IDs
-  # Example with depth=2 and root_folder="/tmp/samples/":
-  #   /tmp/samples/user_a/batch1/file1.txt -> session "user_a/batch1"
-  #   /tmp/samples/user_b/upload/file2.txt -> session "user_b/upload"
-  depth: 2
+  file: session.so
+  config:
+    # Directory depth for session grouping (default: 2)
+    # Determines how many directory levels to use for creating session IDs
+    # Example with depth=2 and root_folder="/tmp/samples/":
+    #   /tmp/samples/user_a/batch1/file1.txt -> session "user_a/batch1"
+    #   /tmp/samples/user_b/upload/file2.txt -> session "user_b/upload"
+    depth: 2
 
-  # Delay before closing inactive sessions (default: 30s)
-  # Sessions are closed after this duration of inactivity
-  # Supports duration format: ns, us, ms, s, m, h
-  delay: 30s
+    # Delay before closing inactive sessions (default: 30s)
+    # Sessions are closed after this duration of inactivity
+    # Supports duration format: ns, us, ms, s, m, h
+    delay: 30s
 
-  # Remove input files after session completion (default: true)
-  # When true, original files are deleted after successful scanning and session closure
-  remove_inputs: true
+    # Remove input files after session completion (default: true)
+    # When true, original files are deleted after successful scanning and session closure
+    remove_inputs: true
 
-  # Root folder for session path calculation (required)
-  # This is the base path from which session IDs are calculated
-  # Must be an absolute path
-  root_folder: /tmp/samples/
+    # Root folder for session path calculation (required)
+    # This is the base path from which session IDs are calculated
+    # Must be an absolute path
+    root_folder: /tmp/samples/
 
-  # List of export plugin names to trigger on session completion (optional)
-  # Example: ["report"] - generates reports when sessions close
-  # Leave empty to disable automatic exports
-  exports: []
+    # List of export plugin names to trigger on session completion (optional)
+    # Example: ["report"] - generates reports when sessions close
+    # Leave empty to disable automatic exports
+    exports: []
 
 # Report Plugin - Report generation (PDF/HTML)
 # Generates comprehensive scan reports in PDF or HTML format
 report:
-  # Path to custom HTML template file (optional)
-  # If not specified, uses the embedded default template
-  # The template uses Go's html/template syntax
-  # Available template data:
-  #   - ScanID: Unique scan identifier
-  #   - NbFileSubmitted: Total files submitted
-  #   - NbFileAnalyzed: Total files analyzed
-  #   - FileVolume: Total file size (human-readable)
-  #   - AnalyzedVolume: Size of analyzed files
-  #   - FilteredVolume: Size of filtered files
-  #   - TotalMitigated: Number of threats mitigated
-  #   - TotalMalware: Number of malware detected
-  #   - MitigatedFiles: List of mitigated file details
-  #   - MitigatedArchives: List of mitigated archive details
-  #   - ScanStartTime: Scan start timestamp
-  #   - Duration: Scan duration
-  # template_path: /path/to/custom/template.html
-  template_path: ""
-
-# Plugin Loading Order
-# Plugins are loaded and executed in the order they appear in this file.
-# The recommended order for callbacks is:
-#
-# OnStartScanFile callbacks (executed in order):
-#   1. session - Track file in session
-#   2. filetype_filter - Filter by MIME type
-#   3. filesize_filter - Filter by size
-#
-# OnFileScanned callbacks (executed in order):
-#   1. error_filter - Flag analysis errors
-#   2. session - Update session with results
-#
-# OnReport callbacks:
-#   1. session - Collect reports for session
-#
-# GenerateReport:
-#   1. report - Generate PDF/HTML output
-#
-# ExtractFile:
-#   1. extract - Handle archive extraction
-
-# Security Best Practices
-# 1. Never trust user input - all file paths and data should be validated
-# 2. Set appropriate resource limits (max_file_size, max_extracted_elements)
-# 3. Use restrictive file permissions on configuration files (0o600)
-# 4. Regularly update password lists for extract plugin
-# 5. Monitor session plugin's remove_inputs setting in production
-# 6. Review forbidden_types and skipped_types lists periodically
-# 7. Ensure root_folder paths are properly sanitized
-# 8. Use custom templates with caution (validate template sources)
+  file: report.so
+  config:
+    # Path to custom HTML template file (optional)
+    # If not specified, uses the embedded default template
+    # The template uses Go's html/template syntax
+    # Available template data:
+    #   - ScanID: Unique scan identifier
+    #   - NbFileSubmitted: Total files submitted
+    #   - NbFileAnalyzed: Total files analyzed
+    #   - FileVolume: Total file size (human-readable)
+    #   - AnalyzedVolume: Size of analyzed files
+    #   - FilteredVolume: Size of filtered files
+    #   - TotalMitigated: Number of threats mitigated
+    #   - TotalMalware: Number of malware detected
+    #   - MitigatedFiles: List of mitigated file details
+    #   - MitigatedArchives: List of mitigated archive details
+    #   - ScanStartTime: Scan start timestamp
+    #   - Duration: Scan duration
+    # template_path: /path/to/custom/template.html
+    template_path: ""

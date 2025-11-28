@@ -207,13 +207,15 @@ Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP
 
 ```yaml
 extract:
-  max_file_size: 524288000          # Maximum size for extracted files (500MB default)
-  max_extracted_elements: 1000      # Maximum number of files to extract (prevents zip bombs)
-  default_passwords:                # Passwords for encrypted archives
-    - infected
-    - password
-  seven_zip_path: ""                # Custom 7-Zip binary path (auto-detect if empty)
-  t_option: false                   # Enable 7-Zip type detection mode
+  file: extract.so
+  config:
+    max_file_size: 524288000          # Maximum size for extracted files (500MB default)
+    max_extracted_elements: 1000      # Maximum number of files to extract (prevents zip bombs)
+    default_passwords:                # Passwords for encrypted archives
+      - infected
+      - password
+    seven_zip_path: ""                # Custom 7-Zip binary path (auto-detect if empty)
+    t_option: false                   # Enable 7-Zip type detection mode
 ```
 
 **Key Features:**
@@ -228,14 +230,16 @@ Filters files based on MIME type detection using libmagic.
 
 ```yaml
 filetype_filter:
-  forbidden_types:                  # MIME types to flag as malicious (Score=1000)
-    - application/x-executable
-    - application/x-msdos-program
-    - application/x-msdownload
-  skipped_types:                    # MIME types to mark as safe (Score=-500)
-    - text/plain
-    - image/jpeg
-    - image/png
+  file: filetype.so
+  config:
+    forbidden_types:                  # MIME types to flag as malicious (Score=1000)
+      - application/x-executable
+      - application/x-msdos-program
+      - application/x-msdownload
+    skipped_types:                    # MIME types to mark as safe (Score=-500)
+      - text/plain
+      - image/jpeg
+      - image/png
 ```
 
 **Key Features:**
@@ -249,7 +253,9 @@ Filters files exceeding a maximum size threshold.
 
 ```yaml
 filesize_filter:
-  max_size: "100MB"                 # Human-readable size (supports B, KB, MB, GB, TB)
+  file: filesize.so
+  config:
+    max_size: "100MB"                 # Human-readable size (supports B, KB, MB, GB, TB)
 ```
 
 **Key Features:**
@@ -262,7 +268,8 @@ filesize_filter:
 Marks files with analysis errors as malicious for proper handling.
 
 ```yaml
-error_filter: {}                    # No configuration required
+error_filter:                     # No configuration required
+  file: error_filter.so
 ```
 
 **Key Features:**
@@ -276,11 +283,13 @@ Manages scanning sessions by grouping files based on directory structure.
 
 ```yaml
 session:
-  depth: 2                          # Directory depth for session grouping
-  delay: 30s                        # Delay before closing inactive sessions
-  remove_inputs: true               # Remove input files after session completion
-  root_folder: /tmp/samples/        # Base path for session ID calculation (required)
-  exports: []                       # Export plugins to trigger on session completion
+  file: session.so
+  config:
+    depth: 2                          # Directory depth for session grouping
+    delay: 30s                        # Delay before closing inactive sessions
+    remove_inputs: true               # Remove input files after session completion
+    root_folder: /tmp/samples/        # Base path for session ID calculation (required)
+    exports: []                       # Export plugins to trigger on session completion
 ```
 
 **Session ID Examples** (with `depth: 2` and `root_folder: /tmp/samples/`):
@@ -299,7 +308,9 @@ Generates comprehensive scan reports in PDF or HTML format.
 
 ```yaml
 report:
-  template_path: ""                  # Path to custom HTML template (uses embedded default if empty)
+  file: report.so
+  config:
+    template_path: ""                  # Path to custom HTML template (uses embedded default if empty)
 ```
 
 **Key Features:**

@@ -319,17 +319,16 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 
 func moveFile(src, dst string) (err error) {
 	err = Rename(src, dst)
-	if err == nil {
-		return //nolint:nilerr // made on purpose
-	}
-
-	var linkErr *os.LinkError
-	// cross-device link error, happen when src and dst file are on different FS
-	if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
+	linkErr := new(os.LinkError)
+	switch {
+	case err == nil:
+	case errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV):
 		// Fall back to copy + delete for cross-device moves
 		return copyAndDelete(src, dst)
+	default:
+		return fmt.Errorf("could not move file %s to %s, error: %w", src, dst, err)
 	}
-	return
+	return nil
 }
 
 func copyAndDelete(src, dst string) (err error) {

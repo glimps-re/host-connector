@@ -388,6 +388,7 @@ func (c *Connector) worker() {
 			ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 			if err := c.action.Handle(ctx, input.location, result, report); err != nil {
 				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
+				ConsoleLogger.Error("could not handle file action: " + err.Error())
 			}
 			cancel()
 			c.addReport(report)

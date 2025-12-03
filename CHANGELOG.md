@@ -1,5 +1,15 @@
 # Changelog
 
+## [v1.0.3] - 2025-12-04
+
+### Fixed
+
+- GLIMPS Malware's analysis error logging and treatment
+- Do not move file when there's an error in the analysis
+- Console log error when action(s) failed
+- Update embedded 7zzs version
+- Unique name for lock report
+
 ## [v1.0.2] - 2025-11-25
 
 ### Fixed

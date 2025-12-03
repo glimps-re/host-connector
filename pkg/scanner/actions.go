@@ -272,6 +272,13 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 }
 
 func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	// move only file analyzed with no error
+	if result.Error != nil {
+		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination, error in analysis: %s", path, result.Error.Error()))
+		logger.Warn("file will not be moved to destination, error in analysis", slog.String("file", path), slog.String("error", result.Error.Error()))
+		return
+	}
+
 	path, err = filepath.Abs(path)
 	if err != nil {
 		return
@@ -290,30 +297,40 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	if err != nil {
 		return
 	}
+
+	if result.Malware {
+		now := time.Now().Format("020106_1504")
+		f, createErr := Create(dest + fmt.Sprintf("-lockreport%s.json", now))
+		if createErr != nil {
+			err = createErr
+			return
+		}
+		defer func() {
+			if e := f.Close(); e != nil {
+				logger.Error("MoveAction cannot close file", slog.String(logErrorKey, e.Error()))
+			}
+		}()
+		w := json.NewEncoder(f)
+		w.SetIndent("", "  ")
+		if err = w.Encode(report); err != nil {
+			return
+		}
+		return
+	}
+
+	if result.AnalysisError != "" {
+		logger.Warn("file will not be moved to destination, error in analysis", slog.String("file", path), slog.String("error", result.AnalysisError))
+		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination, error in analysis: %s", path, result.AnalysisError))
+		return
+	}
+
 	// move safe file
-	if !result.Malware && result.Error == nil {
-		err = moveFile(path, dest)
-		if err != nil {
-			return err
-		}
-		report.MovedTo = dest
-		ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))
-		return
-	}
-	f, err := Create(dest + ".locked.json")
+	err = moveFile(path, dest)
 	if err != nil {
-		return
+		return err
 	}
-	defer func() {
-		if e := f.Close(); e != nil {
-			logger.Error("MoveAction cannot close file", slog.String(logErrorKey, e.Error()))
-		}
-	}()
-	w := json.NewEncoder(f)
-	w.SetIndent("", "  ")
-	if err = w.Encode(report); err != nil {
-		return
-	}
+	report.MovedTo = dest
+	ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))
 	return
 }
 

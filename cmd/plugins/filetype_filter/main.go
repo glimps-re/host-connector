@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"strings"
@@ -91,7 +92,7 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 	}
 	mime := magic.MimeFromFile(location)
 	if _, ok := p.ForbiddenTypes[mime]; ok {
-		consoleLogger.Debug("filtered file based on its type (blacklist)")
+		consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (blacklist) file=%s, mime=%s", location, mime))
 		logger.Debug("set file as malware",
 			slog.String("file", location),
 			slog.String("sha256", sha256),
@@ -109,7 +110,7 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 	}
 
 	if _, ok := p.SkippedTypes[mime]; ok {
-		consoleLogger.Debug("filtered file based on its type (whitelist)")
+		consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (whitelist) file=%s, mime=%s", location, mime))
 		logger.Debug("set file as legit",
 			slog.String("file", location),
 			slog.String("sha256", sha256),

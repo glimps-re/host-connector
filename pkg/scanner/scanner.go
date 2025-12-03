@@ -356,7 +356,7 @@ func (c *Connector) worker() {
 		case <-c.stopWorker:
 			return
 		case input := <-c.fileChan:
-			inputLogger := logger.With(slog.String("input", input.filename))
+			inputLogger := logger.With(slog.String("file", input.location))
 			if input.archiveID != "" {
 				err := c.handleArchive(input)
 				if err != nil {
@@ -379,7 +379,8 @@ func (c *Connector) worker() {
 			}
 
 			if result.Error != nil {
-				inputLogger.Error("could not handle file", slog.Any(logErrorKey, result.Error.Error()))
+				inputLogger.Error("could not handle file properly", slog.Any(logErrorKey, result.Error.Error()))
+				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s properly: %s", input.location, result.Error.Error()))
 			}
 			if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
 				result = *newres
@@ -388,7 +389,7 @@ func (c *Connector) worker() {
 			ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
 			if err := c.action.Handle(ctx, input.location, result, report); err != nil {
 				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
-				ConsoleLogger.Error("could not handle file action: " + err.Error())
+				ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, err.Error()))
 			}
 			cancel()
 			c.addReport(report)

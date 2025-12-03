@@ -715,7 +715,7 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 			errors = append(errors, fmt.Sprintf("%s: %s", k, v))
 		}
 		analysisError := strings.Join(errors, ",")
-		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, gdetectResult.Error))
+		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, analysisError))
 		result.AnalysisError = analysisError
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected

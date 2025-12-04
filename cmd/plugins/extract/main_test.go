@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
@@ -19,11 +20,9 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 		{
 			name: "ok",
 			config: &Config{
-				extractorConfig: extractorConfig{
-					MaxFileSize:          defaultMaxSize,          // 500MB limit per file
-					MaxExtractedElements: defaultMaxFileExtracted, // Max 1000 files per archive
-					DefaultPasswords:     []string{"infected"},
-				},
+				MaxFileSize:       defaultMaxSize,          // 500MB limit per file
+				MaxExtractedFiles: defaultMaxFileExtracted, // Max 1000 files per archive
+				DefaultPasswords:  []string{"infected"},
 			},
 			wantErr: false,
 		},
@@ -242,11 +241,15 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 
 	// Verify default configuration values through behavior
 	// The specific values are tested indirectly through the extraction engine
-	if plugin.sze.config.MaxFileSize != defaultMaxSize {
-		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, defaultMaxSize)
+	expectedMaxSize, err := units.ParseStrictBytes(defaultMaxSize)
+	if err != nil {
+		t.Fatalf("Failed to parse defaultMaxSize: %v", err)
 	}
-	if plugin.sze.config.MaxExtractedElements != defaultMaxFileExtracted {
-		t.Errorf("Default MaxExtractedElements = %v, want %v", plugin.sze.config.MaxExtractedElements, defaultMaxFileExtracted)
+	if plugin.sze.config.MaxFileSize != int(expectedMaxSize) {
+		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, int(expectedMaxSize))
+	}
+	if plugin.sze.config.MaxExtractedFiles != defaultMaxFileExtracted {
+		t.Errorf("Default MaxExtractedElements = %v, want %v", plugin.sze.config.MaxExtractedFiles, defaultMaxFileExtracted)
 	}
 	if len(plugin.sze.config.DefaultPasswords) != 1 || plugin.sze.config.DefaultPasswords[0] != "infected" {
 		t.Errorf("Default passwords = %v, want [\"infected\"]", plugin.sze.config.DefaultPasswords)

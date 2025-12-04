@@ -47,7 +47,7 @@ func (p *FTFilterPlugin) GetDefaultConfig() (config any) {
 
 // Init initializes the plugin with libmagic and configuration.
 func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
-	logger = hcc.GetLogger().With(slog.String("plugin", "FTFilter"))
+	logger = hcc.GetLogger().With(slog.String("plugin", "filetype_filter"))
 	consoleLogger = hcc.GetConsoleLogger()
 
 	if addMagicErr := magic.AddMagicDir(magic.GetDefaultDir()); addMagicErr != nil {
@@ -76,6 +76,8 @@ func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		slog.String("forbidden_types", strings.Join(config.ForbiddenTypes, ", ")),
 		slog.String("skipped_types", strings.Join(config.SkippedTypes, ", ")),
 	)
+	consoleLogger.Info(fmt.Sprintf("filetypefilter plugin initialized, forbidden_types: %s, skipped_types: %s",
+		strings.Join(config.ForbiddenTypes, ", "), strings.Join(config.SkippedTypes, ", ")))
 	return nil
 }
 

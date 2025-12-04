@@ -7,28 +7,23 @@
 extract:
   file: extract.so
   config:
-    # Maximum size in bytes for individual extracted files (default: 524288000 = 500MB)
+    # Maximum size for individual extracted files (default: 500MB)
+    # Supports human-readable units: B, KB, MB, GB, TB
     # Files exceeding this size will not be extracted
-    max_file_size: 524288000
+    max_file_size: 500MB
 
     # Maximum number of files to extract from a single archive (default: 1000)
     # Prevents extraction bombs by limiting the total number of extracted files
-    max_extracted_elements: 1000
+    max_extracted_files: 1000
 
     # List of passwords to try when extracting password-protected archives
     # Default: ["infected"] - commonly used password for malware samples
     default_passwords:
       - infected
-      - password
-      - 123456
 
     # Custom path to 7-Zip binary (optional)
     # If not specified, the plugin will auto-detect system 7-Zip or use the embedded binary
     # seven_zip_path: /usr/bin/7z
-
-    # Enable type detection mode (optional, default: false)
-    # When enabled, uses 7-Zip's -t option to force archive type detection
-    # t_option: false
 
 # FileType Filter Plugin - MIME type-based file filtering
 # Filters files based on their detected MIME types using libmagic
@@ -80,29 +75,30 @@ error_filter:
 session:
   file: session.so
   config:
-    # Directory depth for session grouping (default: 2)
+    # Directory depth for session grouping (default: 1)
     # Determines how many directory levels to use for creating session IDs
     # Example with depth=2 and root_folder="/tmp/samples/":
     #   /tmp/samples/user_a/batch1/file1.txt -> session "user_a/batch1"
     #   /tmp/samples/user_b/upload/file2.txt -> session "user_b/upload"
-    depth: 2
+    # depth: 1
 
-    # Delay before closing inactive sessions (default: 30s)
+    # Delay before closing inactive sessions (default: 15m)
     # Sessions are closed after this duration of inactivity
     # Supports duration format: ns, us, ms, s, m, h
-    delay: 30s
+    # delay: 15m
 
-    # Remove input files after session completion (default: true)
+    # Remove input files after session completion (default: false)
     # When true, original files are deleted after successful scanning and session closure
-    remove_inputs: true
+    # remove_inputs: false
 
     # Root folder for session path calculation (required)
     # This is the base path from which session IDs are calculated
     # Must be an absolute path
     root_folder: /tmp/samples/
 
-    # List of export plugin names to trigger on session completion (optional)
-    # Example: ["report"] - generates reports when sessions close
+    # List of base directories where session reports will be saved (required)
+    # Reports are placed in <base>/<session_id>/ subdirectories
+    # Example: ["/var/reports"] creates reports in /var/reports/<session_id>/
     # Leave empty to disable automatic exports
     exports: []
 
@@ -128,4 +124,4 @@ report:
     #   - ScanStartTime: Scan start timestamp
     #   - Duration: Scan duration
     # template_path: /path/to/custom/template.html
-    template_path: ""
+    # template_path: ""

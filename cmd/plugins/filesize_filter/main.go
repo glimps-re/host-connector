@@ -15,7 +15,10 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-var logger = slog.New(slog.DiscardHandler)
+var (
+	logger        = slog.New(slog.DiscardHandler)
+	consoleLogger = slog.New(slog.DiscardHandler)
+)
 
 // Config defines the maximum file size limit.
 type Config struct {
@@ -48,7 +51,8 @@ func (p *FileSizePlugin) GetDefaultConfig() (config any) {
 
 // Init parses configuration and registers callbacks.
 func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
-	logger = hcc.GetLogger().With(slog.String("plugin", "FileSize"))
+	logger = hcc.GetLogger().With(slog.String("plugin", "filesize_filter"))
+	consoleLogger = hcc.GetConsoleLogger()
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		return errors.New("invalid config passed")
@@ -62,7 +66,8 @@ func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) 
 
 	p.MaxSize = maxFileSize
 	hcc.RegisterOnScanFile(p.OnScanFile)
-	logger.Info("plugin initialized", slog.Int("max_size", int(p.MaxSize)))
+	logger.Info("plugin initialized", slog.String("max_size", config.MaxSize))
+	consoleLogger.Info("filesize_filter plugin initialized: " + config.MaxSize)
 	return
 }
 

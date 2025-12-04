@@ -209,13 +209,12 @@ Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP
 extract:
   file: extract.so
   config:
-    max_file_size: 524288000          # Maximum size for extracted files (500MB default)
-    max_extracted_elements: 1000      # Maximum number of files to extract (prevents zip bombs)
+    max_file_size: 500MB              # Maximum size for extracted files (supports B, KB, MB, GB, TB)
+    max_extracted_files: 1000         # Maximum number of files to extract (prevents zip bombs)
     default_passwords:                # Passwords for encrypted archives
       - infected
       - password
     seven_zip_path: ""                # Custom 7-Zip binary path (auto-detect if empty)
-    t_option: false                   # Enable 7-Zip type detection mode
 ```
 
 **Key Features:**
@@ -289,7 +288,7 @@ session:
     delay: 30s                        # Delay before closing inactive sessions
     remove_inputs: true               # Remove input files after session completion
     root_folder: /tmp/samples/        # Base path for session ID calculation (required)
-    exports: []                       # Export plugins to trigger on session completion
+    exports: []                       # Base directories for session reports (e.g., ["/var/reports"])
 ```
 
 **Session ID Examples** (with `depth: 2` and `root_folder: /tmp/samples/`):

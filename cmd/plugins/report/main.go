@@ -75,6 +75,8 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 			return
 		}
 		logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
+		consoleLogger.Info("report plugin initialized, template: " + config.TemplatePath)
+
 		hcc.RegisterGenerateReport(p.GenerateReport)
 		return
 	}
@@ -82,6 +84,8 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 		return
 	}
 	logger.Info("plugin initialized", slog.String("template", "default"))
+	consoleLogger.Info("report plugin initialized, default template")
+
 	hcc.RegisterGenerateReport(p.GenerateReport)
 	return nil
 }

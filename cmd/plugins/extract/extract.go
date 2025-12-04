@@ -44,9 +44,9 @@ const (
 )
 
 type extractorConfig struct {
-	MaxFileSize          int      `mapstructure:"max_file_size,omitempty"`          // Max size per extracted file in bytes
-	MaxExtractedElements int      `mapstructure:"max_extracted_elements,omitempty"` // Max number of files to extract
-	DefaultPasswords     []string `mapstructure:"default_passwords,omitempty"`      // Default passwords for encrypted archives
+	MaxFileSize       int
+	MaxExtractedFiles int
+	DefaultPasswords  []string
 }
 
 type FileProperties struct {
@@ -81,7 +81,6 @@ type sevenZipExtract struct {
 	config       extractorConfig
 	sevenZipPath string
 	tmpSevenZip  bool
-	tOption      bool
 }
 
 var (
@@ -90,27 +89,23 @@ var (
 	ErrFileNotFound      = errors.New("file not found")
 )
 
-func newSevenZipExtract(config extractorConfig, sevenZipPath string, tOption bool) (sze *sevenZipExtract) {
+func newSevenZipExtract(config extractorConfig, sevenZipPath string) (sze *sevenZipExtract) {
 	return &sevenZipExtract{
 		config:       config,
 		sevenZipPath: sevenZipPath,
-		tOption:      tOption,
 	}
 }
 
 func (sze *sevenZipExtract) list(archivePath string, passwords []string, files []string) (archiveContent listResult, err error) {
 	var commonArgs []string
 
-	if sze.tOption {
-		commonArgs = append(commonArgs, "-t*")
-	}
 	commonArgs = append(commonArgs, "--", "l", archivePath)
 
 	allPasswords := []string{""}
 	allPasswords = append(allPasswords, sze.config.DefaultPasswords...)
 	allPasswords = append(allPasswords, passwords...)
 
-	out := ""
+	var out string
 PASSWORD_LOOP:
 	for _, pwd := range allPasswords {
 		total := len(files)
@@ -168,7 +163,7 @@ func (sze *sevenZipExtract) extract(archivePath string, extractLocation string, 
 		if len(files) > 0 && !slices.Contains(files, file.Name) {
 			continue
 		}
-		if file.Size > sze.config.MaxFileSize || len(filesToExtract) >= sze.config.MaxExtractedElements {
+		if file.Size > sze.config.MaxFileSize || len(filesToExtract) >= sze.config.MaxExtractedFiles {
 			skippedFiles = append(skippedFiles, file.Name)
 			continue
 		}
@@ -184,9 +179,6 @@ func (sze *sevenZipExtract) extract(archivePath string, extractLocation string, 
 	}
 
 	var commonArgs []string
-	if sze.tOption {
-		commonArgs = append(commonArgs, "-t*")
-	}
 	commonArgs = append(commonArgs, "-aou", "-o"+extractLocation, "-y", "--", "x", archivePath)
 
 	allPasswords := []string{""}

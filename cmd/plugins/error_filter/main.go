@@ -40,10 +40,11 @@ func (p *ErrorFilterPlugin) GetDefaultConfig() (config any) {
 
 // Init initializes the plugin and registers callbacks.
 func (p *ErrorFilterPlugin) Init(_ any, hcc plugins.HCContext) (err error) {
-	logger = hcc.GetLogger().With(slog.String("plugin", "ErrorFilter"))
+	logger = hcc.GetLogger().With(slog.String("plugin", "error_filter"))
 	consoleLogger = hcc.GetConsoleLogger()
 	hcc.RegisterOnFileScanned(p.OnFileScanned)
 	logger.Info("plugin initialized")
+	consoleLogger.Info("error_filter plugin initialized")
 	return
 }
 

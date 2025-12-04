@@ -75,9 +75,8 @@ const (
 
 func (p *SessionPlugin) GetDefaultConfig() (config any) {
 	config = &Config{
-		Depth:      2,
-		Delay:      15 * time.Minute,
-		RootFolder: "/tmp/samples/",
+		Depth: 1,
+		Delay: 15 * time.Minute,
 	}
 	return
 }
@@ -107,6 +106,8 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		slog.String("root_folder", config.RootFolder),
 		slog.Bool("remove_inputs", config.RemoveInputs),
 	)
+	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s, remove_inputs: %v",
+		config.Depth, config.Delay.String(), config.RootFolder, config.RemoveInputs))
 	return nil
 }
 
@@ -177,6 +178,7 @@ func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
 		slog.Bool("malicious", rep.Malicious),
 		slog.String("sha256", rep.SHA256),
 	)
+	consoleLogger.Debug(fmt.Sprintf("add report for %s to session %s (malicious: %v)", rep.Filename, session.ID, rep.Malicious))
 }
 
 func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session, created bool) {

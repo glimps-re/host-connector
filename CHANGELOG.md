@@ -9,6 +9,7 @@
 - Console log error when action(s) failed
 - Update embedded 7zzs version
 - Unique name for lock report
+- Syndetect error message
 
 ## [v1.0.2] - 2025-11-25
 

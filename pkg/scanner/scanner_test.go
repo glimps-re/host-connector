@@ -1184,6 +1184,7 @@ func TestConnector_handleFile(t *testing.T) {
 							"extract":    "error",
 							"deepengine": "error",
 						},
+						Error: "error with 2 service",
 					},
 					err: nil,
 				},

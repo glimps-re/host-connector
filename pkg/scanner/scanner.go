@@ -706,17 +706,17 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 	}
 
 	switch {
-	case len(gdetectResult.Errors) > 0:
-		errors := make([]string, 0, len(gdetectResult.Errors))
-		for k, v := range gdetectResult.Errors {
-			errors = append(errors, fmt.Sprintf("%s: %s", k, v))
+	case gdetectResult.Error != "":
+		analysisError := gdetectResult.Error
+		if len(gdetectResult.Errors) > 0 {
+			errors := make([]string, 0, len(gdetectResult.Errors))
+			for k, v := range gdetectResult.Errors {
+				errors = append(errors, fmt.Sprintf("%s: %s", k, v))
+			}
+			analysisError = strings.Join(errors, ",")
 		}
-		analysisError := strings.Join(errors, ",")
 		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, analysisError))
 		result.AnalysisError = analysisError
-	case gdetectResult.Error != "":
-		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, gdetectResult.Error))
-		result.AnalysisError = gdetectResult.Error
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected
 	}

@@ -39,9 +39,10 @@ type Handler struct {
 	monitor     Monitorer
 	Quarantiner quarantine.Quarantiner
 
-	stopped   bool
-	needSetup bool
-	conf      *config.Config
+	stopped     bool
+	wantStopped bool
+	needSetup   bool
+	conf        *config.Config
 }
 
 const (
@@ -299,6 +300,7 @@ func (h *Handler) OnNewFile(ctx context.Context) OnNewFileFunc {
 }
 
 func (h *Handler) Start(ctx context.Context) (err error) {
+	h.wantStopped = false
 	if h.needSetup {
 		err = h.setup(ctx, h.conf)
 		if err != nil {
@@ -337,6 +339,7 @@ func (h *Handler) Start(ctx context.Context) (err error) {
 }
 
 func (h *Handler) Stop(ctx context.Context) (err error) {
+	h.wantStopped = true
 	if h.stopped {
 		return
 	}
@@ -375,7 +378,7 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 		logger.Error("failed to setup host connector", slog.String("error", err.Error()))
 		return
 	}
-	if !h.stopped {
+	if !h.wantStopped {
 		err = h.Start(ctx)
 		if err != nil {
 			return

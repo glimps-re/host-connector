@@ -58,6 +58,18 @@ builds:
     flags:
       - -buildmode=plugin
 
+  - id: plugin-filepath-filter
+    main: ./cmd/plugins/filepath_filter
+    binary: filepath_filter
+    goos:
+      - linux
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+    flags:
+      - -buildmode=plugin
+
   - id: plugin-report
     main: ./cmd/plugins/report
     binary: report

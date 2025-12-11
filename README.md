@@ -185,6 +185,7 @@ GMHost includes several built-in plugins (**GNU/Linux only**):
 
 - **extract**: Extracts and scans content from various archive formats
 - **filetype_filter**: Filters files based on file type patterns (allow/deny lists)
+- **filepath_filter**: Filters files based on file path patterns (allow/deny lists)
 - **filesize_filter**: Filters files based on maximum size, treating oversized files as threats
 - **error_filter**: Marks files with analysis errors as malicious for proper handling
 - **session**: Manages scanning sessions and tracks progress
@@ -243,6 +244,27 @@ filetype_filter:
 
 **Key Features:**
 - Real-time MIME type detection
+- Early filtering reduces processing load
+- Configurable allow/deny lists
+
+#### FilePath Filter Plugin
+
+Filters files based on their path, using regular expressions.
+
+```yaml
+filepath_filter:
+  file: filepath.so
+  config:
+    forbidden_paths:                  # regexp paths to flag as malicious (Score=1000)
+      - "^/tmp/.*"                      # any file in /tmp or its subfolders
+      - "^/tmp/[^/]+$"                  # any file strictly in /tmp (not its subfolders)
+      - "^.*.exe$"                      # all exe files
+    skipped_paths:                    # regexp paths to mark as safe (Score=-500)
+      - "^.*.png$"                      # all png files
+      - "^.*.jpg$"                      # all jpg files
+```
+
+**Key Features:**
 - Early filtering reduces processing load
 - Configurable allow/deny lists
 

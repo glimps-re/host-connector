@@ -90,11 +90,6 @@ type Connector struct {
 	stopExtract chan struct{}
 	stopWorker  chan struct{}
 
-	// workerCtx     context.Context
-	// cancelWorker  context.CancelFunc
-	// archiveCtx    context.Context
-	// cancelArchive context.CancelFunc
-
 	config             Config
 	workerWg           sync.WaitGroup
 	extractWg          sync.WaitGroup

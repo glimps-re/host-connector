@@ -52,6 +52,24 @@ filetype_filter:
       - application/json
       - application/pdf
 
+# FilePath Filter Plugin - path based file filtering
+# Filters files based on their path, using regular expressions
+filepath_filter:
+  file: filepath_filter.so
+  config:
+    # List of paths (in the form of regular expressions) to flag as malicious (Score=1000)
+    # Files matching one of these paths will be immediately marked as threats without further analysis
+    forbidden_paths:
+      - "^/tmp/.*"         # any file in /tmp or its subfolders
+      - "^/tmp/[^/]+$"     # any file strictly in /tmp (not its subfolders)
+      - "^.*.exe$"         # all exe files
+
+    # List of paths (in the form of regular expressions) to mark as safe (Score=-500)
+    # Files matching one of these paths will be skipped from expensive analysis
+    skipped_paths:
+      - "^.*.png$"         # all png files
+      - "^.*.jpg$"         # all jpg files
+
 # FileSize Filter Plugin - File size-based filtering
 # Filters files exceeding a maximum size threshold
 filesize_filter:

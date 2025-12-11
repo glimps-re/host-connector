@@ -147,6 +147,8 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		result.MalwareReason = datamodel.TooBig
 	case resultToMerge.MalwareReason == datamodel.FilteredFileType || baseResult.MalwareReason == datamodel.FilteredFileType:
 		result.MalwareReason = datamodel.FilteredFileType
+	case resultToMerge.MalwareReason == datamodel.FilteredFilePath || baseResult.MalwareReason == datamodel.FilteredFilePath:
+		result.MalwareReason = datamodel.FilteredFilePath
 	default:
 		result.MalwareReason = ""
 	}

@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.1.0] - 2025-12-11
+
+### Added
+
+- filepath_filter plugin
+
 ## [v1.0.3] - 2025-12-04
 
 ### Fixed

@@ -78,6 +78,8 @@ func getMitigationReason(malwareReason datamodel.MalwareReason) (mitigationReaso
 		mitigationReason = events.ReasonMalware
 	case datamodel.FilteredFileType:
 		mitigationReason = events.ReasonFileType
+	case datamodel.FilteredFilePath:
+		mitigationReason = events.ReasonFilePath
 	}
 	return
 }
@@ -157,7 +159,7 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 			GmalwareURLs:       gmalwareURLs,
 			QuarantineLocation: report.QuarantineLocation,
 		},
-		Filename: path,
+		File:     path,
 		Size:     report.FileSize,
 		Filetype: report.FileType,
 	}); e != nil {

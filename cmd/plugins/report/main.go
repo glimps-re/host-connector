@@ -307,6 +307,8 @@ func getCompleteReason(mitigationReason datamodel.MalwareReason) (reason string)
 		reason = "Erreur lors de l'analyse du fichier"
 	case datamodel.FilteredFileType:
 		reason = "Type de fichier filtré"
+	case datamodel.FilteredFilePath:
+		reason = "Path de fichier filtré"
 	case datamodel.MalwareDetected:
 		reason = "Fichier malveillant"
 	case datamodel.TooBig:

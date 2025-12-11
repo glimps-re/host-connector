@@ -27,4 +27,5 @@ const (
 	AnalysisError    MalwareReason = "analysis-error"
 	TooBig           MalwareReason = "too-big"
 	FilteredFileType MalwareReason = "filtered-filetype"
+	FilteredFilePath MalwareReason = "filtered-filepath"
 )

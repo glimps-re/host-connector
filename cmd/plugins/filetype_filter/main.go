@@ -106,6 +106,7 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 			SHA256:         sha256,
 			Score:          1000,
 			Malwares:       []string{"forbidden_files"},
+			MalwareReason:  datamodel.FilteredFileType,
 			FilteredVolume: fileInfo.Size(),
 			FileSize:       fileInfo.Size(),
 		}

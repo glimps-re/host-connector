@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
 
 var _ Submitter = &mockSubmitter{}
@@ -107,4 +108,15 @@ func (m *mockSubmitter) Reconfigure(ctx context.Context, config gdetect.ClientCo
 		return m.ReconfigureMock(ctx, config)
 	}
 	panic("Reconfigure not implemented")
+}
+
+type MockAction struct {
+	HandleMock func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) error
+}
+
+func (m *MockAction) Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+	if m.HandleMock != nil {
+		return m.HandleMock(ctx, path, result, analysisReport)
+	}
+	panic("HandleMock() not implemented")
 }

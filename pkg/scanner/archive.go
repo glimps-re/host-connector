@@ -8,14 +8,20 @@ import (
 	"github.com/google/uuid"
 )
 
+type parentArchive struct {
+	statusID string
+	relPath  string // relative path within parent archive
+}
+
 type archiveStatus struct {
-	started     bool
-	finished    bool
-	archiveName string
-	result      datamodel.Result
-	analyzed    int
-	total       int
-	tmpFolder   string
+	started         bool
+	finished        bool
+	archiveLocation string
+	result          datamodel.Result
+	analyzed        int
+	total           int
+	tmpFolder       string
+	parentArchive   parentArchive // only for sub-archives (= empty for top-level)
 }
 
 type archiveStatusHandler struct {
@@ -122,7 +128,8 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 			result.Malwares = append(result.Malwares, m)
 		}
 	}
-	result.TotalExtractedFile++
+	// Add 1 for current file + any files extracted from sub-archives
+	result.TotalExtractedFile += 1 + resultToMerge.TotalExtractedFile
 	result.Malware = baseResult.Malware || resultToMerge.Malware
 
 	if result.MaliciousSubfiles == nil {
@@ -131,6 +138,12 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 	if resultToMerge.Malware {
 		resultToMerge.Location = baseResult.Location // We put archive location as location (cause extracted file won't be accessible after analysis)
 		result.MaliciousSubfiles[filename] = resultToMerge
+	}
+	if resultToMerge.Error != nil {
+		if result.ErrorSubfiles == nil {
+			result.ErrorSubfiles = make(map[string]string)
+		}
+		result.ErrorSubfiles[filename] = resultToMerge.Error.Error()
 	}
 	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
 	result.FilteredVolume += resultToMerge.FilteredVolume

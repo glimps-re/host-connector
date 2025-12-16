@@ -17,24 +17,25 @@ var logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
 }))
 
 type Report struct {
-	Filename                string          `json:"filename"`
-	SHA256                  string          `json:"sha256"`
-	Malicious               bool            `json:"malicious"`
-	Deleted                 bool            `json:"deleted,omitempty"`
-	QuarantineLocation      string          `json:"quarantine-location,omitempty"`
-	MitigationID            string          `json:"mitigation-id,omitempty"`
-	GMalwareURL             string          `json:"gmalware-url,omitempty"`
-	HasBeenRestored         bool            `json:"has-been-restored,omitempty"`
-	MovedTo                 string          `json:"moved-to,omitempty"`
-	Malwares                []string        `json:"malwares,omitempty"`
-	FileSize                int64           `json:"size,omitempty"`
-	FileType                string          `json:"type,omitempty"`
-	AnalyzedVolume          int64           `json:"analyzed-volume,omitempty"`
-	FilteredVolume          int64           `json:"filtered-volume,omitempty"`
-	MalwareReason           MalwareReason   `json:"malware-reason,omitempty"`
-	Action                  Action          `json:"mitigation-action,omitempty"`
-	TotalExtractedFile      int             `json:"total-extracted-file,omitempty"`
-	MaliciousExtractedFiles []ExtractedFile `json:"malicious-extracted-files,omitempty"`
+	Filename                string            `json:"filename"`
+	SHA256                  string            `json:"sha256"`
+	Malicious               bool              `json:"malicious"`
+	Deleted                 bool              `json:"deleted,omitempty"`
+	QuarantineLocation      string            `json:"quarantine-location,omitempty"`
+	MitigationID            string            `json:"mitigation-id,omitempty"`
+	GMalwareURL             string            `json:"gmalware-url,omitempty"`
+	HasBeenRestored         bool              `json:"has-been-restored,omitempty"`
+	MovedTo                 string            `json:"moved-to,omitempty"`
+	Malwares                []string          `json:"malwares,omitempty"`
+	FileSize                int64             `json:"size,omitempty"`
+	FileType                string            `json:"type,omitempty"`
+	AnalyzedVolume          int64             `json:"analyzed-volume,omitempty"`
+	FilteredVolume          int64             `json:"filtered-volume,omitempty"`
+	MalwareReason           MalwareReason     `json:"malware-reason,omitempty"`
+	Action                  Action            `json:"mitigation-action,omitempty"`
+	TotalExtractedFile      int               `json:"total-extracted-file,omitempty"`
+	MaliciousExtractedFiles []ExtractedFile   `json:"malicious-extracted-files,omitempty"`
+	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
 }
 
 type Action string
@@ -46,13 +47,14 @@ const (
 )
 
 type ExtractedFile struct {
-	FileName      string        `json:"filename"`
-	SHA256        string        `json:"sha256"`
-	Malicious     bool          `json:"malicious"`
-	Malwares      []string      `json:"malwares,omitempty"`
-	Size          int64         `json:"size,omitempty"`
-	MalwareReason MalwareReason `json:"malware-reason,omitempty"`
-	GMalwareURL   string        `json:"gmalware-url,omitempty"`
+	FileName       string          `json:"filename"`
+	SHA256         string          `json:"sha256"`
+	Malicious      bool            `json:"malicious"`
+	Malwares       []string        `json:"malwares,omitempty"`
+	Size           int64           `json:"size,omitempty"`
+	MalwareReason  MalwareReason   `json:"malware-reason,omitempty"`
+	GMalwareURL    string          `json:"gmalware-url,omitempty"`
+	ExtractedFiles []ExtractedFile `json:"extracted-files,omitempty"`
 }
 
 type ReportsWriter struct {

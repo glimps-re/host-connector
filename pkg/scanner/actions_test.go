@@ -119,7 +119,60 @@ func TestLogAction_Handle(t *testing.T) {
 				},
 			},
 			logLevel: slog.LevelDebug,
-			wantLog:  `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/test1","sha256":"123456789","malware":true,"malwares":["MALWARE-1"],"reason":"malware-detected","malicious-subfiles":{"sha256":"8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc","malwares":["MALWARE-1"]}}` + "\n",
+			wantLog:  `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/test1","sha256":"123456789","malware":true,"malwares":["MALWARE-1"],"reason":"malware-detected","malicious-subfiles":{"test/test.txt":{"sha256":"8f20eb58d3348fa7ca9341048a1c7b2eed2fb3e2189b362341e9cbf66f00b4cc","malwares":["MALWARE-1"]}}}` + "\n",
+		},
+		{
+			name: "ok subfiles with recursivity depth 3",
+			args: args{
+				path: "/tmp/archive.zip",
+				result: datamodel.Result{
+					Malware:  true,
+					Malwares: []string{"EICAR"},
+					SHA256:   "archive-sha256",
+					MaliciousSubfiles: map[string]datamodel.Result{
+						"test_recursive/file_1-1.txt": {
+							SHA256:        "file1-sha256",
+							Malware:       true,
+							Malwares:      []string{"EICAR"},
+							MalwareReason: datamodel.MalwareDetected,
+						},
+						"test_recursive/level1.zip": {
+							SHA256:        "level1-sha256",
+							Malware:       true,
+							Malwares:      []string{"EICAR"},
+							MalwareReason: datamodel.MalwareDetected,
+							MaliciousSubfiles: map[string]datamodel.Result{
+								"level1/file_2-1.txt": {
+									SHA256:        "file2-sha256",
+									Malware:       true,
+									Malwares:      []string{"EICAR"},
+									MalwareReason: datamodel.MalwareDetected,
+								},
+								"level1/level2.zip": {
+									SHA256:        "level2-sha256",
+									Malware:       true,
+									Malwares:      []string{"EICAR"},
+									MalwareReason: datamodel.MalwareDetected,
+									MaliciousSubfiles: map[string]datamodel.Result{
+										"level2/file_3-1.txt": {
+											SHA256:        "file3-sha256",
+											Malware:       true,
+											Malwares:      []string{"EICAR"},
+											MalwareReason: datamodel.MalwareDetected,
+										},
+									},
+								},
+							},
+						},
+					},
+					MalwareReason: datamodel.MalwareDetected,
+				},
+				report: &datamodel.Report{
+					Filename: "archive.zip",
+				},
+			},
+			logLevel: slog.LevelDebug,
+			wantLog:  `{"time":"2024-01-25T12:55:00Z","level":"INFO","msg":"info scanned","file":"/tmp/archive.zip","sha256":"archive-sha256","malware":true,"malwares":["EICAR"],"reason":"malware-detected","malicious-subfiles":{"test_recursive/file_1-1.txt":{"sha256":"file1-sha256","malwares":["EICAR"]},"test_recursive/level1.zip":{"sha256":"level1-sha256","malwares":["EICAR"],"malicious-subfiles":{"level1/file_2-1.txt":{"sha256":"file2-sha256","malwares":["EICAR"]},"level1/level2.zip":{"sha256":"level2-sha256","malwares":["EICAR"],"malicious-subfiles":{"level2/file_3-1.txt":{"sha256":"file3-sha256","malwares":["EICAR"]}}}}}}}` + "\n",
 		},
 		{
 			name: "test debug false",

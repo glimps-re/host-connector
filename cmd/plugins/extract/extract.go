@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
@@ -31,6 +32,11 @@ const (
 	szNamePrefix       = 2
 	szMinLineSize      = szDateTimePrefix + szDateTimeSize + szAttrPrefix + szAttrSize + szSizePrefix + szSizeSize + szCompressedPrefix + szCompressedSize + szNamePrefix
 	sevenZipMaxFile    = 200
+
+	zipBombThreshold int64 = 3 * 1000 * 1000 * 1000 // 3GB
+	zipBombRatio     int64 = 100
+
+	szRunTimeout time.Duration = 1 * time.Hour // deliberately large timeout, more to have at least a deadline and avoid indefinite run
 )
 
 type SevenZipFileAttr int
@@ -44,9 +50,10 @@ const (
 )
 
 type extractorConfig struct {
-	MaxFileSize       int
-	MaxExtractedFiles int
-	DefaultPasswords  []string
+	MaxFileSize           int
+	MaxExtractedFiles     int
+	MaxTotalExtractedSize int
+	DefaultPasswords      []string
 }
 
 type FileProperties struct {
@@ -68,6 +75,32 @@ type extractResult struct {
 	ignoredFiles   []string
 	symlinkFiles   []string
 	passwordUsed   string
+}
+
+// calculateEffectiveZipBombSizes calculates the total decompressed and compressed sizes
+// for zip bomb detection, excluding files that would be filtered by maxFileSize anyway.
+// => allow legit files that would trigger zipbomb check due to huge files inside, ex:
+// file.vmdk
+//
+//	│
+//	├── 0.img  (237GB) - main partition
+//	│
+//	├── 1.img  (954MB) - boot partition
+//	│   └── 333 fichiers (55MB reel)
+//	│
+//	├── 2.img  (9GB)   - swap
+//	│
+//	├── 3.img  (290GB) - free space
+//	│
+//	└── 4      (1MB)
+func calculateEffectiveZipBombSizes(files []FileProperties, maxFileSize int) (totalSize, totalCompressedSize int64) {
+	for _, file := range files {
+		if file.Size <= maxFileSize {
+			totalSize += int64(file.Size)
+			totalCompressedSize += int64(file.CompressedSize)
+		}
+	}
+	return
 }
 
 type ExtractedFile struct {
@@ -157,16 +190,26 @@ func (sze *sevenZipExtract) extract(archivePath string, extractLocation string, 
 	if err != nil {
 		return
 	}
+
+	// zip bomb detection (only count files that would pass MaxFileSize filter)
+	totalSize, effectiveCompressedSize := calculateEffectiveZipBombSizes(archiveContent.files, sze.config.MaxFileSize)
+	if totalSize > zipBombThreshold && effectiveCompressedSize > 0 && totalSize/effectiveCompressedSize > zipBombRatio {
+		err = fmt.Errorf("size of files within archive is high compared to archive size, potential ZipBomb (total: %d, compressed: %d, ratio: %d)", totalSize, effectiveCompressedSize, totalSize/effectiveCompressedSize)
+		return
+	}
+
+	totalSizeToExtract := 0
 	filesToExtract := []string{}
 	skippedFiles := []string{}
 	for _, file := range archiveContent.files {
 		if len(files) > 0 && !slices.Contains(files, file.Name) {
 			continue
 		}
-		if file.Size > sze.config.MaxFileSize || len(filesToExtract) >= sze.config.MaxExtractedFiles {
+		if file.Size > sze.config.MaxFileSize || len(filesToExtract) >= sze.config.MaxExtractedFiles || totalSizeToExtract+file.Size > sze.config.MaxTotalExtractedSize {
 			skippedFiles = append(skippedFiles, file.Name)
 			continue
 		}
+		totalSizeToExtract += file.Size
 		filesToExtract = append(filesToExtract, file.Name)
 	}
 
@@ -264,7 +307,9 @@ func (sze *sevenZipExtract) run(password string, args []string) (out string, sym
 	} else {
 		argsPwd = append([]string{"-P" + password}, args...)
 	}
-	cmd = exec.CommandContext(context.Background(), sze.sevenZipPath, argsPwd...) //nolint:gosec // args are handled on our side
+	runCtx, runCancel := context.WithTimeout(context.Background(), szRunTimeout)
+	defer runCancel()
+	cmd = exec.CommandContext(runCtx, sze.sevenZipPath, argsPwd...) //nolint:gosec // args are handled on our side
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmdErr := cmd.Run()
@@ -280,23 +325,28 @@ var errSevenZipRecoverable = errors.New("recoverable sevenzip error")
 
 func handleSevenZipError(sevenZipErr error, stderr string) (symLinkFiles []string, err error) {
 	switch {
-	case sevenZipErr != nil:
-		err = errors.Join(sevenZipErr, errors.New(stderr))
-		return
+	case sevenZipErr == nil:
 	case stderr == "":
-	case strings.Contains(stderr, "Headers Error") ||
-		strings.Contains(stderr, "There are some data after the end of the payload data") ||
-		strings.Contains(stderr, "ERROR: Data Error") ||
-		strings.Contains(stderr, "Unexpected end of archive"):
-		err = errors.Join(errSevenZipRecoverable, errors.New(stderr))
+		err = sevenZipErr
 	case strings.Contains(stderr, "Wrong password"):
 		err = ErrInvalidPassword
-	case strings.Contains(stderr, "Dangerous link path was ignored") || strings.Contains(stderr, "Dangerous symbolic link path was ignored"):
+	case strings.Contains(stderr, "Dangerous link path was ignored") || strings.Contains(stderr, "Dangerous link via another link was ignored") ||
+		strings.Contains(stderr, "Dangerous symbolic link path was ignored"):
+		// with latest versions of 7z, this error will always cause 7z to terminate with exit code 2 (even though other files were successfully extracted).
+		// see:
+		// - https://sourceforge.net/p/sevenzip/bugs/2356/
+		// - https://sourceforge.net/p/sevenzip/discussion/45797/thread/9f5b067368/?page=2#6f4f
 		symLinkFiles = parseSymlinkError(stderr)
 	case strings.Contains(stderr, "Cannot open the file as archive"):
 		err = ErrUnsupportedFormat
 	case strings.Contains(stderr, "No such file or directory"):
 		err = ErrFileNotFound
+	// recoverable errors should be checked last so it does not hide other error types
+	case strings.Contains(stderr, "Headers Error") ||
+		strings.Contains(stderr, "There are some data after the end of the payload data") ||
+		strings.Contains(stderr, "ERROR: Data Error") ||
+		strings.Contains(stderr, "Unexpected end of archive"):
+		err = errors.Join(errSevenZipRecoverable, errors.New(stderr))
 	default:
 		err = errors.Join(sevenZipErr, errors.New(stderr))
 		logger.Error("7z unsupported error", slog.String("retrieved error", stderr), slog.String("returned error", err.Error()))
@@ -434,6 +484,7 @@ func parseSymlinkError(stderr string) (symlinkFiles []string) {
 			continue
 		}
 		sanitized := strings.ReplaceAll(line, "ERROR: Dangerous link path was ignored : ", "")
+		sanitized = strings.ReplaceAll(sanitized, "ERROR: Dangerous link via another link was ignored : ", "")
 		sanitized = strings.ReplaceAll(sanitized, "ERROR: Dangerous symbolic link path was ignored : ", "")
 		sanitized = strings.Split(sanitized, " : ")[0]
 		symlinkFiles = append(symlinkFiles, sanitized)

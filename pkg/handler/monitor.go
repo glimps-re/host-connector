@@ -40,6 +40,7 @@ type Monitor struct {
 	done         chan struct{}
 	filesToScan  chan string
 	pendingFiles *sync.Map
+	started      bool
 }
 
 func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
@@ -58,16 +59,21 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 		filesToScan:  make(chan string),
 		pendingFiles: new(sync.Map),
 		done:         make(chan struct{}),
+		started:      false,
 	}, nil
 }
 
 func (m *Monitor) Close() (err error) {
+	if !m.started {
+		return
+	}
 	if err := m.watcher.Close(); err != nil {
 		logger.Error("cannot close watcher", slog.String("error", err.Error()))
 		return fmt.Errorf("cannot close watcher, error: %w", err)
 	}
 	close(m.done)
 	m.wg.Wait()
+	m.started = false
 	return
 }
 
@@ -83,6 +89,7 @@ func (m *Monitor) Start() {
 	m.wg.Go(func() {
 		m.scanFiles()
 	})
+	m.started = true
 }
 
 func (m *Monitor) scan() {

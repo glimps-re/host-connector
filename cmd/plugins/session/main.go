@@ -31,6 +31,7 @@ type SessionPlugin struct {
 	mutex    sync.RWMutex
 	hcc      plugins.HCContext
 	stop     chan struct{}
+	started  bool
 }
 
 // Config defines session behavior and directory monitoring settings.
@@ -91,6 +92,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	p.config = *config
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc
+	p.stop = make(chan struct{})
 	logger = hcc.GetLogger().With(slog.String("plugin", "session"))
 	consoleLogger = hcc.GetConsoleLogger()
 
@@ -108,19 +110,21 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	)
 	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s, remove_inputs: %v",
 		config.Depth, config.Delay.String(), config.RootFolder, config.RemoveInputs))
+	p.started = true
 	return nil
 }
 
 // Close stops session monitoring and waits briefly for cleanup.
 func (p *SessionPlugin) Close(ctx context.Context) error {
-	if p.stop != nil {
-		close(p.stop)
+	if !p.started {
+		return nil
 	}
+	close(p.stop)
 	select {
 	case <-time.After(1 * time.Second):
 	case <-ctx.Done():
 	}
-
+	p.started = false
 	return nil
 }
 

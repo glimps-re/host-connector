@@ -726,6 +726,9 @@ func (c *Connector) addReport(report *datamodel.Report) {
 }
 
 func (c *Connector) Close(ctx context.Context) {
+	if !c.started {
+		return
+	}
 	c.started = false
 
 	close(c.stopExtract)

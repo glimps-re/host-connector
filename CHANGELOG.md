@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.1.1] - 2026-01-06
+
+### Fixed
+
+- Channel closed twice in some cases, resulting in a panic
+
 ## [v1.1.0] - 2025-12-11
 
 ### Added

@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.2.0] - xxx
+
+### Added
+
+- SHA256 in mitigation info
+
 ## [v1.1.1] - 2026-01-06
 
 ### Fixed

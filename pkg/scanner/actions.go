@@ -158,6 +158,7 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 			Malwares:           result.Malwares,
 			GmalwareURLs:       gmalwareURLs,
 			QuarantineLocation: report.QuarantineLocation,
+			SHA256:             result.SHA256,
 		},
 		File:     path,
 		Size:     report.FileSize,

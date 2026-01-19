@@ -97,19 +97,23 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 }
 
 func (h *Handler) setupGMalwareClient(ctx context.Context, config *config.Config) (err error) {
+	detectConfig := gdetect.ClientConfig{
+		Endpoint:  config.GMalwareAPIURL,
+		ExpertURL: config.GMalwareExpertURL,
+		Token:     config.GMalwareAPIToken,
+		Insecure:  config.GMalwareNoCertCheck,
+		Syndetect: config.GMalwareSyndetect,
+	}
+
 	if h.submitter == nil {
-		client, err := gdetect.NewClient(config.GMalwareAPIURL, config.GMalwareAPIToken, config.GMalwareNoCertCheck, nil)
+		client, err := gdetect.NewClientFromConfig(detectConfig)
 		if err != nil {
 			err = fmt.Errorf("init glimps malware client error: %w", err)
 			return err
 		}
-
-		if config.GMalwareSyndetect {
-			client.SetSyndetect()
-		}
 		h.submitter = client
 	} else {
-		err = h.submitter.Reconfigure(ctx, config.GMalwareAPIURL, config.GMalwareAPIToken, config.GMalwareNoCertCheck, config.GMalwareSyndetect, nil)
+		err = h.submitter.Reconfigure(ctx, detectConfig)
 		if err != nil {
 			err = fmt.Errorf("reconfigure gdetect client error: %w", err)
 			return

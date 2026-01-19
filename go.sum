@@ -58,6 +58,10 @@ github.com/gabriel-vasile/mimetype v1.4.10 h1:zyueNbySn/z8mJZHLt6IPw0KoZsiQNszIp
 github.com/gabriel-vasile/mimetype v1.4.10/go.mod h1:d+9Oxyo1wTzWdyVUPMmXFvp4F9tea18J8ufA774AB3s=
 github.com/glimps-re/connector-integration v0.2.0 h1:QALGrlmdbhEwBpCBPYjAIqWy+lBjN8NmauuKUVioDE0=
 github.com/glimps-re/connector-integration v0.2.0/go.mod h1:rxUdcSl7+aaQtBhdk8OJ7bUTzRvXsHD3laeScIM1gr4=
+github.com/glimps-re/connector-integration v0.5.1-0.20260113104440-27b7197f13b2 h1:/wbPcBxSJHlFXs+D18yYsAs7jmtpxmdbpBbKT6thCsM=
+github.com/glimps-re/connector-integration v0.5.1-0.20260113104440-27b7197f13b2/go.mod h1:rxUdcSl7+aaQtBhdk8OJ7bUTzRvXsHD3laeScIM1gr4=
+github.com/glimps-re/connector-integration v0.5.1 h1:RB465oLU6M+XpV9Rg3tqQ9VugpR7fjr9JKWRXHqzDMY=
+github.com/glimps-re/connector-integration v0.5.1/go.mod h1:rxUdcSl7+aaQtBhdk8OJ7bUTzRvXsHD3laeScIM1gr4=
 github.com/glimps-re/go-gdetect v1.5.0 h1:T0K6tvEx3ewdAq8gVrH5xVXk7WbgGpgbZLjpCGoao2c=
 github.com/glimps-re/go-gdetect v1.5.0/go.mod h1:Na5E0hT+XjRucZ8FSXQ+X9Ji3Y+YlpTnRjggwpGohYI=
 github.com/glimps-re/rfsnotify v0.1.0 h1:a1QaA3BXZ4RmRBXpMIoIUBkEuXN3ZzRJfJ0k4DPsU5Q=

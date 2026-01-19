@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20250803210736-d308e07a266d
 	github.com/chromedp/chromedp v0.14.2
 	github.com/dustin/go-humanize v1.0.1
-	github.com/glimps-re/connector-integration v0.2.0
+	github.com/glimps-re/connector-integration v0.5.1
 	github.com/glimps-re/rfsnotify v0.1.0
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/gonutz/wui/v2 v2.8.2

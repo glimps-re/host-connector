@@ -6,15 +6,17 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
 
 type (
-	ExtractFile     = func(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error)
-	OnStartScanFile = func(file string, sha256 string)
-	OnScanFile      = func(filename string, location string, sha256 string, isArchive bool) (result *datamodel.Result)
-	OnFileScanned   = func(file string, sha256 string, result datamodel.Result) (newResult *datamodel.Result)
-	OnReport        = func(report *datamodel.Report)
+	ExtractFile            = func(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error)
+	OnStartScanFile        = func(file string, sha256 string)
+	OnScanFile             = func(filename string, location string, sha256 string, isArchive bool) (result *datamodel.Result)
+	OnFileScanned          = func(file string, sha256 string, result datamodel.Result) (newResult *datamodel.Result)
+	OnReport               = func(report *datamodel.Report)
+	WithWaitForOptionsFunc = func(opts *gdetect.WaitForOptions, location string)
 )
 
 type GenerateReport = func(reportConntext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
@@ -32,6 +34,7 @@ type HCContext interface {
 
 	RegisterOnStartScanFile(f OnStartScanFile)
 	RegisterOnScanFile(f OnScanFile)
+	RegisterWithWaitForOptions(f WithWaitForOptionsFunc)
 	RegisterOnFileScanned(f OnFileScanned)
 	RegisterOnReport(f OnReport)
 

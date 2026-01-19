@@ -90,22 +90,23 @@ type Connector struct {
 	stopExtract chan struct{}
 	stopWorker  chan struct{}
 
-	config             Config
-	workerWg           sync.WaitGroup
-	extractWg          sync.WaitGroup
-	fileChan           chan fileToAnalyze
-	archiveChan        chan archiveToAnalyze
-	action             Action
-	reportMutex        sync.Mutex
-	reports            []*datamodel.Report
-	archiveStatus      *archiveStatusHandler
-	loadedPlugins      []plugins.Plugin
-	onStartScanFileCbs []plugins.OnStartScanFile
-	onScanFileCbs      []plugins.OnScanFile
-	onFileScannedCbs   []plugins.OnFileScanned
-	onReportCbs        []plugins.OnReport
-	generateReport     plugins.GenerateReport
-	ongoingAnalysis    *sync.Map
+	config                 Config
+	workerWg               sync.WaitGroup
+	extractWg              sync.WaitGroup
+	fileChan               chan fileToAnalyze
+	archiveChan            chan archiveToAnalyze
+	action                 Action
+	reportMutex            sync.Mutex
+	reports                []*datamodel.Report
+	archiveStatus          *archiveStatusHandler
+	loadedPlugins          []plugins.Plugin
+	onStartScanFileCbs     []plugins.OnStartScanFile
+	onScanFileCbs          []plugins.OnScanFile
+	withWaitForOptionsFunc []plugins.WithWaitForOptionsFunc
+	onFileScannedCbs       []plugins.OnFileScanned
+	onReportCbs            []plugins.OnReport
+	generateReport         plugins.GenerateReport
+	ongoingAnalysis        *sync.Map
 }
 
 const (
@@ -636,7 +637,11 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 		}
 		return
 	}
-
+	location := input.location
+	if input.archiveID != "" {
+		location = input.archiveLocation
+	}
+	c.withWaitForOptions(&opts, location)
 	gdetectResult, err := c.submitter.WaitForFile(ctx, input.location, opts)
 	httpError := new(gdetect.HTTPError)
 	urlError := new(url.Error)

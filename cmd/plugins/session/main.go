@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -97,6 +98,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	consoleLogger = hcc.GetConsoleLogger()
 
 	hcc.RegisterOnStartScanFile(p.OnStartScanFile)
+	hcc.RegisterWithWaitForOptions(p.WaitForOptions)
 	hcc.RegisterOnFileScanned(p.OnFileScanned)
 	hcc.RegisterOnReport(p.OnReport)
 
@@ -143,6 +145,14 @@ func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) {
 			consoleLogger.Info(fmt.Sprintf("session %s started", session.ID))
 		}
 	}
+}
+
+func (p *SessionPlugin) WaitForOptions(opts *gdetect.WaitForOptions, location string) {
+	session, _ := p.getSession(location, false)
+	if session == nil {
+		return
+	}
+	opts.Tags = append(opts.Tags, "session:"+session.ID)
 }
 
 // OnFileScanned marks files as completed in their sessions.

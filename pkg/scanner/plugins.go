@@ -5,6 +5,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -46,6 +47,12 @@ func (c *Connector) onFileScanned(filepath string, sha256 string, result datamod
 	return
 }
 
+func (c *Connector) withWaitForOptions(opts *gdetect.WaitForOptions, location string) {
+	for _, f := range c.withWaitForOptionsFunc {
+		f(opts, location)
+	}
+}
+
 func (c *Connector) onReport(report *datamodel.Report) {
 	for _, cb := range c.onReportCbs {
 		cb(report)
@@ -62,6 +69,10 @@ func (c *Connector) RegisterOnFileScanned(f plugins.OnFileScanned) {
 
 func (c *Connector) RegisterOnScanFile(f plugins.OnScanFile) {
 	c.onScanFileCbs = append(c.onScanFileCbs, f)
+}
+
+func (c *Connector) RegisterWithWaitForOptions(f plugins.WithWaitForOptionsFunc) {
+	c.withWaitForOptionsFunc = append(c.withWaitForOptionsFunc, f)
 }
 
 func (c *Connector) RegisterOnReport(f plugins.OnReport) {

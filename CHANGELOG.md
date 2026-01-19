@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.2.0] - 2026-01-19
+
+### Added
+
+- SHA256 in mitigation info
+- plugin can register gdetect.WaitForOptions to specify submit options
+- session plugin add session id in user tags
+
 ## [v1.1.1] - 2026-01-06
 
 ### Fixed

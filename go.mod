@@ -14,7 +14,8 @@ require (
 	github.com/chromedp/cdproto v0.0.0-20250803210736-d308e07a266d
 	github.com/chromedp/chromedp v0.14.2
 	github.com/dustin/go-humanize v1.0.1
-	github.com/glimps-re/connector-integration v0.6.0
+	github.com/gabriel-vasile/mimetype v1.4.10
+	github.com/glimps-re/connector-integration v0.6.1
 	github.com/glimps-re/rfsnotify v0.1.0
 	github.com/go-viper/mapstructure/v2 v2.4.0
 	github.com/gonutz/wui/v2 v2.8.2
@@ -34,7 +35,6 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
-	github.com/gabriel-vasile/mimetype v1.4.10 // indirect
 	github.com/go-json-experiment/json v0.0.0-20251027170946-4849db3c2f7e // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect

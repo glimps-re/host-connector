@@ -60,6 +60,14 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	templ := template.New("report").Funcs(template.FuncMap{
 		"mergeArgsIntoSlice": mergeArgsIntoSlice,
 		"formatDuration":     formatDuration,
+		"add":                func(a, b int) int { return a + b }, // used to increment depth for recursive calls
+		"mul":                func(a, b int) int { return a * b }, // used to calculates indentation (depth * 10px)
+		"min": func(a, b int) int { // used to cap indentation depth
+			if a < b {
+				return a
+			}
+			return b
+		},
 	})
 
 	config, ok := rawConfig.(*Config)
@@ -140,6 +148,13 @@ type ExtractedFileData struct {
 	Size             string
 	MitigationReason string
 	GMalwareURL      string
+	ExtractedFiles   []ExtractedFileData
+}
+
+// ErrorFileData contains error information for files that failed analysis.
+type ErrorFileData struct {
+	Name  string
+	Error string
 }
 
 // ReportData contains complete scan report data for template rendering.
@@ -152,8 +167,10 @@ type ReportData struct {
 	FilteredVolume    string
 	TotalMitigated    int
 	TotalMalware      int
+	TotalErrors       int
 	MitigatedFiles    []FileReportData
 	MitigatedArchives []ArchiveReportData
+	ErrorFiles        []ErrorFileData
 	ScanStartTime     string
 	Duration          string
 }
@@ -189,6 +206,13 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 		totalSizeAnalyzed += report.AnalyzedVolume
 		totalSizeFiltered += report.FilteredVolume
 		totalSizeFile += report.FileSize
+		for filename, errMsg := range report.ErrorExtractedFiles {
+			reportData.ErrorFiles = append(reportData.ErrorFiles, ErrorFileData{
+				Name:  filename,
+				Error: errMsg,
+			})
+			reportData.TotalErrors++
+		}
 		if !report.Malicious {
 			continue
 		}
@@ -218,24 +242,34 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 			FileCount:          report.TotalExtractedFile,
 		}
 
-		for _, extractedFile := range report.MaliciousExtractedFiles {
-			if !extractedFile.Malicious {
-				continue
-			}
-			aReport.ExtractedFiles = append(aReport.ExtractedFiles, ExtractedFileData{
-				Name:             extractedFile.FileName,
-				SHA256:           extractedFile.SHA256,
-				Malwares:         extractedFile.Malwares,
-				MitigationReason: getCompleteReason(extractedFile.MalwareReason),
-				Size:             humanize.Bytes(toUint(extractedFile.Size)),
-				GMalwareURL:      extractedFile.GMalwareURL,
-			})
-		}
+		aReport.ExtractedFiles = convertExtractedFiles(report.MaliciousExtractedFiles)
 		reportData.MitigatedArchives = append(reportData.MitigatedArchives, aReport)
 	}
 	reportData.AnalyzedVolume = humanize.Bytes(toUint(totalSizeAnalyzed))
 	reportData.FileVolume = humanize.Bytes(toUint(totalSizeFile))
 	reportData.FilteredVolume = humanize.Bytes(toUint((totalSizeFiltered)))
+	return
+}
+
+// convertExtractedFiles recursively converts datamodel.ExtractedFile to ExtractedFileData.
+func convertExtractedFiles(files []datamodel.ExtractedFile) (result []ExtractedFileData) {
+	for _, f := range files {
+		if !f.Malicious {
+			continue
+		}
+		efd := ExtractedFileData{
+			Name:             f.FileName,
+			SHA256:           f.SHA256,
+			Malwares:         f.Malwares,
+			MitigationReason: getCompleteReason(f.MalwareReason),
+			Size:             humanize.Bytes(toUint(f.Size)),
+			GMalwareURL:      f.GMalwareURL,
+		}
+		if len(f.ExtractedFiles) > 0 {
+			efd.ExtractedFiles = convertExtractedFiles(f.ExtractedFiles)
+		}
+		result = append(result, efd)
+	}
 	return
 }
 

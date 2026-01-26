@@ -193,6 +193,15 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		return
 	}
 
+	var recursiveExtractMaxSize int64
+	if config.RecursiveExtractMaxSize != "" {
+		recursiveExtractMaxSize, err = units.ParseStrictBytes(config.RecursiveExtractMaxSize)
+		if err != nil {
+			err = fmt.Errorf("could not parse recursive-extract-max-size: %w", err)
+			return
+		}
+	}
+
 	switch {
 	case maxFileSize > maxFileSizeDetect && !config.GMalwareSyndetect:
 		logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
@@ -222,11 +231,12 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	h.Conn = scanner.NewConnector(scanner.Config{
 		QuarantineFolder: config.Quarantine.Location,
 		MaxFileSize:      maxFileSize,
-		Workers:          config.Workers,
-		ExtractWorkers:   config.ExtractWorkers,
-		Password:         config.Quarantine.Password,
-		Timeout:          config.GMalwareTimeout,
-		FollowSymlinks:   config.FollowSymlinks,
+		// ExtractMinThreshold: , // not set to always use default value
+		Workers:        config.Workers,
+		ExtractWorkers: config.ExtractWorkers,
+		Password:       config.Quarantine.Password,
+		Timeout:        config.GMalwareTimeout,
+		FollowSymlinks: config.FollowSymlinks,
 		Actions: scanner.Actions{
 			Log:        config.Actions.Log,
 			Quarantine: config.Actions.Quarantine,
@@ -242,11 +252,14 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 			PullTime:    time.Millisecond * 500,
 			BypassCache: config.GMalwareBypassCache,
 		},
-		ScanPeriod:    config.Monitoring.Period,
-		CustomActions: customAction,
-		Extract:       config.Extract,
-		MoveTo:        config.Move.Destination,
-		MoveFrom:      config.Move.Source,
+		ScanPeriod:               config.Monitoring.Period,
+		CustomActions:            customAction,
+		Extract:                  config.Extract,
+		RecursiveExtractMaxDepth: config.RecursiveExtractMaxDepth,
+		RecursiveExtractMaxSize:  recursiveExtractMaxSize,
+		RecursiveExtractMaxFiles: config.RecursiveExtractMaxFiles,
+		MoveTo:                   config.Move.Destination,
+		MoveFrom:                 config.Move.Source,
 	}, h.Quarantiner, h.submitter)
 
 	if config.PluginsConfig != "" {

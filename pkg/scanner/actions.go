@@ -9,7 +9,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -54,16 +56,27 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel
 	analysisReport.MalwareReason = result.MalwareReason
 	analysisReport.TotalExtractedFile = result.TotalExtractedFile
 	analysisReport.GMalwareURL = result.GMalwareURL
-	for _, subfile := range result.MaliciousSubfiles {
-		analysisReport.MaliciousExtractedFiles = append(analysisReport.MaliciousExtractedFiles, datamodel.ExtractedFile{
-			FileName:      subfile.Filename,
+	analysisReport.MaliciousExtractedFiles = collectExtractedFiles(result.MaliciousSubfiles)
+	analysisReport.ErrorExtractedFiles = result.ErrorSubfiles
+	return
+}
+
+// collectExtractedFiles recursively collects extracted files from malicious subfiles.
+func collectExtractedFiles(subfiles map[string]datamodel.Result) (extractedFiles []datamodel.ExtractedFile) {
+	for filename, subfile := range subfiles {
+		ef := datamodel.ExtractedFile{
+			FileName:      filename,
 			SHA256:        subfile.SHA256,
 			Malicious:     true,
 			Malwares:      subfile.Malwares,
 			Size:          subfile.FileSize,
 			MalwareReason: subfile.MalwareReason,
 			GMalwareURL:   subfile.GMalwareURL,
-		})
+		}
+		if len(subfile.MaliciousSubfiles) > 0 {
+			ef.ExtractedFiles = collectExtractedFiles(subfile.MaliciousSubfiles)
+		}
+		extractedFiles = append(extractedFiles, ef)
 	}
 	return
 }
@@ -113,11 +126,29 @@ func (a *LogAction) Handle(ctx context.Context, path string, result datamodel.Re
 		a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares))
 		return
 	}
-	attrs := []slog.Attr{}
-	for _, v := range result.MaliciousSubfiles {
-		attrs = append(attrs, slog.GroupAttrs(v.Filename, slog.String("sha256", v.SHA256), slog.Any("malwares", v.Malwares)))
-	}
+	attrs := collectMaliciousSubfilesAttrs(result.MaliciousSubfiles)
 	a.logger.Info("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", true), slog.Any("malwares", result.Malwares), slog.String("reason", string(result.MalwareReason)), slog.GroupAttrs("malicious-subfiles", attrs...))
+	return
+}
+
+// collectMaliciousSubfilesAttrs recursively collects slog attributes for all malicious subfiles.
+// Keys are sorted to ensure deterministic log output.
+func collectMaliciousSubfilesAttrs(subfiles map[string]datamodel.Result) (attrs []slog.Attr) {
+	keys := make([]string, 0, len(subfiles))
+	for k := range subfiles {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+
+	for _, filename := range keys {
+		v := subfiles[filename]
+		subAttrs := []any{slog.String("sha256", v.SHA256), slog.Any("malwares", v.Malwares)}
+		if len(v.MaliciousSubfiles) > 0 {
+			nestedAttrs := collectMaliciousSubfilesAttrs(v.MaliciousSubfiles)
+			subAttrs = append(subAttrs, slog.GroupAttrs("malicious-subfiles", nestedAttrs...))
+		}
+		attrs = append(attrs, slog.Group(filename, subAttrs...))
+	}
 	return
 }
 
@@ -172,6 +203,11 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 type RemoveFileAction struct{}
 
 func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("remove action: %w", err)
+		}
+	}()
 	if !result.Malware {
 		return
 	}
@@ -197,6 +233,11 @@ func NewQuarantineAction(quarantiner quarantine.Quarantiner) *QuarantineAction {
 }
 
 func (a *QuarantineAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("quarantine action: %w", err)
+		}
+	}()
 	if a.quarantiner == nil {
 		return
 	}
@@ -217,12 +258,22 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result datam
 type PrintAction struct {
 	Verbose bool
 	Out     io.Writer
+	mu      sync.Mutex // protects Out from concurrent writes by worker goroutines
 }
 
 func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("print action: %w", err)
+		}
+	}()
 	if a.Out == nil {
 		a.Out = os.Stdout
 	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
 	switch {
 	case result.Malware:
 		sb := strings.Builder{}
@@ -275,6 +326,11 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 }
 
 func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+	defer func() {
+		if err != nil {
+			err = fmt.Errorf("move action: %w", err)
+		}
+	}()
 	// move only file analyzed with no error
 	if result.Error != nil {
 		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination, error in analysis: %s", path, result.Error.Error()))
@@ -288,7 +344,8 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	}
 
 	if !strings.HasPrefix(path, a.Src) {
-		return errors.New("file not in paths")
+		err = errors.New("file not in source directory")
+		return
 	}
 
 	destSubpath, ok := strings.CutPrefix(path, a.Src)
@@ -330,7 +387,7 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	// move safe file
 	err = moveFile(path, dest)
 	if err != nil {
-		return err
+		return
 	}
 	report.MovedTo = dest
 	ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))

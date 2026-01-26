@@ -16,6 +16,11 @@ extract:
     # Prevents extraction bombs by limiting the total number of extracted files
     max_extracted_files: 1000
 
+    # Maximum size for an extracted archive (default: 3GB)
+    # Supports human-readable units: B, KB, MB, GB, TB
+    # Additional files are skipped if limit is reached
+    max_total_extracted_size: 3GB
+
     # List of passwords to try when extracting password-protected archives
     # Default: ["infected"] - commonly used password for malware samples
     default_passwords:

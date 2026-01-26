@@ -1,3 +1,25 @@
+{{ define "extractedFilesRows" }}
+{{ $files := index . 0 }}
+{{ $depth := index . 1 }}
+{{ range $file := $files }}
+<tr>
+    <td style="padding-left: {{ mul (min $depth 6) 10 }}px;">{{ if gt $depth 0 }}↳ {{ end }}{{ .Name }}</td>
+    <td>{{ .SHA256 }}</td>
+    <td>{{ .Size }}</td>
+    <td>{{ range $i, $malware := .Malwares}}* {{ $malware }}<br>{{ end }}</td>
+    <td>{{ .MitigationReason }}</td>
+    {{ if eq .GMalwareURL "" }}
+    <td>Pas d'analyse GLIMPS Malware</td>
+    {{ else }}
+    <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
+    {{ end }}
+</tr>
+{{ if gt (len .ExtractedFiles) 0 }}
+{{ template "extractedFilesRows" (mergeArgsIntoSlice .ExtractedFiles (add $depth 1)) }}
+{{ end }}
+{{ end }}
+{{ end }}
+
 <!DOCTYPE html>
 <html lang="fr">
 
@@ -159,6 +181,7 @@
             <li><strong>Volume analysé : </strong>{{ .AnalyzedVolume }}</li>
             <li><strong>Volume filtré : </strong>{{ .FilteredVolume }}</li>
             <li><strong>Bloqués : </strong>{{ .TotalMitigated }}, dont fichiers détéctés comme malveillants: {{ .TotalMalware }}</li>
+            <li><strong>Fichiers en erreur : </strong>{{ .TotalErrors }}</li>
             <li><strong>Date de début : </strong>{{ .ScanStartTime }}</li>
             <li><strong>Durée : </strong>{{ .Duration }}</li>
         </ul>
@@ -244,28 +267,37 @@
                             </tr>
                         </thead>
                         <tbody>
-                            {{ range $index, $file := .ExtractedFiles}}
-                            <tr>
-                                <td>{{ .Name }}</td>
-                                <td>{{ .SHA256 }}</td>
-                                <td>{{ .Size }}</td>
-                                <td>{{ range $i, $malware := .Malwares}}
-                                    * {{ $malware }}<br>
-                                    {{ end }}
-                                </td>
-                                <td>{{ .MitigationReason }}</td>
-                                {{ if eq .GMalwareURL "" }}
-                                <td>Pas d'analyse GLIMPS Malware</td>
-                                {{ else }}
-                                <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
-                                {{ end }}
-                            </tr>
-                            {{ end }}
+                            {{ template "extractedFilesRows" (mergeArgsIntoSlice .ExtractedFiles 0) }}
                         </tbody>
                     </table>
                 </div>
             </section>
         {{ end }}
+    </section>
+    {{ end }}
+
+    {{ if gt (len .ErrorFiles) 0 }}
+    <section id="error-files">
+        <h2>Fichiers en erreur</h2>
+        <p>Les fichiers suivants n'ont pas pu être analysés correctement :</p>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Fichier</th>
+                        <th>Erreur</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .ErrorFiles}}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Error }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
     </section>
     {{ end }}
 </body>

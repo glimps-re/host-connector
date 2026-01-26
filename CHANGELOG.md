@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.4.0] - 2026-01-22
+
+### Changed
+
+- use recursive extraction
+
 ## [v1.3.0]
 
 ### Added

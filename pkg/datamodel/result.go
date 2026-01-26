@@ -2,6 +2,7 @@ package datamodel
 
 type Result struct {
 	MaliciousSubfiles  map[string]Result `json:"malicious-subfiles,omitempty"`
+	ErrorSubfiles      map[string]string `json:"error-subfiles,omitempty"`
 	Filename           string            `json:"filename,omitempty"`
 	Location           string            `json:"location,omitempty"`
 	SHA256             string            `json:"sha256,omitempty"`

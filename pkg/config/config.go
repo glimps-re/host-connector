@@ -6,14 +6,17 @@ import (
 	"github.com/glimps-re/connector-integration/sdk"
 )
 
-var (
-	DefaultTimeout           = sdk.Duration(5 * time.Minute)
-	DefaultWorkers           = 4
-	DefaultExtractWorkers    = 2
-	DefaultScanValidity      = sdk.Duration(time.Hour * 24 * 7)
-	DefaultModificationDelay = sdk.Duration(time.Second * 30)
-	DefaultMaxFileSize       = "100MiB"
-	Version                  = "dev"
+const (
+	DefaultTimeout                  = sdk.Duration(5 * time.Minute)
+	DefaultWorkers                  = 4
+	DefaultExtractWorkers           = 2
+	DefaultScanValidity             = sdk.Duration(time.Hour * 24 * 7)
+	DefaultModificationDelay        = sdk.Duration(time.Second * 30)
+	DefaultMaxFileSize              = "100MiB"
+	DefaultRecursiveExtractMaxDepth = 10
+	DefaultRecursiveExtractMaxSize  = "5GB"
+	DefaultRecursiveExtractMaxFiles = 10000
+	Version                         = "dev"
 )
 
 type Config struct {

@@ -10,9 +10,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +48,37 @@ func createTestFile(t *testing.T, dir string, content string) (file string, file
 
 	file = testFile.Name()
 	fileSHA256 = hex.EncodeToString(h.Sum(nil))
+	return
+}
+
+func createArchiveWithRawFiles(t *testing.T, files map[string][]byte) (archive string, archiveSHA256 string) {
+	testFile, err := os.CreateTemp(t.TempDir(), "archive_*.zip")
+	if err != nil {
+		t.Fatalf("failed to create archive temp file, error: %v", err)
+	}
+	defer func() {
+		if e := testFile.Close(); e != nil {
+			t.Fatalf("could not close archive, error: %v", e)
+		}
+	}()
+
+	h := sha256.New()
+	mw := io.MultiWriter(testFile, h)
+	zipWriter := zip.NewWriter(mw)
+	for filename, content := range files {
+		subFile, err := zipWriter.Create(filename)
+		if err != nil {
+			t.Fatalf("could not create zip subfile, error: %v", err)
+		}
+		if _, e := subFile.Write(content); e != nil {
+			t.Fatalf("could not write zip subfile, error: %v", e)
+		}
+	}
+	if e := zipWriter.Close(); e != nil {
+		t.Fatalf("could not close zip writer, error: %v", e)
+	}
+	archive = testFile.Name()
+	archiveSHA256 = hex.EncodeToString(h.Sum(nil))
 	return
 }
 
@@ -179,8 +214,9 @@ func TestNewConnector(t *testing.T) {
 			name: "ok archive clean",
 			fields: fields{
 				config: Config{
-					MaxFileSize: 200,
-					Extract:     true,
+					MaxFileSize:         200,
+					ExtractMinThreshold: 1,
+					Extract:             true,
 					Actions: Actions{
 						Deleted:    true,
 						Quarantine: true,
@@ -203,8 +239,9 @@ func TestNewConnector(t *testing.T) {
 			name: "ok archive with malware",
 			fields: fields{
 				config: Config{
-					MaxFileSize: 200,
-					Extract:     true,
+					MaxFileSize:         200,
+					ExtractMinThreshold: 1,
+					Extract:             true,
 					Actions: Actions{
 						Deleted:    true,
 						Quarantine: true,
@@ -418,8 +455,9 @@ func TestNewConnector(t *testing.T) {
 			name: "test one archive with callbacks",
 			fields: fields{
 				config: Config{
-					MaxFileSize: 200,
-					Extract:     true,
+					MaxFileSize:         200,
+					ExtractMinThreshold: 1,
+					Extract:             true,
 					Actions: Actions{
 						Deleted:    true,
 						Quarantine: true,
@@ -432,14 +470,15 @@ func TestNewConnector(t *testing.T) {
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
 				archive, archiveSHA256 := createArchive(t, []string{"content1", "content2", badFileContent})
 
-				onStartCalled := 0
-				onScanCalled := 0
+				// atomic because callbacks are called from worker goroutines
+				var onStartCalled atomic.Int64
+				var onScanCalled atomic.Int64
 
 				c.onStartScanFileCbs = append(c.onStartScanFileCbs, func(file string, sha256 string) {
-					onStartCalled++
+					onStartCalled.Add(1)
 				})
 				c.onScanFileCbs = append(c.onScanFileCbs, func(filename string, location string, sha256 string, isArchive bool) (res *datamodel.Result) {
-					onScanCalled++
+					onScanCalled.Add(1)
 					return
 				})
 
@@ -451,11 +490,11 @@ func TestNewConnector(t *testing.T) {
 				cacheID := quarantine.ComputeCacheID(archive, archiveSHA256)
 				assertFileDeleted(t, buff, archive, cacheID)
 
-				if onStartCalled != 1 {
-					t.Fatalf("start scan call %d time(s), want 1", onStartCalled)
+				if onStartCalled.Load() != 1 {
+					t.Fatalf("start scan call %d time(s), want 1", onStartCalled.Load())
 				}
-				if onScanCalled != 4 {
-					t.Fatalf("scan call %d time(s), want 4", onScanCalled)
+				if onScanCalled.Load() != 4 {
+					t.Fatalf("scan call %d time(s), want 4", onScanCalled.Load())
 				}
 			},
 		},
@@ -463,8 +502,9 @@ func TestNewConnector(t *testing.T) {
 			name: "ok archive with all empty files",
 			fields: fields{
 				config: Config{
-					MaxFileSize: 200,
-					Extract:     true,
+					MaxFileSize:         200,
+					ExtractMinThreshold: 1,
+					Extract:             true,
 					Actions: Actions{
 						Deleted:    true,
 						Quarantine: true,
@@ -1358,6 +1398,1173 @@ func Test_getFileSHA256(t *testing.T) {
 			}
 			if gotFileSHA256 != expectedSHA256 {
 				t.Errorf("getFileSHA256() = %v, want %v", gotFileSHA256, expectedSHA256)
+			}
+		})
+	}
+}
+
+func Test_Connector_checkBeforeExtract(t *testing.T) {
+	type fields struct {
+		recursiveExtractMaxDepth int
+		extractMinThreshold      int64
+		recursiveExtractMaxSize  int64
+		recursiveExtractMaxFiles int
+		fileContent              string
+		fileNotExist             bool
+		createZipArchive         bool
+	}
+	type args struct {
+		size                int64
+		totalExtractedSize  *int64
+		totalExtractedFiles *int
+		depth               int
+	}
+	tests := []struct {
+		name    string
+		fields  fields
+		args    args
+		wantErr bool
+	}{
+		{
+			name: "ko max depth reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 5,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              strings.Repeat("a", 200),
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(0),
+				depth:               5,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko size below threshold",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1000,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              strings.Repeat("a", 500),
+			},
+			args: args{
+				size:                500,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko totalExtractedSize nil",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              strings.Repeat("a", 200),
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  nil,
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko total extracted size limit reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              strings.Repeat("a", 200),
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(1001),
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko totalExtractedFiles nil",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              strings.Repeat("a", 200),
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: nil,
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko total extracted files limit reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 50,
+				fileContent:              strings.Repeat("a", 200),
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(51),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko file does not exist",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileNotExist:             true,
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko type not in extractable list",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				fileContent:              "plain text content",
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ok zip file",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         true,
+			},
+			args: args{
+				size:                200,
+				totalExtractedSize:  ptrInt64(0),
+				totalExtractedFiles: ptrInt(0),
+				depth:               0,
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := &Connector{
+				config: Config{
+					RecursiveExtractMaxDepth: tt.fields.recursiveExtractMaxDepth,
+					ExtractMinThreshold:      tt.fields.extractMinThreshold,
+					RecursiveExtractMaxSize:  tt.fields.recursiveExtractMaxSize,
+					RecursiveExtractMaxFiles: tt.fields.recursiveExtractMaxFiles,
+				},
+				typesToExtract: extractableTypes(),
+			}
+
+			var location string
+			switch {
+			case tt.fields.fileNotExist:
+				location = filepath.Join(t.TempDir(), "nonexistent.zip")
+			case tt.fields.createZipArchive:
+				archive, _ := createArchive(t, []string{"content1", "content2"})
+				location = archive
+			default:
+				testFile, err := os.CreateTemp(t.TempDir(), "test*")
+				if err != nil {
+					t.Fatalf("could not create test file: %v", err)
+				}
+				if _, err := testFile.WriteString(tt.fields.fileContent); err != nil {
+					t.Fatalf("could not write test file: %v", err)
+				}
+				if err := testFile.Close(); err != nil {
+					t.Fatalf("could not close test file: %v", err)
+				}
+				location = testFile.Name()
+			}
+
+			err := c.checkBeforeExtract(location, tt.args.size, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkBeforeExtract() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func ptrInt64(v int64) *int64 {
+	return &v
+}
+
+func ptrInt(v int) *int {
+	return &v
+}
+
+func Test_Connector_sendForAnalyze(t *testing.T) {
+	type fields struct {
+		stopWorker bool
+	}
+	tests := []struct {
+		name            string
+		fields          fields
+		wantErr         bool
+		wantSpecificErr error
+	}{
+		{
+			name: "ko worker stopped",
+			fields: fields{
+				stopWorker: true,
+			},
+			wantErr:         true,
+			wantSpecificErr: context.Canceled,
+		},
+		{
+			name: "ok",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stopWorker := make(chan struct{})
+			var fileChan chan fileToAnalyze
+			if tt.fields.stopWorker {
+				fileChan = make(chan fileToAnalyze) // unbuffered to force select choice
+			} else {
+				fileChan = make(chan fileToAnalyze, 1)
+			}
+
+			if tt.fields.stopWorker {
+				close(stopWorker)
+			}
+
+			c := &Connector{
+				stopWorker: stopWorker,
+				fileChan:   fileChan,
+			}
+
+			file := fileToAnalyze{
+				sha256:   "abc123",
+				location: "/path/to/file",
+				filename: "file.txt",
+				size:     100,
+			}
+
+			err := c.sendForAnalyze(file, logger)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("sendForAnalyze() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantSpecificErr != nil && !errors.Is(err, tt.wantSpecificErr) {
+				t.Errorf("sendForAnalyze() want specific error %v, got %v", tt.wantSpecificErr, err)
+				return
+			}
+			if err != nil {
+				return
+			}
+
+			select {
+			case <-fileChan:
+			default:
+				t.Errorf("sendForAnalyze() file not sent to channel")
+			}
+		})
+	}
+}
+
+func Test_Connector_finishArchiveAnalysis(t *testing.T) {
+	actionErr := errors.New("action error (test)")
+
+	type fields struct {
+		archiveNotFound        bool
+		archiveFileDeleted     bool
+		sha256Mismatch         bool
+		actionError            bool
+		isSubArchive           bool
+		parentFinishesAfterSub bool
+	}
+	tests := []struct {
+		name            string
+		fields          fields
+		wantErr         bool
+		wantSpecificErr error
+		wantActions     bool
+		wantStatusKept  bool
+	}{
+		{
+			name: "ko archive not found",
+			fields: fields{
+				archiveNotFound: true,
+			},
+		},
+		{
+			name: "ko getFileSHA256 error",
+			fields: fields{
+				archiveFileDeleted: true,
+			},
+			wantErr:        true,
+			wantStatusKept: true,
+		},
+		{
+			name: "ko SHA256 mismatch",
+			fields: fields{
+				sha256Mismatch: true,
+			},
+			wantStatusKept: true,
+		},
+		{
+			name: "ko error handling action",
+			fields: fields{
+				actionError: true,
+			},
+			wantErr:         true,
+			wantSpecificErr: actionErr,
+			wantActions:     true,
+		},
+		{
+			name:        "ok top-level archive",
+			wantActions: true,
+		},
+		{
+			name: "ok sub-archive",
+			fields: fields{
+				isSubArchive: true,
+			},
+		},
+		{
+			name: "ok sub-archive triggers parent archive completion",
+			fields: fields{
+				isSubArchive:           true,
+				parentFinishesAfterSub: true,
+			},
+			wantActions: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var actionCalled bool
+			var actionPath string
+			action := &MockAction{
+				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+					actionCalled = true
+					actionPath = path
+					if tt.fields.actionError {
+						err = actionErr
+						return
+					}
+					return
+				},
+			}
+
+			c := &Connector{
+				action:          action,
+				archiveStatus:   newArchiveStatusHandler(),
+				ongoingAnalysis: new(sync.Map),
+			}
+
+			var archiveID string
+			var archiveLocation string
+			var tmpFolder string
+			var parentID string
+			var parentLocation string
+			var err error
+
+			switch {
+			case tt.fields.archiveNotFound:
+				archiveID = "nonexistent-id"
+				archiveLocation = filepath.Join(t.TempDir(), "nonexistent.zip")
+				tmpFolder = t.TempDir()
+			case tt.fields.isSubArchive:
+				// Create parent archive for sub-archive tests
+				var parentSHA256 string
+				parentLocation, parentSHA256 = createTestFile(t, t.TempDir(), "parent archive content")
+				parentInfo, e := os.Stat(parentLocation)
+				if e != nil {
+					t.Fatalf("could not stat parent archive: %v", e)
+				}
+				parentTmpFolder := t.TempDir()
+
+				parentTotal := 2
+				if tt.fields.parentFinishesAfterSub {
+					parentTotal = 1
+				}
+				parentID = c.archiveStatus.addStatus(archiveStatus{
+					started:         true,
+					finished:        false,
+					archiveLocation: parentLocation,
+					result: datamodel.Result{
+						SHA256:   parentSHA256,
+						FileSize: parentInfo.Size(),
+					},
+					analyzed:  0,
+					total:     parentTotal,
+					tmpFolder: parentTmpFolder,
+				})
+
+				subArchiveLocation := filepath.Join(t.TempDir(), "sub-archive.zip")
+				subTmpFolder := t.TempDir()
+				archiveID = c.archiveStatus.addStatus(archiveStatus{
+					started:         true,
+					finished:        true,
+					archiveLocation: subArchiveLocation,
+					result: datamodel.Result{
+						SHA256:   "sub-archive-sha256",
+						Malware:  true,
+						Malwares: []string{"TestMalware"},
+					},
+					analyzed:  1,
+					total:     1,
+					tmpFolder: subTmpFolder,
+					parentArchive: parentArchive{
+						statusID: parentID,
+						relPath:  "sub-archive.zip",
+					},
+				})
+				archiveLocation = subArchiveLocation
+				tmpFolder = subTmpFolder
+			default:
+				// Top-level archive tests
+				location, fileSHA256 := createTestFile(t, t.TempDir(), "archive content")
+				info, e := os.Stat(location)
+				if e != nil {
+					t.Fatalf("could not stat archive: %v", e)
+				}
+				tmpFolder = t.TempDir()
+
+				storedSHA256 := fileSHA256
+				if tt.fields.sha256Mismatch {
+					storedSHA256 = "different-sha256"
+				}
+				archiveID = c.archiveStatus.addStatus(archiveStatus{
+					started:         true,
+					finished:        true,
+					archiveLocation: location,
+					result: datamodel.Result{
+						SHA256:   storedSHA256,
+						FileSize: info.Size(),
+					},
+					analyzed:  1,
+					total:     1,
+					tmpFolder: tmpFolder,
+				})
+				archiveLocation = location
+			}
+
+			if tt.fields.archiveFileDeleted {
+				if e := os.Remove(archiveLocation); e != nil {
+					t.Fatalf("could not delete archive file: %v", e)
+				}
+			}
+
+			err = c.finishArchiveAnalysis(archiveID)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("finishArchiveAnalysis() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantSpecificErr != nil && !errors.Is(err, tt.wantSpecificErr) {
+				t.Errorf("finishArchiveAnalysis() want specific error %v, got %v", tt.wantSpecificErr, err)
+				return
+			}
+			if actionCalled != tt.wantActions {
+				t.Errorf("action.Handle() called = %v, want %v", actionCalled, tt.wantActions)
+			}
+
+			if !tt.fields.archiveNotFound {
+				_, _, ok := c.archiveStatus.getArchiveStatus(archiveID, false)
+				if ok != tt.wantStatusKept {
+					t.Errorf("archive status kept = %v, want %v", ok, tt.wantStatusKept)
+				}
+			}
+
+			if tt.fields.isSubArchive && tt.fields.parentFinishesAfterSub {
+				if actionPath != parentLocation {
+					// check action has been called on parent
+					t.Errorf("action.Handle() path = %v, want parent %v", actionPath, parentLocation)
+				}
+				// check parent status is deleted
+				_, _, ok := c.archiveStatus.getArchiveStatus(parentID, false)
+				if ok {
+					t.Errorf("parent status should have been deleted after completion")
+					return
+				}
+			}
+
+			// check tmpFolder was cleaned up
+			if !tt.fields.archiveNotFound && !tt.wantStatusKept {
+				if _, err := os.Stat(tmpFolder); !errors.Is(err, os.ErrNotExist) {
+					t.Errorf("tmpFolder should have been removed, but still exists or error: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func Test_Connector_handleArchive(t *testing.T) {
+	type fields struct {
+		archiveNotFound bool
+		archiveFinished bool
+		archiveTotal    int
+		archiveAnalyzed int
+	}
+	tests := []struct {
+		name              string
+		fields            fields
+		wantErr           bool
+		wantActionsCalled bool
+	}{
+		{
+			name:   "ko archive not found",
+			fields: fields{archiveNotFound: true},
+		},
+		{
+			name:   "ko archive already finished",
+			fields: fields{archiveFinished: true},
+		},
+		{
+			name: "ok file analyzed, archive not finished",
+			fields: fields{
+				archiveTotal:    3,
+				archiveAnalyzed: 0,
+			},
+		},
+		{
+			name: "ok file analyzed, archive finished",
+			fields: fields{
+				archiveTotal:    1,
+				archiveAnalyzed: 0,
+			},
+			wantActionsCalled: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var actionCalled bool
+			action := &MockAction{
+				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+					actionCalled = true
+					return
+				},
+			}
+
+			c := &Connector{
+				action:          action,
+				archiveStatus:   newArchiveStatusHandler(),
+				ongoingAnalysis: new(sync.Map),
+				config: Config{
+					MaxFileSize: 100,
+				},
+			}
+
+			var archiveID string
+			var archiveLocation string
+			var tmpFolder string
+
+			switch {
+			case tt.fields.archiveNotFound:
+				archiveID = "nonexistent-id"
+				archiveLocation = "/path/to/archive.zip"
+			case tt.fields.archiveFinished:
+				archiveID = c.archiveStatus.addStatus(archiveStatus{
+					started:         true,
+					finished:        true,
+					archiveLocation: "/path/to/archive.zip",
+					result:          datamodel.Result{SHA256: "archive-sha256"},
+					analyzed:        1,
+					total:           1,
+				})
+				archiveLocation = "/path/to/archive.zip"
+			default:
+				location, fileSHA256 := createTestFile(t, t.TempDir(), "archive content")
+				tmpFolder = t.TempDir()
+				archiveID = c.archiveStatus.addStatus(archiveStatus{
+					started:         true,
+					finished:        false,
+					archiveLocation: location,
+					result: datamodel.Result{
+						SHA256:   fileSHA256,
+						Location: location,
+					},
+					analyzed:  tt.fields.archiveAnalyzed,
+					total:     tt.fields.archiveTotal,
+					tmpFolder: tmpFolder,
+				})
+				archiveLocation = location
+			}
+
+			input := fileToAnalyze{
+				archiveID:       archiveID,
+				archiveLocation: archiveLocation,
+				filename:        "file.txt",
+				location:        "/tmp/file.txt",
+				size:            1000,
+			}
+
+			err := c.handleArchive(input)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("handleArchive() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if actionCalled != tt.wantActionsCalled {
+				t.Errorf("action.Handle() called = %v, want %v", actionCalled, tt.wantActionsCalled)
+			}
+		})
+	}
+}
+
+// test_recursive_depth_8.zip
+// └── test_recursive/
+//
+//	├── file_1-1.txt
+//	├── file_1-2.txt
+//	└── level1.zip
+//	    └── level1/
+//	        ├── file_2-1.txt
+//	        ├── file_2-2.txt
+//	        └── level2.zip
+//	            └── ... (to level7.zip with file_8-1.txt and file_8-2.txt inside)
+//
+//go:embed testdata/test_recursive_depth_8.zip
+var testRecursive []byte
+
+func Test_Connector_recursiveExtract(t *testing.T) {
+	inputArchiveSHA256 := "INPUT_ARCHIVE_SHA256"
+	innermostArchiveSHA256 := "INNERMOST_ARCHIVE_SHA256"
+	type fields struct {
+		recursiveExtractMaxDepth int
+		extractMinThreshold      int64
+		recursiveExtractMaxSize  int64
+		recursiveExtractMaxFiles int
+		inputFile                []byte
+		createTestFile           bool
+		createZipArchive         []string // with contents
+		createEmptyZipArchive    bool
+		createInvalidArchive     bool
+		createArchiveWithDepth   int // ex: 1 means archive -> archive -> txtFile
+	}
+	type args struct {
+		totalExtractedSizeNil  bool
+		totalExtractedFilesNil bool
+		depth                  int
+	}
+	tests := []struct {
+		name          string
+		fields        fields
+		args          args
+		wantErr       bool
+		wantFilesSent []fileToAnalyze
+	}{
+		{
+			name: "ko totalExtractedSize nil",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1"},
+			},
+			args: args{
+				totalExtractedSizeNil: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko totalExtractedFiles nil",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1"},
+			},
+			args: args{
+				totalExtractedFilesNil: true,
+			},
+			wantErr: true,
+		},
+		{
+			name: "ok input is not an archive", // (= MIME type not in whitelist)
+			fields: fields{
+				recursiveExtractMaxDepth: 1,
+				extractMinThreshold:      100,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createTestFile:           true,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "test*"},
+			},
+		},
+		{
+			name: "ok with checkBeforeExtract error for input archive",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      100000, // so file size < extractMinThreshold, to provoke error checking before extract
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1"},
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_*.zip"},
+			},
+		},
+		{
+			name: "ok with ExtractFile error for input archive",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createInvalidArchive:     true,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "invalid*.zip"},
+			},
+		},
+		{
+			name: "ok empty archive", // (0 files to extract)
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createEmptyZipArchive:    true,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_*.zip"}, // 0 extracted files => input archive sent for analyze
+			},
+		},
+		{
+			name: "ok archive with 1 non-archive file inside",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1"},
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
+			},
+		},
+		{
+			name: "ok archive with 3 non-archive files inside",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1", "content2", "content3"},
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-1", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-2", archiveSHA256: inputArchiveSHA256},
+			},
+		},
+		{
+			name: "ok starting at depth 1",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createZipArchive:         []string{"content1"},
+			},
+			args: args{
+				depth: 1,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
+			},
+		},
+		{
+			name: "ok max recursive extracted files reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 2,
+				createArchiveWithDepth:   3, // archive_*.zip -> archive_level_0.zip -> archive_level_1.zip -> archive_level_2.zip -> file-0
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_level_2.zip"},
+			},
+		},
+		{
+			name: "ok max depth reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 1, // can only extract at depth 0
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   1, // archive_*.zip -> archive_level_0.zip -> file-0
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_level_0.zip"},
+			},
+		},
+		{
+			name: "ok max recursive extracted size reached",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   2, // archive_*.zip -> archive_level_0.zip -> archive_level_1.zip -> file-0
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_level_0.zip"},
+			},
+		},
+		{
+			name: "ok nested archive till depth 1",
+			fields: fields{
+				recursiveExtractMaxDepth: 2, // need depth 2 to extract inner archive at depth 1
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   1,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+			},
+		},
+		{
+			name: "ok nested archive till depth 2",
+			fields: fields{
+				recursiveExtractMaxDepth: 3,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   2,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+			},
+		},
+		{
+			name: "ok nested archive till max depth",
+			fields: fields{
+				recursiveExtractMaxDepth: defaultRecursiveExtractMaxDepth,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   defaultRecursiveExtractMaxDepth - 1,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+			},
+		},
+		{
+			name: "ok archive with mixed content", // archive containing both archives and regular files on each level
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				inputFile:                testRecursive,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "test_recursive/file_1-1.txt", archiveSHA256: inputArchiveSHA256},
+				{filename: "test_recursive/file_1-2.txt", archiveSHA256: inputArchiveSHA256},
+				{filename: "level1/file_2-1.txt", archiveSHA256: ""},
+				{filename: "level1/file_2-2.txt", archiveSHA256: ""},
+				{filename: "level2/file_3-1.txt", archiveSHA256: ""},
+				{filename: "level2/file_3-2.txt", archiveSHA256: ""},
+				{filename: "level3/file_4-1.txt", archiveSHA256: ""},
+				{filename: "level3/file_4-2.txt", archiveSHA256: ""},
+				{filename: "level4/file_5-1.txt", archiveSHA256: ""},
+				{filename: "level4/file_5-2.txt", archiveSHA256: ""},
+				{filename: "level5/file_6-1.txt", archiveSHA256: ""},
+				{filename: "level5/file_6-2.txt", archiveSHA256: ""},
+				{filename: "level6/file_7-1.txt", archiveSHA256: ""},
+				{filename: "level6/file_7-2.txt", archiveSHA256: ""},
+				{filename: "level7/file_8-1.txt", archiveSHA256: ""},
+				{filename: "level7/file_8-2.txt", archiveSHA256: ""},
+			},
+		},
+		{
+			name: "ok archive with mixed content blocked by recursive depth",
+			fields: fields{
+				recursiveExtractMaxDepth: 6,
+				extractMinThreshold:      1,
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				inputFile:                testRecursive,
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "test_recursive/file_1-1.txt", archiveSHA256: inputArchiveSHA256},
+				{filename: "test_recursive/file_1-2.txt", archiveSHA256: inputArchiveSHA256},
+				{filename: "level1/file_2-1.txt", archiveSHA256: ""},
+				{filename: "level1/file_2-2.txt", archiveSHA256: ""},
+				{filename: "level2/file_3-1.txt", archiveSHA256: ""},
+				{filename: "level2/file_3-2.txt", archiveSHA256: ""},
+				{filename: "level3/file_4-1.txt", archiveSHA256: ""},
+				{filename: "level3/file_4-2.txt", archiveSHA256: ""},
+				{filename: "level4/file_5-1.txt", archiveSHA256: ""},
+				{filename: "level4/file_5-2.txt", archiveSHA256: ""},
+				{filename: "level5/file_6-1.txt", archiveSHA256: ""},
+				{filename: "level5/file_6-2.txt", archiveSHA256: ""},
+				{filename: "level5/level6.zip", archiveSHA256: ""},
+			},
+		},
+		{
+			name: "ok inner archive below threshold",
+			fields: fields{
+				recursiveExtractMaxDepth: 10,
+				extractMinThreshold:      200, // threshold between outer (~257B) and inner (~170B) archive sizes
+				recursiveExtractMaxSize:  1000000,
+				recursiveExtractMaxFiles: 100,
+				createArchiveWithDepth:   1, // outer_archive_*.zip -> inner_archive_level_0.zip -> file-0
+			},
+			args: args{
+				depth: 0,
+			},
+			wantFilesSent: []fileToAnalyze{
+				{filename: "archive_level_0.zip", archiveSHA256: inputArchiveSHA256},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			LogLevel.Set(slog.LevelDebug.Level())
+			stopWorker := make(chan struct{})
+			fileChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
+
+			c := &Connector{
+				config: Config{
+					RecursiveExtractMaxDepth: tt.fields.recursiveExtractMaxDepth,
+					ExtractMinThreshold:      tt.fields.extractMinThreshold,
+					RecursiveExtractMaxSize:  tt.fields.recursiveExtractMaxSize,
+					RecursiveExtractMaxFiles: tt.fields.recursiveExtractMaxFiles,
+				},
+				typesToExtract: extractableTypes(),
+				stopWorker:     stopWorker,
+				fileChan:       fileChan,
+				archiveStatus:  newArchiveStatusHandler(),
+			}
+
+			var archiveLocation string
+			var archiveSHA256 string
+			var innerArchiveSHA256 string
+			var archiveSize int64
+			switch {
+			case len(tt.fields.inputFile) > 0:
+				testFile, err := os.CreateTemp(t.TempDir(), "test_recursive*.zip")
+				if err != nil {
+					t.Fatalf("could not create test file, error: %s", err)
+				}
+				defer func() {
+					if e := testFile.Close(); e != nil {
+						t.Fatalf("could not close test file: %v", e)
+					}
+				}()
+				h := sha256.New()
+				mw := io.MultiWriter(testFile, h)
+				if _, e := mw.Write(tt.fields.inputFile); e != nil {
+					t.Fatalf("could not write test file: %v", e)
+				}
+				archiveLocation = testFile.Name()
+				archiveSHA256 = hex.EncodeToString(h.Sum(nil))
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			case len(tt.fields.createZipArchive) > 0:
+				archiveLocation, archiveSHA256 = createArchive(t, tt.fields.createZipArchive)
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			case tt.fields.createEmptyZipArchive:
+				archiveLocation, archiveSHA256 = createArchive(t, []string{})
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			case tt.fields.createTestFile:
+				folder := t.TempDir()
+				archiveLocation, archiveSHA256 = createTestFile(t, folder, "plain text")
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			case tt.fields.createInvalidArchive:
+				testFile, err := os.CreateTemp(t.TempDir(), "invalid*.zip")
+				if err != nil {
+					t.Fatalf("could not create test file: %v", err)
+				}
+				// Write valid ZIP magic bytes followed by garbage to pass type detection but fail extraction
+				invalidZipContent := []byte{0x50, 0x4B, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF}
+				if _, err := testFile.Write(invalidZipContent); err != nil {
+					t.Fatalf("could not write test file: %v", err)
+				}
+				if err := testFile.Close(); err != nil {
+					t.Fatalf("could not close test file: %v", err)
+				}
+				archiveLocation = testFile.Name()
+				archiveSHA256 = "fakehash"
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			case tt.fields.createArchiveWithDepth >= 1:
+				// Start with the innermost archive containing a file at the deepest level
+				fileContent := fmt.Sprintf("file content at depth %d", tt.fields.createArchiveWithDepth)
+				var nestedArchive string
+				nestedArchive, innerArchiveSHA256 = createArchive(t, []string{fileContent})
+
+				// Create nested archives up to the requested depth
+				for d := 0; d < tt.fields.createArchiveWithDepth; d++ {
+					innerContent, err := os.ReadFile(nestedArchive) // #nosec G304 // path is controlled by test
+					if err != nil {
+						t.Fatalf("could not read inner archive: %v", err)
+					}
+					level := tt.fields.createArchiveWithDepth - 1 - d
+					nestedArchive, archiveSHA256 = createArchiveWithRawFiles(t, map[string][]byte{fmt.Sprintf("archive_level_%d.zip", level): innerContent})
+				}
+
+				archiveLocation = nestedArchive
+				info, _ := os.Stat(archiveLocation)
+				archiveSize = info.Size()
+			}
+
+			archive := fileToAnalyze{
+				sha256:   archiveSHA256,
+				location: archiveLocation,
+				filename: filepath.Base(archiveLocation),
+				size:     archiveSize,
+			}
+
+			var totalExtractedSize *int64
+			var totalExtractedFiles *int
+			if !tt.args.totalExtractedSizeNil {
+				totalExtractedSize = ptrInt64(0)
+			}
+			if !tt.args.totalExtractedFilesNil {
+				totalExtractedFiles = ptrInt(0)
+			}
+
+			archiveLogger := logger.With(slog.String("input file", archive.location))
+			err := c.recursiveExtract(archive, tt.args.depth, totalExtractedSize, totalExtractedFiles, archiveLogger)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("recursiveExtract() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			close(fileChan)
+			var filesSent []fileToAnalyze
+			for f := range fileChan {
+				filesSent = append(filesSent, f)
+			}
+
+			if len(filesSent) != len(tt.wantFilesSent) {
+				t.Errorf("recursiveExtract() files sent = %d, want %d", len(filesSent), len(tt.wantFilesSent))
+				return
+			}
+
+			if len(tt.wantFilesSent) == 0 {
+				return
+			}
+
+			slices.SortFunc(filesSent, func(a, b fileToAnalyze) int {
+				return strings.Compare(a.filename, b.filename)
+			})
+			fmt.Printf("\n\nfileSent:%+v\n", filesSent)
+			slices.SortFunc(tt.wantFilesSent, func(a, b fileToAnalyze) int {
+				return strings.Compare(a.filename, b.filename)
+			})
+
+			for i, want := range tt.wantFilesSent {
+				// use pattern because file names generated in test can contain random strings
+				matched, err := filepath.Match(want.filename, filesSent[i].filename)
+				if err != nil {
+					t.Fatalf("invalid pattern %q: %v", want.filename, err)
+				}
+				if !matched {
+					t.Errorf("filesSent[%d].filename = %q, want match %q", i, filesSent[i].filename, want.filename)
+					return
+				}
+				tt.wantFilesSent[i].filename = filesSent[i].filename
+
+				switch want.archiveSHA256 {
+				case inputArchiveSHA256:
+					tt.wantFilesSent[i].archiveSHA256 = archiveSHA256
+				case innermostArchiveSHA256:
+					tt.wantFilesSent[i].archiveSHA256 = innerArchiveSHA256
+				case "":
+					// Don't check archiveSHA256 - copy from got to skip comparison
+					tt.wantFilesSent[i].archiveSHA256 = filesSent[i].archiveSHA256
+				}
+			}
+
+			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
+				cmp.AllowUnexported(fileToAnalyze{}),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveSize"),
+			); diff != "" {
+				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}
 		})
 	}

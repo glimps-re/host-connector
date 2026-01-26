@@ -20,9 +20,10 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 		{
 			name: "ok",
 			config: &Config{
-				MaxFileSize:       defaultMaxSize,          // 500MB limit per file
-				MaxExtractedFiles: defaultMaxFileExtracted, // Max 1000 files per archive
-				DefaultPasswords:  []string{"infected"},
+				MaxFileSize:           defaultMaxSize,               // 500MB limit per file
+				MaxExtractedFiles:     defaultMaxFileExtracted,      // Max 1000 files per archive
+				MaxTotalExtractedSize: defaultMaxTotalExtractedSize, // 3GB limit total
+				DefaultPasswords:      []string{"infected"},
 			},
 			wantErr: false,
 		},

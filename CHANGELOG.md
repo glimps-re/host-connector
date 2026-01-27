@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.4.1]
+
+### Added
+
+- analysis error in mitigation 
+
 ## [v1.4.0] - 2026-01-22
 
 ### Changed

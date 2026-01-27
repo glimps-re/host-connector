@@ -190,6 +190,7 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 			GmalwareURLs:       gmalwareURLs,
 			QuarantineLocation: report.QuarantineLocation,
 			SHA256:             result.SHA256,
+			AnalysisError:      result.AnalysisError,
 		},
 		File:     path,
 		Size:     report.FileSize,

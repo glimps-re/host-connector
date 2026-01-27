@@ -211,7 +211,7 @@ extract:
   file: extract.so
   config:
     max_file_size: 500MB              # Maximum size for extracted files (supports B, KB, MB, GB, TB)
-    max_extracted_files: 1000         # Maximum number of files to extract (prevents zip bombs)
+    max_extracted_files: 1000         # Maximum number of files to extract
     max_total_extracted_size: 3GB     # Maximum total size to extract from archive (supports B, KB, MB, GB, TB)
     default_passwords:                # Passwords for encrypted archives
       - infected
@@ -224,6 +224,13 @@ extract:
 - Prevents extraction bombs through size and count limits
 - Handles symlinks securely
 - Supports password-protected archives
+
+**Important note:**
+- Files exceeding following limits will be skipped (not extracted):
+  - `max_total_extracted_size`
+  - `max_extracted_files`
+  - `max_file_size`
+- Zip bomb protection : an archive is considered a zip bomb if total size to extract is > 3GB and if ratio between size to extract and compressed size is > 100 (files above `max_file_size` are excluded from calculation because skipped anyway).
 
 #### FileType Filter Plugin
 
@@ -582,6 +589,48 @@ GMHost can extract and analyze files from various archive formats when the `extr
 - Zlib
 - LZW
 
+**Conditions to attempt extraction:**
+- file size must be > 8KB
+- file's MIME type must belong to list of allowed types (see below)
+
+Allowed types for extraction:
+```go
+"application/x-archive"              // .ar
+"application/x-arj"                  // .arj
+"application/vnd.ms-cab-compressed"  // .cab
+"application/x-cpio"                 // .cpio
+"application/x-iso9660-image"        // .iso
+"application/x-qemu-disk"            // .qcow, .qcow2
+"application/x-lha"                  // .lha
+"application/x-lzh-compressed"       // .lzh
+"application/vnd.rar"                // .rar
+"application/x-virtualbox-vhd"       // .vhd, .vhdx
+"application/x-7z-compressed"        // .7z
+"application/x-xz"                   // .xz, .tar.xz
+"application/x-bzip2"                // .bz2, .tar.bz2
+"application/gzip"                   // .gz, .tar.gz, .tgz
+"application/x-tar"                  // .tar
+"application/x-lzma"                 // .lzma, .tar.lzma
+"application/vnd.ms-htmlhelp"        // .chm
+"application/x-ms-wim"               // .wim
+"application/x-compress"             // .Z
+"application/zip"                    // .zip
+"application/x-rpm"                  // .rpm
+"application/x-apple-diskimage"      // .dmg
+
+// default MIME type, kept in case identification failed, or for specific raw file formats like flat VMDK
+"application/octet-stream"
+
+// MIME types absent from default libmagic database
+"application/x-vmdk"                 // .vmdk
+"application/x-lzh"                  // .lzh
+"application/x-lzh-archive"          // .lzh
+"application/x-rar-compressed"       // .rar
+"application/x-vhd"                  // .vhd, .vhdx
+"application/x-virtualbox-vdi"       // .vdi
+```
+MIME type detection is done using https://github.com/gabriel-vasile/mimetype.
+
 **Recursive extraction:**
 
 GMHost uses recursive extraction, meaning archives within archives are automatically extracted.
@@ -598,7 +647,6 @@ It is limited by:
 - If any file in an archive is malicious, the entire archive is considered malicious
 - Archive contents are extracted to temporary directories and cleaned up after analysis
 - Files larger than `max_file_size` within archives are skipped
-- If `max_total_extracted_size` is reached during an archive extraction, remaining files are skipped
 
 ## Actions
 

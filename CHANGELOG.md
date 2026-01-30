@@ -1,5 +1,15 @@
 # Changelog
 
+## [v1.4.2]
+
+### Changed
+
+- plugin session : session now have uniq id in addition to the reference path
+
+### Deleted
+
+- plugin session : delete remove_inputs option
+
 ## [v1.4.1]
 
 ### Added

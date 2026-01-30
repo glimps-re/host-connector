@@ -24,17 +24,15 @@ func TestSessionPlugin_Init(t *testing.T) {
 		{
 			name: "init config",
 			config: &Config{
-				Depth:        2,
-				Delay:        time.Second,
-				RemoveInputs: true,
-				RootFolder:   "/tmp",
+				Depth:      2,
+				Delay:      time.Second,
+				RootFolder: "/tmp",
 			},
 			wantErr: false,
 			wantConfig: Config{
-				Depth:        2,
-				Delay:        time.Second,
-				RemoveInputs: true,
-				RootFolder:   "/tmp",
+				Depth:      2,
+				Delay:      time.Second,
+				RootFolder: "/tmp",
 			},
 		},
 		{
@@ -125,8 +123,8 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 		return
 	}
 
-	if session.ID != sessionID {
-		t.Errorf("Session ID = %v, want %v", session.ID, sessionID)
+	if session.RefPath != sessionID {
+		t.Errorf("Session ID = %v, want %v", session.RefPath, sessionID)
 	}
 
 	// Test adding file to session
@@ -215,8 +213,8 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 				if session == nil {
 					t.Error("Session should be created")
 				} else {
-					if session.ID != tt.expectedSessID {
-						t.Errorf("want session ID %s, got %s", tt.expectedSessID, session.ID)
+					if session.RefPath != tt.expectedSessID {
+						t.Errorf("want session ID %s, got %s", tt.expectedSessID, session.RefPath)
 					}
 					if _, exists := session.TrackedFiles[tt.filePath]; !exists {
 						t.Error("File should be added to session")
@@ -325,10 +323,9 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 
 	// Override config for testing
 	config := Config{
-		RootFolder:   tmpDir,
-		Depth:        2,
-		Delay:        50 * time.Millisecond,
-		RemoveInputs: false, // Don't remove files in test
+		RootFolder: tmpDir,
+		Depth:      2,
+		Delay:      50 * time.Millisecond,
 	}
 
 	// Initialize manually with test config
@@ -506,7 +503,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 				},
 				storedSessions: map[string]*Session{
 					"user_a": {
-						ID: "user_a",
+						RefPath: "user_a",
 					},
 				},
 			},
@@ -533,8 +530,8 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			if got == nil {
 				return
 			}
-			if got.ID != tt.wantID {
-				t.Errorf("getSession() want session ID %s, got %s", tt.wantID, got.ID)
+			if got.RefPath != tt.wantID {
+				t.Errorf("getSession() want session ID %s, got %s", tt.wantID, got.RefPath)
 			}
 		})
 	}

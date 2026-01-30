@@ -6,6 +6,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -37,16 +39,16 @@ type SessionPlugin struct {
 
 // Config defines session behavior and directory monitoring settings.
 type Config struct {
-	Depth        int           `mapstructure:"depth"`
-	Delay        time.Duration `mapstructure:"delay"`
-	RemoveInputs bool          `mapstructure:"remove_inputs"`
-	RootFolder   string        `mapstructure:"root_folder"`
-	Exports      []string      `mapstructure:"exports"`
+	Depth      int           `mapstructure:"depth"`
+	Delay      time.Duration `mapstructure:"delay"`
+	RootFolder string        `mapstructure:"root_folder"`
+	Exports    []string      `mapstructure:"exports"`
 }
 
 // Session tracks files and reports for a specific directory.
 type Session struct {
 	ID               string
+	RefPath          string
 	Paths            []string
 	StartTime        time.Time
 	LastActivity     time.Time
@@ -71,8 +73,9 @@ var (
 )
 
 const (
-	sessionIDLogKey = "session_id"
-	filepathLogKey  = "file_path"
+	sessionIDLogKey      = "session_id"
+	sessionRefPathLogKey = "ref_path"
+	filepathLogKey       = "file_path"
 )
 
 func (p *SessionPlugin) GetDefaultConfig() (config any) {
@@ -108,10 +111,9 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		slog.Int("depth", config.Depth),
 		slog.String("delay", config.Delay.String()),
 		slog.String("root_folder", config.RootFolder),
-		slog.Bool("remove_inputs", config.RemoveInputs),
 	)
-	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s, remove_inputs: %v",
-		config.Depth, config.Delay.String(), config.RootFolder, config.RemoveInputs))
+	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s",
+		config.Depth, config.Delay.String(), config.RootFolder))
 	p.started = true
 	return nil
 }
@@ -138,11 +140,12 @@ func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) {
 		session.addFile(file, sha256)
 		logger.Debug("file added to session",
 			slog.String(filepathLogKey, file),
+			slog.String(sessionRefPathLogKey, session.RefPath),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("sha256", sha256),
 		)
 		if created {
-			consoleLogger.Info(fmt.Sprintf("session %s started", session.ID))
+			consoleLogger.Info(fmt.Sprintf("session %s:%s started", session.RefPath, session.ID))
 		}
 	}
 }
@@ -152,7 +155,7 @@ func (p *SessionPlugin) WaitForOptions(opts *gdetect.WaitForOptions, location st
 	if session == nil {
 		return
 	}
-	opts.Tags = append(opts.Tags, "session:"+session.ID)
+	opts.Tags = append(opts.Tags, "session:"+session.RefPath+":"+session.ID)
 }
 
 // OnFileScanned marks files as completed in their sessions.
@@ -166,6 +169,7 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 	if result.Error != nil {
 		logger.Warn("file scan completed with error",
 			slog.String(filepathLogKey, file),
+			slog.String(sessionRefPathLogKey, session.RefPath),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.Any("error", result.Error.Error()),
 		)
@@ -173,6 +177,7 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 	}
 	logger.Debug("file scan completed successfully",
 		slog.String(filepathLogKey, file),
+		slog.String(sessionRefPathLogKey, session.RefPath),
 		slog.String(sessionIDLogKey, session.ID),
 	)
 	return
@@ -188,11 +193,12 @@ func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
 	session.addReport(*rep)
 	logger.Debug("report added to session",
 		slog.String(filepathLogKey, rep.Filename),
+		slog.String(sessionRefPathLogKey, session.RefPath),
 		slog.String(sessionIDLogKey, session.ID),
 		slog.Bool("malicious", rep.Malicious),
 		slog.String("sha256", rep.SHA256),
 	)
-	consoleLogger.Debug(fmt.Sprintf("add report for %s to session %s (malicious: %v)", rep.Filename, session.ID, rep.Malicious))
+	consoleLogger.Debug(fmt.Sprintf("add report for %s to session %s:%s (malicious: %v)", rep.Filename, session.RefPath, session.ID, rep.Malicious))
 }
 
 func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session, created bool) {
@@ -213,11 +219,11 @@ func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Sessi
 
 	// Build session ID from the first 'depth' directory parts (excluding filename)
 	sessionParts := parts[:p.config.Depth]
-	sessionID := strings.Join(sessionParts, "/")
+	refPath := strings.Join(sessionParts, "/")
 
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
-	session, exists := p.sessions[sessionID]
+	session, exists := p.sessions[refPath]
 	switch {
 	case exists:
 		return
@@ -225,19 +231,25 @@ func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Sessi
 		created = true
 		sessionPaths := make([]string, 0, len(p.config.Exports))
 		for _, v := range p.config.Exports {
-			sessionPaths = append(sessionPaths, filepath.Join(v, sessionID))
+			sessionPaths = append(sessionPaths, filepath.Join(v, refPath))
+		}
+
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			return
 		}
 		session = &Session{
-			ID:               sessionID,
+			ID:               hex.EncodeToString(b),
+			RefPath:          refPath,
 			Paths:            sessionPaths,
 			StartTime:        time.Now(),
 			LastActivity:     time.Now(),
 			TrackedFiles:     make(map[string]*FileEntry),
 			CompletedReports: make([]datamodel.Report, 0),
 		}
-		p.sessions[sessionID] = session
+		p.sessions[refPath] = session
 		logger.Info("new session created",
-			slog.String(sessionIDLogKey, sessionID),
+			slog.String(sessionRefPathLogKey, refPath),
 			slog.String("export_paths", strings.Join(sessionPaths, ",")),
 			slog.String("start_time", session.StartTime.Format(time.RFC3339)),
 		)
@@ -309,33 +321,29 @@ func (p *SessionPlugin) checkAndCloseSessions() {
 	p.mutex.Lock()
 	defer p.mutex.Unlock()
 
-	for sessionID, session := range p.sessions {
+	for refPath, session := range p.sessions {
 		if session.isReadyForClosure(p.config.Delay) {
-			p.closeSession(sessionID, session)
-			delete(p.sessions, sessionID)
+			p.closeSession(refPath, session)
+			delete(p.sessions, refPath)
 		}
 	}
 }
 
-func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
+func (p *SessionPlugin) closeSession(refPath string, session *Session) {
 	session.mutex.RLock()
 	hasReports := len(session.CompletedReports) > 0
 	session.mutex.RUnlock()
 
 	logger.Info("closing session",
-		slog.String(sessionIDLogKey, sessionID),
+		slog.String(sessionRefPathLogKey, refPath),
 		slog.Int("completed_reports", len(session.CompletedReports)),
 		slog.Int("tracked_files", len(session.TrackedFiles)),
 		slog.String("duration", time.Since(session.StartTime).String()))
 
-	consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), time.Since(session.StartTime).String()))
+	consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", refPath, len(session.CompletedReports), time.Since(session.StartTime).String()))
 
 	if hasReports {
 		p.generateSessionReport(session)
-	}
-
-	if p.config.RemoveInputs {
-		p.cleanupSessionFiles(session)
 	}
 }
 
@@ -345,7 +353,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 	}
 
 	reportContext := datamodel.ScanContext{
-		ScanID: fmt.Sprintf("session-%s-%d", session.ID, session.StartTime.Unix()),
+		ScanID: fmt.Sprintf("session-%s-%s-%d", session.RefPath, session.ID, session.StartTime.Unix()),
 		Start:  session.StartTime,
 		End:    time.Now(),
 	}
@@ -353,6 +361,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 	reader, err := p.hcc.GenerateReport(reportContext, session.CompletedReports)
 	if err != nil {
 		logger.Error("failed to generate session report",
+			slog.String(sessionRefPathLogKey, session.RefPath),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("error", err.Error()))
 		return
@@ -363,6 +372,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 	}
 	if err := p.saveReport(reader, reportPaths...); err != nil {
 		logger.Error("failed to save session report",
+			slog.String(sessionRefPathLogKey, session.RefPath),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("report_paths", strings.Join(reportPaths, ",")),
 			slog.String("error", err.Error()),
@@ -370,6 +380,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 		return
 	}
 	logger.Info("session report saved",
+		slog.String(sessionRefPathLogKey, session.RefPath),
 		slog.String(sessionIDLogKey, session.ID),
 		slog.String("report_paths", strings.Join(reportPaths, ",")),
 	)
@@ -409,42 +420,6 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 		return
 	}
 	return
-}
-
-func (p *SessionPlugin) cleanupSessionFiles(session *Session) {
-	session.mutex.RLock()
-	defer session.mutex.RUnlock()
-
-	for filePath := range session.TrackedFiles {
-		if err := os.Remove(filePath); err != nil {
-			logger.Warn("failed to remove session file",
-				slog.String(filepathLogKey, filePath),
-				slog.String(sessionIDLogKey, session.ID),
-				slog.String("error", err.Error()),
-			)
-			continue
-		}
-		logger.Debug("removed session file",
-			slog.String(filepathLogKey, filePath),
-			slog.String(sessionIDLogKey, session.ID),
-		)
-	}
-
-	// Try to remove the session directory if it's empty
-	for _, path := range session.Paths {
-		if err := os.Remove(path); err != nil {
-			logger.Debug("failed to remove session directory",
-				slog.String("session_path", path),
-				slog.String(sessionIDLogKey, session.ID),
-				slog.String("error", err.Error()),
-			)
-			return
-		}
-		logger.Debug("removed session directory",
-			slog.String("session_path", path),
-			slog.String(sessionIDLogKey, session.ID),
-		)
-	}
 }
 
 func main() {}

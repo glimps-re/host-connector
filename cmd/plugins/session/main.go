@@ -37,11 +37,10 @@ type SessionPlugin struct {
 
 // Config defines session behavior and directory monitoring settings.
 type Config struct {
-	Depth        int           `mapstructure:"depth"`
-	Delay        time.Duration `mapstructure:"delay"`
-	RemoveInputs bool          `mapstructure:"remove_inputs"`
-	RootFolder   string        `mapstructure:"root_folder"`
-	Exports      []string      `mapstructure:"exports"`
+	Depth      int           `mapstructure:"depth"`
+	Delay      time.Duration `mapstructure:"delay"`
+	RootFolder string        `mapstructure:"root_folder"`
+	Exports    []string      `mapstructure:"exports"`
 }
 
 // Session tracks files and reports for a specific directory.
@@ -108,10 +107,9 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		slog.Int("depth", config.Depth),
 		slog.String("delay", config.Delay.String()),
 		slog.String("root_folder", config.RootFolder),
-		slog.Bool("remove_inputs", config.RemoveInputs),
 	)
-	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s, remove_inputs: %v",
-		config.Depth, config.Delay.String(), config.RootFolder, config.RemoveInputs))
+	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s",
+		config.Depth, config.Delay.String(), config.RootFolder))
 	p.started = true
 	return nil
 }
@@ -333,10 +331,6 @@ func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
 	if hasReports {
 		p.generateSessionReport(session)
 	}
-
-	if p.config.RemoveInputs {
-		p.cleanupSessionFiles(session)
-	}
 }
 
 func (p *SessionPlugin) generateSessionReport(session *Session) {
@@ -409,42 +403,6 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 		return
 	}
 	return
-}
-
-func (p *SessionPlugin) cleanupSessionFiles(session *Session) {
-	session.mutex.RLock()
-	defer session.mutex.RUnlock()
-
-	for filePath := range session.TrackedFiles {
-		if err := os.Remove(filePath); err != nil {
-			logger.Warn("failed to remove session file",
-				slog.String(filepathLogKey, filePath),
-				slog.String(sessionIDLogKey, session.ID),
-				slog.String("error", err.Error()),
-			)
-			continue
-		}
-		logger.Debug("removed session file",
-			slog.String(filepathLogKey, filePath),
-			slog.String(sessionIDLogKey, session.ID),
-		)
-	}
-
-	// Try to remove the session directory if it's empty
-	for _, path := range session.Paths {
-		if err := os.Remove(path); err != nil {
-			logger.Debug("failed to remove session directory",
-				slog.String("session_path", path),
-				slog.String(sessionIDLogKey, session.ID),
-				slog.String("error", err.Error()),
-			)
-			return
-		}
-		logger.Debug("removed session directory",
-			slog.String("session_path", path),
-			slog.String(sessionIDLogKey, session.ID),
-		)
-	}
 }
 
 func main() {}

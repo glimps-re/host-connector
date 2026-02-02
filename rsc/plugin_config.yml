@@ -110,10 +110,6 @@ session:
     # Supports duration format: ns, us, ms, s, m, h
     # delay: 15m
 
-    # Remove input files after session completion (default: false)
-    # When true, original files are deleted after successful scanning and session closure
-    # remove_inputs: false
-
     # Root folder for session path calculation (required)
     # This is the base path from which session IDs are calculated
     # Must be an absolute path

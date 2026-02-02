@@ -6,6 +6,10 @@
 
 - Fixed session plugin not receiving callbacks for nested archives containing only sub-archives, which caused sessions to never close and reports to not be generated
 
+### Deleted
+
+- session plugin: remove useless delete_inputs option
+
 ## [v1.4.1]
 
 ### Added

@@ -6,6 +6,10 @@
 
 - Fixed session plugin not receiving callbacks for nested archives containing only sub-archives, which caused sessions to never close and reports to not be generated
 
+### Changed
+
+- session plugin : tag are now push with session-<id>-<start time timestamp> as seen in report
+
 ### Deleted
 
 - session plugin: remove useless delete_inputs option

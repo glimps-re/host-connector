@@ -150,7 +150,7 @@ func (p *SessionPlugin) WaitForOptions(opts *gdetect.WaitForOptions, location st
 	if session == nil {
 		return
 	}
-	opts.Tags = append(opts.Tags, "session:"+session.ID)
+	opts.Tags = append(opts.Tags, fmt.Sprintf("session-%s-%d", session.ID, session.StartTime.Unix()))
 }
 
 // OnFileScanned marks files as completed in their sessions.

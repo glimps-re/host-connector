@@ -89,6 +89,17 @@ func (a *archiveStatusHandler) deleteStatus(id string) {
 	a.Unlock()
 }
 
+func (a *archiveStatusHandler) setStarted(id string) {
+	a.Lock()
+	defer a.Unlock()
+	status, ok := a.statusByID[id]
+	if !ok {
+		return
+	}
+	status.started = true
+	a.statusByID[id] = status
+}
+
 func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, result datamodel.Result) (finished bool, ok bool) {
 	a.Lock()
 	defer a.Unlock()

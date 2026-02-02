@@ -2569,3 +2569,116 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 		})
 	}
 }
+
+func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
+	type fields struct {
+		onScanFileReturnsResult bool
+	}
+	tests := []struct {
+		name                  string
+		fields                fields
+		wantOnStartScanFile   int64
+		wantOnScanFile        int64
+		wantFilesSentToWorker int
+	}{
+		{
+			name:                  "ok nested archive only sub-archive calls callbacks",
+			wantOnStartScanFile:   1,
+			wantOnScanFile:        1,
+			wantFilesSentToWorker: 1, // innermost file
+		},
+		{
+			name: "ok plugin filters top-level archive skips extraction",
+			fields: fields{
+				onScanFileReturnsResult: true,
+			},
+			wantOnStartScanFile:   1,
+			wantOnScanFile:        1,
+			wantFilesSentToWorker: 0, // no files sent because plugin filtered
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			LogLevel.Set(slog.LevelDebug.Level())
+			stopWorker := make(chan struct{})
+			fileChan := make(chan fileToAnalyze, 20)
+
+			var onStartScanFileCalled atomic.Int64
+			var onScanFileCalled atomic.Int64
+
+			c := &Connector{
+				config: Config{
+					RecursiveExtractMaxDepth: 10,
+					ExtractMinThreshold:      1,
+					RecursiveExtractMaxSize:  1000000,
+					RecursiveExtractMaxFiles: 100,
+				},
+				typesToExtract: extractableTypes(),
+				stopWorker:     stopWorker,
+				fileChan:       fileChan,
+				archiveStatus:  newArchiveStatusHandler(),
+				onStartScanFileCbs: []func(string, string){
+					func(file string, sha256 string) {
+						onStartScanFileCalled.Add(1)
+					},
+				},
+				onScanFileCbs: []func(string, string, string, bool) *datamodel.Result{
+					func(filename string, location string, sha256 string, isArchive bool) (res *datamodel.Result) {
+						onScanFileCalled.Add(1)
+						if tt.fields.onScanFileReturnsResult {
+							res = &datamodel.Result{
+								SHA256:   sha256,
+								Location: location,
+								Filename: filename,
+							}
+						}
+						return
+					},
+				},
+			}
+
+			// Create nested archive: outer.zip -> inner.zip -> file.txt
+			// This simulates tar.gz scenario where outer archive contains only sub-archives
+			innerArchive, _ := createArchive(t, []string{"innermost file content"})
+			innerContent, err := os.ReadFile(innerArchive) // #nosec G304 // path is controlled by test
+			if err != nil {
+				t.Fatalf("could not read inner archive: %v", err)
+			}
+			outerArchive, outerSHA256 := createArchiveWithRawFiles(t, map[string][]byte{"inner.zip": innerContent})
+			info, _ := os.Stat(outerArchive)
+
+			archive := fileToAnalyze{
+				sha256:   outerSHA256,
+				location: outerArchive,
+				filename: filepath.Base(outerArchive),
+				size:     info.Size(),
+			}
+
+			totalExtractedSize := int64(0)
+			totalExtractedFiles := 0
+			archiveLogger := logger.With(slog.String("input file", archive.location))
+
+			err = c.recursiveExtract(archive, 0, &totalExtractedSize, &totalExtractedFiles, archiveLogger)
+			if err != nil {
+				t.Errorf("recursiveExtract() error = %v", err)
+				return
+			}
+
+			close(fileChan)
+			var filesSent []fileToAnalyze
+			for f := range fileChan {
+				filesSent = append(filesSent, f)
+			}
+
+			if onStartScanFileCalled.Load() != tt.wantOnStartScanFile {
+				t.Errorf("onStartScanFile called %d times, want %d", onStartScanFileCalled.Load(), tt.wantOnStartScanFile)
+			}
+			if onScanFileCalled.Load() != tt.wantOnScanFile {
+				t.Errorf("onScanFile called %d times, want %d", onScanFileCalled.Load(), tt.wantOnScanFile)
+			}
+			if len(filesSent) != tt.wantFilesSentToWorker {
+				t.Errorf("files sent to worker = %d, want %d", len(filesSent), tt.wantFilesSentToWorker)
+			}
+		})
+	}
+}

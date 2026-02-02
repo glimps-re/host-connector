@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.4.2]
+
+### Fixed
+
+- Fixed session plugin not receiving callbacks for nested archives containing only sub-archives, which caused sessions to never close and reports to not be generated
+
 ## [v1.4.1]
 
 ### Added

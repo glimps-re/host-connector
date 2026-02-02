@@ -579,6 +579,22 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	archiveID := c.archiveStatus.addStatus(eStatus)
 	needCleanUp = false
 
+	if archive.archiveID == "" {
+		// Top-level archive: mark as started and call onStartScanFile/onScanFile immediately.
+		// This ensures session plugin tracking works even when all extracted files are sub-archives
+		// that get processed recursively.
+		// Mark archive as started so that handleArchive won't call onStartScanFile/onScanFile
+		// a second time when extracted files arrive at workers.
+		c.archiveStatus.setStarted(archiveID)
+		c.onStartScanFile(archive.location, archive.sha256)
+		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
+			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
+			c.archiveStatus.addArchiveResult(archiveID, *archiveResult)
+			needCleanUp = true
+			return
+		}
+	}
+
 	depth += 1
 	// Note: files should be directly streamed to channel and not accumulated in memory
 	for _, fileLocation := range extractedFiles {

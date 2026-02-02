@@ -24,17 +24,15 @@ func TestSessionPlugin_Init(t *testing.T) {
 		{
 			name: "init config",
 			config: &Config{
-				Depth:        2,
-				Delay:        time.Second,
-				RemoveInputs: true,
-				RootFolder:   "/tmp",
+				Depth:      2,
+				Delay:      time.Second,
+				RootFolder: "/tmp",
 			},
 			wantErr: false,
 			wantConfig: Config{
-				Depth:        2,
-				Delay:        time.Second,
-				RemoveInputs: true,
-				RootFolder:   "/tmp",
+				Depth:      2,
+				Delay:      time.Second,
+				RootFolder: "/tmp",
 			},
 		},
 		{
@@ -325,10 +323,9 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 
 	// Override config for testing
 	config := Config{
-		RootFolder:   tmpDir,
-		Depth:        2,
-		Delay:        50 * time.Millisecond,
-		RemoveInputs: false, // Don't remove files in test
+		RootFolder: tmpDir,
+		Depth:      2,
+		Delay:      50 * time.Millisecond,
 	}
 
 	// Initialize manually with test config

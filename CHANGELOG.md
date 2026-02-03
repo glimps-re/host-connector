@@ -2,6 +2,10 @@
 
 ## [v1.4.2]
 
+### Added
+
+- user tags archive with top level archive name is now push in case or archive
+
 ### Fixed
 
 - Fixed session plugin not receiving callbacks for nested archives containing only sub-archives, which caused sessions to never close and reports to not be generated

@@ -910,6 +910,10 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 	location := input.location
 	if input.archiveID != "" {
 		location = input.archiveTopLocation
+		parts := strings.Split(location, "/")
+		if len(parts) > 0 {
+			opts.Tags = append(opts.Tags, "archive:"+parts[len(parts)-1])
+		}
 	}
 	c.withWaitForOptions(&opts, location)
 	fileLogger.Debug("sending file to detect ...")

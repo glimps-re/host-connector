@@ -353,7 +353,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 	}
 	reportPaths := make([]string, 0, len(session.Paths))
 	for _, path := range session.Paths {
-		reportPaths = append(reportPaths, filepath.Join(path, fmt.Sprintf("session-report-%d.pdf", time.Now().Unix())))
+		reportPaths = append(reportPaths, filepath.Join(path, fmt.Sprintf("report-session-%s-%d.pdf", strings.ReplaceAll(session.ID, "/", "-"), session.StartTime.Unix())))
 	}
 	if err := p.saveReport(reader, reportPaths...); err != nil {
 		logger.Error("failed to save session report",

@@ -10,6 +10,7 @@
 ### Changed
 
 - session plugin : tag are now push with session-<id>-<start time timestamp> as seen in report
+- session plugin : report now are named report-session-id-<start time timestamp>.pdf
 
 ### Deleted
 

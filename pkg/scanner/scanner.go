@@ -109,14 +109,15 @@ type Config struct {
 }
 
 type fileToAnalyze struct {
-	sha256          string
-	location        string
-	filename        string
-	size            int64
-	archiveID       string
-	archiveLocation string
-	archiveSHA256   string
-	archiveSize     int64
+	sha256             string
+	location           string
+	filename           string
+	size               int64
+	archiveTopLocation string
+	archiveID          string
+	archiveLocation    string
+	archiveSHA256      string
+	archiveSize        int64
 }
 
 type archiveToAnalyze struct {
@@ -592,6 +593,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			needCleanUp = true
 			return
 		}
+		archive.archiveTopLocation = archive.location
 	}
 
 	depth += 1
@@ -623,14 +625,15 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			relPath = fileLocation
 		}
 		subFile := fileToAnalyze{
-			location:        fileLocation,
-			archiveID:       archiveID,
-			filename:        relPath,
-			archiveLocation: archive.location,
-			sha256:          fileSHA256,
-			archiveSHA256:   archive.sha256,
-			size:            fileSize,
-			archiveSize:     archive.size,
+			location:           fileLocation,
+			archiveID:          archiveID,
+			filename:           relPath,
+			archiveLocation:    archive.location,
+			sha256:             fileSHA256,
+			archiveSHA256:      archive.sha256,
+			size:               fileSize,
+			archiveSize:        archive.size,
+			archiveTopLocation: archive.archiveTopLocation,
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
@@ -906,7 +909,7 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 	}
 	location := input.location
 	if input.archiveID != "" {
-		location = input.archiveLocation
+		location = input.archiveTopLocation
 	}
 	c.withWaitForOptions(&opts, location)
 	fileLogger.Debug("sending file to detect ...")

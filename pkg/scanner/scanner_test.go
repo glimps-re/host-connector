@@ -2562,7 +2562,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveSize"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}

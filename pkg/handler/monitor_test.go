@@ -20,7 +20,6 @@ func TestNewMonitor(t *testing.T) {
 	}
 	type fields struct {
 		preScan  bool
-		reScan   bool
 		period   sdk.Duration
 		modDelay sdk.Duration
 	}
@@ -262,7 +261,6 @@ func TestNewMonitor(t *testing.T) {
 
 			m, err := NewMonitor(cb, Config{
 				PreScan:  tt.fields.preScan,
-				ReScan:   tt.fields.reScan,
 				Period:   tt.fields.period,
 				ModDelay: tt.fields.modDelay,
 			})

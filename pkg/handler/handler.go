@@ -252,7 +252,6 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 			PullTime:    time.Millisecond * 500,
 			BypassCache: config.GMalwareBypassCache,
 		},
-		ScanPeriod:               config.Monitoring.Period,
 		CustomActions:            customAction,
 		Extract:                  config.Extract,
 		RecursiveExtractMaxDepth: config.RecursiveExtractMaxDepth,
@@ -296,7 +295,6 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		h.OnNewFile(ctx),
 		Config{
 			PreScan:  config.Monitoring.PreScan,
-			ReScan:   config.Monitoring.ReScan,
 			Period:   config.Monitoring.Period,
 			ModDelay: config.Monitoring.ModificationDelay,
 		},

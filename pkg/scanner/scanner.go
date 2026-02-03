@@ -96,7 +96,6 @@ type Config struct {
 	WaitOpts                 gdetect.WaitForOptions
 	Actions                  Actions
 	CustomActions            []Action
-	ScanPeriod               sdk.Duration
 	Extract                  bool
 	MaxFileSize              int64
 	ExtractMinThreshold      int64 // only configurable for unit tests

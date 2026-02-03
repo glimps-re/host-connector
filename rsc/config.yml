@@ -12,7 +12,6 @@ actions:
   move: false
 monitoring:
   prescan: true
-  rescan: true
   period: 1h
   modification_delay: 30s
 gmalware_api_url: https://gmalware.ggp.glimps.re

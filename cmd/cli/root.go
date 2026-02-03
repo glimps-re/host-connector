@@ -89,7 +89,7 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().BoolVar(&hostConfig.FollowSymlinks, "follow-symlinks", false, "Follow symbolic links when scanning directories (if disabled, symlinks are skipped)")
 
 	monitoringCmd.PersistentFlags().BoolVar(&hostConfig.Monitoring.PreScan, "pre-scan", false, "Immediately scan all existing files in monitored paths when monitoring starts")
-	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.Period, "scan-period", "Time interval between periodic re-scans (e.g., '1h', '30m', requires rescan enabled)")
+	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.Period, "scan-period", "If set enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m')")
 	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.ModificationDelay, "mod-delay", "Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes)")
 
 	agentCmd.PersistentFlags().StringVar(&hostConfig.Console.URL, "console-url", "", "connector manager url")

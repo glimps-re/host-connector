@@ -65,13 +65,15 @@ Flags:
   -h, --help                         help for GMHost
       --insecure                     do not check certificates
       --max-file-size string         Maximum file size to scan directly (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected (default "100MiB")
-      --mod-delay duration           Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes) (default 0s)
       --move-destination string      Target directory for moving clean files (preserves subdirectory structure)
       --move-source string           Source directory filter (only clean files within this path are moved to destination)
       --print-location string        File path for scan reports (leave empty to print to stdout)
       --quarantine string            Directory path where quarantined files are stored (files are encrypted with .lock extension) (default "/var/lib/gmhost/quarantine")
       --quarantine-registry string   Path to the database that store quarantined and restored file entry (leave empty for in-memory store, lost on restart)
-      --scan-period duration         Time interval between periodic re-scans (e.g., '1h', '30m', requires rescan enabled) (default 0s)
+      --recursive-extract-max-depth int     Maximum depth for recursive archive extraction (default: 10) (default 10)
+      --recursive-extract-max-files int     Maximum total number of files for recursive archive extraction (default: 10000) (default 10000)
+      --recursive-extract-max-size string   Maximum total size for recursive archive extraction (default: 5GB) (default "5GB")
+
       --timeout duration             Time allowed to analyze each file (default 0s)
   -v, --verbose                      Report all scanned files, including clean files (not just malware detections)
       --workers int                  Number of concurrent workers for file analysis (default: 4, affects CPU usage) (default 4)
@@ -118,7 +120,7 @@ Flags:
   -h, --help                   help for monitoring
       --mod-delay duration     Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes) (default 30s)
       --pre-scan               Immediately scan all existing files in monitored paths when monitoring starts
-      --scan-period duration   Time interval between periodic re-scans (e.g., '1h', '30m', requires rescan enabled) (default 0s)
+      --scan-period duration   If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m') (default 0s - disabled)
 
 ```
 
@@ -487,7 +489,6 @@ actions:
   log: true
 monitoring:
   prescan: true
-  rescan: true
   period: 1h
   modification_delay: 30s
 gmalware_api_url: https://gmalware.ggp.glimps.re
@@ -536,8 +537,7 @@ Configure what happens when malware is detected:
 #### Monitoring
 
 - **`prescan`**: Immediately scan all existing files in monitored paths when monitoring starts (default: false)
-- **`rescan`**: Enable periodic re-scanning of all files (requires period to be set, default: false)
-- **`period`**: Time interval between periodic re-scans (e.g., '1h', '30m', requires rescan enabled, default: 0, disabled)
+- **`period`**: If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m', default: 0, disabled)
 - **`modification_delay`**: Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes, default: 30s)
 
 #### GLIMPS Malware Detect

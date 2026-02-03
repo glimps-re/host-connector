@@ -23,7 +23,6 @@ type OnNewFileFunc func(file string) error
 
 type Config struct {
 	PreScan  bool
-	ReScan   bool
 	Period   sdk.Duration
 	ModDelay sdk.Duration
 }
@@ -33,7 +32,6 @@ type Monitor struct {
 	wg           sync.WaitGroup
 	cb           OnNewFileFunc
 	preScan      bool
-	reScan       bool
 	period       sdk.Duration
 	modDelay     sdk.Duration
 	paths        *sync.Map
@@ -52,7 +50,6 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 		watcher:      watcher,
 		cb:           onNewFile,
 		preScan:      config.PreScan,
-		reScan:       config.ReScan,
 		period:       config.Period,
 		modDelay:     config.ModDelay,
 		paths:        new(sync.Map),

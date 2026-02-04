@@ -966,18 +966,15 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 	}
 
 	result = datamodel.Result{
-		Filename:    input.filename,
-		FileType:    gdetectResult.FileType,
-		Location:    input.location,
-		SHA256:      input.sha256,
-		Malware:     gdetectResult.Malware,
-		Malwares:    gdetectResult.Malwares,
-		FileSize:    gdetectResult.FileSize,
-		GMalwareURL: urlExpertView,
-	}
-
-	for _, f := range gdetectResult.Files {
-		result.AnalyzedVolume += f.Size
+		Filename:       input.filename,
+		FileType:       gdetectResult.FileType,
+		Location:       input.location,
+		SHA256:         input.sha256,
+		Malware:        gdetectResult.Malware,
+		Malwares:       gdetectResult.Malwares,
+		FileSize:       gdetectResult.FileSize,
+		GMalwareURL:    urlExpertView,
+		AnalyzedVolume: gdetectResult.FileSize,
 	}
 
 	switch {

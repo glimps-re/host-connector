@@ -10,6 +10,7 @@
 
 - Fixed session plugin not receiving callbacks for nested archives containing only sub-archives, which caused sessions to never close and reports to not be generated
 - Delete rescan unused option and fix doc for period option.
+- Fixed report duration refers now to session duration
 
 ### Changed
 

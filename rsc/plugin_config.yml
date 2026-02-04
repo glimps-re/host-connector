@@ -141,6 +141,6 @@ report:
     #   - MitigatedFiles: List of mitigated file details
     #   - MitigatedArchives: List of mitigated archive details
     #   - ScanStartTime: Scan start timestamp
-    #   - Duration: Scan duration
+    #   - Duration: Session duration
     # template_path: /path/to/custom/template.html
     # template_path: ""

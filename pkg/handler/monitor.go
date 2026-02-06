@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,7 +81,7 @@ func (m *Monitor) Start() {
 	})
 	if m.period != 0 {
 		m.wg.Go(func() {
-			m.scan()
+			m.periodicalScan()
 		})
 	}
 	m.wg.Go(func() {
@@ -89,7 +90,7 @@ func (m *Monitor) Start() {
 	m.started = true
 }
 
-func (m *Monitor) scan() {
+func (m *Monitor) periodicalScan() {
 	ticker := time.NewTicker(time.Duration(m.period))
 	defer ticker.Stop()
 	for {
@@ -102,9 +103,21 @@ func (m *Monitor) scan() {
 				if !ok {
 					m.paths.Delete(key)
 				}
-				err := m.cb(path)
+				path += string(filepath.Separator)
+				err := filepath.WalkDir(path, func(path string, d fs.DirEntry, walkErr error) (err error) {
+					if walkErr != nil {
+						return walkErr
+					}
+					if d.IsDir() {
+						return
+					}
+					if _, loaded := m.pendingFiles.LoadOrStore(path, struct{}{}); !loaded {
+						m.filesToScan <- path
+					}
+					return
+				})
 				if err != nil {
-					logger.Error("error action on new file", slog.String("path", path), slog.String("error", err.Error()))
+					logger.Error("cannot walk dir at rescan", slog.String("path", path), slog.String("error", err.Error()))
 				}
 				return true
 			})
@@ -155,7 +168,6 @@ func (m *Monitor) scanFiles() {
 				m.pendingFiles.Delete(path)
 				continue
 			}
-
 			if Since(info.ModTime()) < time.Duration(m.modDelay) {
 				delay := time.Duration(m.modDelay) - Since(info.ModTime())
 				time.AfterFunc(delay, func() {

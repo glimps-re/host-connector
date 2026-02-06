@@ -12,6 +12,7 @@
 - Delete rescan unused option and fix doc for period option.
 - Fixed report duration refers now to session duration
 - Analyzed volume is now based on input file when submit to gdetect
+- ModDelay is now used when a file is seen by rescan
 
 ### Changed
 

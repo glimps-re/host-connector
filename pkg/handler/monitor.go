@@ -31,10 +31,10 @@ type Config struct {
 type Monitor struct {
 	watcher      *rfsnotify.RWatcher
 	wg           sync.WaitGroup
-	cb           OnNewFileFunc
+	cb           OnNewFileFunc // callbacks
 	preScan      bool
 	period       sdk.Duration
-	modDelay     sdk.Duration
+	modDelay     sdk.Duration // modification delay
 	paths        *sync.Map
 	done         chan struct{}
 	filesToScan  chan string
@@ -112,7 +112,11 @@ func (m *Monitor) periodicalScan() {
 						return
 					}
 					if _, loaded := m.pendingFiles.LoadOrStore(path, struct{}{}); !loaded {
-						m.filesToScan <- path
+						select {
+						case <-m.done:
+							return fs.SkipAll
+						case m.filesToScan <- path:
+						}
 					}
 					return
 				})
@@ -136,7 +140,11 @@ func (m *Monitor) work() {
 			}
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				if _, loaded := m.pendingFiles.LoadOrStore(event.Name, struct{}{}); !loaded {
-					m.filesToScan <- event.Name
+					select {
+					case <-m.done:
+						return
+					case m.filesToScan <- event.Name:
+					}
 				}
 			}
 		case err, ok := <-m.watcher.Errors:

@@ -614,10 +614,14 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 				continue
 			}
 			if finished {
-				archiveLogger.Warn("all files from archive skipped")
+				status, _, statusOk := c.archiveStatus.getArchiveStatus(archiveID, false)
+				if statusOk && status.analyzed == 0 {
+					archiveLogger.Warn("all files from archive skipped")
+				}
 				err = nil
 				return
 			}
+			err = nil
 			continue
 		}
 		relPath, relErr := filepath.Rel(outputDir, fileLocation)

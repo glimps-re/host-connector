@@ -1014,6 +1014,12 @@ func (c *Connector) Close(ctx context.Context) {
 	close(c.stopWorker)
 	c.workerWg.Wait()
 
+	if c.config.Actions.InformDest != nil && c.config.Actions.InformDest != os.Stdout && c.config.Actions.InformDest != os.Stderr {
+		if closeErr := c.config.Actions.InformDest.Close(); closeErr != nil {
+			logger.Error("failed to close file descriptor", slog.String(logErrorKey, closeErr.Error()))
+		}
+	}
+
 	for _, plugin := range c.loadedPlugins {
 		if closeErr := plugin.Close(ctx); closeErr != nil {
 			logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))

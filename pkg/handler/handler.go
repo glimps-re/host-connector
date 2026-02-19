@@ -214,14 +214,13 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		maxFileSize = maxFileSizeDetect
 	}
 
-	var informDest io.Writer = os.Stdout
+	var informDest io.WriteCloser = os.Stdout
 	if config.Print.Location != "" {
-		informFile, createErr := os.Create(config.Print.Location)
-		if createErr != nil {
-			err = fmt.Errorf("could not open report location, error: %w", createErr)
+		informDest, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		if err != nil {
+			err = fmt.Errorf("could not open report location, error: %w", err)
 			return
 		}
-		informDest = informFile
 	}
 
 	if h.Conn != nil {

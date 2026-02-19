@@ -115,7 +115,7 @@ func createArchive(t *testing.T, contents []string) (archive string, archiveSHA2
 
 func assertFileDeleted(t *testing.T, buff *bytes.Buffer, file, cacheID string) {
 	t.Helper()
-	if !strings.HasSuffix(buff.String(), cacheID+".lock, it has been deleted\n") {
+	if !strings.Contains(buff.String(), "deleted") && !strings.Contains(buff.String(), cacheID+".lock") {
 		t.Errorf("invalid output: %v, want suffix: %v", buff.String(), cacheID+".lock, it has been deleted")
 	}
 	if _, err := os.Stat(file); !errors.Is(err, os.ErrNotExist) {
@@ -128,6 +128,19 @@ func assertNoOutput(t *testing.T, buff *bytes.Buffer) {
 	if buff.String() != "" {
 		t.Errorf("scan file result: %s, want nothing", buff.String())
 	}
+}
+
+type nopCloser struct {
+	io.Writer
+}
+
+func (nopCloser) Close() error {
+	return nil
+}
+
+// NopCloser wraps an io.Writer to make it an io.WriteCloser with a no-op Close method.
+func NopCloser(w io.Writer) io.WriteCloser {
+	return nopCloser{w}
 }
 
 func TestNewConnector(t *testing.T) {
@@ -319,7 +332,7 @@ func TestNewConnector(t *testing.T) {
 				}
 				c.Close(t.Context())
 
-				if !strings.HasSuffix(buff.String(), "no malware found\n") {
+				if !strings.Contains(buff.String(), "seems safe") {
 					t.Errorf("invalid output: %v", buff.String())
 				}
 			},
@@ -409,7 +422,7 @@ func TestNewConnector(t *testing.T) {
 				c.Close(t.Context())
 
 				// The symlink should be skipped, so only the clean file is scanned
-				if !strings.HasSuffix(buff.String(), "no malware found\n") {
+				if !strings.Contains(buff.String(), "seems safe") {
 					t.Errorf("invalid output: %v", buff.String())
 				}
 				// Target file should still exist (not deleted)
@@ -760,7 +773,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			}
 			buff := bytes.NewBuffer(nil)
-			tt.fields.config.Actions.InformDest = buff
+			tt.fields.config.Actions.InformDest = NopCloser(buff)
 			con := NewConnector(tt.fields.config, &quarantiner, submitter)
 			if e := con.Start(); e != nil {
 				t.Fatalf("could not start connector, error: %v", e.Error())

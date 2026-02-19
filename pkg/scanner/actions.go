@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -26,7 +27,7 @@ type Actions struct {
 	Log        bool
 	Inform     bool
 	Verbose    bool
-	InformDest io.Writer
+	InformDest io.WriteCloser
 	Move       bool
 }
 
@@ -275,30 +276,28 @@ func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	switch {
-	case result.Malware:
-		sb := strings.Builder{}
-		fmt.Fprintf(&sb, "file %s seems malicious", path)
-		if len(result.Malwares) > 0 {
-			fmt.Fprintf(&sb, " [%v]", result.Malwares)
-		}
+	reason := "seems safe"
+	if result.Malware {
+		reason = string(result.MalwareReason)
+	}
+	actions := []string{}
+	details := []string{}
+	if result.Malware {
+		details = result.Malwares
 		if report.QuarantineLocation != "" {
-			fmt.Fprintf(&sb, ", it has been quarantined to %s", report.QuarantineLocation)
+			actions = append(actions, "quarantined")
+			details = append(details, report.QuarantineLocation)
 		}
 		if report.Deleted {
-			fmt.Fprint(&sb, ", it has been deleted")
+			actions = append(actions, "deleted")
 		}
-		_, err = fmt.Fprintln(a.Out, sb.String())
-		if err != nil {
-			return
-		}
-	case report.MovedTo != "":
-		_, err = fmt.Fprintf(a.Out, "file %s has been moved to %s\n", path, report.MovedTo)
-		if err != nil {
-			return
-		}
-	case a.Verbose:
-		_, err = fmt.Fprintf(a.Out, "file %s no malware found\n", path)
+	} else if report.MovedTo != "" {
+		details = append(details, report.MovedTo)
+		actions = append(actions, "moved")
+	}
+	s := fmt.Sprintf("time: %d, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", Now().Unix(), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
+	if result.Malware || a.Verbose || report.MovedTo != "" {
+		_, err = fmt.Fprintln(a.Out, s)
 		if err != nil {
 			return
 		}

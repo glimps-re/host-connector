@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.4.3]
+
+### Changed
+
+- modify messages print by Print options
+- print option now append to file if provided and exists
+
 ## [v1.4.2]
 
 ### Added

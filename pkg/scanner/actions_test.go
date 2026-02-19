@@ -312,6 +312,9 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 }
 
 func TestInformAction_Handle(t *testing.T) {
+	Now = func() time.Time {
+		return time.Date(2100, 0, 0, 0, 0, 0, 0, time.UTC)
+	}
 	type fields struct {
 		Verbose bool
 	}
@@ -352,7 +355,7 @@ func TestInformAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `file test_file.bin no malware found`,
+			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: false, reason: seems safe, actions: [], details: []`,
 		},
 		{
 			name: "test malware",
@@ -366,7 +369,7 @@ func TestInformAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `file test_file.bin seems malicious`,
+			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: true, reason: , actions: [], details: []`,
 		},
 		{
 			name: "test malware quarantine",
@@ -384,7 +387,47 @@ func TestInformAction_Handle(t *testing.T) {
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
 			},
-			wantOut: `file test_file.bin seems malicious [[eicar test_eicar]], it has been quarantined to /tmp/q/test.lock, it has been deleted`,
+			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: true, reason: , actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
+		},
+		{
+			name: "test malware full info",
+			fields: fields{
+				Verbose: true,
+			},
+			args: args{
+				result: datamodel.Result{
+					Filename:           "test_file.bin",
+					Location:           "/home/user/downloads/test_file.bin",
+					SHA256:             "sha256",
+					Malware:            true,
+					Malwares:           []string{"eicar", "test_eicar"},
+					MalwareReason:      datamodel.MalwareDetected,
+					FileSize:           68,
+					FileType:           "text/plain",
+					AnalyzedVolume:     68,
+					FilteredVolume:     0,
+					Score:              100,
+					TotalExtractedFile: 0,
+					GMalwareURL:        "https://gmalware.glimps.re/analysis/abc123",
+				},
+				path: "test_file.bin",
+				report: &datamodel.Report{
+					Filename:           "test_file.bin",
+					SHA256:             "sha256",
+					Malicious:          true,
+					Deleted:            true,
+					QuarantineLocation: "/tmp/q/test.lock",
+					Malwares:           []string{"eicar", "test_eicar"},
+					FileSize:           68,
+					FileType:           "text/plain",
+					AnalyzedVolume:     68,
+					MalwareReason:      datamodel.MalwareDetected,
+					Action:             datamodel.Removed,
+					MitigationID:       "mitigation-123",
+					GMalwareURL:        "https://gmalware.glimps.re/analysis/abc123",
+				},
+			},
+			wantOut: `time: 4099680000, file: test_file.bin, sha256: sha256, flagged: true, reason: malware-detected, actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
 		},
 	}
 	for _, tt := range tests {

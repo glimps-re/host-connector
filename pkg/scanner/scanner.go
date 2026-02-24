@@ -320,6 +320,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	}
 	if restored {
 		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
+		c.ongoingAnalysis.Delete(input)
 		return
 	}
 
@@ -590,7 +591,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
 			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
 			c.archiveStatus.addArchiveResult(archiveID, *archiveResult)
-			needCleanUp = true
+			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+				archiveLogger.Error("could not finish filtered archive analysis", slog.String(logErrorKey, finishErr.Error()))
+			}
 			return
 		}
 		archive.archiveTopLocation = archive.location
@@ -616,6 +619,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			if finished {
 				archiveLogger.Warn("all files from archive skipped")
 				err = nil
+				if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+					archiveLogger.Error("could not finish archive analysis after all files skipped", slog.String(logErrorKey, finishErr.Error()))
+				}
 				return
 			}
 			continue
@@ -651,6 +657,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			}
 			if finished {
 				err = nil
+				if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+					archiveLogger.Error("could not finish archive analysis after all extractions failed", slog.String(logErrorKey, finishErr.Error()))
+				}
 				return
 			}
 			continue

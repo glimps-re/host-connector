@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
@@ -2622,10 +2623,12 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 					RecursiveExtractMaxSize:  1000000,
 					RecursiveExtractMaxFiles: 100,
 				},
-				typesToExtract: extractableTypes(),
-				stopWorker:     stopWorker,
-				fileChan:       fileChan,
-				archiveStatus:  newArchiveStatusHandler(),
+				typesToExtract:  extractableTypes(),
+				stopWorker:      stopWorker,
+				fileChan:        fileChan,
+				archiveStatus:   newArchiveStatusHandler(),
+				ongoingAnalysis: new(sync.Map),
+				action:          NewMultiAction(events.NoopEventHandler{}, &ReportAction{}),
 				onStartScanFileCbs: []func(string, string){
 					func(file string, sha256 string) {
 						onStartScanFileCalled.Add(1)

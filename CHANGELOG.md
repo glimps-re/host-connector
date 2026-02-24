@@ -7,6 +7,10 @@
 - modify messages print by Print options
 - print option now append to file if provided and exists
 
+### Fixed
+
+- Fix ongoing analysis leaks
+
 ## [v1.4.2]
 
 ### Added

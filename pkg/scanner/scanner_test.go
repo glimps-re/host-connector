@@ -1453,8 +1453,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(0),
 				depth:               5,
 			},
 			wantErr: true,
@@ -1470,8 +1470,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                500,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1488,7 +1488,7 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			args: args{
 				size:                200,
 				totalExtractedSize:  nil,
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1504,8 +1504,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(1001),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(1001)),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1521,7 +1521,7 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
+				totalExtractedSize:  new(int64(0)),
 				totalExtractedFiles: nil,
 				depth:               0,
 			},
@@ -1538,8 +1538,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(51),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(51),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1555,8 +1555,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1572,8 +1572,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: true,
@@ -1589,8 +1589,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			},
 			args: args{
 				size:                200,
-				totalExtractedSize:  ptrInt64(0),
-				totalExtractedFiles: ptrInt(0),
+				totalExtractedSize:  new(int64(0)),
+				totalExtractedFiles: new(0),
 				depth:               0,
 			},
 			wantErr: false,
@@ -1636,14 +1636,6 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 			}
 		})
 	}
-}
-
-func ptrInt64(v int64) *int64 {
-	return &v
-}
-
-func ptrInt(v int) *int {
-	return &v
 }
 
 func Test_Connector_sendForAnalyze(t *testing.T) {
@@ -2517,10 +2509,10 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			var totalExtractedSize *int64
 			var totalExtractedFiles *int
 			if !tt.args.totalExtractedSizeNil {
-				totalExtractedSize = ptrInt64(0)
+				totalExtractedSize = new(int64(0))
 			}
 			if !tt.args.totalExtractedFilesNil {
-				totalExtractedFiles = ptrInt(0)
+				totalExtractedFiles = new(0)
 			}
 
 			archiveLogger := logger.With(slog.String("input file", archive.location))

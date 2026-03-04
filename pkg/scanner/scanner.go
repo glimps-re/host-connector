@@ -892,7 +892,6 @@ func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
 		fileLogger.Debug("file handled", slog.Any("result", result))
 	}()
 
-	// GDetect cache
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.config.Timeout))
 	defer cancel()
 

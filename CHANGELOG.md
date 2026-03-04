@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.4.4]
+
+### Fixed
+
+- Fix syndetect analysis ID lookup in cached result polling
+
 ## [v1.4.3]
 
 ### Changed

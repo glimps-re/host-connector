@@ -16,8 +16,9 @@ const (
 	DefaultRecursiveExtractMaxDepth = 10
 	DefaultRecursiveExtractMaxSize  = "5GB"
 	DefaultRecursiveExtractMaxFiles = 10000
-	Version                         = "dev"
 )
+
+var Version = "dev"
 
 type Config struct {
 	// global

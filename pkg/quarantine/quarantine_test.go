@@ -103,12 +103,13 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 		malwares   []string
 	}
 	tests := []struct {
-		name         string
-		fields       fields
-		args         args
-		wantLocation func(quarantineDir string, id string) string
-		wantID       func(filePath string, sha256 string) string
-		wantErr      error
+		name            string
+		fields          fields
+		args            args
+		wantLocation    func(quarantineDir string, id string) string
+		wantID          func(filePath string, sha256 string) string
+		wantErr         error
+		wantLockCleaned bool // expect .lock file to be removed on failure
 	}{
 		{
 			name: "ok quarantine with single malware",
@@ -232,10 +233,11 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 			wantID: func(filePath string, sha256 string) string {
 				return ""
 			},
-			wantErr: errors.New("locker failed"),
+			wantErr:         errors.New("locker failed"),
+			wantLockCleaned: true,
 		},
 		{
-			name: "error when registry set fails",
+			name: "error when registry set",
 			fields: fields{
 				lockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
 					return nil
@@ -257,7 +259,8 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 			wantID: func(filePath string, sha256 string) string {
 				return ""
 			},
-			wantErr: errors.New("registry set failed"),
+			wantErr:         errors.New("registry set failed"),
+			wantLockCleaned: true,
 		},
 	}
 	for _, tt := range tests {
@@ -303,6 +306,18 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 				}
 				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
 					t.Errorf("Quarantine() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				// Verify .lock file cleanup on failure
+				if tt.wantLockCleaned {
+					entries, readErr := os.ReadDir(quarantineDir)
+					if readErr != nil {
+						t.Fatalf("failed to read quarantine dir: %v", readErr)
+					}
+					for _, entry := range entries {
+						if filepath.Ext(entry.Name()) == ".lock" {
+							t.Errorf("Quarantine() left orphaned .lock file %s after failure", entry.Name())
+						}
+					}
 				}
 				return
 			}

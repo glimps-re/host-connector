@@ -650,7 +650,10 @@ It is limited by:
 
 ## Actions
 
-When a file is scanned, multiple actions can be triggered based on the results:
+When a file is scanned, multiple actions can be triggered based on the results (see below).
+
+Each sequence of actions is limited by a timeout proportional to the file size (to adapt to costly operations like quarantine (read + encrypt + write)). Timeout is **30 seconds per GB**, rounded up to the next GB with a minimum of 30 seconds in any case.  
+Examples: 1MB -> 30s ; 500MB -> 30s ; 1,2GB -> 60s ; 2GB -> 60s
 
 ### Quarantine
 

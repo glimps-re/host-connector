@@ -1,5 +1,14 @@
 # Changelog
 
+## [v1.4.5]
+
+### Fixed
+
+- Action timeout is now proportional to file size
+- Fix orphaned .lock files when quarantine fails midway
+- Fix race condition ongoinganalysis clean too early
+- Fix version at build
+
 ## [v1.4.4]
 
 ### Fixed

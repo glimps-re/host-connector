@@ -98,6 +98,20 @@ func (q *QuarantineHandler) Reconfigure(ctx context.Context, newConfig Config) (
 	return
 }
 
+// ctxReader wraps an io.Reader to abort on context cancellation.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (cr *ctxReader) Read(p []byte) (n int, err error) {
+	if err = cr.ctx.Err(); err != nil {
+		return
+	}
+	n, err = cr.r.Read(p)
+	return
+}
+
 func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA256 string, malwares []string) (location string, id string, err error) {
 	entry := Entry{
 		ID:              ComputeCacheID(file, fileSHA256),
@@ -114,9 +128,16 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA
 	if err != nil {
 		return
 	}
+
+	success := false
 	defer func() {
 		if e := fOut.Close(); e != nil {
 			logger.Warn("could not close output quarantined file", slog.String("file", entry.QuarantineLocation), slog.String("error", e.Error()))
+		}
+		if !success {
+			if e := os.Remove(entry.QuarantineLocation); e != nil && !errors.Is(e, os.ErrNotExist) {
+				logger.Error("could not remove orphaned quarantine lock file", slog.String("file", entry.QuarantineLocation), slog.String("error", e.Error()))
+			}
 		}
 	}()
 
@@ -134,12 +155,15 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA
 	if len(malwares) > 0 {
 		malware = malwares[0]
 	}
-	if err = q.locker.LockFile(file, fIn, stat, "malware: "+malware, fOut); err != nil {
+	// Wrap reader so LockFile I/O respects the context timeout
+	fInCtxAware := &ctxReader{ctx: ctx, r: fIn}
+	if err = q.locker.LockFile(file, fInCtxAware, stat, "malware: "+malware, fOut); err != nil {
 		return
 	}
 	if err = q.registry.Set(ctx, &entry); err != nil {
 		return
 	}
+	success = true
 	location = entry.QuarantineLocation
 	id = entry.ID
 	return

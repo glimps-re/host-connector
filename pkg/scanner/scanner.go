@@ -30,10 +30,17 @@ const (
 	logReasonKey = "reason"
 	logErrorKey  = "error"
 
-	actionTimeout = 30 * time.Second
+	// actionTimeoutPerGB is the time budget per GB for the action chain (~100MB/s throughput).
+	actionTimeoutPerGB = 30 * time.Second
 
 	defaultExtractMinThreshold int64 = 8 * 1000 // minimum size to try extraction, in bytes (8KB)
 )
+
+// actionTimeoutForSize computes a timeout proportional to file size,
+// accounting for I/O-heavy actions like quarantine (read + encrypt + write).
+func actionTimeoutForSize(fileSize int64) time.Duration {
+	return time.Duration(fileSize/(1024*1024*1024)+1) * actionTimeoutPerGB
+}
 
 var (
 	LogLevel                          = &slog.LevelVar{}
@@ -372,7 +379,9 @@ func (c *Connector) checkFileRestored(ctx context.Context, location string, sha2
 		res = *newres
 	}
 	report := &datamodel.Report{}
-	if err = c.action.Handle(ctx, location, res, report); err != nil {
+	actionCtx, cancel := context.WithTimeout(ctx, actionTimeoutForSize(size))
+	defer cancel()
+	if err = c.action.Handle(actionCtx, location, res, report); err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
 		return
 	}
@@ -437,15 +446,16 @@ func (c *Connector) worker() {
 			inputLogger.Debug("applying onStartScanFile() from plugins")
 			c.onStartScanFile(input.location, input.sha256)
 			result := c.handleFile(input)
-			c.ongoingAnalysis.Delete(input.location)
 			actualSHA256, err := getFileSHA256(input.location)
 			if err != nil {
 				inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
+				c.ongoingAnalysis.Delete(input.location)
 				continue
 			}
 			if actualSHA256 != input.sha256 {
 				inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
 				ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
+				c.ongoingAnalysis.Delete(input.location)
 				continue
 			}
 
@@ -457,7 +467,7 @@ func (c *Connector) worker() {
 				result = *newres
 			}
 			report := &datamodel.Report{}
-			ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+			ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
 			if err := c.action.Handle(ctx, input.location, result, report); err != nil {
 				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
 				ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, err.Error()))
@@ -466,6 +476,7 @@ func (c *Connector) worker() {
 			}
 			cancel()
 			c.addReport(report)
+			c.ongoingAnalysis.Delete(input.location)
 		}
 	}
 }
@@ -857,7 +868,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 
 	if !isSubArchive {
 		report := &datamodel.Report{}
-		ctx, cancel := context.WithTimeout(context.Background(), actionTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(status.result.FileSize))
 		defer cancel()
 		err = c.action.Handle(ctx, status.archiveLocation, status.result, report)
 		if err != nil {

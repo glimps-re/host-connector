@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -39,6 +40,7 @@ type Handler struct {
 	monitor     Monitorer
 	Quarantiner quarantine.Quarantiner
 
+	mu          sync.RWMutex
 	stopped     bool
 	wantStopped bool
 	needSetup   bool
@@ -314,6 +316,13 @@ func (h *Handler) OnNewFile(ctx context.Context) OnNewFileFunc {
 }
 
 func (h *Handler) Start(ctx context.Context) (err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.startLocked(ctx)
+}
+
+func (h *Handler) startLocked(ctx context.Context) (err error) {
 	h.wantStopped = false
 	if h.needSetup {
 		err = h.setup(ctx, h.conf)
@@ -353,6 +362,9 @@ func (h *Handler) Start(ctx context.Context) (err error) {
 }
 
 func (h *Handler) Stop(ctx context.Context) (err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	h.wantStopped = true
 	if h.stopped {
 		return
@@ -387,13 +399,17 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 	if err != nil {
 		return
 	}
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
 	err = h.setup(ctx, conf)
 	if err != nil {
 		logger.Error("failed to setup host connector", slog.String("error", err.Error()))
 		return
 	}
 	if !h.wantStopped {
-		err = h.Start(ctx)
+		err = h.startLocked(ctx)
 		if err != nil {
 			return
 		}
@@ -414,6 +430,9 @@ func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionCont
 }
 
 func (h *Handler) Status() (status sdk.ConnectorStatus) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
 	if h.stopped {
 		return sdk.Stopped
 	}

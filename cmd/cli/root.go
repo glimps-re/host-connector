@@ -38,7 +38,6 @@ var hostConfig = &config.Config{
 		},
 		Quarantine: sdk.HostQuarantineConfig{
 			Password: "infected",
-			Registry: ":file::memory",
 		},
 	},
 }

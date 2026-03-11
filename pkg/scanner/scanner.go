@@ -213,7 +213,7 @@ func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter S
 		archiveChan:     make(chan archiveToAnalyze, max(config.Workers, config.ExtractWorkers)), // so workers can't exhaust archiveChan
 		config:          config,
 		archiveStatus:   newArchiveStatusHandler(),
-		action:          newAction(config, quarantiner, EventHandler),
+		action:          newAction(config, quarantiner),
 		generateReport:  datamodel.GenerateReport,
 		ongoingAnalysis: new(sync.Map),
 		stopExtract:     make(chan struct{}),
@@ -222,8 +222,8 @@ func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter S
 	}
 }
 
-func newAction(config Config, quarantiner quarantine.Quarantiner, eventHandler events.EventHandler) *MultiAction {
-	action := NewMultiAction(eventHandler, &ReportAction{})
+func newAction(config Config, quarantiner quarantine.Quarantiner) *MultiAction {
+	action := NewMultiAction(&ReportAction{})
 	if config.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: logger})
 	}
@@ -388,20 +388,20 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	// WalkDir seems to not handle correctly path without ending /
 	input += string(filepath.Separator)
 
-	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) (err error) {
+	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
-			return
+			return nil
 		}
 
-		err = c.ScanFile(ctx, path)
+		err := c.ScanFile(ctx, path)
 		if err != nil {
 			logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
-			return
+			return nil // continue to next file
 		}
-		return
+		return nil
 	})
 	return
 }
@@ -974,9 +974,9 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	location := input.location
 	if input.archiveID != "" {
 		location = input.archiveTopLocation
-		parts := strings.Split(location, "/")
-		if len(parts) > 0 {
-			opts.Tags = append(opts.Tags, "archive:"+parts[len(parts)-1])
+		archiveName := filepath.Base(location)
+		if archiveName != "." && archiveName != string(filepath.Separator) {
+			opts.Tags = append(opts.Tags, "archive:"+archiveName)
 		}
 	}
 	c.withWaitForOptions(&opts, location)
@@ -1045,11 +1045,11 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	case gdetectResult.Error != "":
 		analysisError := gdetectResult.Error
 		if len(gdetectResult.Errors) > 0 {
-			errors := make([]string, 0, len(gdetectResult.Errors))
+			gdetectErrors := make([]string, 0, len(gdetectResult.Errors))
 			for k, v := range gdetectResult.Errors {
-				errors = append(errors, fmt.Sprintf("%s: %s", k, v))
+				gdetectErrors = append(gdetectErrors, fmt.Sprintf("%s: %s", k, v))
 			}
-			analysisError = strings.Join(errors, ",")
+			analysisError = strings.Join(gdetectErrors, ",")
 		}
 		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, analysisError))
 		result.AnalysisError = analysisError

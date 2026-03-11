@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk"
-	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
@@ -2428,7 +2427,6 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			LogLevel.Set(slog.LevelDebug.Level())
 			stopWorker := make(chan struct{})
 			fileChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
 
@@ -2629,7 +2627,6 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			LogLevel.Set(slog.LevelDebug.Level())
 			stopWorker := make(chan struct{})
 			fileChan := make(chan fileToAnalyze, 20)
 
@@ -2648,7 +2645,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				fileChan:        fileChan,
 				archiveStatus:   newArchiveStatusHandler(),
 				ongoingAnalysis: new(sync.Map),
-				action:          NewMultiAction(events.NoopEventHandler{}, &ReportAction{}),
+				action:          NewMultiAction(&ReportAction{}),
 				onStartScanFileCbs: []func(string, string){
 					func(file string, sha256 string) {
 						onStartScanFileCalled.Add(1)

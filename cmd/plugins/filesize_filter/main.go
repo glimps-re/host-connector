@@ -78,6 +78,7 @@ func (p *FileSizePlugin) OnScanFile(filename string, location string, sha256 str
 	}
 	fileInfo, err := os.Stat(location)
 	if err != nil {
+		logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
 		return
 	}
 	if fileInfo.Size() > p.MaxSize {

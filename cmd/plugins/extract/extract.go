@@ -19,7 +19,7 @@ import (
 
 const (
 	szFileListHeader1  = "   Date      Time    Attr         Size   Compressed  Name"
-	sfFileListHeader2  = "------------------- ----- ------------ ------------  ------------------------"
+	szFileListHeader2  = "------------------- ----- ------------ ------------  ------------------------"
 	szFileListFooter   = "------------------- ----- ------------ ------------  ------------------------"
 	szDateTimePrefix   = 0
 	szDateTimeSize     = 19
@@ -489,7 +489,7 @@ func parse7ZListingOutput(stdout string) (files []FileProperties, err error) {
 	}
 
 	scanner.Scan()
-	if scanner.Text() != sfFileListHeader2 {
+	if scanner.Text() != szFileListHeader2 {
 		logger.Error("unable to parse 7z output: unexpected line after file list header")
 		return
 	}

@@ -1,6 +1,7 @@
 package mock
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"strings"
@@ -47,9 +48,9 @@ func (m *MockHCContext) RegisterGenerateReport(f plugins.GenerateReport) { m.Gen
 func (m *MockHCContext) GetLogger() *slog.Logger                         { return m.Logger }
 func (m *MockHCContext) GetConsoleLogger() *slog.Logger                  { return m.ConsoleLogger }
 func (m *MockHCContext) GetExtractConfig() plugins.ExtractConfig         { return m.ExtractCfg }
-func (m *MockHCContext) GenerateReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 	if m.GenerateReportFunc != nil {
-		return m.GenerateReportFunc(reportContext, reports)
+		return m.GenerateReportFunc(ctx, reportContext, reports)
 	}
 	return strings.NewReader("mock report content"), nil
 }

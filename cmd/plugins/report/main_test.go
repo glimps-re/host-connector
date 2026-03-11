@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"io"
 	"strings"
 	"testing"
@@ -142,7 +141,7 @@ func TestReportPlugin_Init(t *testing.T) {
 
 func TestReportPlugin_Close(t *testing.T) {
 	p := &ReportPlugin{}
-	err := p.Close(context.Background())
+	err := p.Close(t.Context())
 	if err != nil {
 		t.Errorf("ReportPlugin.Close() error = %v, want nil", err)
 	}
@@ -357,7 +356,7 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 
 	// Note: This test will likely fail in CI/CD environments without chromedp/browser
 	// but will test the data preparation and HTML generation parts
-	result, err := p.GenerateReport(reportContext, reports)
+	result, err := p.GenerateReport(t.Context(), reportContext, reports)
 	// Check if we got an error due to chromedp not being available
 	if err != nil {
 		// This is expected in environments without a browser

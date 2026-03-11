@@ -30,9 +30,10 @@ GMHost is built on a modular plugin architecture that enables extensible file pr
 **Plugin Integration Points**:
 - **OnStartScanFile**: Intercept files before analysis (filtering, preprocessing)
 - **OnScanFile**: Replace GLIMPS Malware analysis
+- **WithWaitForOptions**: Modify submission options before analysis
 - **OnFileScanned**: Process analysis results (logging, custom actions)
 - **OnReport**: Handle generated reports (consolidation, forwarding)
-- **XtractFile**: Custom archive extraction logic
+- **ExtractFile**: Custom archive extraction logic
 - **GenerateReport**: Custom report generation and formatting
 
 ## Usage
@@ -208,13 +209,12 @@ A complete example configuration is available at `rsc/plugin_config.yml`. Below 
 
 Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.).
 
+Extraction size limits (`max_file_size`, `max_extracted_files`, `max_total_extracted_size`) are provided by the host connector configuration (`--max-file-size`, `--recursive-extract-max-files`, `--recursive-extract-max-size` flags or their `config.yml` equivalents).
+
 ```yaml
 extract:
   file: extract.so
   config:
-    max_file_size: 500MB              # Maximum size for extracted files (supports B, KB, MB, GB, TB)
-    max_extracted_files: 1000         # Maximum number of files to extract
-    max_total_extracted_size: 3GB     # Maximum total size to extract from archive (supports B, KB, MB, GB, TB)
     default_passwords:                # Passwords for encrypted archives
       - infected
       - password
@@ -223,15 +223,15 @@ extract:
 
 **Key Features:**
 - Uses embedded 7-Zip binary for automatic deployment
-- Prevents extraction bombs through size and count limits
+- Prevents extraction bombs through size and count limits (centralized in host connector config)
 - Handles symlinks securely
 - Supports password-protected archives
 
 **Important note:**
 - Files exceeding following limits will be skipped (not extracted):
-  - `max_total_extracted_size`
-  - `max_extracted_files`
-  - `max_file_size`
+  - `recursive_extract_max_size` (`--recursive-extract-max-size`)
+  - `recursive_extract_max_files` (`--recursive-extract-max-files`)
+  - `max_file_size` (`--max-file-size`)
 - Zip bomb protection : an archive is considered a zip bomb if total size to extract is > 3GB and if ratio between size to extract and compressed size is > 100 (files above `max_file_size` are excluded from calculation because skipped anyway).
 
 #### FileType Filter Plugin
@@ -357,7 +357,8 @@ All plugins must implement the `plugins.Plugin` interface:
 
 ```go
 type Plugin interface {
-    Init(configPath string, hcc HCContext) error
+    GetDefaultConfig() (config any)
+    Init(config any, hcc HCContext) error
     Close(ctx context.Context) error
 }
 ```
@@ -368,13 +369,17 @@ Plugins interact with the host connector through the `HCContext` interface:
 
 ```go
 type HCContext interface {
-    SetXTractFile(f XtractFileFunc)
+    SetExtractFile(f ExtractFile)
     RegisterOnStartScanFile(f OnStartScanFile)
+    RegisterOnScanFile(f OnScanFile)
+    RegisterWithWaitForOptions(f WithWaitForOptionsFunc)
     RegisterOnFileScanned(f OnFileScanned)
     RegisterOnReport(f OnReport)
     RegisterGenerateReport(f GenerateReport)
-    GenerateReport(reportContext report.ScanContext, reports []report.Report) (io.Reader, error)
+    GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
     GetLogger() *slog.Logger
+    GetConsoleLogger() *slog.Logger
+    GetExtractConfig() ExtractConfig
 }
 ```
 
@@ -383,10 +388,12 @@ type HCContext interface {
 Plugins can register callbacks for different stages of the scanning pipeline:
 
 - **`OnStartScanFile`**: Called before a file begins scanning
+- **`OnScanFile`**: Replace GLIMPS Malware analysis with custom logic
+- **`WithWaitForOptionsFunc`**: Modify submission options before analysis
 - **`OnFileScanned`**: Called after a file completes scanning
 - **`OnReport`**: Called when a scan report is generated
 - **`GenerateReport`**: Custom report generation function
-- **`XtractFileFunc`**: Custom file extraction function
+- **`ExtractFile`**: Custom archive extraction logic
 
 #### Example Plugin Structure
 
@@ -395,6 +402,7 @@ package main
 
 import (
     "context"
+    "errors"
     "log/slog"
     "github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -411,9 +419,21 @@ type MyConfig struct {
 
 var HCPlugin MyPlugin
 
-func (p *MyPlugin) Init(configPath string, hcc plugins.HCContext) error {
+func (p *MyPlugin) GetDefaultConfig() (config any) {
+    return &MyConfig{
+        Setting1: "default",
+        Setting2: 42,
+    }
+}
+
+func (p *MyPlugin) Init(config any, hcc plugins.HCContext) error {
+    cfg, ok := config.(*MyConfig)
+    if !ok {
+        return errors.New("bad config type")
+    }
+    p.config = *cfg
     p.logger = hcc.GetLogger()
-    // Load configuration and register callbacks
+    // Register callbacks
     hcc.RegisterOnStartScanFile(p.OnStartScanFile)
     return nil
 }

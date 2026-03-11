@@ -27,15 +27,12 @@ type archiveStatus struct {
 type archiveStatusHandler struct {
 	*sync.RWMutex
 	statusByID map[string]archiveStatus
-
-	wg *sync.WaitGroup
 }
 
 func newArchiveStatusHandler() (a *archiveStatusHandler) {
 	a = &archiveStatusHandler{
 		RWMutex:    new(sync.RWMutex),
 		statusByID: make(map[string]archiveStatus),
-		wg:         &sync.WaitGroup{},
 	}
 	return
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -68,7 +67,7 @@ func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	}
 
 	// Test close
-	err = plugin.Close(context.Background())
+	err = plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("SevenZipExtractPlugin.Close() error = %v, want nil", err)
 	}
@@ -136,7 +135,7 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 				t.Fatalf("Failed to initialize plugin: %v", err)
 			}
 			defer func() {
-				if err := plugin.Close(context.Background()); err != nil {
+				if err := plugin.Close(t.Context()); err != nil {
 					t.Logf("Warning: failed to close plugin: %v", err)
 				}
 			}()
@@ -190,7 +189,7 @@ func TestSevenZipExtractPlugin_Integration(t *testing.T) {
 	}
 
 	// Test close
-	err = plugin.Close(context.Background())
+	err = plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("SevenZipExtractPlugin.Close() error = %v", err)
 	}
@@ -211,7 +210,7 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 		t.Fatalf("SevenZipExtractPlugin.Init() with defaults error = %v", err)
 	}
 	defer func() {
-		if err := plugin.Close(context.Background()); err != nil {
+		if err := plugin.Close(t.Context()); err != nil {
 			t.Logf("Warning: failed to close plugin: %v", err)
 		}
 	}()

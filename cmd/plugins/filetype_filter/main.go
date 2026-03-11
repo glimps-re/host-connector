@@ -90,6 +90,7 @@ func (p *FTFilterPlugin) Close(context.Context) error {
 func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 string, _ bool) (res *datamodel.Result) {
 	fileInfo, err := os.Stat(location)
 	if err != nil {
+		logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
 		return
 	}
 	mime := magic.MimeFromFile(location)

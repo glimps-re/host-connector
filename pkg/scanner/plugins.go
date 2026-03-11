@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"context"
 	"errors"
 	"io"
 	"time"
@@ -83,6 +84,6 @@ func (c *Connector) RegisterGenerateReport(f plugins.GenerateReport) {
 	c.generateReport = f
 }
 
-func (c *Connector) GenerateReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
-	return c.generateReport(reportContext, reports)
+func (c *Connector) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+	return c.generateReport(ctx, reportContext, reports)
 }

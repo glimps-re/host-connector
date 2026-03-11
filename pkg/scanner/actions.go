@@ -157,7 +157,7 @@ type MultiAction struct {
 	Actions []Action
 }
 
-func NewMultiAction(eventHandler events.EventHandler, actions ...Action) *MultiAction {
+func NewMultiAction(actions ...Action) *MultiAction {
 	return &MultiAction{Actions: actions}
 }
 

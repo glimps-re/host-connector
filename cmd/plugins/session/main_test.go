@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"maps"
 	"os"
 	"path/filepath"
@@ -84,7 +83,7 @@ func TestSessionPlugin_Close(t *testing.T) {
 	}
 
 	// Test close
-	err = plugin.Close(context.Background())
+	err = plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("SessionPlugin.Close() error = %v, want nil", err)
 	}

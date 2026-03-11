@@ -340,7 +340,10 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 		End:    time.Now(),
 	}
 
-	reader, err := p.hcc.GenerateReport(reportContext, session.CompletedReports)
+	reportCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	reader, err := p.hcc.GenerateReport(reportCtx, reportContext, session.CompletedReports)
 	if err != nil {
 		logger.Error("failed to generate session report",
 			slog.String(sessionIDLogKey, session.ID),
@@ -377,7 +380,7 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 			logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", e.Error()))
 			continue
 		}
-		file, createErr := os.Create(path)
+		file, createErr := os.Create(cleanPath)
 		if createErr != nil {
 			consoleLogger.Error(fmt.Sprintf("failed to create session rapport at %s, error: %s", cleanPath, createErr.Error()))
 			logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", createErr.Error()))

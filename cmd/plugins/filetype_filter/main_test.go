@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -98,7 +97,7 @@ func TestFTFilterPlugin_Init(t *testing.T) {
 
 func TestFTFilterPlugin_Close(t *testing.T) {
 	plugin := &FTFilterPlugin{}
-	err := plugin.Close(context.Background())
+	err := plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("FTFilterPlugin.Close() error = %v, want nil", err)
 	}
@@ -323,7 +322,7 @@ func TestFTFilterPlugin_Integration(t *testing.T) {
 	}
 
 	// Test close
-	err = plugin.Close(context.Background())
+	err = plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("FTFilterPlugin.Close() error = %v", err)
 	}

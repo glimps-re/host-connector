@@ -40,16 +40,16 @@ func createWindow(pg *wui.ProgressBar, xLabel *wui.Label, fileLabel *wui.Label, 
 	nbFilesLabel.SetText("0")
 	window.Add(nbFilesLabel)
 
-	dir_scan := wui.NewLabel()
+	dirScan := wui.NewLabel()
 
-	dir_scan.SetBounds(60, 30, 151, 15)
-	dir_scan.SetText("Scanning folder: ")
-	window.Add(dir_scan)
+	dirScan.SetBounds(60, 30, 151, 15)
+	dirScan.SetText("Scanning folder: ")
+	window.Add(dirScan)
 
-	folder_name := wui.NewLabel()
-	folder_name.SetBounds(148, 30, 150, 15)
-	folder_name.SetText(path)
-	window.Add(folder_name)
+	folderName := wui.NewLabel()
+	folderName.SetBounds(148, 30, 150, 15)
+	folderName.SetText(path)
+	window.Add(folderName)
 
 	label2 := wui.NewLabel()
 	label2.SetBounds(61, 98, 118, 15)

@@ -3,6 +3,7 @@ package datamodel
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -101,7 +102,7 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	return
 }
 
-func GenerateReport(_ ScanContext, reports []Report) (r io.Reader, err error) {
+func GenerateReport(_ context.Context, _ ScanContext, reports []Report) (r io.Reader, err error) {
 	buffer := &bytes.Buffer{}
 	out := json.NewEncoder(buffer)
 	out.SetIndent("", "")

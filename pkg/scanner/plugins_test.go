@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"strings"
@@ -32,7 +33,7 @@ func TestConnector_GenerateReport(t *testing.T) {
 		{
 			name:    "csv",
 			reports: []datamodel.Report{{Filename: "test", SHA256: "123456"}, {Filename: "test2", SHA256: "123457", Malicious: true}},
-			generator: func(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+			generator: func(_ context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 				buffer := &bytes.Buffer{}
 				fmt.Fprintf(buffer, "file,sha256,malicious\n")
 				for _, r := range reports {
@@ -51,7 +52,7 @@ test2,123457,true`,
 			if tt.generator != nil {
 				c.RegisterGenerateReport(tt.generator)
 			}
-			got, gotErr := c.GenerateReport(datamodel.ScanContext{}, tt.reports)
+			got, gotErr := c.GenerateReport(t.Context(), datamodel.ScanContext{}, tt.reports)
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("GenerateReport() failed: %v", gotErr)

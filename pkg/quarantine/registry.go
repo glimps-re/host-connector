@@ -160,16 +160,15 @@ func (c *sqliteRegistry) Migrate(ctx context.Context, newLocation string) (err e
 		return
 	}
 
+	c.Lock()
 	oldDB := c.db
-	if err = oldDB.Close(); err != nil {
-		if closeErr := newReg.Close(); closeErr != nil {
-			logger.Error("failed to close new registry after old database close error", slog.String("error", closeErr.Error()))
-		}
-		return
-	}
-
 	c.db = newReg.db
 	c.location = newReg.location
+	c.Unlock()
+
+	if err = oldDB.Close(); err != nil {
+		logger.Error("failed to close old registry database", slog.String("error", err.Error()))
+	}
 	return
 }
 

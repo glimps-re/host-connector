@@ -19,7 +19,7 @@ type (
 	WithWaitForOptionsFunc = func(opts *gdetect.WaitForOptions, location string)
 )
 
-type GenerateReport = func(reportConntext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
 
 // Plugin interface must be implemented by host-connector plugins
 type Plugin interface {
@@ -46,7 +46,7 @@ type HCContext interface {
 	RegisterOnReport(f OnReport)
 
 	RegisterGenerateReport(f GenerateReport)
-	GenerateReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+	GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
 
 	GetLogger() *slog.Logger
 	GetConsoleLogger() *slog.Logger

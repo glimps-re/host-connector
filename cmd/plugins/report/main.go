@@ -176,9 +176,9 @@ type ReportData struct {
 }
 
 // GenerateReport generates a PDF report from scan results.
-func (p *ReportPlugin) GenerateReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (o io.Reader, err error) {
+func (p *ReportPlugin) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (o io.Reader, err error) {
 	consoleLogger.Debug(fmt.Sprintf("generate pdf report for %d analysis", len(reports)))
-	buffer, err := p.generatePDFReport(reportContext, reports)
+	buffer, err := p.generatePDFReport(ctx, reportContext, reports)
 	o = buffer
 	return
 }
@@ -284,7 +284,7 @@ func (p *ReportPlugin) generateHTMLReport(data ReportData) (htmlBuf *bytes.Buffe
 }
 
 // generatePDFReport converts HTML report to PDF using chromedp.
-func (p *ReportPlugin) generatePDFReport(reportContext datamodel.ScanContext, reports []datamodel.Report) (pdfBuf *bytes.Buffer, err error) {
+func (p *ReportPlugin) generatePDFReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (pdfBuf *bytes.Buffer, err error) {
 	pdfBuf = new(bytes.Buffer)
 
 	data := scanResToReportData(reportContext, reports)
@@ -293,7 +293,7 @@ func (p *ReportPlugin) generatePDFReport(reportContext datamodel.ScanContext, re
 		return
 	}
 
-	ctx, cancel := chromedp.NewContext(context.Background())
+	ctx, cancel := chromedp.NewContext(ctx)
 	defer cancel()
 
 	if err = chromedp.Run(ctx,

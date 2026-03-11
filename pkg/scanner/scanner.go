@@ -1105,3 +1105,11 @@ func (c *Connector) GetLogLevel() *slog.LevelVar {
 func (c *Connector) GetConsoleLogger() *slog.Logger {
 	return ConsoleLogger
 }
+
+func (c *Connector) GetExtractConfig() plugins.ExtractConfig {
+	return plugins.ExtractConfig{
+		MaxFileSize:           c.config.MaxFileSize,
+		MaxExtractedFiles:     c.config.RecursiveExtractMaxFiles,
+		MaxTotalExtractedSize: c.config.RecursiveExtractMaxSize,
+	}
+}

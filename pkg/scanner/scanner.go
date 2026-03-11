@@ -125,6 +125,7 @@ type fileToAnalyze struct {
 	archiveLocation    string
 	archiveSHA256      string
 	archiveSize        int64
+	needsPrecheck      bool // true when originated from ScanFile (tracked by precheckWg)
 }
 
 type archiveToAnalyze struct {
@@ -145,6 +146,7 @@ type Connector struct {
 	config                 Config
 	workerWg               sync.WaitGroup
 	extractWg              sync.WaitGroup
+	precheckWg             sync.WaitGroup // tracks files from ScanFile through worker precheck
 	fileChan               chan fileToAnalyze
 	archiveChan            chan archiveToAnalyze
 	action                 Action
@@ -169,6 +171,7 @@ const (
 	defaultRecursiveExtractMaxDepth       = 10
 	defaultRecursiveExtractMaxSize  int64 = 5 * 1000 * 1000 * 1000 // 5GB
 	defaultRecursiveExtractMaxFiles       = 10000
+	restoredCheckTimeout                  = 10 * time.Second
 )
 
 func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter Submitter) *Connector {
@@ -206,8 +209,8 @@ func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter S
 	return &Connector{
 		submitter:       submitter,
 		quarantiner:     quarantiner,
-		fileChan:        make(chan fileToAnalyze),
-		archiveChan:     make(chan archiveToAnalyze),
+		fileChan:        make(chan fileToAnalyze, config.Workers),
+		archiveChan:     make(chan archiveToAnalyze, max(config.Workers, config.ExtractWorkers)), // so workers can't exhaust archiveChan
 		config:          config,
 		archiveStatus:   newArchiveStatusHandler(),
 		action:          newAction(config, quarantiner, EventHandler),
@@ -316,41 +319,16 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		}
 	}()
 
-	fileSHA256, err := getFileSHA256(input)
-	if err != nil {
-		return
-	}
-
-	restored, err := c.checkFileRestored(ctx, input, fileSHA256, info.Size())
-	if err != nil {
-		return
-	}
-	if restored {
-		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
-		c.ongoingAnalysis.Delete(input)
-		return
-	}
-
-	// files which size is > ExtractMinThreshold and < c.config.MaxFileSize (usually 100MB) could be directly submitted to Detect,
-	// but it has been decided to prefer extraction on host-connector side
-	if info.Size() > c.config.ExtractMinThreshold && c.config.Extract {
-		inputLogger.Debug("sending file to archive worker ...")
-		select {
-		case <-ctx.Done():
-			return context.Canceled
-		case c.archiveChan <- archiveToAnalyze{location: input, sha256: fileSHA256, size: info.Size()}:
-			return
-		}
-	}
-
+	c.precheckWg.Add(1)
 	select {
 	case <-ctx.Done():
+		c.precheckWg.Done()
 		return context.Canceled
 	case c.fileChan <- fileToAnalyze{
-		filename: input,
-		location: input,
-		sha256:   fileSHA256,
-		size:     info.Size(),
+		filename:      input,
+		location:      input,
+		size:          info.Size(),
+		needsPrecheck: true,
 	}:
 		return
 	}
@@ -434,51 +412,118 @@ func (c *Connector) worker() {
 		case <-c.stopWorker:
 			return
 		case input := <-c.fileChan:
-			inputLogger := logger.With(slog.String("file", input.location))
-			if input.archiveID != "" {
-				inputLogger.Debug("file has archive_id, handling ...")
-				err := c.handleArchive(input)
-				if err != nil {
-					inputLogger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation), slog.String(logErrorKey, err.Error()))
-				}
-				continue
-			}
-			inputLogger.Debug("applying onStartScanFile() from plugins")
-			c.onStartScanFile(input.location, input.sha256)
-			result := c.handleFile(input)
-			actualSHA256, err := getFileSHA256(input.location)
-			if err != nil {
-				inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
-				c.ongoingAnalysis.Delete(input.location)
-				continue
-			}
-			if actualSHA256 != input.sha256 {
-				inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
-				ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
-				c.ongoingAnalysis.Delete(input.location)
-				continue
-			}
-
-			if result.Error != nil {
-				inputLogger.Error("could not handle file properly", slog.Any(logErrorKey, result.Error.Error()))
-				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s properly: %s", input.location, result.Error.Error()))
-			}
-			if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
-				result = *newres
-			}
-			report := &datamodel.Report{}
-			ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
-			if err := c.action.Handle(ctx, input.location, result, report); err != nil {
-				inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
-				ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, err.Error()))
-			} else {
-				inputLogger.Debug("file handled successfully")
-			}
-			cancel()
-			c.addReport(report)
-			c.ongoingAnalysis.Delete(input.location)
+			c.processFile(input)
 		}
 	}
+}
+
+// precheck computes SHA256, refreshes file size, and checks quarantine restored status.
+// Returns the updated input and whether the file should be skipped.
+func (c *Connector) precheck(input fileToAnalyze) (result fileToAnalyze, skip bool) {
+	result = input
+	inputLogger := logger.With(slog.String("file", input.location))
+
+	info, err := os.Stat(input.location)
+	if err != nil {
+		inputLogger.Error("could not stat file, stop processing", slog.String("error", err.Error()))
+		skip = true
+		return
+	}
+	result.size = info.Size()
+
+	fileSHA256, err := getFileSHA256(input.location)
+	if err != nil {
+		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
+		skip = true
+		return
+	}
+	result.sha256 = fileSHA256
+
+	ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
+	restored, err := c.checkFileRestored(ctx, result.location, result.sha256, result.size)
+	cancel()
+	if err != nil {
+		inputLogger.Error("could not check file restored status", slog.String(logErrorKey, err.Error()))
+		skip = true
+		return
+	}
+	if restored {
+		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
+		skip = true
+		return
+	}
+
+	return
+}
+
+func (c *Connector) processFile(input fileToAnalyze) {
+	inputLogger := logger.With(slog.String("file", input.location))
+
+	if input.archiveID != "" {
+		inputLogger.Debug("file has archive_id, handling ...")
+		if err := c.analyzeArchive(input); err != nil {
+			inputLogger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation), slog.String(logErrorKey, err.Error()))
+		}
+		return
+	}
+
+	if input.needsPrecheck {
+		var skip bool
+		input, skip = c.precheck(input)
+		c.precheckWg.Done()
+		if skip {
+			c.ongoingAnalysis.Delete(input.location)
+			return
+		}
+	}
+
+	// Route to extraction if applicable
+	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
+		inputLogger.Debug("sending file to archive worker ...")
+		select {
+		case <-c.stopExtract:
+			inputLogger.Debug("extract workers stopped, skipping extraction")
+			c.ongoingAnalysis.Delete(input.location)
+			return
+		case c.archiveChan <- archiveToAnalyze{location: input.location, sha256: input.sha256, size: input.size}:
+			return
+		}
+	}
+
+	inputLogger.Debug("applying onStartScanFile() from plugins")
+	c.onStartScanFile(input.location, input.sha256)
+	result := c.analyzeFile(input)
+	actualSHA256, err := getFileSHA256(input.location)
+	if err != nil {
+		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
+		c.ongoingAnalysis.Delete(input.location)
+		return
+	}
+	if actualSHA256 != input.sha256 {
+		inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
+		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
+		c.ongoingAnalysis.Delete(input.location)
+		return
+	}
+
+	if result.Error != nil {
+		inputLogger.Error("could not handle file properly", slog.Any(logErrorKey, result.Error.Error()))
+		ConsoleLogger.Error(fmt.Sprintf("could not handle file %s properly: %s", input.location, result.Error.Error()))
+	}
+	if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
+		result = *newres
+	}
+	report := &datamodel.Report{}
+	actionCtx, actionCancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
+	defer actionCancel()
+	if err := c.action.Handle(actionCtx, input.location, result, report); err != nil {
+		inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
+		ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, err.Error()))
+	} else {
+		inputLogger.Debug("file handled successfully")
+	}
+	c.addReport(report)
+	c.ongoingAnalysis.Delete(input.location)
 }
 
 func (c *Connector) extractWorker() {
@@ -757,7 +802,7 @@ func (c *Connector) checkBeforeExtract(location string, size int64, totalExtract
 
 var sha256BufferPool = sync.Pool{
 	New: func() any {
-		// Buffer de 128KB (au lieu de 32KB par défaut)
+		// 128KB buffer (instead of 32KB default)
 		buf := make([]byte, 128*1024)
 		return &buf
 	},
@@ -789,7 +834,7 @@ func getFileSHA256(location string) (fileSHA256 string, err error) {
 	return
 }
 
-func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
+func (c *Connector) analyzeArchive(input fileToAnalyze) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
 	status, started, ok := c.archiveStatus.getArchiveStatus(input.archiveID, true)
 	if status.finished {
@@ -811,7 +856,7 @@ func (c *Connector) handleArchive(input fileToAnalyze) (err error) {
 			return
 		}
 	}
-	result := c.handleFile(input)
+	result := c.analyzeFile(input)
 	if result.Error != nil {
 		archiveLogger.Error("could not handle archive inner file properly", slog.String("file", input.filename), slog.Any(logErrorKey, result.Error.Error()))
 		ConsoleLogger.Error(fmt.Sprintf("could not handle archive inner file %s properly: %s", input.filename, result.Error.Error()))
@@ -896,7 +941,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	return
 }
 
-func (c *Connector) handleFile(input fileToAnalyze) (result datamodel.Result) {
+func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	fileLogger := logger.With(slog.String("file", input.location))
 
 	defer func() {
@@ -1026,6 +1071,9 @@ func (c *Connector) Close(ctx context.Context) {
 		return
 	}
 	c.started = false
+
+	// We stop "input" file before to finish started analysis
+	c.precheckWg.Wait()
 
 	close(c.stopExtract)
 	c.extractWg.Wait()

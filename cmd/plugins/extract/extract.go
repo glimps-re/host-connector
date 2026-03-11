@@ -122,11 +122,51 @@ var (
 	ErrFileNotFound      = errors.New("file not found")
 )
 
-func newSevenZipExtract(config extractorConfig, sevenZipPath string) (sze *sevenZipExtract) {
-	return &sevenZipExtract{
+func newSevenZipExtract(config extractorConfig, sevenZipPath string) (sze *sevenZipExtract, err error) {
+	sze = &sevenZipExtract{
 		config:       config,
 		sevenZipPath: sevenZipPath,
 	}
+
+	if sevenZipPath == "" {
+		if err = sze.resolve7zzs(); err != nil {
+			return nil, fmt.Errorf("resolving 7zzs binary: %w", err)
+		}
+	}
+
+	return
+}
+
+// resolve7zzs locates 7zzs in PATH or deploys the embedded binary.
+func (sze *sevenZipExtract) resolve7zzs() (err error) {
+	fname, err := exec.LookPath("7zzs")
+	if err == nil {
+		sze.sevenZipPath, err = filepath.Abs(fname)
+		return
+	}
+
+	f, err := os.CreateTemp(os.TempDir(), "7zzs")
+	if err != nil {
+		return
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			logger.Error("could not close created 7zzs temp file", slog.String("file", f.Name()), slog.String("error", e.Error()))
+		}
+	}()
+
+	_, err = f.Write(SevenZip)
+	if err != nil {
+		return
+	}
+
+	err = f.Chmod(0o755)
+	if err != nil {
+		return
+	}
+	sze.sevenZipPath = f.Name()
+	sze.tmpSevenZip = true
+	return
 }
 
 func (sze *sevenZipExtract) list(archivePath string, passwords []string, files []string) (archiveContent listResult, err error) {

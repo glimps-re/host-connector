@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -75,7 +74,7 @@ func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	}
 }
 
-func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
+func TestSevenZipExtractPlugin_resolve7zzs(t *testing.T) {
 	tests := []struct {
 		name    string
 		wantErr bool
@@ -88,33 +87,19 @@ func TestSevenZipExtractPlugin_get7zzs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			plugin := &SevenZipExtractPlugin{
-				// pathToRemove: []string{},
-			}
-
-			path, err := plugin.get7zzs()
+			sze, err := newSevenZipExtract(extractorConfig{}, "")
 			if (err != nil) != tt.wantErr {
-				t.Errorf("SevenZipExtractPlugin.get7zzs() error = %v, wantErr %v", err, tt.wantErr)
+				t.Errorf("newSevenZipExtract() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 
 			if !tt.wantErr {
-				if path == "" {
-					t.Error("SevenZipExtractPlugin.get7zzs() should return a valid path")
+				if sze.sevenZipPath == "" {
+					t.Error("newSevenZipExtract() should resolve a valid path")
 				}
 
-				// Check if path exists
-				if _, err := os.Stat(path); os.IsNotExist(err) {
-					t.Errorf("SevenZipExtractPlugin.get7zzs() returned non-existent path: %s", path)
-				}
-
-				// If it's a temporary file, it should be tracked for cleanup
-				// Check if the returned path is in system PATH or in pathToRemove
-				isInPath := false
-
-				// Check if it's a system binary
-				if !strings.Contains(path, os.TempDir()) && !isInPath {
-					t.Logf("Using system 7zzs binary at: %s", path)
+				if _, err := os.Stat(sze.sevenZipPath); os.IsNotExist(err) {
+					t.Errorf("newSevenZipExtract() resolved non-existent path: %s", sze.sevenZipPath)
 				}
 			}
 		})
@@ -253,15 +238,11 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 }
 
 func TestSevenZipExtractPlugin_BinaryManagement(t *testing.T) {
-	plugin := &SevenZipExtractPlugin{
-		// pathToRemove: []string{},
-	}
-
-	// Test binary location/deployment
-	binaryPath, err := plugin.get7zzs()
+	sze, err := newSevenZipExtract(extractorConfig{}, "")
 	if err != nil {
-		t.Fatalf("Failed to get 7zzs binary: %v", err)
+		t.Fatalf("Failed to resolve 7zzs binary: %v", err)
 	}
+	binaryPath := sze.sevenZipPath
 
 	// Verify binary exists and is executable
 	info, err := os.Stat(binaryPath)

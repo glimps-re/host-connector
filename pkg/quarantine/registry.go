@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	"modernc.org/sqlite"
+	_ "modernc.org/sqlite"
 )
 
 var LogLevel = &slog.LevelVar{}
@@ -242,14 +242,21 @@ func (c *sqliteRegistry) Set(ctx context.Context, entry *Entry) (err error) {
 			}
 		}
 	}()
-	sqlStatement := `INSERT INTO entries (id, sha256, created_at, updated_at, quarantine, location, restored_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)`
 	if entry.CreatedAt.UnixMilli() <= 0 {
 		entry.CreatedAt = Now()
 	}
 	if entry.UpdatedAt.UnixMilli() <= 0 {
 		entry.UpdatedAt = Now()
 	}
+	sqlStatement := `INSERT INTO entries (id, sha256, created_at, updated_at, quarantine, location, restored_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT(id) DO UPDATE SET
+	sha256=$2,
+	created_at=$3,
+	updated_at=$4,
+	quarantine=$5,
+	location=$6,
+	restored_at=$7`
 	_, err = tx.ExecContext(ctx, sqlStatement,
 		entry.ID,
 		entry.SHA256,
@@ -259,25 +266,6 @@ VALUES ($1, $2, $3, $4, $5, $6, $7)`
 		entry.InitialLocation,
 		entry.RestoredAt.UnixMilli(),
 	)
-	if err == nil {
-		return
-	}
-	// check for update
-	sqliteErr := new(sqlite.Error)
-	if errors.As(err, &sqliteErr) && sqliteErr.Code() == 1555 {
-		sqlStatement := `UPDATE entries SET sha256=$2, created_at=$3, updated_at=$4, quarantine=$5, location=$6, restored_at=$7
-		WHERE id = $1`
-		_, err = tx.ExecContext(ctx, sqlStatement,
-			entry.ID,
-			entry.SHA256,
-			entry.CreatedAt.UnixMilli(),
-			entry.UpdatedAt.UnixMilli(),
-			entry.QuarantineLocation,
-			entry.InitialLocation,
-			entry.RestoredAt.UnixMilli(),
-		)
-		return
-	}
 	return
 }
 

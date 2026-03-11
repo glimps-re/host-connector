@@ -39,6 +39,7 @@ type Handler struct {
 	submitter   scanner.Submitter
 	monitor     Monitorer
 	Quarantiner quarantine.Quarantiner
+	informDest  io.WriteCloser
 
 	mu          sync.RWMutex
 	stopped     bool
@@ -216,6 +217,13 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		maxFileSize = maxFileSizeDetect
 	}
 
+	if h.informDest != nil {
+		if e := h.informDest.Close(); e != nil {
+			logger.Warn("could not close previous inform destination", slog.String("error", e.Error()))
+		}
+		h.informDest = nil
+	}
+
 	var informDest io.WriteCloser = os.Stdout
 	if config.Print.Location != "" {
 		informDest, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
@@ -223,6 +231,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 			err = fmt.Errorf("could not open report location, error: %w", err)
 			return
 		}
+		h.informDest = informDest
 	}
 
 	if h.Conn != nil {
@@ -388,6 +397,12 @@ func (h *Handler) Stop(ctx context.Context) (err error) {
 			return
 		}
 		h.Quarantiner = nil
+	}
+	if h.informDest != nil {
+		if e := h.informDest.Close(); e != nil {
+			logger.Warn("could not close inform destination", slog.String("error", e.Error()))
+		}
+		h.informDest = nil
 	}
 	logger.Info("connector stopped")
 	return

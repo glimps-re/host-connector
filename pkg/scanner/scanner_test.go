@@ -31,6 +31,7 @@ import (
 )
 
 func createTestFile(t *testing.T, dir string, content string) (file string, fileSHA256 string) {
+	t.Helper()
 	testFile, err := os.CreateTemp(dir, "test*")
 	if err != nil {
 		t.Errorf("could not create test file, error: %s", err)
@@ -53,6 +54,7 @@ func createTestFile(t *testing.T, dir string, content string) (file string, file
 }
 
 func createArchiveWithRawFiles(t *testing.T, files map[string][]byte) (archive string, archiveSHA256 string) {
+	t.Helper()
 	testFile, err := os.CreateTemp(t.TempDir(), "archive_*.zip")
 	if err != nil {
 		t.Fatalf("failed to create archive temp file, error: %v", err)
@@ -84,6 +86,7 @@ func createArchiveWithRawFiles(t *testing.T, files map[string][]byte) (archive s
 }
 
 func createArchive(t *testing.T, contents []string) (archive string, archiveSHA256 string) {
+	t.Helper()
 	testFile, err := os.CreateTemp(t.TempDir(), "archive_*.zip")
 	if err != nil {
 		t.Fatalf("failed to create archive temp file, error: %v", err)
@@ -182,6 +185,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				if c.config.Workers != defaultWorkers {
 					t.Errorf("invalid workers %v", c.config.Workers)
 				}
@@ -214,6 +218,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, fileSHA256 := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -241,6 +246,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				archive, _ := createArchive(t, []string{"content1", "content2"})
 				if e := c.ScanFile(t.Context(), archive); e != nil {
 					t.Errorf("unwanted error: %v", e)
@@ -266,6 +272,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				archive, archiveSHA256 := createArchive(t, []string{"content1", "content2", badFileContent})
 				if e := c.ScanFile(t.Context(), archive); e != nil {
 					t.Errorf("unwanted error: %v", e)
@@ -290,6 +297,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				folder, err := os.MkdirTemp(t.TempDir(), "testfolder") //nolint:usetesting // we want to check if we analyze the created folder
 				if err != nil {
 					t.Fatalf("error creating folder, error: %v", err)
@@ -321,6 +329,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				folder, err := os.MkdirTemp(t.TempDir(), "otherfolder") //nolint:usetesting // we want to check if we analyze the created folder
 				if err != nil {
 					t.Fatalf("error creating folder, error: %v", err)
@@ -353,6 +362,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				folder, err := os.MkdirTemp(t.TempDir(), "testfolder") //nolint:usetesting // we want to check if we analyze the created folder
 				if err != nil {
 					t.Fatalf("error creating folder, error: %v", err)
@@ -400,6 +410,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				folder, err := os.MkdirTemp(t.TempDir(), "testfolder") //nolint:usetesting // we want to check if we analyze the created folder
 				if err != nil {
 					t.Fatalf("error creating folder, error: %v", err)
@@ -447,6 +458,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				// Create symlink pointing to non-existent file
 				nonExistentPath := filepath.Join(t.TempDir(), "nonexistent")
 				symlinkPath := filepath.Join(t.TempDir(), "broken_symlink")
@@ -482,6 +494,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				archive, archiveSHA256 := createArchive(t, []string{"content1", "content2", badFileContent})
 
 				// atomic because callbacks are called from worker goroutines
@@ -529,6 +542,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				archive, _ := createArchive(t, []string{"", "", ""})
 				if e := c.ScanFile(t.Context(), archive); e != nil {
 					t.Errorf("unwanted error: %v", e)
@@ -559,6 +573,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, _ := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -595,6 +610,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, _ := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -626,12 +642,13 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, _ := createTestFile(t, t.TempDir(), badFileContent)
 				err := c.ScanFile(t.Context(), testFile)
-				// Should return error from cache
-				if err == nil {
-					t.Errorf("expected error from cache, got nil")
+				if err != nil {
+					t.Errorf("unexpected error from ScanFile: %v", err)
 				}
+				// Cache error is now handled asynchronously by the worker (logged, not returned)
 				c.Close(t.Context())
 			},
 		},
@@ -651,6 +668,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, _ := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -680,6 +698,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, _ := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -704,6 +723,7 @@ func TestNewConnector(t *testing.T) {
 				errExtractExpertViewURL: true,
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
 				testFile, fileSHA256 := createTestFile(t, t.TempDir(), badFileContent)
 				if err := c.ScanFile(t.Context(), testFile); err != nil {
 					t.Errorf("unwanted error: %v", err)
@@ -784,7 +804,7 @@ func TestNewConnector(t *testing.T) {
 	}
 }
 
-func TestConnector_handleFile(t *testing.T) {
+func TestConnector_analyzeFile(t *testing.T) {
 	type fields struct {
 		config                   Config
 		onScanFileResp           *datamodel.Result
@@ -1296,7 +1316,7 @@ func TestConnector_handleFile(t *testing.T) {
 				})
 			}
 
-			gotResult := c.handleFile(tt.args.input)
+			gotResult := c.analyzeFile(tt.args.input)
 
 			// Compare all fields except Error and AnalysisError using cmp.Diff
 			if diff := cmp.Diff(gotResult, tt.wantResult, cmpopts.IgnoreFields(datamodel.Result{}, "Error", "AnalysisError")); diff != "" {
@@ -1938,7 +1958,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 	}
 }
 
-func Test_Connector_handleArchive(t *testing.T) {
+func Test_Connector_analyzeArchive(t *testing.T) {
 	type fields struct {
 		archiveNotFound bool
 		archiveFinished bool
@@ -2038,7 +2058,7 @@ func Test_Connector_handleArchive(t *testing.T) {
 				size:            1000,
 			}
 
-			err := c.handleArchive(input)
+			err := c.analyzeArchive(input)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("handleArchive() error = %v, wantErr %v", err, tt.wantErr)
@@ -2486,8 +2506,8 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				nestedArchive, innerArchiveSHA256 = createArchive(t, []string{fileContent})
 
 				// Create nested archives up to the requested depth
-				for d := 0; d < tt.fields.createArchiveWithDepth; d++ {
-					innerContent, err := os.ReadFile(nestedArchive) // #nosec G304 // path is controlled by test
+				for d := range tt.fields.createArchiveWithDepth {
+					innerContent, err := os.ReadFile(filepath.Clean(nestedArchive))
 					if err != nil {
 						t.Fatalf("could not read inner archive: %v", err)
 					}

@@ -7,19 +7,9 @@
 extract:
   file: extract.so
   config:
-    # Maximum size for individual extracted files (default: 500MB)
-    # Supports human-readable units: B, KB, MB, GB, TB
-    # Files exceeding this size will not be extracted
-    max_file_size: 500MB
-
-    # Maximum number of files to extract from a single archive (default: 1000)
-    # Prevents extraction bombs by limiting the total number of extracted files
-    max_extracted_files: 1000
-
-    # Maximum size for an extracted archive (default: 3GB)
-    # Supports human-readable units: B, KB, MB, GB, TB
-    # Additional files are skipped if limit is reached
-    max_total_extracted_size: 3GB
+    # Extraction size limits (max_file_size, max_extracted_files, max_total_extracted_size)
+    # are provided by the host connector configuration (--max-file-size, --recursive-extract-max-files,
+    # --recursive-extract-max-size flags or their config.yml equivalents).
 
     # List of passwords to try when extracting password-protected archives
     # Default: ["infected"] - commonly used password for malware samples

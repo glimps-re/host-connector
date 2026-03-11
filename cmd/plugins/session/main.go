@@ -194,12 +194,8 @@ func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
 }
 
 func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session, created bool) {
-	if !strings.HasPrefix(filePath, p.config.RootFolder) {
-		return
-	}
-
 	relPath, err := filepath.Rel(p.config.RootFolder, filePath)
-	if err != nil {
+	if err != nil || strings.HasPrefix(relPath, "..") {
 		return
 	}
 

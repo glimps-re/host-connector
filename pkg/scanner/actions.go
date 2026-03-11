@@ -343,16 +343,13 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 		return
 	}
 
-	if !strings.HasPrefix(path, a.Src) {
+	relPath, relErr := filepath.Rel(a.Src, path)
+	if relErr != nil || strings.HasPrefix(relPath, "..") {
 		err = errors.New("file not in source directory")
 		return
 	}
 
-	destSubpath, ok := strings.CutPrefix(path, a.Src)
-	if !ok {
-		destSubpath = path
-	}
-	dest := filepath.Join(a.Dest, destSubpath)
+	dest := filepath.Join(a.Dest, relPath)
 	err = MkdirAll(filepath.Dir(dest), 0o755)
 	if err != nil {
 		return

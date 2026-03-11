@@ -311,9 +311,9 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 	}
 }
 
-func TestInformAction_Handle(t *testing.T) {
+func TestPrintAction_Handle(t *testing.T) {
 	Now = func() time.Time {
-		return time.Date(2100, 0, 0, 0, 0, 0, 0, time.UTC)
+		return time.Date(2050, time.January, 1, 0, 0, 0, 0, time.UTC)
 	}
 	type fields struct {
 		Verbose bool
@@ -355,7 +355,7 @@ func TestInformAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: false, reason: seems safe, actions: [], details: []`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: false, reason: seems safe, actions: [], details: []`,
 		},
 		{
 			name: "test malware",
@@ -369,7 +369,7 @@ func TestInformAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: true, reason: , actions: [], details: []`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: true, reason: , actions: [], details: []`,
 		},
 		{
 			name: "test malware quarantine",
@@ -387,7 +387,7 @@ func TestInformAction_Handle(t *testing.T) {
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
 			},
-			wantOut: `time: 4099680000, file: test_file.bin, sha256: , flagged: true, reason: , actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: true, reason: , actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
 		},
 		{
 			name: "test malware full info",
@@ -427,7 +427,7 @@ func TestInformAction_Handle(t *testing.T) {
 					GMalwareURL:        "https://gmalware.glimps.re/analysis/abc123",
 				},
 			},
-			wantOut: `time: 4099680000, file: test_file.bin, sha256: sha256, flagged: true, reason: malware-detected, actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: sha256, flagged: true, reason: malware-detected, actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
 		},
 	}
 	for _, tt := range tests {
@@ -560,6 +560,7 @@ func Test_moveFile(t *testing.T) {
 		{
 			name: "successful move within same filesystem",
 			setup: func(t *testing.T) (string, string) {
+				t.Helper()
 				tmpDir := t.TempDir()
 				src := filepath.Join(tmpDir, "source.txt")
 				dst := filepath.Join(tmpDir, "dest.txt")
@@ -574,6 +575,7 @@ func Test_moveFile(t *testing.T) {
 		{
 			name: "source file does not exist",
 			setup: func(t *testing.T) (string, string) {
+				t.Helper()
 				tmpDir := t.TempDir()
 				src := filepath.Join(tmpDir, "nonexistent.txt")
 				dst := filepath.Join(tmpDir, "dest.txt")
@@ -616,6 +618,7 @@ func Test_copyAndDelete(t *testing.T) {
 		{
 			name: "successful copy and delete",
 			setup: func(t *testing.T) (string, string) {
+				t.Helper()
 				tmpDir := t.TempDir()
 				src := filepath.Join(tmpDir, "source.txt")
 				dst := filepath.Join(tmpDir, "dest.txt")
@@ -628,6 +631,7 @@ func Test_copyAndDelete(t *testing.T) {
 			},
 			wantErr: false,
 			checkResult: func(t *testing.T, src, dst string) {
+				t.Helper()
 				// Verify destination exists with correct content
 				// #nosec G304 - dst is controlled by test code
 				content, err := os.ReadFile(dst)
@@ -656,6 +660,7 @@ func Test_copyAndDelete(t *testing.T) {
 		{
 			name: "source file does not exist",
 			setup: func(t *testing.T) (string, string) {
+				t.Helper()
 				tmpDir := t.TempDir()
 				src := filepath.Join(tmpDir, "nonexistent.txt")
 				dst := filepath.Join(tmpDir, "dest.txt")
@@ -666,6 +671,7 @@ func Test_copyAndDelete(t *testing.T) {
 		{
 			name: "destination directory does not exist",
 			setup: func(t *testing.T) (string, string) {
+				t.Helper()
 				tmpDir := t.TempDir()
 				src := filepath.Join(tmpDir, "source.txt")
 				dst := filepath.Join(tmpDir, "nonexistent", "dest.txt")

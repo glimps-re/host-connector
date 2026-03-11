@@ -295,7 +295,7 @@ func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.
 		details = append(details, report.MovedTo)
 		actions = append(actions, "moved")
 	}
-	s := fmt.Sprintf("time: %d, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", Now().Unix(), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
+	s := fmt.Sprintf("time: %s, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", Now().UTC().Format(time.RFC3339), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
 	if result.Malware || a.Verbose || report.MovedTo != "" {
 		_, err = fmt.Fprintln(a.Out, s)
 		if err != nil {

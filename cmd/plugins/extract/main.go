@@ -11,8 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -67,20 +65,15 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 
 	extractCfg := hcc.GetExtractConfig()
 
-	if config.SevenZipPath == "" {
-		szPath, err := p.get7zzs()
-		if err != nil {
-			return err
-		}
-		config.SevenZipPath = szPath
-	}
-
-	p.sze = newSevenZipExtract(extractorConfig{
+	p.sze, err = newSevenZipExtract(extractorConfig{
 		MaxFileSize:           int(extractCfg.MaxFileSize),
 		MaxExtractedFiles:     extractCfg.MaxExtractedFiles,
 		MaxTotalExtractedSize: int(extractCfg.MaxTotalExtractedSize),
 		DefaultPasswords:      config.DefaultPasswords,
 	}, config.SevenZipPath)
+	if err != nil {
+		return
+	}
 
 	hcc.SetExtractFile(p.ExtractFile)
 	logger.Info("plugin initialized",
@@ -93,40 +86,6 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 	consoleLogger.Info(fmt.Sprintf("extract plugin initialized, max_file_size: %d, max_extracted_elements: %d, max_total_extracted_size: %d, default_passwords: %s, seven_zip_path: %s",
 		extractCfg.MaxFileSize, extractCfg.MaxExtractedFiles, extractCfg.MaxTotalExtractedSize, strings.Join(config.DefaultPasswords, ", "), config.SevenZipPath,
 	))
-	return
-}
-
-// get7zzs locates 7zzs in PATH or deploys the embedded binary.
-func (p *SevenZipExtractPlugin) get7zzs() (path string, err error) {
-	fname, err := exec.LookPath("7zzs")
-	if err == nil {
-		path, err = filepath.Abs(fname)
-		if err != nil {
-			return
-		}
-		return
-	}
-
-	f, err := os.CreateTemp(os.TempDir(), "7zzs")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if e := f.Close(); e != nil {
-			logger.Error("could not close created 7zzs temp file", slog.String("file", f.Name()), slog.String("error", e.Error()))
-		}
-	}()
-
-	_, err = f.Write(SevenZip)
-	if err != nil {
-		return
-	}
-
-	err = f.Chmod(0o755)
-	if err != nil {
-		return
-	}
-	path = f.Name()
 	return
 }
 

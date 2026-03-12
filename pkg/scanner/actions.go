@@ -321,6 +321,9 @@ func NewMoveAction(dest string, src string) (*MoveAction, error) {
 	if err != nil {
 		return nil, err
 	}
+	if !strings.HasSuffix(pp, string(filepath.Separator)) {
+		pp += string(filepath.Separator)
+	}
 	a.Src = pp
 	return a, nil
 }

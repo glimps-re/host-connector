@@ -264,8 +264,8 @@ var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []s
 	xFile := &xtractr.XFile{
 		FilePath:  archiveLocation,
 		OutputDir: outputDir,
-		FileMode:  0o755,
-		DirMode:   0o755,
+		FileMode:  0o600,
+		DirMode:   0o700,
 	}
 	return xtractr.ExtractFile(xFile)
 }
@@ -390,7 +390,8 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 
 	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			logger.Error("could not access path during walk", slog.String("path", path), slog.String("err", walkErr.Error()))
+			return nil
 		}
 		if d.IsDir() {
 			return nil

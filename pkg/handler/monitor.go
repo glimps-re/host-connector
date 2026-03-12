@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -37,9 +38,10 @@ type Monitor struct {
 	modDelay     sdk.Duration // modification delay
 	paths        *sync.Map
 	done         chan struct{}
+	closeOnce    sync.Once
 	filesToScan  chan string
 	pendingFiles *sync.Map
-	started      bool
+	started      atomic.Bool
 }
 
 func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
@@ -57,21 +59,20 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 		filesToScan:  make(chan string),
 		pendingFiles: new(sync.Map),
 		done:         make(chan struct{}),
-		started:      false,
 	}, nil
 }
 
 func (m *Monitor) Close() (err error) {
-	if !m.started {
+	if !m.started.Load() {
 		return
 	}
 	if err := m.watcher.Close(); err != nil {
 		logger.Error("cannot close watcher", slog.String("error", err.Error()))
 		return fmt.Errorf("cannot close watcher, error: %w", err)
 	}
-	close(m.done)
+	m.closeOnce.Do(func() { close(m.done) })
 	m.wg.Wait()
-	m.started = false
+	m.started.Store(false)
 	return
 }
 
@@ -87,7 +88,7 @@ func (m *Monitor) Start() {
 	m.wg.Go(func() {
 		m.scanFiles()
 	})
-	m.started = true
+	m.started.Store(true)
 }
 
 func (m *Monitor) periodicalScan() {

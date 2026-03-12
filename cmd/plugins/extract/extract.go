@@ -186,7 +186,7 @@ PASSWORD_LOOP:
 		for {
 			from := listedFiles
 			to := min(total, from+sevenZipMaxFile)
-			args := append(commonArgs, files[from:to]...) //nolint:gocritic //ok
+			args := slices.Concat(commonArgs, files[from:to])
 			out, _, err = sze.run(pwd, args)
 			switch {
 			case err == nil:
@@ -277,7 +277,7 @@ PASSWORD_LOOP:
 		for {
 			from := listedFiles
 			to := min(total, from+sevenZipMaxFile)
-			args := append(commonArgs, filesToExtract[from:to]...) //nolint:gocritic //ok
+			args := slices.Concat(commonArgs, filesToExtract[from:to])
 			_, symLinkFiles, err = sze.run(pwd, args)
 			switch {
 			case err == nil:

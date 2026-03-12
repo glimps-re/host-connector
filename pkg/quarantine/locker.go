@@ -203,11 +203,11 @@ func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
 
 func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	salt := make([]byte, 32)
-	if _, err = in.Read(salt); err != nil {
+	if _, err = io.ReadFull(in, salt); err != nil {
 		return
 	}
 	iv := make([]byte, aes.BlockSize)
-	if _, err = in.Read(iv); err != nil {
+	if _, err = io.ReadFull(in, iv); err != nil {
 		return
 	}
 	key := pbkdf2.Key([]byte(password), salt, LockPasswordIter, aes.BlockSize, sha256.New)

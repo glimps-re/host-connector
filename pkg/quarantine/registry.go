@@ -53,7 +53,7 @@ var ErrEntryNotFound = errors.New("entry not found")
 type sqliteRegistry struct {
 	db       *sql.DB
 	location string
-	sync.Mutex
+	sync.RWMutex
 }
 
 var _ quarantineRegistry = &sqliteRegistry{}
@@ -80,7 +80,7 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 				err = fmt.Errorf("failed to create quarantine registry db location: %w", err)
 				return
 			}
-			_, err = os.Create(filepath.Clean(location))
+			_, err = os.OpenFile(filepath.Clean(location), os.O_RDONLY|os.O_CREATE, 0o600)
 			if err != nil {
 				err = fmt.Errorf("failed to create quarantine registry db file: %w", err)
 				return
@@ -95,6 +95,12 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 	if err != nil {
 		err = fmt.Errorf("failed to open quarantine db: %w", err)
 		return
+	}
+	// SQLite does not support concurrent connections to in-memory databases;
+	// each connection gets its own empty database. Limit to 1 connection
+	// so all queries share the same in-memory state.
+	if location == "" {
+		db.SetMaxOpenConns(1)
 	}
 
 	result, err := db.ExecContext(ctx, CreateTable)
@@ -173,8 +179,8 @@ func (c *sqliteRegistry) Migrate(ctx context.Context, newLocation string) (err e
 }
 
 func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err error) {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 	entry = &Entry{}
 	var createdAt, updatedAt, restoredAt int64
 	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where id = ?", id).Scan(
@@ -199,8 +205,8 @@ func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err 
 }
 
 func (c *sqliteRegistry) GetBySHA256(ctx context.Context, sha256 string) (entry *Entry, err error) {
-	c.Lock()
-	defer c.Unlock()
+	c.RLock()
+	defer c.RUnlock()
 	entry = &Entry{}
 	var createdAt, updatedAt, restoredAt int64
 	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where sha256 = ?", sha256).Scan(

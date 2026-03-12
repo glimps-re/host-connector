@@ -124,7 +124,7 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA
 	}
 	entry.QuarantineLocation = filepath.Join(q.location, entry.ID+".lock")
 
-	fOut, err := os.Create(entry.QuarantineLocation)
+	fOut, err := os.OpenFile(entry.QuarantineLocation, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return
 	}
@@ -236,18 +236,19 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
-	entry, err := q.registry.Get(ctx, id)
-	if err == nil {
+	// from here the file has been restored, we want the lock file to be deleted
+	deleteLocked = true
+	entry, registryErr := q.registry.Get(ctx, id)
+	if registryErr != nil {
+		logger.Error("error getting registry entry", slog.String("id", id), slog.String("error", registryErr.Error()))
+	} else {
 		entry.QuarantineLocation = ""
 		entry.RestoredAt = Now()
-		err = q.registry.Set(ctx, entry)
-		if err != nil {
-			logger.Error("error set cache", slog.String("sha256", entry.SHA256), slog.String("error", err.Error()))
+		if setErr := q.registry.Set(ctx, entry); setErr != nil {
+			logger.Error("error set cache", slog.String("sha256", entry.SHA256), slog.String("error", setErr.Error()))
 		}
 	}
 	logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
-	// from here we want the lock file to be deleted
-	deleteLocked = true
 	return
 }
 

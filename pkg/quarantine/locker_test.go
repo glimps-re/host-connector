@@ -121,6 +121,7 @@ func Test_LockFile(t *testing.T) {
 		{
 			name: "test 1",
 			test: func(t *testing.T) {
+				t.Helper()
 				file, err := os.CreateTemp(os.TempDir(), "test_lock_*")
 				if err != nil {
 					t.Errorf("could not create temp file, error: %s", err)

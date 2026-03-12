@@ -74,7 +74,11 @@ func NewReportsWriter(dst io.WriteSeeker) *ReportsWriter {
 
 func (rw *ReportsWriter) Write(r Report) (err error) {
 	// try to seek above last "\n]"
-	n, _ := rw.dst.Seek(-2, io.SeekEnd)
+	n, seekErr := rw.dst.Seek(-2, io.SeekEnd)
+	if seekErr != nil {
+		// empty or new file, reset to start
+		n = 0
+	}
 	out := bufio.NewWriter(rw.dst)
 	if n == 0 {
 		// start of file

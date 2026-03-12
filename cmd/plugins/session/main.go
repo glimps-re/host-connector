@@ -300,31 +300,41 @@ func (p *SessionPlugin) sessionMonitor() {
 }
 
 func (p *SessionPlugin) checkAndCloseSessions() {
-	p.mutex.Lock()
-	defer p.mutex.Unlock()
+	type closableSession struct {
+		id      string
+		session *Session
+	}
 
+	var toClose []closableSession
+
+	p.mutex.Lock()
 	for sessionID, session := range p.sessions {
 		if session.isReadyForClosure(p.config.Delay) {
-			p.closeSession(sessionID, session)
+			toClose = append(toClose, closableSession{id: sessionID, session: session})
 			delete(p.sessions, sessionID)
 		}
+	}
+	p.mutex.Unlock()
+
+	for _, cs := range toClose {
+		p.closeSession(cs.id, cs.session)
 	}
 }
 
 func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
 	session.mutex.RLock()
-	hasReports := len(session.CompletedReports) > 0
-	session.mutex.RUnlock()
+	defer session.mutex.RUnlock()
 
+	duration := time.Since(session.StartTime).String()
 	logger.Info("closing session",
 		slog.String(sessionIDLogKey, sessionID),
 		slog.Int("completed_reports", len(session.CompletedReports)),
 		slog.Int("tracked_files", len(session.TrackedFiles)),
-		slog.String("duration", time.Since(session.StartTime).String()))
+		slog.String("duration", duration))
 
-	consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), time.Since(session.StartTime).String()))
+	consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), duration))
 
-	if hasReports {
+	if len(session.CompletedReports) > 0 {
 		p.generateSessionReport(session)
 	}
 }
@@ -387,7 +397,7 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 			continue
 		}
 		defer func(f *os.File) {
-			if e := file.Close(); e != nil {
+			if e := f.Close(); e != nil {
 				logger.Warn("failed to close report file",
 					slog.String(filepathLogKey, f.Name()),
 					slog.String("error", e.Error()),

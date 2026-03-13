@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"context"
-	"errors"
 	"io"
 	"log/slog"
 
@@ -52,8 +51,5 @@ type HCContext interface {
 	GetConsoleLogger() *slog.Logger
 	GetExtractConfig() ExtractConfig
 }
-
-// ErrUnhandledMethod is return when a plugin does not handle the request method
-var ErrUnhandledMethod = errors.New("unhandled method")
 
 var PluginExportedName = "HCPlugin"

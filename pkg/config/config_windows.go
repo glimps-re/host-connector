@@ -10,9 +10,7 @@ import (
 
 var (
 	DefaultConfigPath         = filepath.Join(os.Getenv("APPDATA"), "gmhost", "config.yml")
-	DefaultCacheLocation      = filepath.Join(os.Getenv("APPDATA"), "gmhost", "cache.db")
 	DefaultQuarantineLocation = filepath.Join(os.Getenv("APPDATA"), "gmhost", "quarantine")
-	DefaultPluginsLocation    = filepath.Join(os.Getenv("APPDATA"), "gmhost", "plugins")
 )
 
 func GetConfigFile() (config string, err error) {

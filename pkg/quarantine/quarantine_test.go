@@ -492,7 +492,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			wantErr: errors.New("unlock failed"),
 		},
 		{
-			name: "error when registry Get fails",
+			name: "registry Get fails after restore: logs error, returns nil",
 			fields: fields{
 				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 					return LockEntry{
@@ -525,10 +525,10 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			args: args{
 				entryID: "test-entry",
 			},
-			wantErr: errors.New("registry get failed"),
+			wantErr: nil,
 		},
 		{
-			name: "error when registry Set fails",
+			name: "registry Set fails after restore: logs error, returns nil",
 			fields: fields{
 				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 					return LockEntry{
@@ -565,7 +565,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			args: args{
 				entryID: "test-entry",
 			},
-			wantErr: errors.New("registry set failed"),
+			wantErr: nil,
 		},
 	}
 	for _, tt := range tests {
@@ -650,7 +650,7 @@ func TestQuarantineHandler_IsRestored(t *testing.T) {
 						SHA256:             sha256,
 						InitialLocation:    "/path/to/file.txt",
 						QuarantineLocation: "",
-						RestoredAt:         Now(),
+						RestoredAt:         now(),
 					}, nil
 				},
 			},
@@ -683,7 +683,7 @@ func TestQuarantineHandler_IsRestored(t *testing.T) {
 			name: "entry not found",
 			fields: fields{
 				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return nil, ErrEntryNotFound
+					return nil, errEntryNotFound
 				},
 			},
 			args: args{

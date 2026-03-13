@@ -159,14 +159,6 @@ func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (
 }
 
 func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config) (err error) {
-	if config.Workers == 0 {
-		config.Workers = 4
-	}
-
-	if config.ExtractWorkers == 0 {
-		config.ExtractWorkers = 2
-	}
-
 	if config.Debug {
 		scanner.LogLevel.Set(slog.LevelDebug)
 		datamodel.LogLevel.Set(slog.LevelDebug)
@@ -238,7 +230,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		h.Conn.Close(ctx)
 	}
 
-	h.Conn = scanner.NewConnector(scanner.Config{
+	h.Conn, err = scanner.NewConnector(scanner.Config{
 		QuarantineFolder: config.Quarantine.Location,
 		MaxFileSize:      maxFileSize,
 		// ExtractMinThreshold: , // not set to always use default value
@@ -270,6 +262,9 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		MoveTo:                   config.Move.Destination,
 		MoveFrom:                 config.Move.Source,
 	}, h.Quarantiner, h.submitter)
+	if err != nil {
+		return
+	}
 
 	if config.PluginsConfig != "" {
 		configFile, openErr := os.Open(filepath.Clean(config.PluginsConfig))

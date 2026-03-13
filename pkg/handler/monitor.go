@@ -157,10 +157,7 @@ func (m *Monitor) work() {
 	}
 }
 
-var (
-	ScanFileLoopPause = time.Millisecond * 100
-	Since             = time.Since
-)
+var since = time.Since
 
 func (m *Monitor) scanFiles() {
 	for {
@@ -177,8 +174,8 @@ func (m *Monitor) scanFiles() {
 				m.pendingFiles.Delete(path)
 				continue
 			}
-			if Since(info.ModTime()) < time.Duration(m.modDelay) {
-				delay := time.Duration(m.modDelay) - Since(info.ModTime())
+			if since(info.ModTime()) < time.Duration(m.modDelay) {
+				delay := time.Duration(m.modDelay) - since(info.ModTime())
 				time.AfterFunc(delay, func() {
 					select {
 					case <-m.done:

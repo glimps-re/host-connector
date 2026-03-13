@@ -48,7 +48,10 @@ test2,123457,true`,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := NewConnector(tt.config, &quarantinermock.QuarantineMock{}, &mockSubmitter{})
+			c, connErr := NewConnector(tt.config, &quarantinermock.QuarantineMock{}, &mockSubmitter{})
+			if connErr != nil {
+				t.Fatalf("could not create connector: %v", connErr)
+			}
 			if tt.generator != nil {
 				c.RegisterGenerateReport(tt.generator)
 			}

@@ -92,7 +92,7 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	}
 
 	encoder := json.NewEncoder(out)
-	// encoder.SetIndent("  ", "")
+
 	err = encoder.Encode(r)
 	if err != nil {
 		return

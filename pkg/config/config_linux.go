@@ -6,18 +6,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-
-	"github.com/mitchellh/go-homedir"
 )
 
 var (
 	DefaultConfigPath         = "/etc/gmhost/config.yml"
 	DefaultQuarantineLocation = "/var/lib/gmhost/quarantine"
-	DefaultPluginsLocation    = "/var/lib/gmhost/plugins"
 )
 
 func GetConfigFile() (config string, err error) {
-	home, err := homedir.Dir()
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}

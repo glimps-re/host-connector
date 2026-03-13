@@ -26,7 +26,7 @@ func (c *Connector) LoadPlugins(pluginsConfig map[string]PluginConfig) (err erro
 		}
 		pp, ok := p.(plugins.Plugin)
 		if !ok {
-			return errors.Join(ErrInvalidPlugin, fmt.Errorf("plugin: %#v", p))
+			return errors.Join(errInvalidPlugin, fmt.Errorf("plugin: %#v", p))
 		}
 
 		config := pp.GetDefaultConfig()

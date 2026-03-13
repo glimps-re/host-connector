@@ -4,7 +4,6 @@ go 1.26
 
 require (
 	github.com/glimps-re/go-gdetect v1.6.1
-	github.com/mitchellh/go-homedir v1.1.0
 	github.com/spf13/cobra v1.10.1
 	modernc.org/sqlite v1.39.0
 )
@@ -24,7 +23,6 @@ require (
 	github.com/vimeo/go-magic v1.0.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/crypto v0.45.0
-	golang.org/x/sync v0.20.0
 	golift.io/xtractr v0.2.2
 )
 
@@ -64,6 +62,7 @@ require (
 	go4.org v0.0.0-20230225012048-214862532bf5 // indirect
 	golang.org/x/exp v0.0.0-20251002181428-27f1f14c8bb9 // indirect
 	golang.org/x/net v0.47.0 // indirect
+	golang.org/x/sync v0.20.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	modernc.org/libc v1.66.10 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

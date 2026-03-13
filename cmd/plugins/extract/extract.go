@@ -75,6 +75,7 @@ type extractResult struct {
 	ignoredFiles   []string
 	symlinkFiles   []string
 	passwordUsed   string
+	logger         *slog.Logger
 }
 
 // calculateEffectiveZipBombSizes calculates the total decompressed and compressed sizes
@@ -114,6 +115,7 @@ type sevenZipExtract struct {
 	config       extractorConfig
 	sevenZipPath string
 	tmpSevenZip  bool
+	logger       *slog.Logger
 }
 
 var (
@@ -122,10 +124,11 @@ var (
 	ErrFileNotFound      = errors.New("file not found")
 )
 
-func newSevenZipExtract(config extractorConfig, sevenZipPath string) (sze *sevenZipExtract, err error) {
+func newSevenZipExtract(config extractorConfig, sevenZipPath string, logger *slog.Logger) (sze *sevenZipExtract, err error) {
 	sze = &sevenZipExtract{
 		config:       config,
 		sevenZipPath: sevenZipPath,
+		logger:       logger,
 	}
 
 	if sevenZipPath == "" {
@@ -151,7 +154,7 @@ func (sze *sevenZipExtract) resolve7zzs() (err error) {
 	}
 	defer func() {
 		if e := f.Close(); e != nil {
-			logger.Error("could not close created 7zzs temp file", slog.String("file", f.Name()), slog.String("error", e.Error()))
+			sze.logger.Error("could not close created 7zzs temp file", slog.String("file", f.Name()), slog.String("error", e.Error()))
 		}
 	}()
 
@@ -204,7 +207,7 @@ PASSWORD_LOOP:
 				return
 			}
 
-			filesProps, errParse := parse7ZListingOutput(out)
+			filesProps, errParse := parse7ZListingOutput(out, sze.logger)
 			if errParse != nil {
 				err = errParse
 				return
@@ -256,6 +259,7 @@ func (sze *sevenZipExtract) extract(archivePath string, extractLocation string, 
 	slices.Sort(filesToExtract)
 	filesToExtract = slices.Compact(filesToExtract)
 	extraction.ignoredFiles = slices.Compact(skippedFiles)
+	extraction.logger = sze.logger
 
 	if len(filesToExtract) == 0 {
 		return
@@ -318,7 +322,7 @@ PASSWORD_LOOP:
 
 	err = filepath.WalkDir(extractLocation, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			logger.Error("error listing directory", slog.String("error", err.Error()), slog.String("path", path))
+			sze.logger.Error("error listing directory", slog.String("error", err.Error()), slog.String("path", path))
 			return err
 		}
 		if d.IsDir() {
@@ -353,7 +357,7 @@ func (sze *sevenZipExtract) run(password string, args []string) (out string, sym
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	cmdErr := cmd.Run()
-	symLinkFiles, err = handleSevenZipError(cmdErr, strings.ToValidUTF8(stderr.String(), ""))
+	symLinkFiles, err = handleSevenZipError(cmdErr, strings.ToValidUTF8(stderr.String(), ""), sze.logger)
 	if err != nil {
 		return
 	}
@@ -363,7 +367,7 @@ func (sze *sevenZipExtract) run(password string, args []string) (out string, sym
 
 var errSevenZipRecoverable = errors.New("recoverable sevenzip error")
 
-func handleSevenZipError(sevenZipErr error, stderr string) (symLinkFiles []string, err error) {
+func handleSevenZipError(sevenZipErr error, stderr string, logger *slog.Logger) (symLinkFiles []string, err error) {
 	switch {
 	case sevenZipErr == nil:
 	case stderr == "":
@@ -469,7 +473,7 @@ func parse7ZFileListLine(line string) (content FileProperties, err error) {
 
 const buffSize = 64 * 1024
 
-func parse7ZListingOutput(stdout string) (files []FileProperties, err error) {
+func parse7ZListingOutput(stdout string, logger *slog.Logger) (files []FileProperties, err error) {
 	headerFound := false
 
 	scanner := bufio.NewScanner(strings.NewReader(stdout))
@@ -542,7 +546,7 @@ func (ec *extractResult) update(filePath string, archivePath string) (err error)
 	var fi fs.FileInfo
 	fi, err = os.Lstat(filePath)
 	if err != nil {
-		logger.Error("unable to get stats on file", slog.String("file", filePath), slog.String("error", err.Error()))
+		ec.logger.Error("unable to get stats on file", slog.String("file", filePath), slog.String("error", err.Error()))
 		return
 	}
 
@@ -550,7 +554,7 @@ func (ec *extractResult) update(filePath string, archivePath string) (err error)
 		ec.symlinkFiles = append(ec.symlinkFiles, filePath)
 		errRm := os.Remove(filePath)
 		if errRm != nil {
-			logger.Warn("could not remove extracted symlink", slog.String("error", errRm.Error()), slog.String("path", filePath))
+			ec.logger.Warn("could not remove extracted symlink", slog.String("error", errRm.Error()), slog.String("path", filePath))
 		}
 		return
 	}
@@ -568,16 +572,16 @@ func (ec *extractResult) update(filePath string, archivePath string) (err error)
 	switch {
 	case err == nil:
 		if errClose := f.Close(); errClose != nil {
-			logger.Error("failed closing file", slog.String("error", errClose.Error()), slog.String("path", f.Name()))
+			ec.logger.Error("failed closing file", slog.String("error", errClose.Error()), slog.String("path", f.Name()))
 		}
 	case errors.Is(err, os.ErrPermission):
 		err = os.Chmod(filePath, 0o400)
 		if err != nil {
-			logger.Error("could not add read permission to file", slog.String("error", err.Error()), slog.String("path", filePath))
+			ec.logger.Error("could not add read permission to file", slog.String("error", err.Error()), slog.String("path", filePath))
 			return
 		}
 	default:
-		logger.Error("unable to open file", slog.String("error", err.Error()), slog.String("path", filePath))
+		ec.logger.Error("unable to open file", slog.String("error", err.Error()), slog.String("path", filePath))
 		return
 	}
 	return

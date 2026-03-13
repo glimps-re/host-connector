@@ -17,15 +17,12 @@ import (
 	"github.com/vimeo/go-magic/magic"
 )
 
-var (
-	logger        = slog.New(slog.DiscardHandler)
-	consoleLogger = slog.New(slog.DiscardHandler)
-)
-
 // FTFilterPlugin provides MIME type-based file filtering.
 type FTFilterPlugin struct {
 	ForbiddenTypes map[string]struct{} // MIME types to flag as malicious
 	SkippedTypes   map[string]struct{} // MIME types to mark as safe
+	logger         *slog.Logger
+	consoleLogger  *slog.Logger
 }
 
 // Config defines MIME type filtering rules.
@@ -47,11 +44,11 @@ func (p *FTFilterPlugin) GetDefaultConfig() (config any) {
 
 // Init initializes the plugin with libmagic and configuration.
 func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
-	logger = hcc.GetLogger().With(slog.String("plugin", "filetype_filter"))
-	consoleLogger = hcc.GetConsoleLogger()
+	p.logger = hcc.GetLogger().With(slog.String("plugin", "filetype_filter"))
+	p.consoleLogger = hcc.GetConsoleLogger()
 
 	if addMagicErr := magic.AddMagicDir(magic.GetDefaultDir()); addMagicErr != nil {
-		logger.Warn("could not add default magic dir", slog.String("dir", magic.GetDefaultDir()), slog.String("error", addMagicErr.Error()))
+		p.logger.Warn("could not add default magic dir", slog.String("dir", magic.GetDefaultDir()), slog.String("error", addMagicErr.Error()))
 	}
 
 	config, ok := rawConfig.(*Config)
@@ -72,11 +69,11 @@ func (p *FTFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 
 	hcc.RegisterOnScanFile(p.OnScanFile)
 
-	logger.Info("plugin initialized",
+	p.logger.Info("plugin initialized",
 		slog.String("forbidden_types", strings.Join(config.ForbiddenTypes, ", ")),
 		slog.String("skipped_types", strings.Join(config.SkippedTypes, ", ")),
 	)
-	consoleLogger.Info(fmt.Sprintf("filetypefilter plugin initialized, forbidden_types: %s, skipped_types: %s",
+	p.consoleLogger.Info(fmt.Sprintf("filetypefilter plugin initialized, forbidden_types: %s, skipped_types: %s",
 		strings.Join(config.ForbiddenTypes, ", "), strings.Join(config.SkippedTypes, ", ")))
 	return nil
 }
@@ -90,13 +87,13 @@ func (p *FTFilterPlugin) Close(context.Context) error {
 func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 string, _ bool) (res *datamodel.Result) {
 	fileInfo, err := os.Stat(location)
 	if err != nil {
-		logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
+		p.logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
 		return
 	}
 	mime := magic.MimeFromFile(location)
 	if _, ok := p.ForbiddenTypes[mime]; ok {
-		consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (blacklist) file=%s, mime=%s", location, mime))
-		logger.Debug("set file as malware",
+		p.consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (blacklist) file=%s, mime=%s", location, mime))
+		p.logger.Debug("set file as malware",
 			slog.String("file", location),
 			slog.String("sha256", sha256),
 			slog.String("mime", mime))
@@ -114,8 +111,8 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 	}
 
 	if _, ok := p.SkippedTypes[mime]; ok {
-		consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (whitelist) file=%s, mime=%s", location, mime))
-		logger.Debug("set file as legit",
+		p.consoleLogger.Debug(fmt.Sprintf("filtered file based on its type (whitelist) file=%s, mime=%s", location, mime))
+		p.logger.Debug("set file as legit",
 			slog.String("file", location),
 			slog.String("sha256", sha256),
 			slog.String("mime", mime))

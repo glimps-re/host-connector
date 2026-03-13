@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -478,6 +479,8 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 			plugin := &FilePathFilterPlugin{
 				ForbiddenPaths: tt.fields.forbiddenPaths,
 				SkippedPaths:   tt.fields.skippedPaths,
+				logger:         slog.New(slog.DiscardHandler),
+				consoleLogger:  slog.New(slog.DiscardHandler),
 			}
 
 			got := plugin.OnScanFile(tt.args.fileName, tt.args.location, tt.args.sha256, false)

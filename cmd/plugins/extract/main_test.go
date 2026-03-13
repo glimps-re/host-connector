@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"testing"
 
@@ -86,7 +87,8 @@ func TestSevenZipExtractPlugin_resolve7zzs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sze, err := newSevenZipExtract(extractorConfig{}, "")
+			testLogger := slog.New(slog.DiscardHandler)
+			sze, err := newSevenZipExtract(extractorConfig{}, "", testLogger)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("newSevenZipExtract() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -237,7 +239,8 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 }
 
 func TestSevenZipExtractPlugin_BinaryManagement(t *testing.T) {
-	sze, err := newSevenZipExtract(extractorConfig{}, "")
+	testLogger := slog.New(slog.DiscardHandler)
+	sze, err := newSevenZipExtract(extractorConfig{}, "", testLogger)
 	if err != nil {
 		t.Fatalf("Failed to resolve 7zzs binary: %v", err)
 	}

@@ -22,14 +22,11 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-var (
-	logger        = slog.New(slog.DiscardHandler)
-	consoleLogger = slog.New(slog.DiscardHandler)
-)
-
 // ReportPlugin generates PDF and HTML reports from scan results.
 type ReportPlugin struct {
-	templ *template.Template
+	templ         *template.Template
+	logger        *slog.Logger
+	consoleLogger *slog.Logger
 }
 
 var (
@@ -75,15 +72,15 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 		err = errors.New("bad config passed to report")
 		return
 	}
-	logger = hcc.GetLogger().With(slog.String("plugin", "report"))
-	consoleLogger = hcc.GetConsoleLogger()
+	p.logger = hcc.GetLogger().With(slog.String("plugin", "report"))
+	p.consoleLogger = hcc.GetConsoleLogger()
 
 	if config.TemplatePath != "" {
 		if p.templ, err = templ.ParseFiles(filepath.Clean(config.TemplatePath)); err != nil {
 			return
 		}
-		logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
-		consoleLogger.Info("report plugin initialized, template: " + config.TemplatePath)
+		p.logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
+		p.consoleLogger.Info("report plugin initialized, template: " + config.TemplatePath)
 
 		hcc.RegisterGenerateReport(p.GenerateReport)
 		return
@@ -91,8 +88,8 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	if p.templ, err = templ.Parse(defaultTemplate); err != nil {
 		return
 	}
-	logger.Info("plugin initialized", slog.String("template", "default"))
-	consoleLogger.Info("report plugin initialized, default template")
+	p.logger.Info("plugin initialized", slog.String("template", "default"))
+	p.consoleLogger.Info("report plugin initialized, default template")
 
 	hcc.RegisterGenerateReport(p.GenerateReport)
 	return nil
@@ -177,7 +174,7 @@ type ReportData struct {
 
 // GenerateReport generates a PDF report from scan results.
 func (p *ReportPlugin) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (o io.Reader, err error) {
-	consoleLogger.Debug(fmt.Sprintf("generate pdf report for %d analysis", len(reports)))
+	p.consoleLogger.Debug(fmt.Sprintf("generate pdf report for %d analysis", len(reports)))
 	buffer, err := p.generatePDFReport(ctx, reportContext, reports)
 	o = buffer
 	return

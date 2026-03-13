@@ -1132,3 +1132,104 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 		})
 	}
 }
+
+func TestMoveFile(t *testing.T) {
+	tests := []struct {
+		name    string
+		setup   func(t *testing.T) (src, dst string)
+		wantErr bool
+		check   func(t *testing.T, src, dst string)
+	}{
+		{
+			name: "successful move within same filesystem",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+				if err := os.WriteFile(src, []byte("test content"), 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			check: func(t *testing.T, src, dst string) {
+				t.Helper()
+				content, err := os.ReadFile(dst) //nolint:gosec // G304 - dst is controlled by test code
+				if err != nil {
+					t.Fatalf("failed to read destination file: %v", err)
+				}
+				if string(content) != "test content" {
+					t.Errorf("content mismatch: got %s, want 'test content'", string(content))
+				}
+				if _, err := os.Stat(src); !os.IsNotExist(err) {
+					t.Errorf("source file should not exist after move")
+				}
+			},
+		},
+		{
+			name: "preserves file permissions",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "dest.txt")
+				if err := os.WriteFile(src, []byte("test file content"), 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			check: func(t *testing.T, src, dst string) {
+				t.Helper()
+				if _, err := os.Stat(src); !os.IsNotExist(err) {
+					t.Errorf("source file should not exist after move")
+				}
+				info, err := os.Stat(dst)
+				if err != nil {
+					t.Fatalf("failed to stat destination: %v", err)
+				}
+				if info.Mode().Perm() != 0o600 {
+					t.Errorf("permissions not preserved: got %o, want 0600", info.Mode().Perm())
+				}
+			},
+		},
+		{
+			name: "source file does not exist",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+				return filepath.Join(tmpDir, "nonexistent.txt"), filepath.Join(tmpDir, "dest.txt")
+			},
+			wantErr: true,
+		},
+		{
+			name: "destination directory does not exist",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				tmpDir := t.TempDir()
+				src := filepath.Join(tmpDir, "source.txt")
+				dst := filepath.Join(tmpDir, "nonexistent", "dest.txt")
+				if err := os.WriteFile(src, []byte("content"), 0o600); err != nil {
+					t.Fatalf("failed to create source file: %v", err)
+				}
+				return src, dst
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := tt.setup(t)
+			err := MoveFile(src, dst)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("MoveFile() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+
+			if !tt.wantErr && tt.check != nil {
+				tt.check(t, src, dst)
+			}
+		})
+	}
+}

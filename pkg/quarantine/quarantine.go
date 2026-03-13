@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/glimps-re/host-connector/pkg/config"
 )
@@ -273,7 +274,12 @@ func (q *QuarantineHandler) ListQuarantinedFiles(ctx context.Context) iter.Seq2[
 			if !strings.HasSuffix(path, ".lock") {
 				return nil
 			}
-			file, err := os.Open(filepath.Clean(path))
+
+			relPath, err := filepath.Rel(q.location, path)
+			if err != nil {
+				return err
+			}
+			file, err := os.OpenInRoot(q.location, relPath)
 			if err != nil {
 				return err
 			}
@@ -324,8 +330,7 @@ func (q *QuarantineHandler) moveQuarantinedFiles(ctx context.Context, oldLocatio
 		filename := filepath.Base(path)
 		newPath := filepath.Join(newLocation, filename)
 
-		moveErr := os.Rename(path, newPath)
-		if moveErr != nil {
+		if moveErr := MoveFile(path, newPath); moveErr != nil {
 			return moveErr
 		}
 
@@ -345,6 +350,63 @@ func (q *QuarantineHandler) moveQuarantinedFiles(ctx context.Context, oldLocatio
 
 		return nil
 	})
+	return
+}
+
+// MoveFile moves a file from src to dst, falling back to copy+delete
+// when src and dst are on different mount points (EXDEV).
+func MoveFile(src, dst string) error {
+	err := os.Rename(src, dst)
+	if err == nil {
+		return nil
+	}
+	var linkErr *os.LinkError
+	if errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV) {
+		return copyAndDelete(src, dst)
+	}
+	return fmt.Errorf("could not move file %s to %s: %w", src, dst, err)
+}
+
+func copyAndDelete(src, dst string) (err error) {
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return
+	}
+
+	srcFile, err := os.Open(filepath.Clean(src))
+	if err != nil {
+		return
+	}
+	defer func() {
+		if e := srcFile.Close(); e != nil {
+			logger.Error("copyAndDelete cannot close source file", slog.String("file", src), slog.String("error", e.Error()))
+		}
+	}()
+
+	dstFile, err := os.Create(dst) //nolint:gosec // G304 - dst is constructed from controlled paths
+	if err != nil {
+		return
+	}
+
+	success := false
+	defer func() {
+		if e := dstFile.Close(); e != nil {
+			logger.Error("copyAndDelete cannot close destination file", slog.String("file", dst), slog.String("error", e.Error()))
+		}
+		if !success {
+			if e := os.Remove(dst); e != nil {
+				logger.Error("copyAndDelete cannot remove destination file after failed copy", slog.String("file", dst), slog.String("error", e.Error()))
+			}
+		}
+	}()
+	if _, err = io.Copy(dstFile, srcFile); err != nil {
+		return
+	}
+	if err = os.Chmod(dst, srcInfo.Mode()); err != nil {
+		return
+	}
+	success = true
+	err = os.Remove(src)
 	return
 }
 

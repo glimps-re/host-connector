@@ -215,11 +215,12 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
+	restored := false
 	defer func() {
 		if e := out.Close(); e != nil {
 			logger.Error("cannot close restored file", slog.String("file", header.Filepath), slog.String("error", e.Error()))
 		}
-		if err != nil {
+		if err != nil && !restored {
 			if e := os.Remove(out.Name()); e != nil {
 				logger.Error("cannot remove restored file after error", slog.String("file", header.Filepath), slog.String("error", e.Error()))
 			}
@@ -237,19 +238,19 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
-	// from here the file has been restored, we want the lock file to be deleted
+
+	restored = true
 	deleteLocked = true
-	entry, registryErr := q.registry.Get(ctx, id)
-	if registryErr != nil {
-		logger.Error("error getting registry entry", slog.String("id", id), slog.String("error", registryErr.Error()))
-	} else {
-		entry.QuarantineLocation = ""
-		entry.RestoredAt = Now()
-		if setErr := q.registry.Set(ctx, entry); setErr != nil {
-			logger.Error("error set cache", slog.String("sha256", entry.SHA256), slog.String("error", setErr.Error()))
-		}
-	}
+
 	logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
+	entry, err := q.registry.Get(ctx, id)
+	if err != nil {
+		return
+	}
+
+	entry.QuarantineLocation = ""
+	entry.RestoredAt = Now()
+	err = q.registry.Set(ctx, entry)
 	return
 }
 

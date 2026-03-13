@@ -531,6 +531,11 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			if err != nil {
 				t.Fatalf("could not init plugin")
 			}
+			t.Cleanup(func() {
+				if err := plugin.Close(t.Context()); err != nil {
+					t.Logf("Warning: failed to close plugin: %v", err)
+				}
+			})
 			maps.Copy(plugin.sessions, tt.fields.storedSessions)
 
 			got, _ := plugin.getSession(tt.filePath, tt.ensure)

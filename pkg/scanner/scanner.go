@@ -23,6 +23,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
+	"golang.org/x/sync/semaphore"
 	"golift.io/xtractr"
 )
 
@@ -126,6 +127,7 @@ type fileToAnalyze struct {
 	archiveSHA256      string
 	archiveSize        int64
 	needsPrecheck      bool // true when originated from ScanFile (tracked by precheckWg)
+	extractAttempted   bool // true when file has been through extraction; prevents re-routing
 }
 
 type archiveToAnalyze struct {
@@ -140,15 +142,15 @@ type Connector struct {
 
 	started bool
 
-	stopExtract chan struct{}
-	stopWorker  chan struct{}
+	stopIncoming     chan struct{} // closed first in Close() to reject new fileChan sends
+	extractCtx       context.Context
+	extractCtxCancel context.CancelFunc
+	stopWorker       chan struct{}
 
 	config                 Config
 	workerWg               sync.WaitGroup
-	extractWg              sync.WaitGroup
-	precheckWg             sync.WaitGroup // tracks files from ScanFile through worker precheck
 	fileChan               chan fileToAnalyze
-	archiveChan            chan archiveToAnalyze
+	extractSem             *semaphore.Weighted
 	action                 Action
 	reportMutex            sync.Mutex
 	reports                []*datamodel.Report
@@ -161,6 +163,7 @@ type Connector struct {
 	onReportCbs            []plugins.OnReport
 	generateReport         plugins.GenerateReport
 	ongoingAnalysis        *sync.Map
+	analysisWg             sync.WaitGroup // tracks files from ScanFile entry to ongoingAnalysis removal
 	typesToExtract         map[string]struct{}
 }
 
@@ -206,19 +209,23 @@ func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter S
 		config.ExtractMinThreshold = defaultExtractMinThreshold
 	}
 
+	extractCtx, extractCtxCancel := context.WithCancel(context.Background())
+
 	return &Connector{
-		submitter:       submitter,
-		quarantiner:     quarantiner,
-		fileChan:        make(chan fileToAnalyze, config.Workers),
-		archiveChan:     make(chan archiveToAnalyze, max(config.Workers, config.ExtractWorkers)), // so workers can't exhaust archiveChan
-		config:          config,
-		archiveStatus:   newArchiveStatusHandler(),
-		action:          newAction(config, quarantiner),
-		generateReport:  datamodel.GenerateReport,
-		ongoingAnalysis: new(sync.Map),
-		stopExtract:     make(chan struct{}),
-		stopWorker:      make(chan struct{}),
-		typesToExtract:  extractableTypes(),
+		submitter:        submitter,
+		quarantiner:      quarantiner,
+		fileChan:         make(chan fileToAnalyze, config.Workers),
+		extractSem:       semaphore.NewWeighted(int64(config.ExtractWorkers)),
+		config:           config,
+		archiveStatus:    newArchiveStatusHandler(),
+		action:           newAction(config, quarantiner),
+		generateReport:   datamodel.GenerateReport,
+		ongoingAnalysis:  new(sync.Map),
+		stopIncoming:     make(chan struct{}),
+		extractCtx:       extractCtx,
+		extractCtxCancel: extractCtxCancel,
+		stopWorker:       make(chan struct{}),
+		typesToExtract:   extractableTypes(),
 	}
 }
 
@@ -252,9 +259,6 @@ func (c *Connector) Start() (err error) {
 	c.started = true
 	for range c.config.Workers {
 		c.workerWg.Go(func() { c.worker() })
-	}
-	for range c.config.ExtractWorkers {
-		c.extractWg.Go(func() { c.extractWorker() })
 	}
 	return
 }
@@ -312,18 +316,19 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "ongoing analysis"))
 		return
 	}
+	c.analysisWg.Add(1)
 
 	defer func() {
 		if err != nil {
-			c.ongoingAnalysis.Delete(input)
+			c.finishAnalysis(input)
 		}
 	}()
 
-	c.precheckWg.Add(1)
 	select {
 	case <-ctx.Done():
-		c.precheckWg.Done()
 		return context.Canceled
+	case <-c.stopIncoming:
+		return errors.New("connector is stopping")
 	case c.fileChan <- fileToAnalyze{
 		filename:      input,
 		location:      input,
@@ -457,6 +462,15 @@ func (c *Connector) precheck(input fileToAnalyze) (result fileToAnalyze, skip bo
 	return
 }
 
+// finishAnalysis removes the file from ongoingAnalysis and signals the pipeline
+// that this top-level file is fully done. Only files registered via ScanFile
+// (LoadOrStore) are present in the map; extracted sub-files are no-ops.
+func (c *Connector) finishAnalysis(location string) {
+	if _, loaded := c.ongoingAnalysis.LoadAndDelete(location); loaded {
+		c.analysisWg.Done()
+	}
+}
+
 func (c *Connector) processFile(input fileToAnalyze) {
 	inputLogger := logger.With(slog.String("file", input.location))
 
@@ -471,24 +485,29 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	if input.needsPrecheck {
 		var skip bool
 		input, skip = c.precheck(input)
-		c.precheckWg.Done()
 		if skip {
-			c.ongoingAnalysis.Delete(input.location)
+			c.finishAnalysis(input.location)
 			return
 		}
 	}
 
 	// Route to extraction if applicable
-	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
-		inputLogger.Debug("sending file to archive worker ...")
-		select {
-		case <-c.stopExtract:
-			inputLogger.Debug("extract workers stopped, skipping extraction")
-			c.ongoingAnalysis.Delete(input.location)
-			return
-		case c.archiveChan <- archiveToAnalyze{location: input.location, sha256: input.sha256, size: input.size}:
-			return
-		}
+	if !input.extractAttempted && input.size > c.config.ExtractMinThreshold && c.config.Extract {
+		archive := archiveToAnalyze{location: input.location, sha256: input.sha256, size: input.size}
+		go func() {
+			if err := c.extractSem.Acquire(c.extractCtx, 1); err != nil {
+				c.finishAnalysis(input.location)
+				return
+			}
+			defer c.extractSem.Release(1)
+
+			if err := c.tryExtract(archive); err != nil {
+				inputLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
+				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
+				c.finishAnalysis(input.location)
+			}
+		}()
+		return
 	}
 
 	inputLogger.Debug("applying onStartScanFile() from plugins")
@@ -497,13 +516,13 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	actualSHA256, err := getFileSHA256(input.location)
 	if err != nil {
 		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
-		c.ongoingAnalysis.Delete(input.location)
+		c.finishAnalysis(input.location)
 		return
 	}
 	if actualSHA256 != input.sha256 {
 		inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
 		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
-		c.ongoingAnalysis.Delete(input.location)
+		c.finishAnalysis(input.location)
 		return
 	}
 
@@ -524,20 +543,7 @@ func (c *Connector) processFile(input fileToAnalyze) {
 		inputLogger.Debug("file handled successfully")
 	}
 	c.addReport(report)
-	c.ongoingAnalysis.Delete(input.location)
-}
-
-func (c *Connector) extractWorker() {
-	for {
-		select {
-		case <-c.stopExtract:
-			return
-		case archive := <-c.archiveChan:
-			if err := c.tryExtract(archive); err != nil {
-				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
-			}
-		}
-	}
+	c.finishAnalysis(input.location)
 }
 
 // tryExtract starts a recursive extraction for archive.
@@ -573,6 +579,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
+		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -600,6 +607,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
+		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -630,6 +638,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
+		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -728,8 +737,6 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err error) {
 	logger.Debug("sending file to worker for analyse...")
 	select {
-	// don't check stopExtract signal here. during shutdown, analysis workers
-	// remain active while ongoing extractions complete, so files can still be sent for analysis.
 	case <-c.stopWorker:
 		err = context.Canceled
 	case c.fileChan <- file:
@@ -888,7 +895,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	archiveLogger = logger.With(slog.String("archive location", status.archiveLocation))
 
 	defer func() {
-		c.ongoingAnalysis.Delete(status.archiveLocation)
+		c.finishAnalysis(status.archiveLocation)
 	}()
 
 	isSubArchive := status.parentArchive.statusID != ""
@@ -1073,12 +1080,17 @@ func (c *Connector) Close(ctx context.Context) {
 	}
 	c.started = false
 
-	// We stop "input" file before to finish started analysis
-	c.precheckWg.Wait()
+	// Phase 1: stop accepting new files from ScanFile callers.
+	close(c.stopIncoming)
 
-	close(c.stopExtract)
-	c.extractWg.Wait()
+	// Phase 2: wait for all accepted files to be fully processed
+	// (including extraction and analysis of extracted files).
+	// If Close's ctx is cancelled, force-stop goroutines waiting on the semaphore.
+	context.AfterFunc(ctx, c.extractCtxCancel)
+	c.analysisWg.Wait()
+	c.extractCtxCancel()
 
+	// Phase 3: pipeline drained, stop workers.
 	close(c.stopWorker)
 	c.workerWg.Wait()
 

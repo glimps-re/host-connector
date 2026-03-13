@@ -2439,6 +2439,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				},
 				typesToExtract: extractableTypes(),
 				stopWorker:     stopWorker,
+				extractCtx:     t.Context(),
 				fileChan:       fileChan,
 				archiveStatus:  newArchiveStatusHandler(),
 			}
@@ -2560,7 +2561,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			slices.SortFunc(filesSent, func(a, b fileToAnalyze) int {
 				return strings.Compare(a.filename, b.filename)
 			})
-			fmt.Printf("\n\nfileSent:%+v\n", filesSent)
+
 			slices.SortFunc(tt.wantFilesSent, func(a, b fileToAnalyze) int {
 				return strings.Compare(a.filename, b.filename)
 			})
@@ -2590,7 +2591,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize", "extractAttempted"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}
@@ -2642,6 +2643,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				},
 				typesToExtract:  extractableTypes(),
 				stopWorker:      stopWorker,
+				extractCtx:      t.Context(),
 				fileChan:        fileChan,
 				archiveStatus:   newArchiveStatusHandler(),
 				ongoingAnalysis: new(sync.Map),

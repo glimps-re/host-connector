@@ -17,13 +17,8 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-var (
-	logger        = slog.New(slog.DiscardHandler)
-	consoleLogger = slog.New(slog.DiscardHandler)
-
-	// HCPlugin is the exported plugin instance.
-	HCPlugin FilePathFilterPlugin
-)
+// HCPlugin is the exported plugin instance.
+var HCPlugin FilePathFilterPlugin
 
 var _ plugins.Plugin = &FilePathFilterPlugin{}
 
@@ -32,7 +27,9 @@ type FilePathFilterPlugin struct {
 	// path regexps to flag as malicious
 	ForbiddenPaths map[string]*regexp.Regexp // map originalRegexpStr:compiledRegexp
 	// path regexps to mark as safe
-	SkippedPaths map[string]*regexp.Regexp // map originalRegexpStr:compiledRegexp
+	SkippedPaths  map[string]*regexp.Regexp // map originalRegexpStr:compiledRegexp
+	logger        *slog.Logger
+	consoleLogger *slog.Logger
 }
 
 // Config defines path regexp lists.
@@ -45,8 +42,8 @@ func (fp *FilePathFilterPlugin) GetDefaultConfig() any { return &Config{} }
 
 // Init initializes the plugin with configuration.
 func (fp *FilePathFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
-	logger = hcc.GetLogger().With(slog.String("plugin", "filepath_filter"))
-	consoleLogger = hcc.GetConsoleLogger()
+	fp.logger = hcc.GetLogger().With(slog.String("plugin", "filepath_filter"))
+	fp.consoleLogger = hcc.GetConsoleLogger()
 
 	config, ok := rawConfig.(*Config)
 	if !ok {
@@ -70,11 +67,11 @@ func (fp *FilePathFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 
 	hcc.RegisterOnScanFile(fp.OnScanFile)
 
-	logger.Info("plugin initialized",
+	fp.logger.Info("plugin initialized",
 		slog.String("forbidden_paths", strings.Join(config.ForbiddenPaths, ", ")),
 		slog.String("skipped_paths", strings.Join(config.SkippedPaths, ", ")),
 	)
-	consoleLogger.Info(fmt.Sprintf("filepath_filter plugin initialized, forbidden_paths: %s, skipped_paths: %s",
+	fp.consoleLogger.Info(fmt.Sprintf("filepath_filter plugin initialized, forbidden_paths: %s, skipped_paths: %s",
 		strings.Join(config.ForbiddenPaths, ", "), strings.Join(config.SkippedPaths, ", ")))
 	return
 }
@@ -100,11 +97,11 @@ func (fp *FilePathFilterPlugin) OnScanFile(fileName string, location string, sha
 	// forbidden paths take priority over skipped paths
 	for strRegexp, regexp := range fp.ForbiddenPaths {
 		if regexp.MatchString(location) {
-			logger.Debug("filtered file based on its path (blacklist)",
+			fp.logger.Debug("filtered file based on its path (blacklist)",
 				slog.String("file", location),
 				slog.String("sha256", sha256),
 				slog.String("regexp", strRegexp))
-			consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (blacklist) file=%s, regexp=%s", location, strRegexp))
+			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (blacklist) file=%s, regexp=%s", location, strRegexp))
 
 			res = &datamodel.Result{
 				Filename:       fileName,
@@ -123,11 +120,11 @@ func (fp *FilePathFilterPlugin) OnScanFile(fileName string, location string, sha
 
 	for strRegexp, regexp := range fp.SkippedPaths {
 		if regexp.MatchString(location) {
-			logger.Debug("filtered file based on its path (whitelist)",
+			fp.logger.Debug("filtered file based on its path (whitelist)",
 				slog.String("file", location),
 				slog.String("sha256", sha256),
 				slog.String("regexp", strRegexp))
-			consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (whitelist) file=%s, regexp=%s", location, strRegexp))
+			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (whitelist) file=%s, regexp=%s", location, strRegexp))
 
 			res = &datamodel.Result{
 				Filename:       fileName,

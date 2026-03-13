@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
@@ -104,7 +105,9 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 			Depth:      2,
 			Delay:      100 * time.Millisecond,
 		},
-		sessions: make(map[string]*Session),
+		sessions:      make(map[string]*Session),
+		logger:        slog.New(slog.DiscardHandler),
+		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
 	// Test creating session
@@ -181,7 +184,9 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
-		sessions: make(map[string]*Session),
+		sessions:      make(map[string]*Session),
+		logger:        slog.New(slog.DiscardHandler),
+		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
 	tests := []struct {
@@ -237,7 +242,9 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
-		sessions: make(map[string]*Session),
+		sessions:      make(map[string]*Session),
+		logger:        slog.New(slog.DiscardHandler),
+		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
 	filePath := filepath.Join(tmpDir, "user_a/subdir/test.txt")
@@ -278,7 +285,9 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
-		sessions: make(map[string]*Session),
+		sessions:      make(map[string]*Session),
+		logger:        slog.New(slog.DiscardHandler),
+		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
 	filePath := filepath.Join(tmpDir, "user_a/subdir/test.txt")
@@ -332,6 +341,8 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = mockContext
 	plugin.stop = make(chan struct{})
+	plugin.logger = slog.New(slog.DiscardHandler)
+	plugin.consoleLogger = slog.New(slog.DiscardHandler)
 
 	mockContext.RegisterOnStartScanFile(plugin.OnStartScanFile)
 	mockContext.RegisterOnFileScanned(plugin.OnFileScanned)

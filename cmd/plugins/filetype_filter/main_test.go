@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"testing"
@@ -163,7 +164,9 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 					ForbiddenTypes: map[string]struct{}{
 						actualMime: {},
 					},
-					SkippedTypes: map[string]struct{}{},
+					SkippedTypes:  map[string]struct{}{},
+					logger:        slog.New(slog.DiscardHandler),
+					consoleLogger: slog.New(slog.DiscardHandler),
 				}
 			}(),
 			filePath: binaryFile,
@@ -182,6 +185,8 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 				SkippedTypes: map[string]struct{}{
 					"text/plain": {},
 				},
+				logger:        slog.New(slog.DiscardHandler),
+				consoleLogger: slog.New(slog.DiscardHandler),
 			},
 			filePath: textFile,
 			sha256:   "test_sha256",
@@ -196,6 +201,8 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 			plugin: &FTFilterPlugin{
 				ForbiddenTypes: map[string]struct{}{},
 				SkippedTypes:   map[string]struct{}{},
+				logger:         slog.New(slog.DiscardHandler),
+				consoleLogger:  slog.New(slog.DiscardHandler),
 			},
 			filePath:  textFile,
 			sha256:    "test_sha256",
@@ -210,6 +217,8 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 				SkippedTypes: map[string]struct{}{
 					"image/jpeg": {},
 				},
+				logger:        slog.New(slog.DiscardHandler),
+				consoleLogger: slog.New(slog.DiscardHandler),
 			},
 			filePath:  textFile,
 			sha256:    "test_sha256",
@@ -257,7 +266,9 @@ func TestFTFilterPlugin_OnStartScanFile_NonExistentFile(t *testing.T) {
 		ForbiddenTypes: map[string]struct{}{
 			"application/x-executable": {},
 		},
-		SkippedTypes: map[string]struct{}{},
+		SkippedTypes:  map[string]struct{}{},
+		logger:        slog.New(slog.DiscardHandler),
+		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
 	// Test with non-existent file

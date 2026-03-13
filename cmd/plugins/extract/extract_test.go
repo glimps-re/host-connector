@@ -2,13 +2,13 @@ package main
 
 import (
 	"errors"
+	"log/slog"
 	"slices"
 	"testing"
 )
 
 func Test_handleSevenZipError(t *testing.T) {
 	sevenZipErr := errors.New("exit status 2 (test)")
-
 	type args struct {
 		sevenZipErr error
 		stderr      string
@@ -151,7 +151,7 @@ func Test_handleSevenZipError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotSymLinkFiles, err := handleSevenZipError(tt.args.sevenZipErr, tt.args.stderr)
+			gotSymLinkFiles, err := handleSevenZipError(tt.args.sevenZipErr, tt.args.stderr, slog.New(slog.DiscardHandler))
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("handleSevenZipError() error = %v, wantErr %v", err, tt.wantErr)

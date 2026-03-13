@@ -20,19 +20,16 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-var (
-	logger        = slog.New(slog.DiscardHandler)
-	consoleLogger = slog.New(slog.DiscardHandler)
-)
-
 // SessionPlugin groups files into sessions based on directory structure.
 type SessionPlugin struct {
-	config   Config
-	sessions map[string]*Session
-	mutex    sync.RWMutex
-	hcc      plugins.HCContext
-	stop     chan struct{}
-	started  bool
+	config        Config
+	sessions      map[string]*Session
+	mutex         sync.RWMutex
+	hcc           plugins.HCContext
+	stop          chan struct{}
+	started       bool
+	logger        *slog.Logger
+	consoleLogger *slog.Logger
 }
 
 // Config defines session behavior and directory monitoring settings.
@@ -93,8 +90,8 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc
 	p.stop = make(chan struct{})
-	logger = hcc.GetLogger().With(slog.String("plugin", "session"))
-	consoleLogger = hcc.GetConsoleLogger()
+	p.logger = hcc.GetLogger().With(slog.String("plugin", "session"))
+	p.consoleLogger = hcc.GetConsoleLogger()
 
 	hcc.RegisterOnStartScanFile(p.OnStartScanFile)
 	hcc.RegisterWithWaitForOptions(p.WaitForOptions)
@@ -103,12 +100,12 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 
 	go p.sessionMonitor()
 
-	logger.Info("plugin initialized",
+	p.logger.Info("plugin initialized",
 		slog.Int("depth", config.Depth),
 		slog.String("delay", config.Delay.String()),
 		slog.String("root_folder", config.RootFolder),
 	)
-	consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s",
+	p.consoleLogger.Info(fmt.Sprintf("session plugin initialized, depth: %d, delay: %s, root_folder: %s",
 		config.Depth, config.Delay.String(), config.RootFolder))
 	p.started = true
 	return nil
@@ -132,15 +129,15 @@ func (p *SessionPlugin) Close(ctx context.Context) error {
 func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) {
 	session, created := p.getSession(file, true)
 	if session != nil {
-		logger.Debug("start scan", slog.String("rep filename", file))
+		p.logger.Debug("start scan", slog.String("rep filename", file))
 		session.addFile(file, sha256)
-		logger.Debug("file added to session",
+		p.logger.Debug("file added to session",
 			slog.String(filepathLogKey, file),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("sha256", sha256),
 		)
 		if created {
-			consoleLogger.Info(fmt.Sprintf("session %s started", session.ID))
+			p.consoleLogger.Info(fmt.Sprintf("session %s started", session.ID))
 		}
 	}
 }
@@ -162,14 +159,14 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 
 	session.markFileCompleted(file)
 	if result.Error != nil {
-		logger.Warn("file scan completed with error",
+		p.logger.Warn("file scan completed with error",
 			slog.String(filepathLogKey, file),
 			slog.String(sessionIDLogKey, session.ID),
 			slog.Any("error", result.Error.Error()),
 		)
 		return
 	}
-	logger.Debug("file scan completed successfully",
+	p.logger.Debug("file scan completed successfully",
 		slog.String(filepathLogKey, file),
 		slog.String(sessionIDLogKey, session.ID),
 	)
@@ -184,13 +181,13 @@ func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
 	}
 
 	session.addReport(*rep)
-	logger.Debug("report added to session",
+	p.logger.Debug("report added to session",
 		slog.String(filepathLogKey, rep.Filename),
 		slog.String(sessionIDLogKey, session.ID),
 		slog.Bool("malicious", rep.Malicious),
 		slog.String("sha256", rep.SHA256),
 	)
-	consoleLogger.Debug(fmt.Sprintf("add report for %s to session %s (malicious: %v)", rep.Filename, session.ID, rep.Malicious))
+	p.consoleLogger.Debug(fmt.Sprintf("add report for %s to session %s (malicious: %v)", rep.Filename, session.ID, rep.Malicious))
 }
 
 func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session, created bool) {
@@ -230,7 +227,7 @@ func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Sessi
 			CompletedReports: make([]datamodel.Report, 0),
 		}
 		p.sessions[sessionID] = session
-		logger.Info("new session created",
+		p.logger.Info("new session created",
 			slog.String(sessionIDLogKey, sessionID),
 			slog.String("export_paths", strings.Join(sessionPaths, ",")),
 			slog.String("start_time", session.StartTime.Format(time.RFC3339)),
@@ -305,9 +302,8 @@ func (p *SessionPlugin) checkAndCloseSessions() {
 		session *Session
 	}
 
-	var toClose []closableSession
-
 	p.mutex.Lock()
+	toClose := make([]closableSession, 0, len(p.sessions))
 	for sessionID, session := range p.sessions {
 		if session.isReadyForClosure(p.config.Delay) {
 			toClose = append(toClose, closableSession{id: sessionID, session: session})
@@ -326,13 +322,13 @@ func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
 	defer session.mutex.RUnlock()
 
 	duration := time.Since(session.StartTime).String()
-	logger.Info("closing session",
+	p.logger.Info("closing session",
 		slog.String(sessionIDLogKey, sessionID),
 		slog.Int("completed_reports", len(session.CompletedReports)),
 		slog.Int("tracked_files", len(session.TrackedFiles)),
 		slog.String("duration", duration))
 
-	consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), duration))
+	p.consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), duration))
 
 	if len(session.CompletedReports) > 0 {
 		p.generateSessionReport(session)
@@ -355,7 +351,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 
 	reader, err := p.hcc.GenerateReport(reportCtx, reportContext, session.CompletedReports)
 	if err != nil {
-		logger.Error("failed to generate session report",
+		p.logger.Error("failed to generate session report",
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("error", err.Error()))
 		return
@@ -365,14 +361,14 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 		reportPaths = append(reportPaths, filepath.Join(path, fmt.Sprintf("report-session-%s-%d.pdf", strings.ReplaceAll(session.ID, "/", "-"), session.StartTime.Unix())))
 	}
 	if err := p.saveReport(reader, reportPaths...); err != nil {
-		logger.Error("failed to save session report",
+		p.logger.Error("failed to save session report",
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("report_paths", strings.Join(reportPaths, ",")),
 			slog.String("error", err.Error()),
 		)
 		return
 	}
-	logger.Info("session report saved",
+	p.logger.Info("session report saved",
 		slog.String(sessionIDLogKey, session.ID),
 		slog.String("report_paths", strings.Join(reportPaths, ",")),
 	)
@@ -386,19 +382,19 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 	for _, path := range filePaths {
 		cleanPath := filepath.Clean(path)
 		if e := os.MkdirAll(filepath.Dir(cleanPath), 0o750); e != nil {
-			consoleLogger.Error(fmt.Sprintf("failed to create session rapport at %s, error: %s", cleanPath, e.Error()))
-			logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", e.Error()))
+			p.consoleLogger.Error(fmt.Sprintf("failed to create session rapport at %s, error: %s", cleanPath, e.Error()))
+			p.logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", e.Error()))
 			continue
 		}
 		file, createErr := os.Create(cleanPath)
 		if createErr != nil {
-			consoleLogger.Error(fmt.Sprintf("failed to create session rapport at %s, error: %s", cleanPath, createErr.Error()))
-			logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", createErr.Error()))
+			p.consoleLogger.Error(fmt.Sprintf("failed to create session rapport at %s, error: %s", cleanPath, createErr.Error()))
+			p.logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", createErr.Error()))
 			continue
 		}
 		defer func(f *os.File) {
 			if e := f.Close(); e != nil {
-				logger.Warn("failed to close report file",
+				p.logger.Warn("failed to close report file",
 					slog.String(filepathLogKey, f.Name()),
 					slog.String("error", e.Error()),
 				)

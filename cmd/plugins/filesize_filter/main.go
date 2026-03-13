@@ -15,11 +15,6 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-var (
-	logger        = slog.New(slog.DiscardHandler)
-	consoleLogger = slog.New(slog.DiscardHandler)
-)
-
 // Config defines the maximum file size limit.
 type Config struct {
 	MaxSize string `mapstructure:"max_size"`
@@ -34,7 +29,9 @@ var (
 
 // FileSizePlugin filters files based on size.
 type FileSizePlugin struct {
-	MaxSize int64
+	MaxSize       int64
+	logger        *slog.Logger
+	consoleLogger *slog.Logger
 }
 
 // Close cleans up plugin resources (no-op for this plugin).
@@ -51,8 +48,8 @@ func (p *FileSizePlugin) GetDefaultConfig() (config any) {
 
 // Init parses configuration and registers callbacks.
 func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
-	logger = hcc.GetLogger().With(slog.String("plugin", "filesize_filter"))
-	consoleLogger = hcc.GetConsoleLogger()
+	p.logger = hcc.GetLogger().With(slog.String("plugin", "filesize_filter"))
+	p.consoleLogger = hcc.GetConsoleLogger()
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		return errors.New("invalid config passed")
@@ -66,8 +63,8 @@ func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) 
 
 	p.MaxSize = maxFileSize
 	hcc.RegisterOnScanFile(p.OnScanFile)
-	logger.Info("plugin initialized", slog.String("max_size", config.MaxSize))
-	consoleLogger.Info("filesize_filter plugin initialized: " + config.MaxSize)
+	p.logger.Info("plugin initialized", slog.String("max_size", config.MaxSize))
+	p.consoleLogger.Info("filesize_filter plugin initialized: " + config.MaxSize)
 	return
 }
 
@@ -78,7 +75,7 @@ func (p *FileSizePlugin) OnScanFile(filename string, location string, sha256 str
 	}
 	fileInfo, err := os.Stat(location)
 	if err != nil {
-		logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
+		p.logger.Warn("could not stat file", slog.String("file", location), slog.String("error", err.Error()))
 		return
 	}
 	if fileInfo.Size() > p.MaxSize {

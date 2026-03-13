@@ -22,6 +22,7 @@ import (
 
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 	quarantinemock "github.com/glimps-re/host-connector/pkg/quarantine/mock"
@@ -33,7 +34,7 @@ func createTestFile(t *testing.T, dir string, content string) (file string, file
 	t.Helper()
 	testFile, err := os.CreateTemp(dir, "test*")
 	if err != nil {
-		t.Errorf("could not create test file, error: %s", err)
+		t.Fatalf("could not create test file, error: %s", err)
 		return
 	}
 	defer func() {
@@ -185,7 +186,7 @@ func TestNewConnector(t *testing.T) {
 			},
 			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
 				t.Helper()
-				if c.config.Workers != defaultWorkers {
+				if c.config.Workers != config.DefaultWorkers {
 					t.Errorf("invalid workers %v", c.config.Workers)
 				}
 				if a, ok := c.action.(*MultiAction); !ok {
@@ -794,7 +795,10 @@ func TestNewConnector(t *testing.T) {
 			}
 			buff := bytes.NewBuffer(nil)
 			tt.fields.config.Actions.InformDest = NopCloser(buff)
-			con := NewConnector(tt.fields.config, &quarantiner, submitter)
+			con, connErr := NewConnector(tt.fields.config, &quarantiner, submitter)
+			if connErr != nil {
+				t.Fatalf("could not create connector: %v", connErr)
+			}
 			if e := con.Start(); e != nil {
 				t.Fatalf("could not start connector, error: %v", e.Error())
 			}
@@ -1816,7 +1820,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			c := &Connector{
 				action:          action,
 				archiveStatus:   newArchiveStatusHandler(),
-				ongoingAnalysis: new(sync.Map),
+				ongoingAnalysis: sync.Map{},
 			}
 
 			var archiveID string
@@ -1957,7 +1961,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 	}
 }
 
-func Test_Connector_analyzeArchive(t *testing.T) {
+func Test_Connector_analyzeArchiveFile(t *testing.T) {
 	type fields struct {
 		archiveNotFound bool
 		archiveFinished bool
@@ -2007,7 +2011,7 @@ func Test_Connector_analyzeArchive(t *testing.T) {
 			c := &Connector{
 				action:          action,
 				archiveStatus:   newArchiveStatusHandler(),
-				ongoingAnalysis: new(sync.Map),
+				ongoingAnalysis: sync.Map{},
 				config: Config{
 					MaxFileSize: 100,
 				},
@@ -2057,7 +2061,7 @@ func Test_Connector_analyzeArchive(t *testing.T) {
 				size:            1000,
 			}
 
-			err := c.analyzeArchive(input)
+			err := c.analyzeArchiveFile(input)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("handleArchive() error = %v, wantErr %v", err, tt.wantErr)
@@ -2336,11 +2340,11 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 		{
 			name: "ok nested archive till max depth",
 			fields: fields{
-				recursiveExtractMaxDepth: defaultRecursiveExtractMaxDepth,
+				recursiveExtractMaxDepth: config.DefaultRecursiveExtractMaxDepth,
 				extractMinThreshold:      1,
 				recursiveExtractMaxSize:  1000000,
 				recursiveExtractMaxFiles: 100,
-				createArchiveWithDepth:   defaultRecursiveExtractMaxDepth - 1,
+				createArchiveWithDepth:   config.DefaultRecursiveExtractMaxDepth - 1,
 			},
 			args: args{
 				depth: 0,
@@ -2439,7 +2443,6 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				},
 				typesToExtract: extractableTypes(),
 				stopWorker:     stopWorker,
-				extractCtx:     t.Context(),
 				fileChan:       fileChan,
 				archiveStatus:  newArchiveStatusHandler(),
 			}
@@ -2591,7 +2594,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize", "extractAttempted"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}
@@ -2643,10 +2646,9 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				},
 				typesToExtract:  extractableTypes(),
 				stopWorker:      stopWorker,
-				extractCtx:      t.Context(),
 				fileChan:        fileChan,
 				archiveStatus:   newArchiveStatusHandler(),
-				ongoingAnalysis: new(sync.Map),
+				ongoingAnalysis: sync.Map{},
 				action:          NewMultiAction(&ReportAction{}),
 				onStartScanFileCbs: []func(string, string){
 					func(file string, sha256 string) {

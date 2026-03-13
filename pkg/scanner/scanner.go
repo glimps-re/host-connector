@@ -16,14 +16,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alecthomas/units"
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
-	"golang.org/x/sync/semaphore"
 	"golift.io/xtractr"
 )
 
@@ -54,28 +55,34 @@ var (
 // (func to have a const map)
 func extractableTypes() map[string]struct{} {
 	return map[string]struct{}{
-		"application/x-archive":             {}, // .ar
-		"application/x-arj":                 {}, // .arj
-		"application/vnd.ms-cab-compressed": {}, // .cab
-		"application/x-cpio":                {}, // .cpio
-		"application/x-iso9660-image":       {}, // .iso
-		"application/x-qemu-disk":           {}, // .qcow, .qcow2
-		"application/x-lha":                 {}, // .lha
-		"application/x-lzh-compressed":      {}, // .lzh
-		"application/vnd.rar":               {}, // .rar
-		"application/x-virtualbox-vhd":      {}, // .vhd, .vhdx
-		"application/x-7z-compressed":       {}, // .7z
-		"application/x-xz":                  {}, // .xz, .tar.xz
-		"application/x-bzip2":               {}, // .bz2, .tar.bz2
-		"application/gzip":                  {}, // .gz, .tar.gz, .tgz
-		"application/x-tar":                 {}, // .tar
-		"application/x-lzma":                {}, // .lzma, .tar.lzma
-		"application/vnd.ms-htmlhelp":       {}, // .chm
-		"application/x-ms-wim":              {}, // .wim
-		"application/x-compress":            {}, // .Z
-		"application/zip":                   {}, // .zip
-		"application/x-rpm":                 {}, // .rpm
-		"application/x-apple-diskimage":     {}, // .dmg
+		"application/x-archive":                 {}, // .ar
+		"application/x-arj":                     {}, // .arj
+		"application/vnd.ms-cab-compressed":     {}, // .cab
+		"application/x-cpio":                    {}, // .cpio
+		"application/x-iso9660-image":           {}, // .iso
+		"application/x-qemu-disk":               {}, // .qcow, .qcow2
+		"application/x-lha":                     {}, // .lha
+		"application/x-lzh-compressed":          {}, // .lzh
+		"application/vnd.rar":                   {}, // .rar
+		"application/x-virtualbox-vhd":          {}, // .vhd, .vhdx
+		"application/x-7z-compressed":           {}, // .7z
+		"application/x-xz":                      {}, // .xz, .tar.xz
+		"application/x-bzip2":                   {}, // .bz2, .tar.bz2
+		"application/gzip":                      {}, // .gz, .tar.gz, .tgz
+		"application/x-tar":                     {}, // .tar
+		"application/x-lzma":                    {}, // .lzma, .tar.lzma
+		"application/vnd.ms-htmlhelp":           {}, // .chm
+		"application/x-ms-wim":                  {}, // .wim
+		"application/x-compress":                {}, // .Z
+		"application/zip":                       {}, // .zip
+		"application/x-rpm":                     {}, // .rpm
+		"application/x-apple-diskimage":         {}, // .dmg
+		"application/vnd.debian.binary-package": {}, // .deb
+		"application/zstd":                      {}, // .zst, .tar.zst
+		"application/x-xar":                     {}, // .xar, .pkg
+		"application/vnd.squashfs":              {}, // .squashfs, .snap, .appimage
+		"application/x-squashfs":                {}, // .squashfs
+		"application/x-lz4":                     {}, // .lz4, .tar.lz4
 
 		// mimetype fallback, kept to still try extraction (in case identification failed, or for specific raw file formats like flat VMDK)
 		"application/octet-stream": {},
@@ -112,7 +119,6 @@ type Config struct {
 	RecursiveExtractMaxFiles int
 	MoveTo                   string
 	MoveFrom                 string
-	PluginsConfigPath        string
 	FollowSymlinks           bool
 }
 
@@ -126,8 +132,6 @@ type fileToAnalyze struct {
 	archiveLocation    string
 	archiveSHA256      string
 	archiveSize        int64
-	needsPrecheck      bool // true when originated from ScanFile (tracked by precheckWg)
-	extractAttempted   bool // true when file has been through extraction; prevents re-routing
 }
 
 type archiveToAnalyze struct {
@@ -140,17 +144,19 @@ type Connector struct {
 	submitter   Submitter
 	quarantiner quarantine.Quarantiner
 
-	started bool
+	closeOnce sync.Once
 
-	stopIncoming     chan struct{} // closed first in Close() to reject new fileChan sends
-	extractCtx       context.Context
-	extractCtxCancel context.CancelFunc
-	stopWorker       chan struct{}
+	stopIncoming chan struct{} // closed first in Close() to reject new inputChan sends
+	stopWorker   chan struct{}
+	stopOnce     sync.Once
 
 	config                 Config
-	workerWg               sync.WaitGroup
+	inputWg                sync.WaitGroup
+	archiveWg              sync.WaitGroup
+	fileWg                 sync.WaitGroup
+	inputChan              chan string
+	archiveChan            chan archiveToAnalyze
 	fileChan               chan fileToAnalyze
-	extractSem             *semaphore.Weighted
 	action                 Action
 	reportMutex            sync.Mutex
 	reports                []*datamodel.Report
@@ -162,103 +168,102 @@ type Connector struct {
 	onFileScannedCbs       []plugins.OnFileScanned
 	onReportCbs            []plugins.OnReport
 	generateReport         plugins.GenerateReport
-	ongoingAnalysis        *sync.Map
+	ongoingAnalysis        sync.Map
 	analysisWg             sync.WaitGroup // tracks files from ScanFile entry to ongoingAnalysis removal
 	typesToExtract         map[string]struct{}
 }
 
-const (
-	defaultMaxFileSize              int64 = 100 * 1024 * 1024
-	defaultWorkers                        = 4
-	defaultExtractWorkers                 = 2
-	defaultRecursiveExtractMaxDepth       = 10
-	defaultRecursiveExtractMaxSize  int64 = 5 * 1000 * 1000 * 1000 // 5GB
-	defaultRecursiveExtractMaxFiles       = 10000
-	restoredCheckTimeout                  = 10 * time.Second
-)
+const restoredCheckTimeout = 10 * time.Second
 
-func NewConnector(config Config, quarantiner quarantine.Quarantiner, submitter Submitter) *Connector {
-	if config.Workers < 1 {
-		config.Workers = defaultWorkers
+func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter Submitter) (*Connector, error) {
+	if cfg.Workers < 1 {
+		cfg.Workers = config.DefaultWorkers
 	}
 
-	if config.ExtractWorkers < 1 {
-		config.ExtractWorkers = defaultExtractWorkers
+	if cfg.ExtractWorkers < 1 {
+		cfg.ExtractWorkers = config.DefaultExtractWorkers
 	}
 
-	if config.MaxFileSize <= 0 {
-		config.MaxFileSize = defaultMaxFileSize
+	if cfg.MaxFileSize <= 0 {
+		maxFileSize, err := units.ParseStrictBytes(config.DefaultMaxFileSize)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse DefaultMaxFileSize %q: %w", config.DefaultMaxFileSize, err)
+		}
+		cfg.MaxFileSize = maxFileSize
 	}
 
-	if config.RecursiveExtractMaxDepth < 1 {
-		config.RecursiveExtractMaxDepth = defaultRecursiveExtractMaxDepth
-		logger.Debug("using default value for recursive_extract_max_depth", slog.Int("value", defaultRecursiveExtractMaxDepth))
+	if cfg.RecursiveExtractMaxDepth < 1 {
+		cfg.RecursiveExtractMaxDepth = config.DefaultRecursiveExtractMaxDepth
+		logger.Debug("using default value for recursive_extract_max_depth", slog.Int("value", config.DefaultRecursiveExtractMaxDepth))
 	}
 
-	if config.RecursiveExtractMaxSize <= 0 {
-		config.RecursiveExtractMaxSize = defaultRecursiveExtractMaxSize
-		logger.Debug("using default value for recursive_extract_max_size", slog.Int64("value", defaultRecursiveExtractMaxSize))
+	if cfg.RecursiveExtractMaxSize <= 0 {
+		recursiveExtractMaxSize, err := units.ParseStrictBytes(config.DefaultRecursiveExtractMaxSize)
+		if err != nil {
+			return nil, fmt.Errorf("could not parse DefaultRecursiveExtractMaxSize %q: %w", config.DefaultRecursiveExtractMaxSize, err)
+		}
+		cfg.RecursiveExtractMaxSize = recursiveExtractMaxSize
+		logger.Debug("using default value for recursive_extract_max_size", slog.Int64("value", cfg.RecursiveExtractMaxSize))
 	}
 
-	if config.RecursiveExtractMaxFiles < 1 {
-		config.RecursiveExtractMaxFiles = defaultRecursiveExtractMaxFiles
-		logger.Debug("using default value for recursive_extract_max_files", slog.Int("value", defaultRecursiveExtractMaxFiles))
+	if cfg.RecursiveExtractMaxFiles < 1 {
+		cfg.RecursiveExtractMaxFiles = config.DefaultRecursiveExtractMaxFiles
+		logger.Debug("using default value for recursive_extract_max_files", slog.Int("value", config.DefaultRecursiveExtractMaxFiles))
 	}
 
-	if config.ExtractMinThreshold <= 0 {
-		config.ExtractMinThreshold = defaultExtractMinThreshold
+	if cfg.ExtractMinThreshold <= 0 {
+		cfg.ExtractMinThreshold = defaultExtractMinThreshold
 	}
-
-	extractCtx, extractCtxCancel := context.WithCancel(context.Background())
 
 	return &Connector{
-		submitter:        submitter,
-		quarantiner:      quarantiner,
-		fileChan:         make(chan fileToAnalyze, config.Workers),
-		extractSem:       semaphore.NewWeighted(int64(config.ExtractWorkers)),
-		config:           config,
-		archiveStatus:    newArchiveStatusHandler(),
-		action:           newAction(config, quarantiner),
-		generateReport:   datamodel.GenerateReport,
-		ongoingAnalysis:  new(sync.Map),
-		stopIncoming:     make(chan struct{}),
-		extractCtx:       extractCtx,
-		extractCtxCancel: extractCtxCancel,
-		stopWorker:       make(chan struct{}),
-		typesToExtract:   extractableTypes(),
-	}
+		submitter:      submitter,
+		quarantiner:    quarantiner,
+		inputChan:      make(chan string, cfg.Workers),
+		archiveChan:    make(chan archiveToAnalyze, cfg.ExtractWorkers),
+		fileChan:       make(chan fileToAnalyze, cfg.Workers),
+		config:         cfg,
+		archiveStatus:  newArchiveStatusHandler(),
+		action:         newAction(cfg, quarantiner),
+		generateReport: datamodel.GenerateReport,
+		stopIncoming:   make(chan struct{}),
+		stopWorker:     make(chan struct{}),
+		typesToExtract: extractableTypes(),
+	}, nil
 }
 
-func newAction(config Config, quarantiner quarantine.Quarantiner) *MultiAction {
+func newAction(cfg Config, quarantiner quarantine.Quarantiner) *MultiAction {
 	action := NewMultiAction(&ReportAction{})
-	if config.Actions.Log {
+	if cfg.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: logger})
 	}
-	if config.Actions.Quarantine {
+	if cfg.Actions.Quarantine {
 		action.Actions = append(action.Actions, NewQuarantineAction(quarantiner))
 	}
-	if config.Actions.Deleted {
+	if cfg.Actions.Deleted {
 		action.Actions = append(action.Actions, &RemoveFileAction{})
 	}
-	if config.Actions.Move {
-		move, err := NewMoveAction(config.MoveTo, config.MoveFrom)
+	if cfg.Actions.Move {
+		move, err := NewMoveAction(cfg.MoveTo, cfg.MoveFrom)
 		if err == nil {
 			action.Actions = append(action.Actions, move)
 		} else {
 			logger.Error("could not add move legit action", slog.String(logErrorKey, err.Error()))
 		}
 	}
-	if config.Actions.Inform {
-		action.Actions = append(action.Actions, &PrintAction{Verbose: config.Actions.Verbose, Out: config.Actions.InformDest})
+	if cfg.Actions.Inform {
+		action.Actions = append(action.Actions, &PrintAction{Verbose: cfg.Actions.Verbose, Out: cfg.Actions.InformDest})
 	}
-	action.Actions = append(action.Actions, config.CustomActions...)
+	action.Actions = append(action.Actions, cfg.CustomActions...)
 	return action
 }
 
 func (c *Connector) Start() (err error) {
-	c.started = true
 	for range c.config.Workers {
-		c.workerWg.Go(func() { c.worker() })
+		c.inputWg.Go(func() { c.dispatchWorker() })
+		c.fileWg.Go(func() { c.analysisWorker() })
+	}
+	for range c.config.ExtractWorkers {
+		c.archiveWg.Go(func() { c.extractWorker() })
 	}
 	return
 }
@@ -275,9 +280,11 @@ var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []s
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	if !c.started {
+	select {
+	case <-c.stopIncoming:
 		err = errors.New("connector is stopped")
 		return
+	default:
 	}
 
 	input = filepath.Clean(input)
@@ -329,12 +336,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		return context.Canceled
 	case <-c.stopIncoming:
 		return errors.New("connector is stopping")
-	case c.fileChan <- fileToAnalyze{
-		filename:      input,
-		location:      input,
-		size:          info.Size(),
-		needsPrecheck: true,
-	}:
+	case c.inputChan <- input:
 		return
 	}
 }
@@ -412,7 +414,39 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	return
 }
 
-func (c *Connector) worker() {
+// dispatchWorker consumes from inputChan, performs prepareFile (SHA256) and dispatches
+// to either archiveChan or fileChan. This is the first stage of the pipeline.
+func (c *Connector) dispatchWorker() {
+	for {
+		select {
+		case <-c.stopWorker:
+			return
+		case location := <-c.inputChan:
+			c.dispatchFile(location)
+		}
+	}
+}
+
+// extractWorker consumes from archiveChan and performs extraction.
+// Extracted sub-files are sent to fileChan via sendForAnalyze.
+func (c *Connector) extractWorker() {
+	for {
+		select {
+		case <-c.stopWorker:
+			return
+		case archive := <-c.archiveChan:
+			archiveLogger := logger.With(slog.String("file", archive.location))
+			if err := c.tryExtract(archive); err != nil {
+				archiveLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
+				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
+				c.finishAnalysis(archive.location)
+			}
+		}
+	}
+}
+
+// analysisWorker consumes from fileChan and performs malware analysis.
+func (c *Connector) analysisWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
@@ -423,30 +457,27 @@ func (c *Connector) worker() {
 	}
 }
 
-// precheck computes SHA256, refreshes file size, and checks quarantine restored status.
-// Returns the updated input and whether the file should be skipped.
-func (c *Connector) precheck(input fileToAnalyze) (result fileToAnalyze, skip bool) {
-	result = input
-	inputLogger := logger.With(slog.String("file", input.location))
+// prepareFile stats the file, computes its SHA256, and checks quarantine restored status.
+// Returns the populated fileToAnalyze and whether the file should be skipped.
+func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool) {
+	inputLogger := logger.With(slog.String("file", location))
 
-	info, err := os.Stat(input.location)
+	info, err := os.Stat(location)
 	if err != nil {
 		inputLogger.Error("could not stat file, stop processing", slog.String("error", err.Error()))
 		skip = true
 		return
 	}
-	result.size = info.Size()
 
-	fileSHA256, err := getFileSHA256(input.location)
+	fileSHA256, err := getFileSHA256(location)
 	if err != nil {
 		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
 		skip = true
 		return
 	}
-	result.sha256 = fileSHA256
 
 	ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
-	restored, err := c.checkFileRestored(ctx, result.location, result.sha256, result.size)
+	restored, err := c.checkFileRestored(ctx, location, fileSHA256, info.Size())
 	cancel()
 	if err != nil {
 		inputLogger.Error("could not check file restored status", slog.String(logErrorKey, err.Error()))
@@ -459,6 +490,12 @@ func (c *Connector) precheck(input fileToAnalyze) (result fileToAnalyze, skip bo
 		return
 	}
 
+	file = fileToAnalyze{
+		filename: location,
+		location: location,
+		sha256:   fileSHA256,
+		size:     info.Size(),
+	}
 	return
 }
 
@@ -471,42 +508,47 @@ func (c *Connector) finishAnalysis(location string) {
 	}
 }
 
+// dispatchFile performs prepareFile (SHA256, size, restored check) and routes the
+// file to either archiveChan (for extraction) or fileChan (for analysis).
+func (c *Connector) dispatchFile(location string) {
+	inputLogger := logger.With(slog.String("file", location))
+
+	input, skip := c.prepareFile(location)
+	if skip {
+		c.finishAnalysis(location)
+		return
+	}
+
+	// Route to extraction if applicable
+	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
+		archive := archiveToAnalyze{location: location, sha256: input.sha256, size: input.size}
+		select {
+		case <-c.stopWorker:
+			c.finishAnalysis(location)
+		case c.archiveChan <- archive:
+			inputLogger.Debug("file sent to extract worker")
+		}
+		return
+	}
+
+	// Route to analysis
+	select {
+	case <-c.stopWorker:
+		c.finishAnalysis(location)
+	case c.fileChan <- input:
+		inputLogger.Debug("file sent to analysis worker")
+	}
+}
+
+// processFile handles analysis for a file that has already been prepareFileed.
 func (c *Connector) processFile(input fileToAnalyze) {
 	inputLogger := logger.With(slog.String("file", input.location))
 
 	if input.archiveID != "" {
 		inputLogger.Debug("file has archive_id, handling ...")
-		if err := c.analyzeArchive(input); err != nil {
+		if err := c.analyzeArchiveFile(input); err != nil {
 			inputLogger.Error("could not handle file", slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation), slog.String(logErrorKey, err.Error()))
 		}
-		return
-	}
-
-	if input.needsPrecheck {
-		var skip bool
-		input, skip = c.precheck(input)
-		if skip {
-			c.finishAnalysis(input.location)
-			return
-		}
-	}
-
-	// Route to extraction if applicable
-	if !input.extractAttempted && input.size > c.config.ExtractMinThreshold && c.config.Extract {
-		archive := archiveToAnalyze{location: input.location, sha256: input.sha256, size: input.size}
-		go func() {
-			if err := c.extractSem.Acquire(c.extractCtx, 1); err != nil {
-				c.finishAnalysis(input.location)
-				return
-			}
-			defer c.extractSem.Release(1)
-
-			if err := c.tryExtract(archive); err != nil {
-				inputLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
-				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
-				c.finishAnalysis(input.location)
-			}
-		}()
 		return
 	}
 
@@ -579,7 +621,6 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
-		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -607,7 +648,6 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
-		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -638,7 +678,6 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
-		file.extractAttempted = true
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -735,12 +774,12 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 }
 
 func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err error) {
-	logger.Debug("sending file to worker for analyse...")
+	logger.Debug("sending file to analysis worker...")
 	select {
 	case <-c.stopWorker:
 		err = context.Canceled
 	case c.fileChan <- file:
-		logger.Debug("file successfully sent to worker")
+		logger.Debug("file successfully sent to analysis worker")
 	}
 	return
 }
@@ -842,7 +881,7 @@ func getFileSHA256(location string) (fileSHA256 string, err error) {
 	return
 }
 
-func (c *Connector) analyzeArchive(input fileToAnalyze) (err error) {
+func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
 	status, started, ok := c.archiveStatus.getArchiveStatus(input.archiveID, true)
 	if status.finished {
@@ -1075,44 +1114,36 @@ func (c *Connector) addReport(report *datamodel.Report) {
 }
 
 func (c *Connector) Close(ctx context.Context) {
-	if !c.started {
-		return
-	}
-	c.started = false
+	c.closeOnce.Do(func() {
+		// Phase 1: stop accepting new files from ScanFile callers.
+		close(c.stopIncoming)
 
-	// Phase 1: stop accepting new files from ScanFile callers.
-	close(c.stopIncoming)
+		closeWorkers := func() { c.stopOnce.Do(func() { close(c.stopWorker) }) }
 
-	// Phase 2: wait for all accepted files to be fully processed
-	// (including extraction and analysis of extracted files).
-	// If Close's ctx is cancelled, force-stop goroutines waiting on the semaphore.
-	context.AfterFunc(ctx, c.extractCtxCancel)
-	c.analysisWg.Wait()
-	c.extractCtxCancel()
+		// Phase 2: wait for all accepted files to be fully processed
+		// (including extraction and analysis of extracted files).
+		// If Close's ctx is cancelled, force-stop workers so channel sends
+		// unblock via the <-c.stopWorker select case and call finishAnalysis.
+		stop := context.AfterFunc(ctx, closeWorkers)
+		c.analysisWg.Wait()
+		stop()
 
-	// Phase 3: pipeline drained, stop workers.
-	close(c.stopWorker)
-	c.workerWg.Wait()
+		// Phase 3: pipeline drained, stop all worker pools.
+		closeWorkers()
+		c.inputWg.Wait()
+		c.archiveWg.Wait()
+		c.fileWg.Wait()
 
-	if c.config.Actions.InformDest != nil && c.config.Actions.InformDest != os.Stdout && c.config.Actions.InformDest != os.Stderr {
-		if closeErr := c.config.Actions.InformDest.Close(); closeErr != nil {
-			logger.Error("failed to close file descriptor", slog.String(logErrorKey, closeErr.Error()))
+		for _, plugin := range c.loadedPlugins {
+			if closeErr := plugin.Close(ctx); closeErr != nil {
+				logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
+			}
 		}
-	}
-
-	for _, plugin := range c.loadedPlugins {
-		if closeErr := plugin.Close(ctx); closeErr != nil {
-			logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
-		}
-	}
+	})
 }
 
 func (c *Connector) GetLogger() *slog.Logger {
 	return logger
-}
-
-func (c *Connector) GetLogLevel() *slog.LevelVar {
-	return LogLevel
 }
 
 func (c *Connector) GetConsoleLogger() *slog.Logger {

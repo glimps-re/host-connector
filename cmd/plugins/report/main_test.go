@@ -273,56 +273,6 @@ func TestReportPlugin_GenerateHTMLReport(t *testing.T) {
 	}
 }
 
-func TestReportPlugin_GeneratePdfReport_Mock(t *testing.T) {
-	// Note: This test is limited because GeneratePdfReport uses chromedp which requires
-	// a browser environment. In a real CI/CD environment, you might want to:
-	// 1. Skip this test if chrome/chromium is not available
-	// 2. Use dependency injection to mock the PDF generation
-	// 3. Test only the data preparation part
-
-	p := &ReportPlugin{}
-
-	// Initialize with default template
-	mockContext := mock.NewMockHCContext()
-	err := p.Init(p.GetDefaultConfig(), mockContext)
-	if err != nil {
-		t.Fatalf("Failed to initialize plugin: %v", err)
-	}
-
-	reportContext := datamodel.ScanContext{
-		Start: time.Date(2023, 1, 1, 12, 0, 0, 0, time.UTC),
-		End:   time.Date(2023, 1, 1, 12, 2, 30, 0, time.UTC),
-	}
-
-	reports := []datamodel.Report{
-		{
-			Filename:  "test.txt",
-			SHA256:    "abc123",
-			Malicious: false,
-			Malwares:  []string{},
-		},
-	}
-
-	// Test data preparation part (this will work without chromedp)
-	reportData := scanResToReportData(reportContext, reports)
-
-	// Test HTML generation part
-	htmlBuf, err := p.generateHTMLReport(reportData)
-	if err != nil {
-		t.Errorf("ReportPlugin.generateHTMLReport() HTML generation error = %v", err)
-		return
-	}
-
-	if htmlBuf == nil || htmlBuf.Len() == 0 {
-		t.Error("ReportPlugin.generateHTMLReport() HTML buffer should not be empty")
-	}
-
-	// Note: We skip the actual PDF generation test here because it requires chromedp
-	// In a full integration test environment, you would call:
-	// pdfBuf, err := p.GeneratePdfReport(reportContext, reports)
-	// But this requires a headless browser to be available
-}
-
 func TestReportPlugin_GenerateReport(t *testing.T) {
 	p := &ReportPlugin{}
 

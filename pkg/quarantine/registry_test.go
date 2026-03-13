@@ -15,7 +15,6 @@ func TestRegistry(t *testing.T) {
 		{
 			name: "test in memory",
 			test: func(t *testing.T) {
-				t.Helper()
 				registry, err := newSQLiteRegistry(t.Context(), "")
 				if err != nil {
 					t.Errorf("NewSQLiteRegistry() error = %v", err)
@@ -70,7 +69,6 @@ func TestRegistry(t *testing.T) {
 		{
 			name: "test file",
 			test: func(t *testing.T) {
-				t.Helper()
 				tfile, err := os.CreateTemp(os.TempDir(), "test_db_*.db")
 				if err != nil {
 					t.Errorf("NewCache() test error = %v", err)
@@ -148,26 +146,24 @@ func TestRegistry(t *testing.T) {
 		{
 			name: "entry not found",
 			test: func(t *testing.T) {
-				t.Helper()
 				registry, err := newSQLiteRegistry(t.Context(), "")
 				if err != nil {
 					t.Errorf("NewCache() error = %v", err)
 					return
 				}
 				_, err = registry.Get(t.Context(), "test")
-				if !errors.Is(err, ErrEntryNotFound) {
-					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, ErrEntryNotFound)
+				if !errors.Is(err, errEntryNotFound) {
+					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, errEntryNotFound)
 				}
 				_, err = registry.GetBySHA256(t.Context(), "test")
-				if !errors.Is(err, ErrEntryNotFound) {
-					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, ErrEntryNotFound)
+				if !errors.Is(err, errEntryNotFound) {
+					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, errEntryNotFound)
 				}
 			},
 		},
 		{
 			name: "goroutines",
 			test: func(t *testing.T) {
-				t.Helper()
 				// prepare goroutine
 				wg := sync.WaitGroup{}
 				workers := 50
@@ -181,8 +177,8 @@ func TestRegistry(t *testing.T) {
 				worker := func(i int) {
 					defer wg.Done()
 					_, err := registry.Get(t.Context(), "test")
-					if !errors.Is(err, ErrEntryNotFound) {
-						t.Errorf("[%d]registry.Get(unknown) error = %v, want = %v", i, err, ErrEntryNotFound)
+					if !errors.Is(err, errEntryNotFound) {
+						t.Errorf("[%d]registry.Get(unknown) error = %v, want = %v", i, err, errEntryNotFound)
 					}
 				}
 				for i := range workers {
@@ -195,7 +191,6 @@ func TestRegistry(t *testing.T) {
 		{
 			name: "goroutines set",
 			test: func(t *testing.T) {
-				t.Helper()
 				// prepare goroutine
 				wg := sync.WaitGroup{}
 				workers := 50
@@ -223,7 +218,6 @@ func TestRegistry(t *testing.T) {
 		{
 			name: "goroutines getSha",
 			test: func(t *testing.T) {
-				t.Helper()
 				// prepare goroutine
 				wg := sync.WaitGroup{}
 				workers := 50
@@ -237,8 +231,8 @@ func TestRegistry(t *testing.T) {
 				worker := func(i int) {
 					defer wg.Done()
 					_, err := registry.GetBySHA256(t.Context(), "test")
-					if !errors.Is(err, ErrEntryNotFound) {
-						t.Errorf("[%d]registry.Get(unknown) error = %v, want = %v", i, err, ErrEntryNotFound)
+					if !errors.Is(err, errEntryNotFound) {
+						t.Errorf("[%d]registry.Get(unknown) error = %v, want = %v", i, err, errEntryNotFound)
 					}
 				}
 				for i := range workers {

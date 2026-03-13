@@ -46,7 +46,7 @@ func initConfig() {
 	if hostConfig.Config == "" {
 		conf, err := config.GetConfigFile()
 		if err != nil {
-			logger.Error("could not create config file", slog.String("location", conf))
+			logger.Error("could not create config file", slog.String("location", conf), slog.String("error", err.Error()))
 		}
 		hostConfig.Config = conf
 	}

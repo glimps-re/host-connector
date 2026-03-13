@@ -47,9 +47,6 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 				if mockContext.ExtractFile == nil {
 					t.Error("SevenZipExtractPlugin.Init() should register XtractFile callback")
 				}
-				// if plugin.pathToRemove == nil {
-				// 	t.Error("SevenZipExtractPlugin.Init() pathToRemove should be initialized")
-				// }
 			}
 		})
 	}
@@ -99,8 +96,13 @@ func TestSevenZipExtractPlugin_resolve7zzs(t *testing.T) {
 					t.Error("newSevenZipExtract() should resolve a valid path")
 				}
 
-				if _, err := os.Stat(sze.sevenZipPath); os.IsNotExist(err) {
+				info, statErr := os.Stat(sze.sevenZipPath)
+				if os.IsNotExist(statErr) {
 					t.Errorf("newSevenZipExtract() resolved non-existent path: %s", sze.sevenZipPath)
+				}
+
+				if info != nil && info.Mode()&0o111 == 0 {
+					t.Error("7zzs binary should be executable")
 				}
 			}
 		})
@@ -236,32 +238,4 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	if len(plugin.sze.config.DefaultPasswords) != 1 || plugin.sze.config.DefaultPasswords[0] != "infected" {
 		t.Errorf("Default passwords = %v, want [\"infected\"]", plugin.sze.config.DefaultPasswords)
 	}
-}
-
-func TestSevenZipExtractPlugin_BinaryManagement(t *testing.T) {
-	testLogger := slog.New(slog.DiscardHandler)
-	sze, err := newSevenZipExtract(extractorConfig{}, "", testLogger)
-	if err != nil {
-		t.Fatalf("Failed to resolve 7zzs binary: %v", err)
-	}
-	binaryPath := sze.sevenZipPath
-
-	// Verify binary exists and is executable
-	info, err := os.Stat(binaryPath)
-	if err != nil {
-		t.Fatalf("7zzs binary not found at %s: %v", binaryPath, err)
-	}
-
-	// Check permissions (should be executable)
-	mode := info.Mode()
-	if mode&0o111 == 0 {
-		t.Error("7zzs binary should be executable")
-	}
-
-	// Clean up any temporary files
-	// for _, path := range plugin.pathToRemove {
-	// 	if err := os.RemoveAll(path); err != nil {
-	// 		t.Logf("Warning: failed to remove temporary path %s: %v", path, err)
-	// 	}
-	// }
 }

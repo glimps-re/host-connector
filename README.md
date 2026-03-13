@@ -240,7 +240,7 @@ Filters files based on MIME type detection using libmagic.
 
 ```yaml
 filetype_filter:
-  file: filetype.so
+  file: filetype_filter.so
   config:
     forbidden_types:                  # MIME types to flag as malicious (Score=1000)
       - application/x-executable
@@ -318,7 +318,6 @@ session:
   config:
     depth: 2                          # Directory depth for session grouping
     delay: 30s                        # Delay before closing inactive sessions
-    remove_inputs: true               # Remove input files after session completion
     root_folder: /tmp/samples/        # Base path for session ID calculation (required)
     exports: []                       # Base directories for session reports (e.g., ["/var/reports"])
 ```
@@ -331,7 +330,6 @@ session:
 - Thread-safe file tracking
 - Automatic session closure with configurable delay
 - Consolidated report generation
-- Optional file cleanup
 
 #### Report Plugin
 
@@ -637,6 +635,12 @@ Allowed types for extraction:
 "application/zip"                    // .zip
 "application/x-rpm"                  // .rpm
 "application/x-apple-diskimage"      // .dmg
+"application/vnd.debian.binary-package" // .deb
+"application/zstd"                   // .zst, .tar.zst
+"application/x-xar"                  // .xar, .pkg
+"application/vnd.squashfs"           // .squashfs, .snap, .appimage
+"application/x-squashfs"             // .squashfs
+"application/x-lz4"                  // .lz4, .tar.lz4
 
 // default MIME type, kept in case identification failed, or for specific raw file formats like flat VMDK
 "application/octet-stream"

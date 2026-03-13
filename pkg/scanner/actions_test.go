@@ -311,7 +311,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 }
 
 func TestPrintAction_Handle(t *testing.T) {
-	Now = func() time.Time {
+	now = func() time.Time {
 		return time.Date(2050, time.January, 1, 0, 0, 0, 0, time.UTC)
 	}
 	type fields struct {
@@ -504,7 +504,8 @@ func TestMoveAction_Handle(t *testing.T) {
 					logger.Error("TestMoveAction cannot remove tmp report", "error", err)
 				}
 			}()
-			Rename = func(oldpath, newpath string) error {
+			origRename := rename
+			rename = func(oldpath, newpath string) error {
 				if oldpath != tt.samplePath {
 					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
 				}
@@ -513,16 +514,16 @@ func TestMoveAction_Handle(t *testing.T) {
 				}
 				return nil
 			}
-			MkdirAll = func(path string, perm os.FileMode) error {
+			mkdirAll = func(path string, perm os.FileMode) error {
 				return nil
 			}
-			Create = func(name string) (*os.File, error) {
+			create = func(name string) (*os.File, error) {
 				return tempReport, nil
 			}
 			defer func() {
-				Rename = os.Rename
-				MkdirAll = os.MkdirAll
-				Create = os.Create
+				rename = origRename
+				mkdirAll = os.MkdirAll
+				create = os.Create
 			}()
 			dst := "/path/to/move"
 			src := "/mnt/../media/test"

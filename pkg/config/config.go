@@ -10,7 +10,6 @@ const (
 	DefaultTimeout                  = sdk.Duration(5 * time.Minute)
 	DefaultWorkers                  = 4
 	DefaultExtractWorkers           = 2
-	DefaultScanValidity             = sdk.Duration(time.Hour * 24 * 7)
 	DefaultModificationDelay        = sdk.Duration(time.Second * 30)
 	DefaultMaxFileSize              = "100MiB"
 	DefaultRecursiveExtractMaxDepth = 10

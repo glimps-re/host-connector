@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -16,9 +15,7 @@ type PluginConfig struct {
 	Config map[string]any `yaml:"config"`
 }
 
-var ErrInvalidPlugin = errors.New("invalid plugin")
-
-var PluginInitTimeout = time.Minute * 5
+var errInvalidPlugin = errors.New("invalid plugin")
 
 func (c *Connector) SetExtractFile(f plugins.ExtractFile) {
 	ExtractFile = f

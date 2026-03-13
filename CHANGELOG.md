@@ -1,5 +1,17 @@
 # Changelog
 
+## [v1.4.6]
+
+### Fixed
+
+- Fix SHA256 compute bottleneck
+- Fix quarantine restore on different mount points (cross-device fallback)
+
+### Changed
+
+- Extract plugin size limits moved from plugin config to host connector configuration only
+- Print action timestamps use RFC3339 format
+
 ## [v1.4.5]
 
 ### Fixed

@@ -27,7 +27,7 @@ type fileLock struct {
 	Password string
 }
 
-const LockPasswordIter = 4096
+const lockPasswordIter = 4096
 
 type LockEntry struct {
 	Filepath string
@@ -60,8 +60,8 @@ func (l *fileLock) LockFile(file string, in io.Reader, info os.FileInfo, reason 
 	indexHeader := tar.Header{
 		Name:       "index",
 		Size:       int64(len(buffer.Bytes())),
-		ChangeTime: Now(),
-		AccessTime: Now(),
+		ChangeTime: now(),
+		AccessTime: now(),
 	}
 	if err = tw.WriteHeader(&indexHeader); err != nil {
 		return
@@ -173,7 +173,7 @@ func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if _, err := rand.Read(salt); err != nil {
 		return err
 	}
-	key := pbkdf2.Key([]byte(password), salt, LockPasswordIter, aes.BlockSize, sha256.New)
+	key := pbkdf2.Key([]byte(password), salt, lockPasswordIter, aes.BlockSize, sha256.New)
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return err
@@ -210,7 +210,7 @@ func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	if _, err = io.ReadFull(in, iv); err != nil {
 		return
 	}
-	key := pbkdf2.Key([]byte(password), salt, LockPasswordIter, aes.BlockSize, sha256.New)
+	key := pbkdf2.Key([]byte(password), salt, lockPasswordIter, aes.BlockSize, sha256.New)
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return err

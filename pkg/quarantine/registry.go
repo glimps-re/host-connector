@@ -48,7 +48,7 @@ type quarantineRegistry interface {
 	Close() error
 }
 
-var ErrEntryNotFound = errors.New("entry not found")
+var errEntryNotFound = errors.New("entry not found")
 
 type sqliteRegistry struct {
 	db       *sql.DB
@@ -58,7 +58,31 @@ type sqliteRegistry struct {
 
 var _ quarantineRegistry = &sqliteRegistry{}
 
-const CreateTable = `CREATE TABLE IF NOT EXISTS entries (
+func ensureDBFile(location string) error {
+	_, err := os.Stat(location)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to stat quarantine registry db: %w", err)
+	}
+
+	dir := filepath.Dir(location)
+	if err = os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("failed to create quarantine registry db location: %w", err)
+	}
+
+	f, err := os.OpenFile(filepath.Clean(location), os.O_RDONLY|os.O_CREATE, 0o600)
+	if err != nil {
+		return fmt.Errorf("failed to create quarantine registry db file: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("failed to close quarantine registry db file after creation: %w", err)
+	}
+	return nil
+}
+
+const createTable = `CREATE TABLE IF NOT EXISTS entries (
 	id TEXT PRIMARY KEY,
 	sha256 TEXT,
 	created_at int NOT NULL,
@@ -70,22 +94,11 @@ const CreateTable = `CREATE TABLE IF NOT EXISTS entries (
 func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry, err error) {
 	finalLocation := "file::memory:"
 	if location != "" {
-		_, err = os.Stat(location)
-		switch {
-		case err == nil:
-		case errors.Is(err, os.ErrNotExist):
-			dir, _ := filepath.Split(location)
-			err = os.MkdirAll(dir, 0o750)
-			if err != nil {
-				err = fmt.Errorf("failed to create quarantine registry db location: %w", err)
-				return
-			}
-			_, err = os.OpenFile(filepath.Clean(location), os.O_RDONLY|os.O_CREATE, 0o600)
-			if err != nil {
-				err = fmt.Errorf("failed to create quarantine registry db file: %w", err)
-				return
-			}
-		default:
+		if !filepath.IsAbs(location) {
+			err = fmt.Errorf("registry location must be an absolute path, got %q", location)
+			return
+		}
+		if err = ensureDBFile(location); err != nil {
 			return
 		}
 		finalLocation = location
@@ -103,7 +116,7 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 		db.SetMaxOpenConns(1)
 	}
 
-	result, err := db.ExecContext(ctx, CreateTable)
+	result, err := db.ExecContext(ctx, createTable)
 	if err != nil {
 		err = fmt.Errorf("failed to create quarantine db: %w", err)
 		return
@@ -137,6 +150,9 @@ func (c *sqliteRegistry) Migrate(ctx context.Context, newLocation string) (err e
 		return
 	}
 
+	c.Lock()
+	defer c.Unlock()
+
 	rows, err := c.db.QueryContext(ctx, "SELECT id, sha256, created_at, updated_at, quarantine, location, restored_at FROM entries")
 	if err != nil {
 		return
@@ -166,14 +182,12 @@ func (c *sqliteRegistry) Migrate(ctx context.Context, newLocation string) (err e
 		return
 	}
 
-	c.Lock()
 	oldDB := c.db
 	c.db = newReg.db
 	c.location = newReg.location
-	c.Unlock()
 
-	if err = oldDB.Close(); err != nil {
-		logger.Error("failed to close old registry database", slog.String("error", err.Error()))
+	if closeErr := oldDB.Close(); closeErr != nil {
+		logger.Error("failed to close old registry database", slog.String("error", closeErr.Error()))
 	}
 	return
 }
@@ -194,7 +208,7 @@ func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err 
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrEntryNotFound
+			return nil, errEntryNotFound
 		}
 		return
 	}
@@ -220,7 +234,7 @@ func (c *sqliteRegistry) GetBySHA256(ctx context.Context, sha256 string) (entry 
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrEntryNotFound
+			return nil, errEntryNotFound
 		}
 		return
 	}
@@ -230,7 +244,7 @@ func (c *sqliteRegistry) GetBySHA256(ctx context.Context, sha256 string) (entry 
 	return
 }
 
-var Now = time.Now
+var now = time.Now
 
 func (c *sqliteRegistry) Set(ctx context.Context, entry *Entry) (err error) {
 	c.Lock()
@@ -245,13 +259,17 @@ func (c *sqliteRegistry) Set(ctx context.Context, entry *Entry) (err error) {
 			if commitErr != nil {
 				err = fmt.Errorf("cannot commit cache set transaction, error: %w", commitErr)
 			}
+		} else {
+			if rbErr := tx.Rollback(); rbErr != nil {
+				logger.Error("cannot rollback transaction", slog.String("error", rbErr.Error()))
+			}
 		}
 	}()
 	if entry.CreatedAt.UnixMilli() <= 0 {
-		entry.CreatedAt = Now()
+		entry.CreatedAt = now()
 	}
 	if entry.UpdatedAt.UnixMilli() <= 0 {
-		entry.UpdatedAt = Now()
+		entry.UpdatedAt = now()
 	}
 	sqlStatement := `INSERT INTO entries (id, sha256, created_at, updated_at, quarantine, location, restored_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)

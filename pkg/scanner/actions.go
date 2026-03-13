@@ -32,10 +32,10 @@ type Actions struct {
 
 // for test purposes
 var (
-	Now      = time.Now
-	Rename   = quarantine.MoveFile
-	MkdirAll = os.MkdirAll
-	Create   = os.Create
+	now      = time.Now
+	rename   = quarantine.MoveFile
+	mkdirAll = os.MkdirAll
+	create   = os.Create
 )
 
 type Action interface {
@@ -294,7 +294,7 @@ func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.
 		details = append(details, report.MovedTo)
 		actions = append(actions, "moved")
 	}
-	s := fmt.Sprintf("time: %s, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", Now().UTC().Format(time.RFC3339), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
+	s := fmt.Sprintf("time: %s, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", now().UTC().Format(time.RFC3339), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
 	if result.Malware || a.Verbose || report.MovedTo != "" {
 		_, err = fmt.Fprintln(a.Out, s)
 		if err != nil {
@@ -352,14 +352,14 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	}
 
 	dest := filepath.Join(a.Dest, relPath)
-	err = MkdirAll(filepath.Dir(dest), 0o755)
+	err = mkdirAll(filepath.Dir(dest), 0o755)
 	if err != nil {
 		return
 	}
 
 	if result.Malware {
 		now := time.Now().Format("020106_1504")
-		f, createErr := Create(dest + fmt.Sprintf("-lockreport%s.json", now))
+		f, createErr := create(dest + fmt.Sprintf("-lockreport%s.json", now))
 		if createErr != nil {
 			err = createErr
 			return
@@ -384,7 +384,7 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	}
 
 	// move safe file
-	err = Rename(path, dest)
+	err = rename(path, dest)
 	if err != nil {
 		return
 	}

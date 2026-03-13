@@ -179,7 +179,7 @@ func (q *QuarantineHandler) IsRestored(ctx context.Context, sha256 string) (rest
 			return
 		}
 		return
-	case errors.Is(getEntryErr, ErrEntryNotFound):
+	case errors.Is(getEntryErr, errEntryNotFound):
 		// ok
 		return
 	default:
@@ -243,14 +243,14 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	deleteLocked = true
 
 	logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
-	entry, err := q.registry.Get(ctx, id)
-	if err != nil {
-		return
+	entry, getErr := q.registry.Get(ctx, id)
+	if getErr == nil {
+		entry.QuarantineLocation = ""
+		entry.RestoredAt = now()
+		if setErr := q.registry.Set(ctx, entry); setErr != nil {
+			logger.Error("error set cache", slog.String("sha256", entry.SHA256), slog.String("error", setErr.Error()))
+		}
 	}
-
-	entry.QuarantineLocation = ""
-	entry.RestoredAt = Now()
-	err = q.registry.Set(ctx, entry)
 	return
 }
 
@@ -338,7 +338,7 @@ func (q *QuarantineHandler) moveQuarantinedFiles(ctx context.Context, oldLocatio
 		id := strings.TrimSuffix(filename, ".lock")
 		entry, getErr := q.registry.Get(ctx, id)
 		if getErr != nil {
-			if errors.Is(getErr, ErrEntryNotFound) {
+			if errors.Is(getErr, errEntryNotFound) {
 				return nil
 			}
 			return getErr
@@ -384,7 +384,7 @@ func copyAndDelete(src, dst string) (err error) {
 		}
 	}()
 
-	dstFile, err := os.Create(dst) //nolint:gosec // G304 - dst is constructed from controlled paths
+	dstFile, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304 - dst is constructed from controlled paths
 	if err != nil {
 		return
 	}

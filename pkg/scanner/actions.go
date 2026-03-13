@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk/events"
@@ -34,7 +33,7 @@ type Actions struct {
 // for test purposes
 var (
 	Now      = time.Now
-	Rename   = os.Rename
+	Rename   = quarantine.MoveFile
 	MkdirAll = os.MkdirAll
 	Create   = os.Create
 )
@@ -385,71 +384,11 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	}
 
 	// move safe file
-	err = moveFile(path, dest)
+	err = Rename(path, dest)
 	if err != nil {
 		return
 	}
 	report.MovedTo = dest
 	ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))
-	return
-}
-
-func moveFile(src, dst string) (err error) {
-	err = Rename(src, dst)
-	linkErr := new(os.LinkError)
-	switch {
-	case err == nil:
-	case errors.As(err, &linkErr) && errors.Is(linkErr.Err, syscall.EXDEV):
-		// Fall back to copy + delete for cross-device moves
-		return copyAndDelete(src, dst)
-	default:
-		return fmt.Errorf("could not move file %s to %s, error: %w", src, dst, err)
-	}
-	return nil
-}
-
-func copyAndDelete(src, dst string) (err error) {
-	srcInfo, err := os.Stat(src)
-	if err != nil {
-		return
-	}
-
-	srcFile, err := os.Open(filepath.Clean(src))
-	if err != nil {
-		return
-	}
-	defer func() {
-		if e := srcFile.Close(); e != nil {
-			logger.Error("copyAndDelete cannot close source file", slog.String("file", src), slog.String(logErrorKey, e.Error()))
-		}
-	}()
-
-	dstFile, err := Create(dst)
-	if err != nil {
-		return
-	}
-
-	success := false
-	defer func() {
-		if e := dstFile.Close(); e != nil {
-			logger.Error("copyAndDelete cannot close destination file", slog.String("file", dst), slog.String(logErrorKey, e.Error()))
-		}
-		if !success {
-			if e := os.Remove(dst); e != nil {
-				logger.Error("copyAndDelete cannot remove destination file after failed copy", slog.String("file", dst), slog.String(logErrorKey, e.Error()))
-			}
-		}
-	}()
-	if _, err = io.Copy(dstFile, srcFile); err != nil {
-		return
-	}
-	if err = os.Chmod(dst, srcInfo.Mode()); err != nil {
-		return
-	}
-	success = true
-	err = os.Remove(src)
-	if err != nil {
-		return
-	}
 	return
 }

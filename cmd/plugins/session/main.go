@@ -27,6 +27,7 @@ type SessionPlugin struct {
 	mutex         sync.RWMutex
 	hcc           plugins.HCContext
 	stop          chan struct{}
+	done          chan struct{}
 	started       bool
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
@@ -90,6 +91,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc
 	p.stop = make(chan struct{})
+	p.done = make(chan struct{})
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "session"))
 	p.consoleLogger = hcc.GetConsoleLogger()
 
@@ -118,7 +120,7 @@ func (p *SessionPlugin) Close(ctx context.Context) error {
 	}
 	close(p.stop)
 	select {
-	case <-time.After(1 * time.Second):
+	case <-p.done:
 	case <-ctx.Done():
 	}
 	p.started = false
@@ -283,6 +285,8 @@ func (s *Session) isReadyForClosure(delay time.Duration) bool {
 }
 
 func (p *SessionPlugin) sessionMonitor() {
+	defer close(p.done)
+
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 

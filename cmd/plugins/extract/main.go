@@ -13,7 +13,14 @@ import (
 	"os"
 	"strings"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/host-connector/pkg/plugins"
+)
+
+const (
+	defaultMaxSize               = "500MB"
+	defaultMaxFileExtracted      = 1000  // 1000 files extracted max
+	defaultMaxTotalExtractedSize = "3GB" // max total size of extracted elements
 )
 
 // SevenZipExtractPlugin provides archive extraction via 7-Zip.
@@ -24,11 +31,12 @@ type SevenZipExtractPlugin struct {
 }
 
 // Config defines extraction behavior and security limits.
-// Extraction size limits (max_file_size, max_extracted_files, max_total_extracted_size)
-// are provided by the host connector configuration.
 type Config struct {
-	DefaultPasswords []string `mapstructure:"default_passwords,omitempty"` // Default passwords for encrypted archives
-	SevenZipPath     string   `mapstructure:"seven_zip_path,omitempty"`
+	MaxFileSize           string   `mapstructure:"max_file_size,omitempty"`            // Max size per extracted file (e.g., "100MB", "1GB")
+	MaxExtractedFiles     int      `mapstructure:"max_extracted_files,omitempty"`      // Max number of files to extract
+	MaxTotalExtractedSize string   `mapstructure:"max_total_extracted_size,omitempty"` // Max total size to extract from one archive (e.g., "500MB", "3GB"). Additional files are skipped if reached
+	DefaultPasswords      []string `mapstructure:"default_passwords,omitempty"`        // Default passwords for encrypted archives
+	SevenZipPath          string   `mapstructure:"seven_zip_path,omitempty"`
 }
 
 var (
@@ -45,7 +53,10 @@ var (
 
 func (p *SevenZipExtractPlugin) GetDefaultConfig() (config any) {
 	config = &Config{
-		DefaultPasswords: []string{"infected"},
+		MaxFileSize:           defaultMaxSize,
+		MaxExtractedFiles:     defaultMaxFileExtracted,
+		MaxTotalExtractedSize: defaultMaxTotalExtractedSize,
+		DefaultPasswords:      []string{"infected"},
 	}
 	return
 }
@@ -60,12 +71,22 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 		return errors.New("error bad config passed")
 	}
 
-	extractCfg := hcc.GetExtractConfig()
+	maxFileSize, err := units.ParseStrictBytes(config.MaxFileSize)
+	if err != nil {
+		err = fmt.Errorf("could not parse max_file_size: %w", err)
+		return
+	}
+
+	maxTotalExtractedSize, err := units.ParseStrictBytes(config.MaxTotalExtractedSize)
+	if err != nil {
+		err = fmt.Errorf("could not parse max_total_extracted_size: %w", err)
+		return
+	}
 
 	p.sze, err = newSevenZipExtract(extractorConfig{
-		MaxFileSize:           int(extractCfg.MaxFileSize),
-		MaxExtractedFiles:     extractCfg.MaxExtractedFiles,
-		MaxTotalExtractedSize: int(extractCfg.MaxTotalExtractedSize),
+		MaxFileSize:           int(maxFileSize),
+		MaxExtractedFiles:     config.MaxExtractedFiles,
+		MaxTotalExtractedSize: int(maxTotalExtractedSize),
 		DefaultPasswords:      config.DefaultPasswords,
 	}, config.SevenZipPath, p.logger)
 	if err != nil {
@@ -74,14 +95,14 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 
 	hcc.SetExtractFile(p.ExtractFile)
 	p.logger.Info("plugin initialized",
-		slog.Int64("max_file_size", extractCfg.MaxFileSize),
-		slog.Int("max_extracted_files", extractCfg.MaxExtractedFiles),
-		slog.Int64("max_total_extracted_size", extractCfg.MaxTotalExtractedSize),
+		slog.String("max_file_size", config.MaxFileSize),
+		slog.Int("max_extracted_files", config.MaxExtractedFiles),
+		slog.String("max_total_extracted_size", config.MaxTotalExtractedSize),
 		slog.String("default_passwords", strings.Join(config.DefaultPasswords, ", ")),
 		slog.String("seven_zip_path", config.SevenZipPath),
 	)
-	p.consoleLogger.Info(fmt.Sprintf("extract plugin initialized, max_file_size: %d, max_extracted_elements: %d, max_total_extracted_size: %d, default_passwords: %s, seven_zip_path: %s",
-		extractCfg.MaxFileSize, extractCfg.MaxExtractedFiles, extractCfg.MaxTotalExtractedSize, strings.Join(config.DefaultPasswords, ", "), config.SevenZipPath,
+	p.consoleLogger.Info(fmt.Sprintf("extract plugin initialized, max_file_size: %s, max_extracted_elements: %d, max_total_extracted_size: %s, default_passwords: %s, seven_zip_path: %s",
+		config.MaxFileSize, config.MaxExtractedFiles, config.MaxTotalExtractedSize, strings.Join(config.DefaultPasswords, ", "), config.SevenZipPath,
 	))
 	return
 }

@@ -133,10 +133,10 @@ func newSevenZipExtract(config extractorConfig, sevenZipPath string, logger *slo
 
 	if sevenZipPath == "" {
 		if err = sze.resolve7zzs(); err != nil {
-			return nil, fmt.Errorf("resolving 7zzs binary: %w", err)
+			err = fmt.Errorf("resolving 7zzs binary: %w", err)
+			return
 		}
 	}
-
 	return
 }
 

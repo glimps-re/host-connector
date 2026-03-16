@@ -203,6 +203,8 @@ func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
 
 func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
 	salt := make([]byte, 32)
+	// use io.ReadFull to ensure all salt is read (for example, io.Reader.Read may return fewer bytes than requested
+	// without error, which would silently corrupt cryptographic material)
 	if _, err = io.ReadFull(in, salt); err != nil {
 		return
 	}

@@ -80,8 +80,6 @@ func extractableTypes() map[string]struct{} {
 		"application/vnd.debian.binary-package": {}, // .deb
 		"application/zstd":                      {}, // .zst, .tar.zst
 		"application/x-xar":                     {}, // .xar, .pkg
-		"application/vnd.squashfs":              {}, // .squashfs, .snap, .appimage
-		"application/x-squashfs":                {}, // .squashfs
 		"application/x-lz4":                     {}, // .lz4, .tar.lz4
 
 		// mimetype fallback, kept to still try extraction (in case identification failed, or for specific raw file formats like flat VMDK)
@@ -94,6 +92,8 @@ func extractableTypes() map[string]struct{} {
 		"application/x-rar-compressed": {}, // .rar
 		"application/x-vhd":            {}, // .vhd, .vhdx
 		"application/x-virtualbox-vdi": {}, // .vdi
+		"application/vnd.squashfs":     {}, // .squashfs, .snap, .appimage
+		"application/x-squashfs":       {}, // .squashfs
 	}
 }
 
@@ -150,13 +150,16 @@ type Connector struct {
 	stopWorker   chan struct{}
 	stopOnce     sync.Once
 
-	config                 Config
-	inputWg                sync.WaitGroup
-	archiveWg              sync.WaitGroup
-	fileWg                 sync.WaitGroup
-	inputChan              chan string
-	archiveChan            chan archiveToAnalyze
-	fileChan               chan fileToAnalyze
+	config Config
+
+	dispatchWg sync.WaitGroup
+	extractWg  sync.WaitGroup
+	analysisWg sync.WaitGroup
+
+	dispatchChan chan string
+	extractChan  chan archiveToAnalyze
+	analysisChan chan fileToAnalyze
+
 	action                 Action
 	reportMutex            sync.Mutex
 	reports                []*datamodel.Report
@@ -169,7 +172,7 @@ type Connector struct {
 	onReportCbs            []plugins.OnReport
 	generateReport         plugins.GenerateReport
 	ongoingAnalysis        sync.Map
-	analysisWg             sync.WaitGroup // tracks files from ScanFile entry to ongoingAnalysis removal
+	scansWg                sync.WaitGroup // tracks files from ScanFile entry to ongoingAnalysis removal
 	typesToExtract         map[string]struct{}
 }
 
@@ -218,9 +221,9 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter Subm
 	return &Connector{
 		submitter:      submitter,
 		quarantiner:    quarantiner,
-		inputChan:      make(chan string, cfg.Workers),
-		archiveChan:    make(chan archiveToAnalyze, cfg.ExtractWorkers),
-		fileChan:       make(chan fileToAnalyze, cfg.Workers),
+		dispatchChan:   make(chan string, cfg.Workers),
+		extractChan:    make(chan archiveToAnalyze, cfg.ExtractWorkers),
+		analysisChan:   make(chan fileToAnalyze, cfg.Workers),
 		config:         cfg,
 		archiveStatus:  newArchiveStatusHandler(),
 		action:         newAction(cfg, quarantiner),
@@ -259,11 +262,11 @@ func newAction(cfg Config, quarantiner quarantine.Quarantiner) *MultiAction {
 
 func (c *Connector) Start() (err error) {
 	for range c.config.Workers {
-		c.inputWg.Go(func() { c.dispatchWorker() })
-		c.fileWg.Go(func() { c.analysisWorker() })
+		c.dispatchWg.Go(func() { c.dispatchWorker() })
+		c.analysisWg.Go(func() { c.analysisWorker() })
 	}
 	for range c.config.ExtractWorkers {
-		c.archiveWg.Go(func() { c.extractWorker() })
+		c.extractWg.Go(func() { c.extractWorker() })
 	}
 	return
 }
@@ -282,7 +285,7 @@ var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []s
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	select {
 	case <-c.stopIncoming:
-		err = errors.New("connector is stopped")
+		err = errors.New("connector is shutting down")
 		return
 	default:
 	}
@@ -323,7 +326,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "ongoing analysis"))
 		return
 	}
-	c.analysisWg.Add(1)
+	c.scansWg.Add(1)
 
 	defer func() {
 		if err != nil {
@@ -335,24 +338,13 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	case <-ctx.Done():
 		return context.Canceled
 	case <-c.stopIncoming:
-		return errors.New("connector is stopping")
-	case c.inputChan <- input:
+		return errors.New("connector is shutting down")
+	case c.dispatchChan <- input:
 		return
 	}
 }
 
-func (c *Connector) checkFileRestored(ctx context.Context, location string, sha256 string, size int64) (restored bool, err error) {
-	if c.quarantiner == nil {
-		return
-	}
-	restored, err = c.quarantiner.IsRestored(ctx, sha256)
-	if err != nil {
-		return
-	}
-	if !restored {
-		return
-	}
-
+func (c *Connector) handleRestoredFile(location string, sha256 string, size int64) (err error) {
 	res := datamodel.Result{
 		Filename: filepath.Base(location),
 		Location: location,
@@ -364,7 +356,7 @@ func (c *Connector) checkFileRestored(ctx context.Context, location string, sha2
 		res = *newres
 	}
 	report := &datamodel.Report{}
-	actionCtx, cancel := context.WithTimeout(ctx, actionTimeoutForSize(size))
+	actionCtx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(size))
 	defer cancel()
 	if err = c.action.Handle(actionCtx, location, res, report); err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
@@ -414,27 +406,42 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	return
 }
 
-// dispatchWorker consumes from inputChan, performs prepareFile (SHA256) and dispatches
-// to either archiveChan or fileChan. This is the first stage of the pipeline.
+// dispatchWorker consumes from dispatchChan, and dispatches
+// to either extractChan or analysisChan. This is the first stage of the pipeline.
 func (c *Connector) dispatchWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
-			return
-		case location := <-c.inputChan:
+			// must call finishAnalysis for any item in channel before exiting, to ensure scansWg is properly decremented
+			for {
+				select {
+				case location := <-c.dispatchChan:
+					c.finishAnalysis(location)
+				default:
+					return
+				}
+			}
+		case location := <-c.dispatchChan:
 			c.dispatchFile(location)
 		}
 	}
 }
 
-// extractWorker consumes from archiveChan and performs extraction.
-// Extracted sub-files are sent to fileChan via sendForAnalyze.
+// extractWorker consumes from extractChan and performs extraction.
+// Extracted sub-files are sent to analysisChan via sendForAnalyze.
 func (c *Connector) extractWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
-			return
-		case archive := <-c.archiveChan:
+			for {
+				select {
+				case archive := <-c.extractChan:
+					c.finishAnalysis(archive.location)
+				default:
+					return
+				}
+			}
+		case archive := <-c.extractChan:
 			archiveLogger := logger.With(slog.String("file", archive.location))
 			if err := c.tryExtract(archive); err != nil {
 				archiveLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
@@ -445,13 +452,24 @@ func (c *Connector) extractWorker() {
 	}
 }
 
-// analysisWorker consumes from fileChan and performs malware analysis.
+// analysisWorker consumes from analysisChan and performs malware analysis.
 func (c *Connector) analysisWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
-			return
-		case input := <-c.fileChan:
+			for {
+				select {
+				case input := <-c.analysisChan:
+					if input.archiveID != "" {
+						c.finishAnalysis(input.archiveTopLocation)
+						continue
+					}
+					c.finishAnalysis(input.location)
+				default:
+					return
+				}
+			}
+		case input := <-c.analysisChan:
 			c.processFile(input)
 		}
 	}
@@ -476,17 +494,25 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
-	restored, err := c.checkFileRestored(ctx, location, fileSHA256, info.Size())
-	cancel()
-	if err != nil {
-		inputLogger.Error("could not check file restored status", slog.String(logErrorKey, err.Error()))
-		skip = true
-		return
+	var restored bool
+	if c.quarantiner != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
+		defer cancel()
+		restored, err = c.quarantiner.IsRestored(ctx, fileSHA256)
+		if err != nil {
+			inputLogger.Error("could not check file restored status", slog.String(logErrorKey, err.Error()))
+			skip = true
+			return
+		}
 	}
 	if restored {
 		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
 		skip = true
+		err = c.handleRestoredFile(location, fileSHA256, info.Size())
+		if err != nil {
+			inputLogger.Error("could not handle restored file", slog.String(logErrorKey, err.Error()))
+			return
+		}
 		return
 	}
 
@@ -504,12 +530,12 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 // (LoadOrStore) are present in the map; extracted sub-files are no-ops.
 func (c *Connector) finishAnalysis(location string) {
 	if _, loaded := c.ongoingAnalysis.LoadAndDelete(location); loaded {
-		c.analysisWg.Done()
+		c.scansWg.Done()
 	}
 }
 
 // dispatchFile performs prepareFile (SHA256, size, restored check) and routes the
-// file to either archiveChan (for extraction) or fileChan (for analysis).
+// file to either extractChan (for extraction) or analysisChan (for analysis).
 func (c *Connector) dispatchFile(location string) {
 	inputLogger := logger.With(slog.String("file", location))
 
@@ -525,7 +551,7 @@ func (c *Connector) dispatchFile(location string) {
 		select {
 		case <-c.stopWorker:
 			c.finishAnalysis(location)
-		case c.archiveChan <- archive:
+		case c.extractChan <- archive:
 			inputLogger.Debug("file sent to extract worker")
 		}
 		return
@@ -535,12 +561,12 @@ func (c *Connector) dispatchFile(location string) {
 	select {
 	case <-c.stopWorker:
 		c.finishAnalysis(location)
-	case c.fileChan <- input:
+	case c.analysisChan <- input:
 		inputLogger.Debug("file sent to analysis worker")
 	}
 }
 
-// processFile handles analysis for a file that has already been prepareFileed.
+// processFile handles analysis for a file that has already been prepared.
 func (c *Connector) processFile(input fileToAnalyze) {
 	inputLogger := logger.With(slog.String("file", input.location))
 
@@ -778,7 +804,7 @@ func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err
 	select {
 	case <-c.stopWorker:
 		err = context.Canceled
-	case c.fileChan <- file:
+	case c.analysisChan <- file:
 		logger.Debug("file successfully sent to analysis worker")
 	}
 	return
@@ -1125,14 +1151,14 @@ func (c *Connector) Close(ctx context.Context) {
 		// If Close's ctx is cancelled, force-stop workers so channel sends
 		// unblock via the <-c.stopWorker select case and call finishAnalysis.
 		stop := context.AfterFunc(ctx, closeWorkers)
-		c.analysisWg.Wait()
+		c.scansWg.Wait()
 		stop()
 
 		// Phase 3: pipeline drained, stop all worker pools.
 		closeWorkers()
-		c.inputWg.Wait()
-		c.archiveWg.Wait()
-		c.fileWg.Wait()
+		c.dispatchWg.Wait()
+		c.extractWg.Wait()
+		c.analysisWg.Wait()
 
 		for _, plugin := range c.loadedPlugins {
 			if closeErr := plugin.Close(ctx); closeErr != nil {
@@ -1148,12 +1174,4 @@ func (c *Connector) GetLogger() *slog.Logger {
 
 func (c *Connector) GetConsoleLogger() *slog.Logger {
 	return ConsoleLogger
-}
-
-func (c *Connector) GetExtractConfig() plugins.ExtractConfig {
-	return plugins.ExtractConfig{
-		MaxFileSize:           c.config.MaxFileSize,
-		MaxExtractedFiles:     c.config.RecursiveExtractMaxFiles,
-		MaxTotalExtractedSize: c.config.RecursiveExtractMaxSize,
-	}
 }

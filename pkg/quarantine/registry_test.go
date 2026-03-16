@@ -248,6 +248,108 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
+func TestMigrate(t *testing.T) {
+	tests := []struct {
+		name string
+		test func(t *testing.T)
+	}{
+		{
+			name: "migrate file to memory",
+			test: func(t *testing.T) {
+				tfile, err := os.CreateTemp(t.TempDir(), "test_db_*.db")
+				if err != nil {
+					t.Fatalf("CreateTemp error = %v", err)
+				}
+				if e := tfile.Close(); e != nil {
+					t.Fatalf("cannot close test file: %v", e)
+				}
+
+				registry, err := newSQLiteRegistry(t.Context(), tfile.Name())
+				if err != nil {
+					t.Fatalf("newSQLiteRegistry() error = %v", err)
+				}
+
+				entry := &Entry{
+					ID:              "abc123",
+					SHA256:          "sha256abc",
+					InitialLocation: "/test/path",
+				}
+				if err := registry.Set(t.Context(), entry); err != nil {
+					t.Fatalf("Set() error = %v", err)
+				}
+
+				// Migrate to in-memory (empty string)
+				if err := registry.Migrate(t.Context(), ""); err != nil {
+					t.Fatalf("Migrate() error = %v", err)
+				}
+
+				if registry.GetLocation() != "file::memory:" {
+					t.Errorf("expected in-memory location, got %q", registry.GetLocation())
+				}
+
+				got, err := registry.Get(t.Context(), "abc123")
+				if err != nil {
+					t.Fatalf("Get() after migrate error = %v", err)
+				}
+				if got.InitialLocation != entry.InitialLocation {
+					t.Errorf("entry mismatch after migrate: got %q, want %q", got.InitialLocation, entry.InitialLocation)
+				}
+			},
+		},
+		{
+			name: "migrate memory to file",
+			test: func(t *testing.T) {
+				registry, err := newSQLiteRegistry(t.Context(), "")
+				if err != nil {
+					t.Fatalf("newSQLiteRegistry() error = %v", err)
+				}
+
+				entry := &Entry{
+					ID:              "def456",
+					SHA256:          "sha256def",
+					InitialLocation: "/test/other",
+				}
+				if err := registry.Set(t.Context(), entry); err != nil {
+					t.Fatalf("Set() error = %v", err)
+				}
+
+				dbPath := t.TempDir() + "/migrated.db"
+				if err := registry.Migrate(t.Context(), dbPath); err != nil {
+					t.Fatalf("Migrate() error = %v", err)
+				}
+
+				if registry.GetLocation() != dbPath {
+					t.Errorf("expected location %q, got %q", dbPath, registry.GetLocation())
+				}
+
+				got, err := registry.Get(t.Context(), "def456")
+				if err != nil {
+					t.Fatalf("Get() after migrate error = %v", err)
+				}
+				if got.InitialLocation != entry.InitialLocation {
+					t.Errorf("entry mismatch after migrate: got %q, want %q", got.InitialLocation, entry.InitialLocation)
+				}
+			},
+		},
+		{
+			name: "migrate same location is noop",
+			test: func(t *testing.T) {
+				registry, err := newSQLiteRegistry(t.Context(), "")
+				if err != nil {
+					t.Fatalf("newSQLiteRegistry() error = %v", err)
+				}
+
+				if err := registry.Migrate(t.Context(), ""); err != nil {
+					t.Fatalf("Migrate() to same location should be noop, got error = %v", err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, tt.test)
+	}
+}
+
 func TestComputeCacheID(t *testing.T) {
 	type args struct {
 		path   string

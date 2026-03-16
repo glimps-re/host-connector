@@ -57,7 +57,7 @@ Available Commands:
 Flags:
       --config string                config file (default "/etc/gmhost/config.yml")
   -d, --debug                        print debug strings
-      --extract                      Enable archive extraction for files exceeding max_file_size (archives are unpacked and contents scanned)
+      --extract                      Enable archive extraction (archives are unpacked and contents scanned)
       --extract-workers int          Number of concurrent workers for archive extraction (default: 2, used when extract is enabled) (default 2)
       --follow-symlinks              Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
       --gmalware-syndetect           Use syndetect API to analyze files
@@ -209,12 +209,15 @@ A complete example configuration is available at `rsc/plugin_config.yml`. Below 
 
 Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.).
 
-Extraction size limits (`max_file_size`, `max_extracted_files`, `max_total_extracted_size`) are provided by the host connector configuration (`--max-file-size`, `--recursive-extract-max-files`, `--recursive-extract-max-size` flags or their `config.yml` equivalents).
+Extraction size limits are configured in the plugin configuration file:
 
 ```yaml
 extract:
   file: extract.so
   config:
+    max_file_size: "500MB"            # Max size per extracted file (default: 500MB)
+    max_extracted_files: 1000         # Max number of files to extract (default: 1000)
+    max_total_extracted_size: "3GB"   # Max total size to extract from one archive (default: 3GB)
     default_passwords:                # Passwords for encrypted archives
       - infected
       - password
@@ -231,7 +234,6 @@ extract:
 - Files exceeding following limits will be skipped (not extracted):
   - `recursive_extract_max_size` (`--recursive-extract-max-size`)
   - `recursive_extract_max_files` (`--recursive-extract-max-files`)
-  - `max_file_size` (`--max-file-size`)
 - Zip bomb protection : an archive is considered a zip bomb if total size to extract is > 3GB and if ratio between size to extract and compressed size is > 100 (files above `max_file_size` are excluded from calculation because skipped anyway).
 
 #### FileType Filter Plugin
@@ -377,7 +379,6 @@ type HCContext interface {
     GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
     GetLogger() *slog.Logger
     GetConsoleLogger() *slog.Logger
-    GetExtractConfig() ExtractConfig
 }
 ```
 
@@ -536,7 +537,7 @@ debug: false
 
 - **`workers`**: Number of concurrent workers for file analysis (default: 4, affects CPU usage)
 - **`extract_workers`**: Number of concurrent workers for archive extraction (default: 2, used when extract is enabled)
-- **`extract`**: Enable archive extraction for files exceeding max_file_size (archives are unpacked and contents scanned)
+- **`extract`**: Enable archive extraction (archives are unpacked and contents scanned)
 - **`max_file_size`**: Maximum file size to send for analyze (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected
 - **`follow_symlinks`**: Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
 - **`paths`**: List of directories or files to monitor and scan (can be absolute or relative paths, required, minimum 1)
@@ -661,9 +662,9 @@ GMHost uses recursive extraction, meaning archives within archives are automatic
 
 It is limited by:
 
-- **`recursive_extract_max_depth`**: Maximum nesting level for extraction (default: 10). Beyond it, files are directly send for analyze.
-- **`recursive_extract_max_size`**: Maximum total size of all extracted files across all nesting levels from one root archive (default: 5GB). When reached, remaining files are directly sent for analyze. Note: this limit is checked before each extraction but the size is counted after, so the actual total may exceed this limit by the size of one archive's extracted content.
-- **`recursive_extract_max_files`**: Maximum total number of files extracted across all nesting levels from one root archive (default: 10000). When reached, remaining files are directly send for analyze.
+- **`recursive_extract_max_depth`**: Maximum nesting level for extraction (default: 10). Beyond it, files are directly sent for analysis.
+- **`recursive_extract_max_size`**: Maximum total size of all extracted files across all nesting levels from one root archive (default: 5GB). When reached, remaining files are directly sent for analysis. Note: this limit is checked before each extraction but the size is counted after, so the actual total may exceed this limit by the size of one archive's extracted content.
+- **`recursive_extract_max_files`**: Maximum total number of files extracted across all nesting levels from one root archive (default: 10000). When reached, remaining files are directly sent for analysis.
 
 **Important notes:**
 

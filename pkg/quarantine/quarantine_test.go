@@ -492,7 +492,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			wantErr: errors.New("unlock failed"),
 		},
 		{
-			name: "registry Get fails after restore: logs error, returns nil",
+			name: "error registry get fails",
 			fields: fields{
 				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 					return LockEntry{
@@ -525,10 +525,10 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			args: args{
 				entryID: "test-entry",
 			},
-			wantErr: nil,
+			wantErr: errors.New("registry get failed"),
 		},
 		{
-			name: "registry Set fails after restore: logs error, returns nil",
+			name: "error registry set fails",
 			fields: fields{
 				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
 					return LockEntry{
@@ -565,7 +565,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			args: args{
 				entryID: "test-entry",
 			},
-			wantErr: nil,
+			wantErr: errors.New("error set cache for sha256 abc123, registry set failed"),
 		},
 	}
 	for _, tt := range tests {

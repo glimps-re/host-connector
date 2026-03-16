@@ -113,7 +113,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	return nil
 }
 
-// Close stops session monitoring and waits briefly for cleanup.
+// Close stops session monitoring and closes all remaining sessions.
 func (p *SessionPlugin) Close(ctx context.Context) error {
 	if !p.started {
 		return nil
@@ -123,6 +123,7 @@ func (p *SessionPlugin) Close(ctx context.Context) error {
 	case <-p.done:
 	case <-ctx.Done():
 	}
+	p.closeAllSessions(ctx)
 	p.started = false
 	return nil
 }
@@ -300,6 +301,20 @@ func (p *SessionPlugin) sessionMonitor() {
 	}
 }
 
+func (p *SessionPlugin) closeAllSessions(ctx context.Context) {
+	p.mutex.Lock()
+	toClose := make(map[string]*Session, len(p.sessions))
+	for id, session := range p.sessions {
+		toClose[id] = session
+		delete(p.sessions, id)
+	}
+	p.mutex.Unlock()
+
+	for id, session := range toClose {
+		p.closeSession(ctx, id, session)
+	}
+}
+
 func (p *SessionPlugin) checkAndCloseSessions() {
 	type closableSession struct {
 		id      string
@@ -316,12 +331,15 @@ func (p *SessionPlugin) checkAndCloseSessions() {
 	}
 	p.mutex.Unlock()
 
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	for _, cs := range toClose {
-		p.closeSession(cs.id, cs.session)
+		p.closeSession(ctx, cs.id, cs.session)
 	}
 }
 
-func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
+func (p *SessionPlugin) closeSession(ctx context.Context, sessionID string, session *Session) {
 	session.mutex.RLock()
 	defer session.mutex.RUnlock()
 
@@ -335,11 +353,11 @@ func (p *SessionPlugin) closeSession(sessionID string, session *Session) {
 	p.consoleLogger.Info(fmt.Sprintf("closing session %s (completed reports: %d, duration: %s)", sessionID, len(session.CompletedReports), duration))
 
 	if len(session.CompletedReports) > 0 {
-		p.generateSessionReport(session)
+		p.generateSessionReport(ctx, session)
 	}
 }
 
-func (p *SessionPlugin) generateSessionReport(session *Session) {
+func (p *SessionPlugin) generateSessionReport(ctx context.Context, session *Session) {
 	if p.hcc == nil {
 		return
 	}
@@ -350,10 +368,7 @@ func (p *SessionPlugin) generateSessionReport(session *Session) {
 		End:    time.Now(),
 	}
 
-	reportCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	reader, err := p.hcc.GenerateReport(reportCtx, reportContext, session.CompletedReports)
+	reader, err := p.hcc.GenerateReport(ctx, reportContext, session.CompletedReports)
 	if err != nil {
 		p.logger.Error("failed to generate session report",
 			slog.String(sessionIDLogKey, session.ID),
@@ -396,14 +411,14 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 			p.logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", createErr.Error()))
 			continue
 		}
-		defer func(f *os.File) {
-			if e := f.Close(); e != nil {
+		defer func() {
+			if e := file.Close(); e != nil {
 				p.logger.Warn("failed to close report file",
-					slog.String(filepathLogKey, f.Name()),
+					slog.String(filepathLogKey, file.Name()),
 					slog.String("error", e.Error()),
 				)
 			}
-		}(file)
+		}()
 		files = append(files, file)
 	}
 	mw := io.MultiWriter(files...)

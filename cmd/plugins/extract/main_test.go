@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
@@ -18,7 +19,10 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 		{
 			name: "ok",
 			config: &Config{
-				DefaultPasswords: []string{"infected"},
+				MaxFileSize:           defaultMaxSize,
+				MaxExtractedFiles:     defaultMaxFileExtracted,
+				MaxTotalExtractedSize: defaultMaxTotalExtractedSize,
+				DefaultPasswords:      []string{"infected"},
 			},
 			wantErr: false,
 		},
@@ -224,16 +228,16 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 		t.Error("Extraction engine should be initialized with default config")
 	}
 
-	// Verify configuration values come from host connector extract config
-	extractCfg := mockContext.ExtractCfg
-	if plugin.sze.config.MaxFileSize != int(extractCfg.MaxFileSize) {
-		t.Errorf("MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, int(extractCfg.MaxFileSize))
+	// Verify default configuration values
+	expectedMaxSize, err := units.ParseStrictBytes(defaultMaxSize)
+	if err != nil {
+		t.Fatalf("Failed to parse defaultMaxSize: %v", err)
 	}
-	if plugin.sze.config.MaxExtractedFiles != extractCfg.MaxExtractedFiles {
-		t.Errorf("MaxExtractedFiles = %v, want %v", plugin.sze.config.MaxExtractedFiles, extractCfg.MaxExtractedFiles)
+	if plugin.sze.config.MaxFileSize != int(expectedMaxSize) {
+		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, int(expectedMaxSize))
 	}
-	if plugin.sze.config.MaxTotalExtractedSize != int(extractCfg.MaxTotalExtractedSize) {
-		t.Errorf("MaxTotalExtractedSize = %v, want %v", plugin.sze.config.MaxTotalExtractedSize, int(extractCfg.MaxTotalExtractedSize))
+	if plugin.sze.config.MaxExtractedFiles != defaultMaxFileExtracted {
+		t.Errorf("Default MaxExtractedFiles = %v, want %v", plugin.sze.config.MaxExtractedFiles, defaultMaxFileExtracted)
 	}
 	if len(plugin.sze.config.DefaultPasswords) != 1 || plugin.sze.config.DefaultPasswords[0] != "infected" {
 		t.Errorf("Default passwords = %v, want [\"infected\"]", plugin.sze.config.DefaultPasswords)

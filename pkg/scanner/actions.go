@@ -309,22 +309,20 @@ type MoveAction struct {
 	Src  string
 }
 
-func NewMoveAction(dest string, src string) (*MoveAction, error) {
-	a := &MoveAction{}
-	var err error
-	a.Dest, err = filepath.Abs(dest)
+func NewMoveAction(dest string, src string) (a *MoveAction, err error) {
+	absDst, err := filepath.Abs(dest)
 	if err != nil {
-		return nil, err
+		return
 	}
-	pp, err := filepath.Abs(src)
+	absSrc, err := filepath.Abs(src)
 	if err != nil {
-		return nil, err
+		return
 	}
-	if !strings.HasSuffix(pp, string(filepath.Separator)) {
-		pp += string(filepath.Separator)
+	a = &MoveAction{
+		Src:  absSrc,
+		Dest: absDst,
 	}
-	a.Src = pp
-	return a, nil
+	return
 }
 
 func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {

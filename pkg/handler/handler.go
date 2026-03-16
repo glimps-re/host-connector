@@ -218,6 +218,11 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 
 	var informDest io.WriteCloser = os.Stdout
 	if config.Print.Location != "" {
+		dir := filepath.Dir(config.Print.Location)
+		if err = os.MkdirAll(dir, 0o700); err != nil {
+			err = fmt.Errorf("could not create report directory %q: %w", dir, err)
+			return
+		}
 		informDest, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 		if err != nil {
 			err = fmt.Errorf("could not open report location, error: %w", err)

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
+	"io"
 	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -414,6 +417,70 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 		if !fileEntry.Completed {
 			t.Error("All files should be completed")
 		}
+	}
+}
+
+func TestSessionPlugin_CloseAllSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	exportDir := t.TempDir()
+
+	var generatedReports [][]datamodel.Report
+
+	mockContext := mock.NewMockHCContext()
+	mockContext.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+		generatedReports = append(generatedReports, reports)
+		return strings.NewReader("mock report"), nil
+	}
+
+	plugin := &SessionPlugin{}
+	config := &Config{
+		RootFolder: tmpDir,
+		Depth:      1,
+		Delay:      1 * time.Hour, // Long delay so sessions are NOT ready for normal closure
+		Exports:    []string{exportDir},
+	}
+
+	if err := plugin.Init(config, mockContext); err != nil {
+		t.Fatalf("Init() error: %v", err)
+	}
+
+	// Create two sessions with files and reports
+	file1 := filepath.Join(tmpDir, "session_a/test1.txt")
+	file2 := filepath.Join(tmpDir, "session_b/test2.txt")
+
+	plugin.OnStartScanFile(file1, "hash1")
+	plugin.OnStartScanFile(file2, "hash2")
+
+	plugin.OnFileScanned(file1, "hash1", datamodel.Result{})
+	plugin.OnFileScanned(file2, "hash2", datamodel.Result{})
+
+	plugin.OnReport(&datamodel.Report{Filename: file1, SHA256: "hash1", Malicious: false})
+	plugin.OnReport(&datamodel.Report{Filename: file2, SHA256: "hash2", Malicious: true})
+
+	// Verify sessions exist before close
+	plugin.mutex.RLock()
+	sessionCount := len(plugin.sessions)
+	plugin.mutex.RUnlock()
+	if sessionCount != 2 {
+		t.Fatalf("expected 2 sessions before close, got %d", sessionCount)
+	}
+
+	// Close should flush all sessions despite delay not being reached
+	if err := plugin.Close(t.Context()); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
+
+	// Verify all sessions were drained
+	plugin.mutex.RLock()
+	sessionCount = len(plugin.sessions)
+	plugin.mutex.RUnlock()
+	if sessionCount != 0 {
+		t.Errorf("expected 0 sessions after close, got %d", sessionCount)
+	}
+
+	// Verify reports were generated for both sessions
+	if len(generatedReports) != 2 {
+		t.Errorf("expected 2 report generations, got %d", len(generatedReports))
 	}
 }
 

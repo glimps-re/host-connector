@@ -138,10 +138,11 @@ func (c *sqliteRegistry) Close() error {
 func (c *sqliteRegistry) Migrate(ctx context.Context, newLocation string) (err error) {
 	// Check if migration is actually needed
 	currentLocation := c.location
-	if newLocation == "" {
-		newLocation = "file::memory:"
+	targetLocation := newLocation
+	if targetLocation == "" {
+		targetLocation = "file::memory:"
 	}
-	if currentLocation == newLocation {
+	if currentLocation == targetLocation {
 		return
 	}
 

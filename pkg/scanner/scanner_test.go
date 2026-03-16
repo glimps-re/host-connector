@@ -1687,11 +1687,11 @@ func Test_Connector_sendForAnalyze(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stopWorker := make(chan struct{})
-			var fileChan chan fileToAnalyze
+			var analysisChan chan fileToAnalyze
 			if tt.fields.stopWorker {
-				fileChan = make(chan fileToAnalyze) // unbuffered to force select choice
+				analysisChan = make(chan fileToAnalyze) // unbuffered to force select choice
 			} else {
-				fileChan = make(chan fileToAnalyze, 1)
+				analysisChan = make(chan fileToAnalyze, 1)
 			}
 
 			if tt.fields.stopWorker {
@@ -1699,8 +1699,8 @@ func Test_Connector_sendForAnalyze(t *testing.T) {
 			}
 
 			c := &Connector{
-				stopWorker: stopWorker,
-				fileChan:   fileChan,
+				stopWorker:   stopWorker,
+				analysisChan: analysisChan,
 			}
 
 			file := fileToAnalyze{
@@ -1725,7 +1725,7 @@ func Test_Connector_sendForAnalyze(t *testing.T) {
 			}
 
 			select {
-			case <-fileChan:
+			case <-analysisChan:
 			default:
 				t.Errorf("sendForAnalyze() file not sent to channel")
 			}
@@ -2432,7 +2432,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stopWorker := make(chan struct{})
-			fileChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
+			analysisChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
 
 			c := &Connector{
 				config: Config{
@@ -2443,7 +2443,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				},
 				typesToExtract: extractableTypes(),
 				stopWorker:     stopWorker,
-				fileChan:       fileChan,
+				analysisChan:   analysisChan,
 				archiveStatus:  newArchiveStatusHandler(),
 			}
 
@@ -2546,9 +2546,9 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				return
 			}
 
-			close(fileChan)
+			close(analysisChan)
 			var filesSent []fileToAnalyze
-			for f := range fileChan {
+			for f := range analysisChan {
 				filesSent = append(filesSent, f)
 			}
 
@@ -2632,7 +2632,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			stopWorker := make(chan struct{})
-			fileChan := make(chan fileToAnalyze, 20)
+			analysisChan := make(chan fileToAnalyze, 20)
 
 			var onStartScanFileCalled atomic.Int64
 			var onScanFileCalled atomic.Int64
@@ -2646,7 +2646,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				},
 				typesToExtract:  extractableTypes(),
 				stopWorker:      stopWorker,
-				fileChan:        fileChan,
+				analysisChan:    analysisChan,
 				archiveStatus:   newArchiveStatusHandler(),
 				ongoingAnalysis: sync.Map{},
 				action:          NewMultiAction(&ReportAction{}),
@@ -2697,9 +2697,9 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				return
 			}
 
-			close(fileChan)
+			close(analysisChan)
 			var filesSent []fileToAnalyze
-			for f := range fileChan {
+			for f := range analysisChan {
 				filesSent = append(filesSent, f)
 			}
 

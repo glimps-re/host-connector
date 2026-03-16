@@ -28,13 +28,6 @@ type Plugin interface {
 	Close(ctx context.Context) error
 }
 
-// ExtractConfig holds extraction limits provided by the host connector.
-type ExtractConfig struct {
-	MaxFileSize           int64 // Max size per extracted file in bytes
-	MaxExtractedFiles     int   // Max number of files to extract
-	MaxTotalExtractedSize int64 // Max total size to extract from one archive in bytes
-}
-
 type HCContext interface {
 	SetExtractFile(f ExtractFile)
 
@@ -49,7 +42,6 @@ type HCContext interface {
 
 	GetLogger() *slog.Logger
 	GetConsoleLogger() *slog.Logger
-	GetExtractConfig() ExtractConfig
 }
 
 var PluginExportedName = "HCPlugin"

@@ -196,12 +196,11 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	}
 	// prepare file handle to be closed
 	// if we correctly restore the file we must delete the lock file
-	deleteLocked := false
 	defer func() {
 		if e := f.Close(); e != nil {
 			logger.Error("QuarantineAction cannot close file", slog.String("error", e.Error()))
 		}
-		if deleteLocked {
+		if err == nil {
 			if e := os.Remove(f.Name()); e != nil {
 				logger.Error("QuarantineAction cannot remove file", slog.String("error", e.Error()))
 			}
@@ -215,12 +214,11 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
-	restored := false
 	defer func() {
 		if e := out.Close(); e != nil {
 			logger.Error("cannot close restored file", slog.String("file", header.Filepath), slog.String("error", e.Error()))
 		}
-		if err != nil && !restored {
+		if err != nil {
 			if e := os.Remove(out.Name()); e != nil {
 				logger.Error("cannot remove restored file after error", slog.String("file", header.Filepath), slog.String("error", e.Error()))
 			}
@@ -234,22 +232,26 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
+	defer func() {
+		if err == nil {
+			logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
+		}
+	}()
 	err = restoreFileInfo(out.Name(), info)
 	if err != nil {
 		return
 	}
 
-	restored = true
-	deleteLocked = true
-
-	logger.Info("file restored", slog.String("file", file), slog.String("reason", reason))
-	entry, getErr := q.registry.Get(ctx, id)
-	if getErr == nil {
-		entry.QuarantineLocation = ""
-		entry.RestoredAt = now()
-		if setErr := q.registry.Set(ctx, entry); setErr != nil {
-			logger.Error("error set cache", slog.String("sha256", entry.SHA256), slog.String("error", setErr.Error()))
-		}
+	entry, err := q.registry.Get(ctx, id)
+	if err != nil {
+		return
+	}
+	entry.QuarantineLocation = ""
+	entry.RestoredAt = now()
+	err = q.registry.Set(ctx, entry)
+	if err != nil {
+		err = fmt.Errorf("error set cache for sha256 %v, %w", entry.SHA256, err)
+		return
 	}
 	return
 }

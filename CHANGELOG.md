@@ -9,7 +9,6 @@
 
 ### Changed
 
-- Extract plugin size limits moved from plugin config to host connector configuration only
 - Print action timestamps use RFC3339 format
 
 ## [v1.4.5]

@@ -926,6 +926,9 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
 				return
 			}
+			if finishErr := c.finishArchiveAnalysis(input.archiveID); finishErr != nil {
+				archiveLogger.Error("could not finish archive analysis", slog.String(logErrorKey, finishErr.Error()))
+			}
 			return
 		}
 	}

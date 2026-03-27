@@ -16,6 +16,7 @@ type parentArchive struct {
 type archiveStatus struct {
 	started         bool
 	finished        bool
+	finishClaimed   bool
 	archiveLocation string
 	result          datamodel.Result
 	analyzed        int
@@ -37,18 +38,24 @@ func newArchiveStatusHandler() (a *archiveStatusHandler) {
 	return
 }
 
-func (a *archiveStatusHandler) getArchiveStatus(id string, startArchiveAnalysis bool) (status archiveStatus, started bool, ok bool) {
-	if startArchiveAnalysis {
-		a.Lock()
-		status, ok = a.statusByID[id]
-		if !status.started {
-			status.started = true
-			started = true
-			a.statusByID[id] = status
-		}
-		a.Unlock()
+// claimStart atomically claims the right to start an archive analysis.
+// Only the first caller gets claimed=true with the status. Subsequent callers get claimed=false.
+// found indicates whether the archive exists in the handler.
+func (a *archiveStatusHandler) claimStart(id string) (status archiveStatus, claimed, found bool) {
+	a.Lock()
+	defer a.Unlock()
+	status, found = a.statusByID[id]
+	if !found || status.started {
 		return
 	}
+	status.started = true
+	claimed = true
+	a.statusByID[id] = status
+	return
+}
+
+// getStatus returns the archive status.
+func (a *archiveStatusHandler) getStatus(id string) (status archiveStatus, ok bool) {
 	a.RLock()
 	status, ok = a.statusByID[id]
 	a.RUnlock()
@@ -86,6 +93,22 @@ func (a *archiveStatusHandler) deleteStatus(id string) {
 	a.Unlock()
 }
 
+// claimFinish atomically claims the right to finalize an archive.
+// Only the first caller gets claimed=true with the status. Subsequent callers get claimed=false.
+// found indicates whether the archive exists in the handler.
+func (a *archiveStatusHandler) claimFinish(id string) (status archiveStatus, claimed, found bool) {
+	a.Lock()
+	defer a.Unlock()
+	status, found = a.statusByID[id]
+	if !found || status.finishClaimed {
+		return
+	}
+	status.finishClaimed = true
+	claimed = true
+	a.statusByID[id] = status
+	return
+}
+
 func (a *archiveStatusHandler) setStarted(id string) {
 	a.Lock()
 	defer a.Unlock()
@@ -114,7 +137,9 @@ func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, re
 	return
 }
 
-func (a *archiveStatusHandler) addArchiveResult(id string, result datamodel.Result) (ok bool) {
+// setArchiveResult sets the archive result and marks the archive as finished.
+// Any previously merged inner file results are discarded.
+func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Result) (ok bool) {
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]

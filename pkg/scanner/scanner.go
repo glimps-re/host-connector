@@ -721,7 +721,11 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		c.onStartScanFile(archive.location, archive.sha256)
 		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
 			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
-			c.archiveStatus.addArchiveResult(archiveID, *archiveResult)
+			ok := c.archiveStatus.setArchiveResult(archiveID, *archiveResult)
+			if !ok {
+				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", archive.location))
+				return
+			}
 			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
 				archiveLogger.Error("could not finish filtered archive analysis", slog.String(logErrorKey, finishErr.Error()))
 			}
@@ -907,9 +911,10 @@ func getFileSHA256(location string) (fileSHA256 string, err error) {
 	return
 }
 
+// analyzeArchiveFile handles the analysis of a file that is part of an archive.
 func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
-	status, started, ok := c.archiveStatus.getArchiveStatus(input.archiveID, true)
+	status, started, ok := c.archiveStatus.claimStart(input.archiveID)
 	if status.finished {
 		archiveLogger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
 		return
@@ -921,7 +926,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	if started {
 		c.onStartScanFile(input.archiveLocation, input.archiveSHA256)
 		if archiveResult := c.onScanFile(input.archiveLocation, input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
-			ok := c.archiveStatus.addArchiveResult(input.archiveID, *archiveResult)
+			ok := c.archiveStatus.setArchiveResult(input.archiveID, *archiveResult)
 			if !ok {
 				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
 				return
@@ -955,9 +960,12 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", archiveID))
 
-	status, _, ok := c.archiveStatus.getArchiveStatus(archiveID, false)
-	if !ok {
+	status, claimed, found := c.archiveStatus.claimFinish(archiveID)
+	if !found {
 		archiveLogger.Warn("could not handle archive, not found in archive handler")
+		return
+	}
+	if !claimed {
 		return
 	}
 	archiveLogger = logger.With(slog.String("archive location", status.archiveLocation))

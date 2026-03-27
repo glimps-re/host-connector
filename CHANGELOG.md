@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- Fix race condition on finishArchiveAnalysis
 - Fix finish archive when scanned by a plugin
 
 ## [v1.4.6]

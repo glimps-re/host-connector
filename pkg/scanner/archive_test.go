@@ -111,7 +111,7 @@ func Test_archiveStatusHandler_addInnerFileResult(t *testing.T) {
 				return
 			}
 
-			status, _, ok := a.getArchiveStatus(archiveID, false)
+			status, ok := a.getStatus(archiveID)
 			if !ok {
 				t.Errorf("archive status should exist after addInnerFileResult")
 				return

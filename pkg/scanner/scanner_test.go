@@ -1932,7 +1932,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			}
 
 			if !tt.fields.archiveNotFound {
-				_, _, ok := c.archiveStatus.getArchiveStatus(archiveID, false)
+				_, ok := c.archiveStatus.getStatus(archiveID)
 				if ok != tt.wantStatusKept {
 					t.Errorf("archive status kept = %v, want %v", ok, tt.wantStatusKept)
 				}
@@ -1944,7 +1944,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 					t.Errorf("action.Handle() path = %v, want parent %v", actionPath, parentLocation)
 				}
 				// check parent status is deleted
-				_, _, ok := c.archiveStatus.getArchiveStatus(parentID, false)
+				_, ok := c.archiveStatus.getStatus(parentID)
 				if ok {
 					t.Errorf("parent status should have been deleted after completion")
 					return

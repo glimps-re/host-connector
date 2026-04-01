@@ -409,6 +409,12 @@ func (h *Handler) Stop(ctx context.Context) (err error) {
 }
 
 func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err error) {
+	logger.Debug("received Configure action from connector-manager")
+	defer func() {
+		if err != nil {
+			logger.Debug("Configure action failed", slog.String("error", err.Error()))
+		}
+	}()
 	conf := new(config.Config)
 	err = json.Unmarshal(rawConfig, conf)
 	if err != nil {
@@ -429,6 +435,7 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 			return
 		}
 	}
+	logger.Debug("Configure action completed")
 	return
 }
 

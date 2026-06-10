@@ -234,6 +234,14 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		h.informDest = informDest
 	}
 
+	// h.monitor must be closed BEFORE h.Conn, otherwise h.monitor keeps sending
+	// files to a closing Conn, which rejects them with an error (=> files not scanned).
+	if h.monitor != nil {
+		if e := h.monitor.Close(); e != nil {
+			logger.Error("could not close monitor for reconfiguring", slog.String("error", e.Error()))
+		}
+		h.monitor = nil
+	}
 	if h.Conn != nil {
 		h.Conn.Close(ctx)
 	}
@@ -297,13 +305,6 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		if err != nil {
 			return fmt.Errorf("could not load plugins, error: %w", err)
 		}
-	}
-
-	if h.monitor != nil {
-		if e := h.monitor.Close(); e != nil {
-			logger.Error("could not close monitor for reconfiguring", slog.String("error", e.Error()))
-		}
-		h.monitor = nil
 	}
 
 	mon, monErr := NewMonitor(

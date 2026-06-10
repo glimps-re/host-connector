@@ -6,6 +6,10 @@
 
 - metrics via connector-manager
 
+### Fixed
+
+- close file monitor before scanner during reconfiguration (which previously caused "connector is shutting down" errors)
+
 ## [v1.4.7]
 
 ### Fixed

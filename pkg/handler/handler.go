@@ -36,7 +36,7 @@ var (
 
 type Handler struct {
 	Conn        *scanner.Connector
-	submitter   scanner.Submitter
+	submitter   gdetect.ControllerExtendedGDetectSubmitter
 	monitor     Monitorer
 	Quarantiner quarantine.Quarantiner
 	informDest  io.WriteCloser
@@ -72,6 +72,9 @@ func NewHandler(ctx context.Context, config *config.Config, consoleClient *sdk.C
 	err = h.setup(ctx, config)
 	if err != nil {
 		return
+	}
+	if consoleClient != nil {
+		scanner.MetricCollecter = consoleClient.NewMetricCollecter(h.submitter)
 	}
 	return
 }
@@ -254,10 +257,12 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 			InformDest: informDest,
 		},
 		WaitOpts: gdetect.WaitForOptions{
-			Tags:        append(config.GMalwareUserTags, "GMHost"),
-			Timeout:     time.Duration(config.GMalwareTimeout),
-			PullTime:    time.Millisecond * 500,
-			BypassCache: config.GMalwareBypassCache,
+			SubmitOptions: gdetect.SubmitOptions{
+				Tags:        append(config.GMalwareUserTags, "GMHost"),
+				BypassCache: config.GMalwareBypassCache,
+			},
+			Timeout:  time.Duration(config.GMalwareTimeout),
+			PullTime: time.Millisecond * 500,
 		},
 		CustomActions:            customAction,
 		Extract:                  config.Extract,

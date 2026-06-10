@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.0]
+
+### Added
+
+- metrics via connector-manager
+
 ## [v1.4.7]
 
 ### Fixed

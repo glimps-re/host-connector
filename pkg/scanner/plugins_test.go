@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	quarantinermock "github.com/glimps-re/host-connector/pkg/quarantine/mock"
@@ -48,7 +49,7 @@ test2,123457,true`,
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c, connErr := NewConnector(tt.config, &quarantinermock.QuarantineMock{}, &mockSubmitter{})
+			c, connErr := NewConnector(tt.config, &quarantinermock.QuarantineMock{}, &gdetectMock.MockGDetectSubmitter{})
 			if connErr != nil {
 				t.Fatalf("could not create connector: %v", connErr)
 			}

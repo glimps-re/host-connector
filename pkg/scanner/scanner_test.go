@@ -22,6 +22,7 @@ import (
 
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
@@ -738,7 +739,7 @@ func TestNewConnector(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &mockSubmitter{
+			submitter := &gdetectMock.MockGDetectSubmitter{
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) {
 					if tt.fields.errExtractExpertViewURL {
 						err = errors.New("error extracting expert view url")
@@ -878,7 +879,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 				Location: "/path/large.txt",
 				SHA256:   "def456",
 				FileSize: 200,
-				Error:    errors.New("file is too big to be analyzed"),
+				Error:    errFileTooBig,
 			},
 		},
 		{
@@ -1299,7 +1300,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &mockSubmitter{
+			submitter := &gdetectMock.MockGDetectSubmitter{
 				WaitForFileMock: func(ctx context.Context, filepath string, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
 					return tt.fields.submitterWaitForFileResp.result, tt.fields.submitterWaitForFileResp.err
 				},

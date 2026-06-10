@@ -20,6 +20,7 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/connector-integration/sdk/events"
+	"github.com/glimps-re/connector-integration/sdk/metrics"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -45,10 +46,13 @@ func actionTimeoutForSize(fileSize int64) time.Duration {
 }
 
 var (
-	LogLevel                          = &slog.LevelVar{}
-	logger                            = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: LogLevel}))
-	EventHandler  events.EventHandler = events.NoopEventHandler{}
-	ConsoleLogger                     = slog.New(slog.DiscardHandler)
+	LogLevel                                = &slog.LevelVar{}
+	logger                                  = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: LogLevel}))
+	EventHandler    events.EventHandler     = events.NoopEventHandler{}
+	ConsoleLogger                           = slog.New(slog.DiscardHandler)
+	MetricCollecter metrics.MetricCollecter = metrics.NoopMetricCollecter{}
+
+	errFileTooBig = errors.New("file is too big to be analyzed")
 )
 
 // accepted MIME types for extraction.
@@ -97,11 +101,6 @@ func extractableTypes() map[string]struct{} {
 	}
 }
 
-type Submitter interface {
-	gdetect.ControllerGDetectSubmitter
-	ExtractExpertViewURL(result *gdetect.Result) (urlExpertView string, err error)
-}
-
 type Config struct {
 	QuarantineFolder         string
 	Workers                  int
@@ -141,7 +140,7 @@ type archiveToAnalyze struct {
 }
 
 type Connector struct {
-	submitter   Submitter
+	submitter   gdetect.ControllerExtendedGDetectSubmitter
 	quarantiner quarantine.Quarantiner
 
 	closeOnce sync.Once
@@ -178,7 +177,7 @@ type Connector struct {
 
 const restoredCheckTimeout = 10 * time.Second
 
-func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter Submitter) (*Connector, error) {
+func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdetect.ControllerExtendedGDetectSubmitter) (*Connector, error) {
 	if cfg.Workers < 1 {
 		cfg.Workers = config.DefaultWorkers
 	}
@@ -1051,10 +1050,22 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 			Location: input.location,
 			SHA256:   input.sha256,
 			FileSize: input.size,
-			Error:    errors.New("file is too big to be analyzed"),
+			Error:    errFileTooBig,
 		}
 		return
 	}
+
+	// report metrics for every file actually analyzed.
+	// files filtered via plugins or too big to be analyzed
+	// count as neither processed nor error.
+	defer func() {
+		if result.Error != nil {
+			MetricCollecter.AddErrorItem()
+			return
+		}
+		MetricCollecter.AddItemProcessed(input.size)
+	}()
+
 	location := input.location
 	if input.archiveID != "" {
 		location = input.archiveTopLocation

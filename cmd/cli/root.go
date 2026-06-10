@@ -142,10 +142,10 @@ func initHandler(cmd *cobra.Command, _ []string, consoleClient *sdk.ConnectorMan
 	}
 	hostHandler, err = handler.NewHandler(cmd.Context(), hostConfig, consoleClient, unresolvedErrors)
 	if err != nil {
-		logger.Error("could not init host connector properly", slog.String("error", err.Error()))
+		err = fmt.Errorf("could not init host connector properly: %w", err)
 		return
 	}
-	return nil
+	return
 }
 
 func checkFiles(cmd *cobra.Command, args []string) error {

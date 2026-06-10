@@ -12,6 +12,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/rfsnotify"
 )
 
@@ -188,7 +189,7 @@ func (m *Monitor) scanFiles() {
 			}
 
 			if err := m.cb(path); err != nil {
-				logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+				logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
 			}
 			m.pendingFiles.Delete(path)
 		}
@@ -207,7 +208,7 @@ func (m *Monitor) Add(path string) error {
 		m.wg.Go(func() {
 			err := m.cb(path)
 			if err != nil {
-				logger.Error("error action on new file", slog.String("path", path), slog.String("err", err.Error()))
+				logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
 			}
 		})
 	}

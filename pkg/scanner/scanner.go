@@ -52,7 +52,8 @@ var (
 	ConsoleLogger                           = slog.New(slog.DiscardHandler)
 	MetricCollecter metrics.MetricCollecter = metrics.NoopMetricCollecter{}
 
-	errFileTooBig = errors.New("file is too big to be analyzed")
+	errFileTooBig    = errors.New("file is too big to be analyzed")
+	errScannerClosed = errors.New("scanner instance is closing and is no longer accepting new files")
 )
 
 // accepted MIME types for extraction.
@@ -284,7 +285,7 @@ var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []s
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	select {
 	case <-c.stopIncoming:
-		err = errors.New("connector is shutting down")
+		err = errScannerClosed
 		return
 	default:
 	}
@@ -337,7 +338,8 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	case <-ctx.Done():
 		return context.Canceled
 	case <-c.stopIncoming:
-		return errors.New("connector is shutting down")
+		err = errScannerClosed
+		return
 	case c.dispatchChan <- input:
 		return
 	}
@@ -397,7 +399,7 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 
 		err := c.ScanFile(ctx, path)
 		if err != nil {
-			logger.Error("could not scan file", slog.String("file", path), slog.String("err", err.Error()))
+			logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "scanDir"))
 			return nil // continue to next file
 		}
 		return nil
@@ -1161,6 +1163,10 @@ func (c *Connector) addReport(report *datamodel.Report) {
 	c.reports = append(c.reports, report)
 }
 
+// Close stops Connector instance:
+//  1. stop accepting new files
+//  2. wait for already accepted files to finish
+//  3. stop all workers
 func (c *Connector) Close(ctx context.Context) {
 	c.closeOnce.Do(func() {
 		// Phase 1: stop accepting new files from ScanFile callers.

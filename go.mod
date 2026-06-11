@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
-	github.com/glimps-re/connector-integration v0.8.1-0.20260610133200-144983abfece
+	github.com/glimps-re/connector-integration v0.8.1
 	github.com/glimps-re/rfsnotify v0.1.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/gonutz/wui/v2 v2.8.2

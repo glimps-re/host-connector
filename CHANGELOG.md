@@ -5,6 +5,7 @@
 ### Added
 
 - metrics via connector-manager
+- more logs for connector-manager actions
 
 ### Fixed
 

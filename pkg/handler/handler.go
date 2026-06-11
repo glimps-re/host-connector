@@ -331,6 +331,14 @@ func (h *Handler) OnNewFile(ctx context.Context) OnNewFileFunc {
 }
 
 func (h *Handler) Start(ctx context.Context) (err error) {
+	logger.Debug("received Start action from connector-manager")
+	defer func() {
+		if err != nil {
+			logger.Error("Start action failed", slog.String("error", err.Error()))
+			return
+		}
+		logger.Debug("Start action completed")
+	}()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -377,6 +385,14 @@ func (h *Handler) startLocked(ctx context.Context) (err error) {
 }
 
 func (h *Handler) Stop(ctx context.Context) (err error) {
+	logger.Debug("received Stop action from connector-manager")
+	defer func() {
+		if err != nil {
+			logger.Error("Stop action failed", slog.String("error", err.Error()))
+			return
+		}
+		logger.Debug("Stop action completed")
+	}()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -418,8 +434,10 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 	logger.Debug("received Configure action from connector-manager")
 	defer func() {
 		if err != nil {
-			logger.Debug("Configure action failed", slog.String("error", err.Error()))
+			logger.Error("Configure action failed", slog.String("error", err.Error()))
+			return
 		}
+		logger.Debug("Configure action completed")
 	}()
 	conf := new(config.Config)
 	err = json.Unmarshal(rawConfig, conf)
@@ -432,7 +450,7 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 
 	err = h.setup(ctx, conf)
 	if err != nil {
-		logger.Error("failed to setup host connector", slog.String("error", err.Error()))
+		err = fmt.Errorf("failed to setup host connector: %w", err)
 		return
 	}
 	if !h.wantStopped {
@@ -441,11 +459,18 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 			return
 		}
 	}
-	logger.Debug("Configure action completed")
 	return
 }
 
 func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionContent) (err error) {
+	logger.Debug("received Restore action from connector-manager")
+	defer func() {
+		if err != nil {
+			logger.Error("Restore action failed", slog.String("error", err.Error()))
+			return
+		}
+		logger.Debug("Restore action completed")
+	}()
 	if h.Quarantiner == nil {
 		err = errors.New("quarantine is disabled, cannot restore files")
 		return

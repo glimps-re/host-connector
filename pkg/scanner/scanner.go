@@ -1169,7 +1169,9 @@ func (c *Connector) addReport(report *datamodel.Report) {
 //  3. stop all workers
 func (c *Connector) Close(ctx context.Context) {
 	c.closeOnce.Do(func() {
+		logger := logger.With(slog.String("operation", "Connector.Close()"))
 		// Phase 1: stop accepting new files from ScanFile callers.
+		logger.Debug("closing scanner")
 		close(c.stopIncoming)
 
 		closeWorkers := func() { c.stopOnce.Do(func() { close(c.stopWorker) }) }
@@ -1179,10 +1181,12 @@ func (c *Connector) Close(ctx context.Context) {
 		// If Close's ctx is cancelled, force-stop workers so channel sends
 		// unblock via the <-c.stopWorker select case and call finishAnalysis.
 		stop := context.AfterFunc(ctx, closeWorkers)
+		logger.Debug("waiting for scans to complete")
 		c.scansWg.Wait()
 		stop()
 
 		// Phase 3: pipeline drained, stop all worker pools.
+		logger.Debug("stopping all workers")
 		closeWorkers()
 		c.dispatchWg.Wait()
 		c.extractWg.Wait()

@@ -290,3 +290,28 @@ func TestNewMonitor(t *testing.T) {
 		})
 	}
 }
+
+func TestMonitor_Close_ReleasesWatcherWhenNeverStarted(t *testing.T) {
+	cb := func(string) error { return nil }
+
+	m, err := NewMonitor(cb, Config{})
+	if err != nil {
+		t.Fatalf("NewMonitor() error = %v", err)
+	}
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() unstarted error = %v", err)
+	}
+
+	// Regression: Close must release the underlying watcher even when the
+	// monitor was never started (otherwise its inotify fd and goroutine leak on
+	// the repeated reconfigure-while-stopped path). A released watcher rejects
+	// Add, so a successful Add here means the watcher was left open.
+	if addErr := m.watcher.Add(t.TempDir()); addErr == nil {
+		t.Fatal("watcher still open after Close() of an unstarted monitor")
+	}
+
+	// Close is idempotent.
+	if err := m.Close(); err != nil {
+		t.Fatalf("Close() idempotent error = %v", err)
+	}
+}

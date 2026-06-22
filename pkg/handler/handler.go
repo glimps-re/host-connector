@@ -42,10 +42,36 @@ type Handler struct {
 	informDest  io.WriteCloser
 
 	mu          sync.RWMutex
-	stopped     bool
+	state       connectorState
 	wantStopped bool
 	needSetup   bool
 	conf        *config.Config
+}
+
+// connectorState is the lifecycle state of the host connector.
+type connectorState int
+
+const (
+	// stateStopped: connector is idle, scanner closed, accepts reconfiguration.
+	stateStopped connectorState = iota
+	// stateStarted: connector is running and accepting files.
+	stateStarted
+	// stateStopping: connector is draining in-flight analyses before it stops;
+	// it accepts no new files and rejects reconfiguration and start.
+	stateStopping
+)
+
+func (s connectorState) String() string {
+	switch s {
+	case stateStarted:
+		return "started"
+	case stateStopping:
+		return "stopping"
+	case stateStopped:
+		return "stopped"
+	default:
+		return "unknown"
+	}
 }
 
 const (
@@ -62,7 +88,7 @@ var _ sdk.Connector = &Handler{}
 
 func NewHandler(ctx context.Context, config *config.Config, consoleClient *sdk.ConnectorManagerClient, unresolvedErrors map[events.ErrorEventType]string) (h *Handler, err error) {
 	h = new(Handler)
-	h.stopped = true
+	h.state = stateStopped
 	if consoleClient != nil {
 		eventHandler = consoleClient.NewConsoleEventHandler(LogLevel, unresolvedErrors)
 		consoleLogger = slog.New(eventHandler.GetLogHandler())
@@ -342,6 +368,11 @@ func (h *Handler) Start(ctx context.Context) (err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
+	if h.state == stateStopping {
+		err = errors.New("connector is stopping, retry once stopped")
+		return
+	}
+
 	return h.startLocked(ctx)
 }
 
@@ -376,58 +407,83 @@ func (h *Handler) startLocked(ctx context.Context) (err error) {
 			return
 		}
 	}
-	h.stopped = false
+	h.state = stateStarted
 	if e := eventHandler.NotifyResolution(ctx, "host connector started successfully", HostConfigError, HostStartError, events.GMalwareConfigError); e != nil {
 		logger.Error("could not push console error", slog.String("error", e.Error()))
+	}
+	if e := eventHandler.NotifyStatus(ctx, events.StatusStarted); e != nil {
+		logger.Warn("could not push started status to connector manager", slog.String("error", e.Error()))
 	}
 	logger.Info("connector started")
 	return
 }
 
+// Stop transitions the connector to "stopping" and drains the scanner in the
+// background, returning immediately. The connector reaches "stopped" once the
+// drain completes. Each transition is reported to the connector manager.
 func (h *Handler) Stop(ctx context.Context) (err error) {
 	logger.Debug("received Stop action from connector-manager")
-	defer func() {
-		if err != nil {
-			logger.Error("Stop action failed", slog.String("error", err.Error()))
-			return
-		}
-		logger.Debug("Stop action completed")
-	}()
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.wantStopped = true
-	if h.stopped {
+	if h.state != stateStarted {
+		// already stopped or stopping: nothing to drain.
+		state := h.state
+		h.mu.Unlock()
+		logger.Debug("Stop action ignored", slog.String("state", state.String()))
 		return
 	}
-	h.stopped = true
+	h.state = stateStopping
+	mon := h.monitor
+	conn := h.Conn
+	quarantiner := h.Quarantiner
+	informDest := h.informDest
+	h.mu.Unlock()
+
+	if e := eventHandler.NotifyStatus(ctx, events.StatusStopping); e != nil {
+		logger.Warn("could not push stopping status to connector manager", slog.String("error", e.Error()))
+	}
+
+	go h.drain(ctx, mon, conn, quarantiner, informDest)
+	logger.Debug("Stop action accepted, connector draining in background")
+	return
+}
+
+// drain closes the resources, waits for in-flight analyses to finish, then
+// marks the connector stopped and reports it. The monitor MUST be closed before
+// the scanner so it stops feeding files into a closing scanner.
+func (h *Handler) drain(ctx context.Context, mon Monitorer, conn *scanner.Connector, quarantiner quarantine.Quarantiner, informDest io.WriteCloser) {
+	if mon != nil {
+		if e := mon.Close(); e != nil {
+			logger.Error("could not close monitor while stopping", slog.String("error", e.Error()))
+		}
+	}
+	if conn != nil {
+		conn.Close(ctx)
+	}
+	if quarantiner != nil {
+		if e := quarantiner.Close(); e != nil {
+			logger.Error("could not close quarantiner while stopping", slog.String("error", e.Error()))
+		}
+	}
+	if informDest != nil {
+		if e := informDest.Close(); e != nil {
+			logger.Warn("could not close inform destination while stopping", slog.String("error", e.Error()))
+		}
+	}
+
+	h.mu.Lock()
+	h.monitor = nil
+	h.Conn = nil
+	h.Quarantiner = nil
+	h.informDest = nil
 	h.needSetup = true
-	if h.monitor != nil {
-		err = h.monitor.Close()
-		if err != nil {
-			return
-		}
-		h.monitor = nil
-	}
-	if h.Conn != nil {
-		h.Conn.Close(ctx)
-		h.Conn = nil
-	}
-	if h.Quarantiner != nil {
-		err = h.Quarantiner.Close()
-		if err != nil {
-			return
-		}
-		h.Quarantiner = nil
-	}
-	if h.informDest != nil {
-		if e := h.informDest.Close(); e != nil {
-			logger.Warn("could not close inform destination", slog.String("error", e.Error()))
-		}
-		h.informDest = nil
+	h.state = stateStopped
+	h.mu.Unlock()
+
+	if e := eventHandler.NotifyStatus(ctx, events.StatusStopped); e != nil {
+		logger.Warn("could not push stopped status to connector manager", slog.String("error", e.Error()))
 	}
 	logger.Info("connector stopped")
-	return
 }
 
 func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err error) {
@@ -447,6 +503,11 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 
 	h.mu.Lock()
 	defer h.mu.Unlock()
+
+	if h.state != stateStopped {
+		err = fmt.Errorf("cannot reconfigure connector while %s: stop the connector before reconfiguring", h.state)
+		return
+	}
 
 	err = h.setup(ctx, conf)
 	if err != nil {
@@ -486,8 +547,12 @@ func (h *Handler) Status() (status sdk.ConnectorStatus) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 
-	if h.stopped {
+	switch h.state {
+	case stateStarted:
+		return sdk.Started
+	case stateStopping:
+		return sdk.Stopping
+	default:
 		return sdk.Stopped
 	}
-	return sdk.Started
 }

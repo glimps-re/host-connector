@@ -3,8 +3,8 @@ module github.com/glimps-re/host-connector
 go 1.26
 
 require (
-	github.com/glimps-re/go-gdetect v1.6.3
-	github.com/spf13/cobra v1.10.1
+	github.com/glimps-re/go-gdetect v1.6.4
+	github.com/spf13/cobra v1.10.2
 	modernc.org/sqlite v1.39.0
 )
 
@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
-	github.com/glimps-re/connector-integration v0.8.1
+	github.com/glimps-re/connector-integration v0.8.2-0.20260622160349-c94d5f41d139
 	github.com/glimps-re/rfsnotify v0.1.0
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/gonutz/wui/v2 v2.8.2

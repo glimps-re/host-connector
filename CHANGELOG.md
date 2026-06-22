@@ -6,6 +6,11 @@
 
 - metrics via connector-manager
 - more logs for connector-manager actions
+- graceful asynchronous stop: Stop is acknowledged immediately and drains
+  in-flight analyses in the background, reporting `stopping` then `stopped`
+  lifecycle status to the connector manager
+- reject reconfiguration unless the connector is stopped, and reject start while
+  stopping
 
 ### Fixed
 

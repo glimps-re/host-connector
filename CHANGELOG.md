@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.1]
+
+### Changed
+
+- Detect: size idle connection pool to number of analysis workers.
+
 ## [v1.5.0]
 
 ### Added

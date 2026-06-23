@@ -79,7 +79,7 @@ func (m *Monitor) Close() (err error) {
 
 func (m *Monitor) Start() {
 	m.wg.Go(func() {
-		m.work()
+		m.dispatchEvents()
 	})
 	if m.period != 0 {
 		m.wg.Go(func() {
@@ -131,7 +131,9 @@ func (m *Monitor) periodicalScan() {
 	}
 }
 
-func (m *Monitor) work() {
+// dispatchEvents reads filesystem events from the watcher and queue these files for scanning.
+// Returns when m.done or a watcher channel is closed.
+func (m *Monitor) dispatchEvents() {
 	for {
 		select {
 		case <-m.done:

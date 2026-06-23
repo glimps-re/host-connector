@@ -102,13 +102,20 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 	return
 }
 
-func (h *Handler) setupGMalwareClient(ctx context.Context, config *config.Config) (err error) {
+func (h *Handler) setupGMalwareClient(ctx context.Context, conf *config.Config) (err error) {
+	// The default idle pool keeps only 2 connections per host, which fits occasional requests but not a worker pool.
+	// Sizing the idle pool to the worker count lets connections be reused across requests instead of paying a TCP+TLS handshake on nearly every one.
+	nbAnalysisWorkers := conf.Workers
+	if nbAnalysisWorkers < 1 {
+		nbAnalysisWorkers = config.DefaultWorkers
+	}
 	detectConfig := gdetect.ClientConfig{
-		Endpoint:  config.GMalwareAPIURL,
-		ExpertURL: config.GMalwareExpertURL,
-		Token:     config.GMalwareAPIToken,
-		Insecure:  config.GMalwareNoCertCheck,
-		Syndetect: config.GMalwareSyndetect,
+		Endpoint:            conf.GMalwareAPIURL,
+		ExpertURL:           conf.GMalwareExpertURL,
+		Token:               conf.GMalwareAPIToken,
+		Insecure:            conf.GMalwareNoCertCheck,
+		Syndetect:           conf.GMalwareSyndetect,
+		MaxIdleConnsPerHost: nbAnalysisWorkers,
 	}
 
 	if h.submitter == nil {

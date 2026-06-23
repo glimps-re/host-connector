@@ -6,10 +6,16 @@
 
 - metrics via connector-manager
 - more logs for connector-manager actions
+- graceful asynchronous stop: Stop is acknowledged immediately and drains
+  in-flight analyses in the background, reporting `stopping` then `stopped`
+  lifecycle status to the connector manager
+- reject reconfiguration unless the connector is stopped, and reject start while
+  stopping
 
 ### Fixed
 
 - close file monitor before scanner during reconfiguration (which previously caused "connector is shutting down" errors)
+- release the file monitor's watcher when closing a monitor that was never started, fixing an inotify fd and goroutine leak on repeated reconfiguration
 
 ## [v1.4.7]
 

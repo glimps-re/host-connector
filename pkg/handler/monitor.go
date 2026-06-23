@@ -64,16 +64,18 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 }
 
 func (m *Monitor) Close() (err error) {
-	if !m.started.Load() {
-		return
-	}
-	if err := m.watcher.Close(); err != nil {
+	// The watcher is created in NewMonitor, so it must be released even when the
+	// monitor was never started (a config can be built but left unstarted).
+	m.closeOnce.Do(func() {
+		err = m.watcher.Close()
+		close(m.done)
+		m.wg.Wait()
+		m.started.Store(false)
+	})
+	if err != nil {
 		logger.Error("cannot close watcher", slog.String("error", err.Error()))
 		return fmt.Errorf("cannot close watcher, error: %w", err)
 	}
-	m.closeOnce.Do(func() { close(m.done) })
-	m.wg.Wait()
-	m.started.Store(false)
 	return
 }
 

@@ -3,7 +3,7 @@ module github.com/glimps-re/host-connector
 go 1.26
 
 require (
-	github.com/glimps-re/go-gdetect v1.6.5-0.20260624095812-47ce3d5c0fad
+	github.com/glimps-re/go-gdetect v1.6.5-0.20260625143734-81a26a0a8e03
 	github.com/spf13/cobra v1.10.1
 	modernc.org/sqlite v1.39.0
 )

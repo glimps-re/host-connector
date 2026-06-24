@@ -596,8 +596,8 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	}
 
 	if result.Error != nil {
-		inputLogger.Error("could not handle file properly", slog.Any(logErrorKey, result.Error.Error()))
-		ConsoleLogger.Error(fmt.Sprintf("could not handle file %s properly: %s", input.location, result.Error.Error()))
+		inputLogger.Error("could not analyze file", slog.Any(logErrorKey, result.Error.Error()))
+		ConsoleLogger.Error(fmt.Sprintf("could not analyze file %s: %s", input.location, result.Error.Error()))
 	}
 	if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
 		result = *newres
@@ -1082,6 +1082,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	var logArgs []any
 	if err != nil {
 		logArgs = append(logArgs, slog.String(logErrorKey, err.Error()))
+		err = fmt.Errorf("detect error: %w", err)
 	}
 	fileLogger.Debug("finished sending file to detect", logArgs...)
 	httpError := new(gdetect.HTTPError)
@@ -1094,7 +1095,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		}
 
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, gdetect.ErrTimeout):
-		ConsoleLogger.Error(fmt.Sprintf("could not analyze file %s, error: %s", input.location, err.Error()))
+		// not a GMalware error (can be file-specific) so don't send error notification
 
 	case errors.As(err, httpError):
 		err := fmt.Errorf("%d: %s : %s", httpError.Code, httpError.Status, httpError.Body)

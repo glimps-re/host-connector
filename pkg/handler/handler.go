@@ -349,18 +349,23 @@ func (h *Handler) Start(ctx context.Context) (err error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	return h.startLocked(ctx)
+	return h.startLocked(ctx, "starting")
 }
 
-func (h *Handler) startLocked(ctx context.Context) (err error) {
+func (h *Handler) startLocked(ctx context.Context, phase string) (err error) {
+	logger := logger.With(slog.String("phase", phase))
+
 	h.wantStopped = false
 	if h.needSetup {
+		logger.Info("setting up connector configuration ...") // info level because start is an important phase and not frequent
 		err = h.setup(ctx, h.conf)
 		if err != nil {
 			return
 		}
+		logger.Info("connector configuration completed successfully")
 	}
 
+	logger.Info("starting workers ...")
 	err = h.Conn.Start() //nolint:contextcheck // no ctx to pass, workers are launched goroutine
 	if err != nil {
 		err = fmt.Errorf("could not start host connector workers, error: %w", err)
@@ -369,10 +374,12 @@ func (h *Handler) startLocked(ctx context.Context) (err error) {
 		}
 		return
 	}
+	logger.Info("workers started")
 	h.monitor.Start()
+	logger.Info("setting up directory monitoring, this may take a while for large directories ...", slog.Int("paths", len(h.conf.Paths)))
 	for _, path := range h.conf.Paths {
 		if err = h.monitor.Add(path); err != nil {
-			err = fmt.Errorf("could not start host connector workers, error monitoring path %s: %w", path, err)
+			err = fmt.Errorf("error adding path %s to monitoring: %w", path, err)
 			if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
 				logger.Warn("could not push console error", slog.String("error", e.Error()))
 			}
@@ -387,11 +394,13 @@ func (h *Handler) startLocked(ctx context.Context) (err error) {
 	if e := eventHandler.NotifyResolution(ctx, "host connector started successfully", HostConfigError, HostStartError, events.GMalwareConfigError); e != nil {
 		logger.Error("could not push console error", slog.String("error", e.Error()))
 	}
-	logger.Info("connector started")
+	logger.Info(fmt.Sprintf("monitoring successfully completed. %s successful", phase))
 	return
 }
 
 func (h *Handler) Stop(ctx context.Context) (err error) {
+	logger := logger.With(slog.String("phase", "stopping"))
+
 	logger.Debug("received Stop action from connector-manager")
 	defer func() {
 		if err != nil {
@@ -410,15 +419,19 @@ func (h *Handler) Stop(ctx context.Context) (err error) {
 	h.stopped = true
 	h.needSetup = true
 	if h.monitor != nil {
+		logger.Info("stopping monitoring ...") // info level because stop is an important phase and not frequent
 		err = h.monitor.Close()
 		if err != nil {
 			return
 		}
 		h.monitor = nil
+		logger.Info("monitoring successfully stopped")
 	}
 	if h.Conn != nil {
+		logger.Info("waiting for ongoing analyses to complete, this may take a while ...")
 		h.Conn.Close(ctx)
 		h.Conn = nil
+		logger.Info("ongoing analyses completed")
 	}
 	if h.Quarantiner != nil {
 		err = h.Quarantiner.Close()
@@ -461,7 +474,7 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 		return
 	}
 	if !h.wantStopped {
-		err = h.startLocked(ctx)
+		err = h.startLocked(ctx, "reconfiguring")
 		if err != nil {
 			return
 		}

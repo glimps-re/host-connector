@@ -6,6 +6,10 @@
 
 - Detect: size idle connection pool to number of analysis workers.
 
+### Added
+
+- logs: add more logs
+
 ## [v1.5.0]
 
 ### Added

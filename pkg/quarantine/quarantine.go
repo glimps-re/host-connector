@@ -210,6 +210,16 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	if err != nil {
 		return
 	}
+
+	// recreate any missing directories in tree, in case some were removed since quarantine
+	restoreDir := filepath.Dir(header.Filepath)
+	if _, statErr := os.Stat(restoreDir); os.IsNotExist(statErr) {
+		logger.Debug("recreating dir tree for restore", slog.String("dir", restoreDir))
+		if err = os.MkdirAll(restoreDir, 0o750); err != nil {
+			return
+		}
+	}
+
 	out, err := os.Create(filepath.Clean(header.Filepath))
 	if err != nil {
 		return

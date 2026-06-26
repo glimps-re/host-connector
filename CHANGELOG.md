@@ -2,6 +2,10 @@
 
 ## [v1.5.1]
 
+### Fixed
+
+- restoration: recreate original directory tree
+
 ### Changed
 
 - Detect: size idle connection pool to number of analysis workers.

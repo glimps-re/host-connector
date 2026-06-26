@@ -1081,8 +1081,8 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	gdetectResult, err := c.submitter.WaitForFile(ctx, input.location, opts)
 	var logArgs []any
 	if err != nil {
-		logArgs = append(logArgs, slog.String(logErrorKey, err.Error()))
 		err = fmt.Errorf("detect error: %w", err)
+		logArgs = append(logArgs, slog.String(logErrorKey, err.Error()))
 	}
 	fileLogger.Debug("finished sending file to detect", logArgs...)
 	httpError := new(gdetect.HTTPError)

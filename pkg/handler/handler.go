@@ -394,7 +394,7 @@ func (h *Handler) startLocked(ctx context.Context, phase string) (err error) {
 	if e := eventHandler.NotifyResolution(ctx, "host connector started successfully", HostConfigError, HostStartError, events.GMalwareConfigError); e != nil {
 		logger.Error("could not push console error", slog.String("error", e.Error()))
 	}
-	logger.Info(fmt.Sprintf("monitoring successfully completed. %s successful", phase))
+	logger.Info("monitoring successfully completed. phase successful")
 	return
 }
 

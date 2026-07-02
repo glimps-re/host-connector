@@ -113,7 +113,7 @@ type Config struct {
 	CustomActions            []Action
 	Extract                  bool
 	MaxFileSize              int64
-	ExtractMinThreshold      int64 // only configurable for unit tests
+	ExtractMinThreshold      int64 // minimum file size to attempt extraction; falls back to default when <= 0
 	RecursiveExtractMaxDepth int
 	RecursiveExtractMaxSize  int64
 	RecursiveExtractMaxFiles int

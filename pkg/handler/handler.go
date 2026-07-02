@@ -198,6 +198,15 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		return
 	}
 
+	var extractMinSize int64
+	if config.ExtractMinSize != "" {
+		extractMinSize, err = units.ParseStrictBytes(config.ExtractMinSize)
+		if err != nil {
+			err = fmt.Errorf("could not parse extract-min-size: %w", err)
+			return
+		}
+	}
+
 	var recursiveExtractMaxSize int64
 	if config.RecursiveExtractMaxSize != "" {
 		recursiveExtractMaxSize, err = units.ParseStrictBytes(config.RecursiveExtractMaxSize)
@@ -254,14 +263,14 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	}
 
 	h.Conn, err = scanner.NewConnector(scanner.Config{
-		QuarantineFolder: config.Quarantine.Location,
-		MaxFileSize:      maxFileSize,
-		// ExtractMinThreshold: , // not set to always use default value
-		Workers:        config.Workers,
-		ExtractWorkers: config.ExtractWorkers,
-		Password:       config.Quarantine.Password,
-		Timeout:        config.GMalwareTimeout,
-		FollowSymlinks: config.FollowSymlinks,
+		QuarantineFolder:    config.Quarantine.Location,
+		MaxFileSize:         maxFileSize,
+		ExtractMinThreshold: extractMinSize,
+		Workers:             config.Workers,
+		ExtractWorkers:      config.ExtractWorkers,
+		Password:            config.Quarantine.Password,
+		Timeout:             config.GMalwareTimeout,
+		FollowSymlinks:      config.FollowSymlinks,
 		Actions: scanner.Actions{
 			Log:        config.Actions.Log,
 			Quarantine: config.Actions.Quarantine,

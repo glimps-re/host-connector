@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.2]
+
+### Added
+
+- extract_min_size config, file at or below extract_min_size (default to 8KB) will directly send to analyze without extraction
+
 ## [v1.5.1]
 
 ### Fixed

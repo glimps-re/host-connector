@@ -25,8 +25,9 @@ var hostConfig = &config.Config{
 		CommonConnectorConfig: sdk.CommonConnectorConfig{
 			GMalwareTimeout: config.DefaultTimeout,
 		},
-		Workers:     config.DefaultWorkers,
-		MaxFileSize: config.DefaultMaxFileSize,
+		Workers:        config.DefaultWorkers,
+		MaxFileSize:    config.DefaultMaxFileSize,
+		ExtractMinSize: config.DefaultExtractMinSize,
 		Actions: sdk.HostActionsConfig{
 			Delete:     true,
 			Quarantine: true,
@@ -75,6 +76,7 @@ func initRoot(rootCmd *cobra.Command) {
 	rootCmd.PersistentFlags().StringVar(&hostConfig.Quarantine.Registry, "quarantine-registry", hostConfig.Quarantine.Registry, "Path to the database that store quarantined and restored file entry (leave empty for in-memory store, lost on restart)")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.Quarantine.Location, "quarantine", config.DefaultQuarantineLocation, "Directory path where quarantined files are stored (files are encrypted with .lock extension)")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.MaxFileSize, "max-file-size", config.DefaultMaxFileSize, "Maximum file size to scan directly (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected")
+	rootCmd.PersistentFlags().StringVar(&hostConfig.ExtractMinSize, "extract-min-size", config.DefaultExtractMinSize, "Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB)")
 	rootCmd.PersistentFlags().BoolVarP(&hostConfig.Debug, "debug", "d", hostConfig.Debug, "print debug strings")
 	rootCmd.PersistentFlags().BoolVarP(&hostConfig.Print.Verbose, "verbose", "v", hostConfig.Print.Verbose, "Report all scanned files, including clean files (not just malware detections)")
 	rootCmd.PersistentFlags().BoolVar(&hostConfig.Extract, "extract", hostConfig.Extract, "Enable archive extraction for files exceeding max_file_size (archives are unpacked and contents scanned)")

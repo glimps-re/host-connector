@@ -58,6 +58,7 @@ Flags:
       --config string                config file (default "/etc/gmhost/config.yml")
   -d, --debug                        print debug strings
       --extract                      Enable archive extraction (archives are unpacked and contents scanned)
+      --extract-min-size string      Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB) (default "8KB")
       --extract-workers int          Number of concurrent workers for archive extraction (default: 2, used when extract is enabled) (default 2)
       --follow-symlinks              Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
       --gmalware-syndetect           Use syndetect API to analyze files
@@ -495,6 +496,7 @@ The default configuration file is located at:
 workers: 4
 extract: true
 extract_workers: 2
+extract_min_size: 8KB
 max_file_size: 100MiB
 follow_symlinks: false
 paths:
@@ -538,6 +540,7 @@ debug: false
 - **`workers`**: Number of concurrent workers for file analysis (default: 4, affects CPU usage)
 - **`extract_workers`**: Number of concurrent workers for archive extraction (default: 2, used when extract is enabled)
 - **`extract`**: Enable archive extraction (archives are unpacked and contents scanned)
+- **`extract_min_size`**: Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB)
 - **`max_file_size`**: Maximum file size to send for analyze (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected
 - **`follow_symlinks`**: Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
 - **`paths`**: List of directories or files to monitor and scan (can be absolute or relative paths, required, minimum 1)
@@ -609,7 +612,7 @@ GMHost can extract and analyze files from various archive formats when the `extr
 - LZW
 
 **Conditions to attempt extraction:**
-- file size must be > 8KB
+- file size must be > `extract_min_size` (`--extract-min-size`, default 8KB)
 - file's MIME type must belong to list of allowed types (see below)
 
 Allowed types for extraction:

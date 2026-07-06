@@ -10,7 +10,7 @@ import (
 )
 
 type (
-	ExtractFile            = func(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error)
+	ExtractFile            = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error)
 	OnStartScanFile        = func(file string, sha256 string)
 	OnScanFile             = func(filename string, location string, sha256 string, isArchive bool) (result *datamodel.Result)
 	OnFileScanned          = func(file string, sha256 string, result datamodel.Result) (newResult *datamodel.Result)

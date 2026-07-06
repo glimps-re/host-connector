@@ -108,7 +108,7 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 }
 
 // ExtractFile extracts archive contents to outputDir with security limits.
-func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error) {
+func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
 	p.consoleLogger.Debug(fmt.Sprintf("start extraction of %s with 7z", archiveLocation))
 
 	result, err := p.sze.extract(archiveLocation, outputDir, []string{}, []string{})
@@ -118,7 +118,9 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (
 
 	for _, ep := range result.extractedFiles {
 		files = append(files, ep.Path)
-		size += int64(ep.Size)
+		if ep.Size > 0 {
+			size += uint64(ep.Size)
+		}
 	}
 	return
 }

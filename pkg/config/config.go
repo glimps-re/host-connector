@@ -12,7 +12,8 @@ const (
 	DefaultExtractWorkers           = 2
 	DefaultModificationDelay        = sdk.Duration(time.Second * 30)
 	DefaultMaxFileSize              = "100MiB"
-	DefaultRecursiveExtractMaxDepth = 10 // arbitrary
+	DefaultExtractMinSize           = "8KB" // minimum size to attempt extraction
+	DefaultRecursiveExtractMaxDepth = 10    // arbitrary
 	DefaultRecursiveExtractMaxSize  = "5GB"
 	DefaultRecursiveExtractMaxFiles = 10000
 )

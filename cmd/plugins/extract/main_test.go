@@ -163,8 +163,8 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 
 			// For successful extractions, verify return values make sense
 			if !tt.wantErr {
-				if size < 0 {
-					t.Errorf("SevenZipExtractPlugin.XtractFile() size = %v, want >= 0", size)
+				if tt.expectFiles && size == 0 {
+					t.Errorf("SevenZipExtractPlugin.XtractFile() size = %v, want > 0", size)
 				}
 				if files == nil {
 					t.Error("SevenZipExtractPlugin.XtractFile() files should not be nil")

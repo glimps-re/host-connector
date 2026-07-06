@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -272,7 +273,7 @@ func (c *Connector) Start() (err error) {
 }
 
 // ExtractFile can be used to override xtract.ExtractFile method
-var ExtractFile = func(archiveLocation, outputDir string) (size int64, files []string, volumes []string, err error) {
+var ExtractFile = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
 	xFile := &xtractr.XFile{
 		FilePath:  archiveLocation,
 		OutputDir: outputDir,
@@ -678,7 +679,10 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
-	*totalExtractedSize += extractedSize
+	if extractedSize > math.MaxInt64 {
+		extractedSize = math.MaxInt64
+	}
+	*totalExtractedSize += int64(extractedSize)
 	*totalExtractedFiles += len(extractedFiles) // add all extracted files in total, including sub-archives
 
 	archiveLogger.Debug("archive extraction successful", slog.String("extracted files", fmt.Sprintf("%v", extractedFiles)))

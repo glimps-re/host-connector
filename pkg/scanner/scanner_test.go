@@ -1057,7 +1057,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 				Location: "/path/timeout.txt",
 				SHA256:   "timeout123",
 				FileSize: 100,
-				Error:    fmt.Errorf("detect error: %w", context.DeadlineExceeded),
+				Error:    fmt.Errorf("%s: %w", errSubmitPrefix, context.DeadlineExceeded),
 			},
 		},
 		{
@@ -1088,7 +1088,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 				Location: "/path/error.txt",
 				SHA256:   "error123",
 				FileSize: 100,
-				Error:    fmt.Errorf("detect error: %w", gdetect.HTTPError{Code: 500, Status: "Internal Server Error", Body: "server error"}),
+				Error:    fmt.Errorf("%s: %w", errSubmitPrefix, gdetect.HTTPError{Code: 500, Status: "Internal Server Error", Body: "server error"}),
 			},
 		},
 		{
@@ -1119,7 +1119,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 				Location: "/path/unauthorized.txt",
 				SHA256:   "unauth123",
 				FileSize: 100,
-				Error:    fmt.Errorf("detect error: %w", gdetect.HTTPError{Code: 401, Status: "Unauthorized", Body: "authentication required"}),
+				Error:    fmt.Errorf("%s: %w", errSubmitPrefix, gdetect.HTTPError{Code: 401, Status: "Unauthorized", Body: "authentication required"}),
 			},
 		},
 		{
@@ -1150,7 +1150,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 				Location: "/path/fail.txt",
 				SHA256:   "fail123",
 				FileSize: 100,
-				Error:    fmt.Errorf("detect error: %w", errors.New("generic error")),
+				Error:    fmt.Errorf("%s: %w", errSubmitPrefix, errors.New("generic error")),
 			},
 		},
 		{

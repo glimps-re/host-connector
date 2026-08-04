@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.3]
+
+### Fixed
+
+- clarify error notifications sent to console
+
 ## [v1.5.2]
 
 ### Added

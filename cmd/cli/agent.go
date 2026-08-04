@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -25,6 +26,7 @@ var agentCmd = &cobra.Command{
 		defer registerCancel()
 		err = console.Register(registerCtx, config.Version, info)
 		if err != nil {
+			err = fmt.Errorf("could not register to connector manager: %w", err)
 			return
 		}
 		hostConfig.HostConfig = *managedConfig

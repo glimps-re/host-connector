@@ -90,6 +90,7 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 	}
 	err = h.setupHostConnector(ctx, config)
 	if err != nil {
+		err = fmt.Errorf("setup host connector error: %w", err)
 		if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
 			logger.Warn("could not push console error", slog.String("error", e.Error()))
 		}
@@ -303,7 +304,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	if config.PluginsConfig != "" {
 		configFile, openErr := os.Open(filepath.Clean(config.PluginsConfig))
 		if openErr != nil {
-			err = openErr
+			err = fmt.Errorf("could not open plugins config file %q: %w", config.PluginsConfig, openErr)
 			return
 		}
 		defer func() {
@@ -332,7 +333,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		},
 	)
 	if monErr != nil {
-		err = monErr
+		err = fmt.Errorf("could not init monitoring: %w", monErr)
 		return
 	}
 	h.monitor = mon

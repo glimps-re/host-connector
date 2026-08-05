@@ -38,6 +38,8 @@ const (
 	actionTimeoutPerGB = 30 * time.Second
 
 	defaultExtractMinThreshold int64 = 8 * 1000 // minimum size to try extraction, in bytes (8KB)
+
+	errSubmitPrefix = "error submitting file to detect"
 )
 
 // actionTimeoutForSize computes a timeout proportional to file size,
@@ -1085,7 +1087,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	gdetectResult, err := c.submitter.WaitForFile(ctx, input.location, opts)
 	var logArgs []any
 	if err != nil {
-		err = fmt.Errorf("detect error: %w", err)
+		err = fmt.Errorf("%s: %w", errSubmitPrefix, err)
 		logArgs = append(logArgs, slog.String(logErrorKey, err.Error()))
 	}
 	fileLogger.Debug("finished sending file to detect", logArgs...)
@@ -1102,13 +1104,14 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		// not a GMalware error (can be file-specific) so don't send error notification
 
 	case errors.As(err, httpError):
-		err := fmt.Errorf("%d: %s : %s", httpError.Code, httpError.Status, httpError.Body)
+		// message kept free of file-specific details so repeated identical failures produce a single notification
+		err := fmt.Errorf("%s: %d: %s : %s", errSubmitPrefix, httpError.Code, httpError.Status, httpError.Body)
 		if errEvent := EventHandler.NotifyError(ctx, events.GMalwareError, err); errEvent != nil {
 			fileLogger.Error("cannot push error event", slog.String("error", errEvent.Error()))
 		}
 
 	case errors.As(err, &urlError):
-		err := fmt.Errorf("error %s: %w", urlError.Op, urlError.Err)
+		err := fmt.Errorf("%s: error %s: %w", errSubmitPrefix, urlError.Op, urlError.Err)
 		if errEvent := EventHandler.NotifyError(ctx, events.GMalwareError, err); errEvent != nil {
 			fileLogger.Error("cannot push error event", slog.String("error", errEvent.Error()))
 		}

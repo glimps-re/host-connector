@@ -1205,6 +1205,16 @@ func (c *Connector) Close(ctx context.Context) {
 		c.extractWg.Wait()
 		c.analysisWg.Wait()
 
+		// Phase 4: reclaim extraction temp folders for archives whose processing was
+		// interrupted by shutdown before they could finish on their own (see recursiveExtract's
+		// and analysisWorker's stopWorker handling, which intentionally skip archive bookkeeping
+		// mid-shutdown). No worker goroutine remains, so this is race-free.
+		for _, tmpFolder := range c.archiveStatus.drainTmpFolders() {
+			if removeErr := os.RemoveAll(tmpFolder); removeErr != nil {
+				logger.Error("could not remove leftover extraction temp folder on shutdown", slog.String("folder", tmpFolder), slog.String(logErrorKey, removeErr.Error()))
+			}
+		}
+
 		for _, plugin := range c.loadedPlugins {
 			if closeErr := plugin.Close(ctx); closeErr != nil {
 				logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))

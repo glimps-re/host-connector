@@ -721,7 +721,18 @@ Download the MSI installer from the [releases page](https://github.com/glimps-re
 - Create a default configuration file
 
 ### Linux
+#### Prerequisites
 
+GMHost requires **libmagic** to be installed on the host (used for file type detection):
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install libmagic1
+
+# RHEL / Rocky / Fedora
+sudo dnf install file-libs
+```
+#### Install GMHost
 Download the appropriate binary from the [releases page](https://github.com/glimps-re/host-connector/releases):
 
 ```bash

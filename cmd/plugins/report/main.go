@@ -244,7 +244,7 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 	}
 	reportData.AnalyzedVolume = humanize.Bytes(toUint(totalSizeAnalyzed))
 	reportData.FileVolume = humanize.Bytes(toUint(totalSizeFile))
-	reportData.FilteredVolume = humanize.Bytes(toUint((totalSizeFiltered)))
+	reportData.FilteredVolume = humanize.Bytes(toUint(totalSizeFiltered))
 	return
 }
 
@@ -293,7 +293,8 @@ func (p *ReportPlugin) generatePDFReport(ctx context.Context, reportContext data
 	ctx, cancel := chromedp.NewContext(ctx)
 	defer cancel()
 
-	if err = chromedp.Run(ctx,
+	if err = chromedp.Run(
+		ctx,
 		chromedp.Navigate("about:blank"),
 		chromedp.ActionFunc(func(ctx context.Context) (err error) {
 			frameTree, err := page.GetFrameTree().Do(ctx)

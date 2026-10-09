@@ -336,7 +336,7 @@ session:
 
 #### Report Plugin
 
-Generates comprehensive scan reports in PDF or HTML format.
+Generates comprehensive scan reports in PDF format.
 
 ```yaml
 report:
@@ -345,9 +345,15 @@ report:
     template_path: ""                  # Path to custom HTML template (uses embedded default if empty)
 ```
 
+**Prerequisites:**
+- Google Chrome or Chromium must be installed on the host to generate PDF reports. On Debian:
+```bash
+  sudo apt update && sudo apt install chromium
+```
+
 **Key Features:**
-- PDF and HTML report generation
-- Uses chromedp for HTML-to-PDF conversion
+- PDF report generation
+- Reports are rendered from an HTML template, then converted to PDF using chromedp
 - Customizable templates using Go's html/template syntax
 
 ### Plugin Development
@@ -721,7 +727,18 @@ Download the MSI installer from the [releases page](https://github.com/glimps-re
 - Create a default configuration file
 
 ### Linux
+#### Prerequisites
 
+GMHost requires **libmagic** to be installed on the host (used for file type detection):
+
+```bash
+# Debian / Ubuntu
+sudo apt update && sudo apt install libmagic1
+
+# RHEL / Rocky / Fedora
+sudo dnf install file-libs
+```
+#### Install GMHost
 Download the appropriate binary from the [releases page](https://github.com/glimps-re/host-connector/releases):
 
 ```bash

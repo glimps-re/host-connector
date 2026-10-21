@@ -42,6 +42,7 @@ type Monitor struct {
 	closeOnce    sync.Once
 	filesToScan  chan string
 	pendingFiles *sync.Map
+	states       *sync.Map // path -> fileState, last observed metadata
 	started      atomic.Bool
 }
 
@@ -59,6 +60,7 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 		paths:        new(sync.Map),
 		filesToScan:  make(chan string),
 		pendingFiles: new(sync.Map),
+		states:       new(sync.Map),
 		done:         make(chan struct{}),
 	}, nil
 }
@@ -100,6 +102,7 @@ func (m *Monitor) periodicalScan() {
 		case <-m.done:
 			return
 		case <-ticker.C:
+			seen := make(map[string]struct{})
 			m.paths.Range(func(key, value any) bool {
 				path, ok := key.(string)
 				if !ok {
@@ -113,6 +116,7 @@ func (m *Monitor) periodicalScan() {
 					if d.IsDir() {
 						return
 					}
+					seen[path] = struct{}{}
 					if _, loaded := m.pendingFiles.LoadOrStore(path, struct{}{}); !loaded {
 						select {
 						case <-m.done:
@@ -125,6 +129,16 @@ func (m *Monitor) periodicalScan() {
 				if err != nil {
 					logger.Error("cannot walk dir at rescan", slog.String("path", path), slog.String("error", err.Error()))
 				}
+				return true
+			})
+			// forget files not seen anymore (deleted, moved), their state would never be cleaned otherwise
+			m.states.Range(func(key, _ any) bool {
+				if path, ok := key.(string); ok {
+					if _, found := seen[path]; found {
+						return true
+					}
+				}
+				m.states.Delete(key)
 				return true
 			})
 		}
@@ -175,11 +189,11 @@ func (m *Monitor) scanFiles() {
 			info, statErr := os.Stat(path)
 			if statErr != nil {
 				m.pendingFiles.Delete(path)
+				m.states.Delete(path)
 				continue
 			}
-			if since(info.ModTime()) < time.Duration(m.modDelay) {
-				delay := time.Duration(m.modDelay) - since(info.ModTime())
-				time.AfterFunc(delay, func() {
+			if wait := m.stabilityWait(path, info); wait > 0 {
+				time.AfterFunc(wait, func() {
 					select {
 					case <-m.done:
 						m.pendingFiles.Delete(path)
@@ -196,6 +210,36 @@ func (m *Monitor) scanFiles() {
 			m.pendingFiles.Delete(path)
 		}
 	}
+}
+
+type fileState struct {
+	size       int64
+	modTime    time.Time
+	changeTime time.Time
+	seen       time.Time // when this metadata was first observed
+}
+
+func (s fileState) sameAs(o fileState) bool {
+	return s.size == o.size && s.modTime.Equal(o.modTime) && s.changeTime.Equal(o.changeTime)
+}
+
+// stabilityWait returns how long to wait before scanning path: its metadata (size, mtime, ctime)
+// must stay unchanged for modDelay. mtime alone is not enough, as some copy tools preserve the
+// source one while writing. Only metadata is compared, file content is never read.
+func (m *Monitor) stabilityWait(path string, info fs.FileInfo) time.Duration {
+	delay := time.Duration(m.modDelay)
+	if delay == 0 {
+		return 0
+	}
+	cur := fileState{size: info.Size(), modTime: info.ModTime(), changeTime: changeTime(info)}
+	if prev, ok := m.states.Load(path); ok {
+		if s, ok := prev.(fileState); ok && s.sameAs(cur) {
+			return max(delay-since(s.seen), 0)
+		}
+	}
+	cur.seen = time.Now()
+	m.states.Store(path, cur)
+	return delay
 }
 
 func (m *Monitor) Add(path string) error {

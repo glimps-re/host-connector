@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.4]
+
+### Fixed
+
+- Handling properly file changing between their listing and their actual scan
+
 ## [v1.5.3]
 
 ### Fixed

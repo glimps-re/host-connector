@@ -588,13 +588,13 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	actualSHA256, err := getFileSHA256(input.location)
 	if err != nil {
 		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
-		c.finishAnalysis(input.location)
+		c.abortAnalysis(input, result, fmt.Errorf("could not compute file SHA256: %w", err))
 		return
 	}
 	if actualSHA256 != input.sha256 {
 		inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
 		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
-		c.finishAnalysis(input.location)
+		c.abortAnalysis(input, result, errors.New("file SHA256 mismatch, file changed during analysis"))
 		return
 	}
 
@@ -1167,6 +1167,14 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		result.MalwareReason = datamodel.MalwareDetected
 	}
 	return
+}
+
+// abortAnalysis ends an analysis without action nor report, still notifying plugins
+// (e.g. session) that the scan started with onStartScanFile is over.
+func (c *Connector) abortAnalysis(input fileToAnalyze, result datamodel.Result, err error) {
+	result.Error = err
+	c.onFileScanned(input.location, input.sha256, result)
+	c.finishAnalysis(input.location)
 }
 
 func (c *Connector) addReport(report *datamodel.Report) {

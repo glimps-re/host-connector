@@ -15,7 +15,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/glimps-re/connector-integration v0.8.4
-	github.com/glimps-re/rfsnotify v0.1.1-0.20261028133726-9f4e7e1cd7b5
+	github.com/glimps-re/rfsnotify v0.1.1-0.20261028142519-cd6726e0d688
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/gonutz/wui/v2 v2.8.2
 	github.com/google/go-cmp v0.7.0

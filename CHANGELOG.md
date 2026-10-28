@@ -1,5 +1,13 @@
 # Changelog
 
+## [v1.5.5]
+
+### Fixed
+
+- Windows: monitoring deadlock (`fatal error: all goroutines are asleep`, or monitoring silently stuck) when files or folders are removed or created while other changes are notified, e.g. while setting up monitoring of large directories (rfsnotify update)
+- monitoring setup no longer fails when a sub-directory is removed while monitored paths are walked
+- Windows: out of memory when monitoring large directory trees (64KB per sub-directory), monitoring now costs a single watch per monitored path, and starts immediately (rfsnotify update)
+
 ## [v1.5.4]
 
 ### Fixed

@@ -229,26 +229,20 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		maxFileSize = maxFileSizeDetect
 	}
 
-	if h.informDest != nil {
-		if e := h.informDest.Close(); e != nil {
-			logger.Warn("could not close previous inform destination", slog.String("error", e.Error()))
-		}
-		h.informDest = nil
-	}
-
 	var informDest io.WriteCloser = os.Stdout
+	var reportFile io.WriteCloser
 	if config.Print.Location != "" {
 		dir := filepath.Dir(config.Print.Location)
 		if err = os.MkdirAll(dir, 0o700); err != nil {
 			err = fmt.Errorf("could not create report directory %q: %w", dir, err)
 			return
 		}
-		informDest, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
+		reportFile, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
 		if err != nil {
 			err = fmt.Errorf("could not open report location, error: %w", err)
 			return
 		}
-		h.informDest = informDest
+		informDest = reportFile
 	}
 
 	// h.monitor must be closed BEFORE h.Conn, otherwise h.monitor keeps sending
@@ -262,6 +256,13 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	if h.Conn != nil {
 		h.Conn.Close(ctx)
 	}
+	// previous inform destination must be closed AFTER h.Conn, ongoing analyses report to it until Close returns
+	if h.informDest != nil {
+		if e := h.informDest.Close(); e != nil {
+			logger.Warn("could not close previous inform destination", slog.String("error", e.Error()))
+		}
+	}
+	h.informDest = reportFile
 
 	h.Conn, err = scanner.NewConnector(scanner.Config{
 		QuarantineFolder:    config.Quarantine.Location,

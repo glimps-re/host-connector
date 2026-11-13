@@ -1,5 +1,12 @@
 # Changelog
 
+## [v1.5.6]
+
+### Fixed
+
+- release: ship filepath-filter plugin in release archives
+- go: bump to go1.27
+
 ## [v1.5.5]
 
 ### Fixed

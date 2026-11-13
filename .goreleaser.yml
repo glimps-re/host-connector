@@ -132,9 +132,10 @@ archives:
     ids:
       - plugin-error-filter
       - plugin-extract
+      - plugin-filepath-filter
+      - plugin-filesize-filter
       - plugin-filetype-filter
       - plugin-report
-      - plugin-filesize-filter
       - plugin-session
     formats: 
       - binary

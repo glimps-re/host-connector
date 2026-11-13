@@ -93,6 +93,24 @@ func (a *archiveStatusHandler) deleteStatus(id string) {
 	a.Unlock()
 }
 
+// drainTmpFolders removes and returns the tmpFolder of every archive still tracked.
+// Archives normally leave the handler via finishArchiveAnalysis once all their extracted
+// files have been analyzed, which also removes their tmpFolder. If processing is interrupted
+// (e.g. connector shutdown) before that count completes, the archive is never finished and its
+// tmpFolder is never removed on its own. Call this only once no goroutine can still be
+// concurrently calling decreaseTotal/addInnerFileResult/addStatus for these ids.
+func (a *archiveStatusHandler) drainTmpFolders() (tmpFolders []string) {
+	a.Lock()
+	defer a.Unlock()
+	for id, status := range a.statusByID {
+		if status.tmpFolder != "" {
+			tmpFolders = append(tmpFolders, status.tmpFolder)
+		}
+		delete(a.statusByID, id)
+	}
+	return
+}
+
 // claimFinish atomically claims the right to finalize an archive.
 // Only the first caller gets claimed=true with the status. Subsequent callers get claimed=false.
 // found indicates whether the archive exists in the handler.

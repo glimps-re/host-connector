@@ -14,44 +14,59 @@ import (
 	"github.com/go-viper/mapstructure/v2"
 )
 
-func (c *Connector) LoadPlugins(pluginsConfig map[string]PluginConfig) (err error) {
-	for pluginName, pluginConfig := range pluginsConfig {
-		plug, err := plugin.Open(pluginConfig.File)
-		if err != nil {
-			return err
-		}
-		p, err := plug.Lookup(plugins.PluginExportedName)
-		if err != nil {
-			return err
-		}
-		pp, ok := p.(plugins.Plugin)
-		if !ok {
-			return errors.Join(errInvalidPlugin, fmt.Errorf("plugin: %#v", p))
-		}
-
-		config := pp.GetDefaultConfig()
-		if config != nil {
-			decoder, decodeErr := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
-				DecodeHook: decodeDuration,
-				Result:     config,
-			})
-			if decodeErr != nil {
-				return fmt.Errorf("failed to create config decoder for %s plugin, error: %w", pluginName, decodeErr)
-			}
-			// Clean the path to prevent directory traversal
-			err = decoder.Decode(pluginConfig.Config)
-			if err != nil {
-				return fmt.Errorf("failed to read config for %s plugin, error: %w", pluginName, err)
-			}
-		}
-
-		err = pp.Init(config, c)
-		if err != nil {
-			logger.Error("could not load plugin", slog.String("plugin", pluginName), slog.Any("config", config), slog.String("error", err.Error()))
-			return fmt.Errorf("error loading plugin %s: %w", pluginName, err)
-		}
-		c.loadedPlugins = append(c.loadedPlugins, pp)
+// LoadPlugins loads the plugins in slice order. A duplicate name is an error.
+func (c *Connector) LoadPlugins(pluginsConfig []PluginConfig) error {
+	if err := checkPluginNames(pluginsConfig); err != nil {
+		return err
 	}
+	for _, pluginConfig := range pluginsConfig {
+		if err := c.loadPlugin(pluginConfig); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
+	pluginName := pluginConfig.Name
+	if pluginConfig.File == "" {
+		return fmt.Errorf("plugin %s: %w: missing %q", pluginName, errInvalidPlugin, "file")
+	}
+	plug, err := plugin.Open(pluginConfig.File)
+	if err != nil {
+		return err
+	}
+	p, err := plug.Lookup(plugins.PluginExportedName)
+	if err != nil {
+		return err
+	}
+	pp, ok := p.(plugins.Plugin)
+	if !ok {
+		return errors.Join(errInvalidPlugin, fmt.Errorf("plugin: %#v", p))
+	}
+
+	config := pp.GetDefaultConfig()
+	if config != nil {
+		decoder, decodeErr := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+			DecodeHook: decodeDuration,
+			Result:     config,
+		})
+		if decodeErr != nil {
+			return fmt.Errorf("failed to create config decoder for %s plugin, error: %w", pluginName, decodeErr)
+		}
+		if err = decoder.Decode(pluginConfig.Config); err != nil {
+			return fmt.Errorf("failed to read config for %s plugin, error: %w", pluginName, err)
+		}
+	}
+
+	c.loadingPlugin = pluginName
+	defer func() { c.loadingPlugin = "" }()
+	if err = pp.Init(config, c); err != nil {
+		// The config is not logged: it can hold secrets (e.g. archive passwords).
+		logger.Error("could not load plugin", slog.String("plugin", pluginName), slog.String("error", err.Error()))
+		return fmt.Errorf("error loading plugin %s: %w", pluginName, err)
+	}
+	c.loadedPlugins = append(c.loadedPlugins, pp)
 	return nil
 }
 

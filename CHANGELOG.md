@@ -4,6 +4,10 @@
 
 ### Changed
 
+- plugins: loaded in the order of the plugins file (same configuration, same verdict); a duplicate plugin name is a startup error. `scanner.PluginConfig` gains `Name` and `Connector.LoadPlugins` takes a `[]PluginConfig`
+- plugins: `OnScanFile` no longer lets an allow-list placed first hide a deny-list placed after: the first refusal (malware or error) wins, otherwise the first waiver applies
+- plugins: an empty plugins file, a plugin without `file`, or any configured plugin on Windows now stops the startup instead of loading nothing
+- plugins: every `OnFileScanned` callback is now called, chained in order (before, the first non-nil result stopped the others, e.g. `session` was not notified); a plugin cannot clear `Error`, `Malware` or `AnalysisError` (restored, with a warning)
 - configuration: connector-integration SDK v0.10.0 declares the new keys (`monitoring.*`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, `quarantine.format`); a key set to a value not supported yet by this version is refused instead of being silently ignored
 
 ### Fixed

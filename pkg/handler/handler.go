@@ -20,7 +20,6 @@ import (
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	quarantine "github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
-	"go.yaml.in/yaml/v3"
 )
 
 var LogLevel = &slog.LevelVar{}
@@ -321,10 +320,9 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 			}
 		}()
 
-		pluginsConfig := make(map[string]scanner.PluginConfig)
-		err = yaml.NewDecoder(configFile).Decode(pluginsConfig)
-		if err != nil {
-			return fmt.Errorf("could not decode plugins config file, error: %w", err)
+		pluginsConfig, decodeErr := decodePluginsConfig(configFile)
+		if decodeErr != nil {
+			return fmt.Errorf("could not decode plugins config file, error: %w", decodeErr)
 		}
 		err = h.Conn.LoadPlugins(pluginsConfig)
 		if err != nil {

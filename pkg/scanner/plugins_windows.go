@@ -2,11 +2,16 @@
 
 package scanner
 
-import "log/slog"
+import "fmt"
 
-func (c *Connector) LoadPlugins(pluginsConfig map[string]PluginConfig) error {
-	for pluginName := range pluginsConfig {
-		logger.Error("could not load plugin, not supported on windows platform", slog.String("plugin-name", pluginName))
+// LoadPlugins fails as soon as a plugin is configured: plugins are not supported
+// on Windows, and starting without the configured filters would fail open.
+func (c *Connector) LoadPlugins(pluginsConfig []PluginConfig) error {
+	if err := checkPluginNames(pluginsConfig); err != nil {
+		return err
+	}
+	if len(pluginsConfig) > 0 {
+		return fmt.Errorf("%w: plugin %q configured but plugins are not supported on windows", errInvalidPlugin, pluginsConfig[0].Name)
 	}
 	return nil
 }

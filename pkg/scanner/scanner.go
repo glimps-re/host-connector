@@ -171,7 +171,8 @@ type Connector struct {
 	onStartScanFileCbs     []plugins.OnStartScanFile
 	onScanFileCbs          []plugins.OnScanFile
 	withWaitForOptionsFunc []plugins.WithWaitForOptionsFunc
-	onFileScannedCbs       []plugins.OnFileScanned
+	onFileScannedCbs       []namedFileScanned
+	loadingPlugin          string
 	onReportCbs            []plugins.OnReport
 	generateReport         plugins.GenerateReport
 	ongoingAnalysis        sync.Map

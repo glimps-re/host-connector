@@ -1,6 +1,9 @@
 # GLIMPS Malware Detect Host Connector - Plugin Configuration
 # This file contains configuration examples for all built-in plugins (GNU/Linux only)
 # Reference this file in the main config.yml using: plugins_config: /path/to/plugin_config.yml
+#
+# Plugins are loaded, and their callbacks called, in the order of this file.
+# Recommended order: filters, then error_filter, then session.
 
 # Extract Plugin - Archive extraction and scanning
 # Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.)

@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -66,17 +68,16 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 }
 
 func (m *Monitor) Close() (err error) {
-	if !m.started.Load() {
-		return
-	}
-	if err := m.watcher.Close(); err != nil {
-		logger.Error("cannot close watcher", slog.String("error", err.Error()))
-		return fmt.Errorf("cannot close watcher, error: %w", err)
-	}
-	m.closeOnce.Do(func() { close(m.done) })
+	m.closeOnce.Do(func() {
+		if e := m.watcher.Close(); e != nil {
+			logger.Error("cannot close watcher", slog.String("error", e.Error()))
+			err = fmt.Errorf("cannot close watcher, error: %w", e)
+		}
+		close(m.done)
+	})
 	m.wg.Wait()
 	m.started.Store(false)
-	return
+	return err
 }
 
 func (m *Monitor) Start() {
@@ -103,46 +104,122 @@ func (m *Monitor) periodicalScan() {
 			return
 		case <-ticker.C:
 			seen := make(map[string]struct{})
-			m.paths.Range(func(key, value any) bool {
-				path, ok := key.(string)
+			var partialRoots []string
+			m.paths.Range(func(key, _ any) bool {
+				root, ok := key.(string)
 				if !ok {
 					m.paths.Delete(key)
+					return true
 				}
-				path += string(filepath.Separator)
-				err := filepath.WalkDir(path, func(path string, d fs.DirEntry, walkErr error) (err error) {
-					if walkErr != nil {
-						return walkErr
-					}
-					if d.IsDir() {
-						return
-					}
-					seen[path] = struct{}{}
-					if _, loaded := m.pendingFiles.LoadOrStore(path, struct{}{}); !loaded {
-						select {
-						case <-m.done:
-							return fs.SkipAll
-						case m.filesToScan <- path:
-						}
-					}
-					return
-				})
-				if err != nil {
-					logger.Error("cannot walk dir at rescan", slog.String("path", path), slog.String("error", err.Error()))
+				if partial := m.walkRoot(root, seen); partial {
+					partialRoots = append(partialRoots, filepath.Clean(root))
 				}
 				return true
 			})
-			// forget files not seen anymore (deleted, moved), their state would never be cleaned otherwise
-			m.states.Range(func(key, _ any) bool {
-				if path, ok := key.(string); ok {
-					if _, found := seen[path]; found {
-						return true
-					}
-				}
-				m.states.Delete(key)
-				return true
-			})
+			m.purgeStates(seen, partialRoots)
 		}
 	}
+}
+
+// maxRescanWarns caps the per-root Warn logs of one rescan: a network
+// filesystem can deny access to thousands of directories at every rescan.
+const maxRescanWarns = 10
+
+// walkRoot queues every file under root and records it in seen. An unreadable
+// entry is logged and skipped so the other entries are still visited. partial
+// is true when entries may be missing from seen: an unreadable entry, a missing
+// root (e.g. unmounted share) or an interrupted walk. A subdirectory removed
+// during the walk is not partial: its files are really gone.
+func (m *Monitor) walkRoot(root string, seen map[string]struct{}) (partial bool) {
+	root = filepath.Clean(root)
+	// The trailing separator makes WalkDir follow a root that is a symlink.
+	walkPath := withSeparator(root)
+	warns, skipped := 0, 0
+	err := filepath.WalkDir(walkPath, func(path string, d fs.DirEntry, walkErr error) error {
+		select {
+		case <-m.done:
+			partial = true
+			return fs.SkipAll
+		default:
+		}
+		if walkErr != nil {
+			isRoot := path == root || path == walkPath
+			if !isRoot && errors.Is(walkErr, fs.ErrNotExist) {
+				logger.Debug("path removed during rescan", slog.String("path", path))
+			} else {
+				partial = true
+				if warns < maxRescanWarns {
+					warns++
+					logger.Warn("cannot access path at rescan", slog.String("path", path), slog.String("error", walkErr.Error()))
+				} else {
+					skipped++
+					logger.Debug("cannot access path at rescan", slog.String("path", path), slog.String("error", walkErr.Error()))
+				}
+			}
+			if d != nil && d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		seen[path] = struct{}{}
+		if _, loaded := m.pendingFiles.LoadOrStore(path, struct{}{}); !loaded {
+			select {
+			case <-m.done:
+				partial = true
+				return fs.SkipAll
+			case m.filesToScan <- path:
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		partial = true
+		logger.Error("cannot walk dir at rescan", slog.String("path", root), slog.String("error", err.Error()))
+	}
+	if skipped > 0 {
+		logger.Warn("more paths could not be accessed at rescan", slog.String("root", root), slog.Int("more", skipped))
+	}
+	return partial
+}
+
+// purgeStates forgets the state of files not seen anymore (deleted, moved): it
+// would never be cleaned otherwise. States under a partially walked root are
+// kept, absence from seen proves nothing there.
+func (m *Monitor) purgeStates(seen map[string]struct{}, partialRoots []string) {
+	m.states.Range(func(key, _ any) bool {
+		path, ok := key.(string)
+		if ok {
+			if _, found := seen[path]; found {
+				return true
+			}
+			if underAny(path, partialRoots) {
+				return true
+			}
+		}
+		m.states.Delete(key)
+		return true
+	})
+}
+
+func withSeparator(path string) string {
+	if strings.HasSuffix(path, string(filepath.Separator)) {
+		return path
+	}
+	return path + string(filepath.Separator)
+}
+
+// underAny reports whether path is one of roots or lies under one of them.
+// Roots must be cleaned, like the paths returned by WalkDir.
+func underAny(path string, roots []string) bool {
+	for _, root := range roots {
+		if path == root || strings.HasPrefix(path, withSeparator(root)) {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchEvents reads filesystem events from the watcher and queue these files for scanning.
@@ -243,10 +320,11 @@ func (m *Monitor) stabilityWait(path string, info fs.FileInfo) time.Duration {
 }
 
 func (m *Monitor) Add(path string) error {
+	path = filepath.Clean(path)
 	if _, ok := m.paths.Load(path); ok {
 		return nil
 	}
-	if err := m.watcher.AddRecursive(filepath.Clean(path)); err != nil {
+	if err := m.watcher.AddRecursive(path); err != nil {
 		return fmt.Errorf("error watching %s: %w", path, err)
 	}
 	m.paths.Store(path, struct{}{})

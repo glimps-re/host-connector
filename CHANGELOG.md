@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- monitoring: a directory that cannot be read during a periodic rescan no longer stops the walk of the other directories
+
 ## [v1.5.6]
 
 ### Fixed

@@ -158,6 +158,7 @@ func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (
 		RegistryLocation: config.Quarantine.Registry,
 		LockPassword:     config.Quarantine.Password,
 		Format:           quarantine.Format(config.Quarantine.Format),
+		WatchedPaths:     config.Paths,
 	}
 	if h.Quarantiner != nil {
 		if err = h.Quarantiner.Reconfigure(ctx, qConfig); err != nil {
@@ -235,6 +236,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	if err = checkWorkDir(config); err != nil {
 		return
 	}
+	warnFollowSymlinks(config)
 
 	switch {
 	case maxFileSize > maxFileSizeDetect && !config.GMalwareSyndetect:
@@ -293,6 +295,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		Timeout:             config.GMalwareTimeout,
 		FollowSymlinks:      config.FollowSymlinks,
 		WorkDir:             config.WorkDir,
+		Roots:               config.Paths,
 		Actions: scanner.Actions{
 			Log:        config.Actions.Log,
 			Quarantine: config.Actions.Quarantine,
@@ -348,6 +351,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		h.OnNewFile(ctx),
 		Config{
 			DisableWatcher: config.Monitoring.DisableFSWatcher,
+			FollowSymlinks: config.FollowSymlinks,
 			Skip:           h.Conn.IsInternalPath,
 			PreScan:        config.Monitoring.PreScan,
 			Period:         config.Monitoring.Period,

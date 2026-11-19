@@ -2,6 +2,10 @@
 package pathutil
 
 import (
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
 	"path/filepath"
 	"strings"
 )
@@ -67,4 +71,121 @@ func UnderResolved(root, p string) bool {
 		}
 	}
 	return false
+}
+
+// ErrSymlinkInPath is returned when a path component below the root is a
+// symbolic link: whoever controls a folder under the root could swap it for a
+// link and make the program read, move, delete or write outside its tree.
+var ErrSymlinkInPath = errors.New("path crosses a symbolic link")
+
+// CheckNoSymlink Lstat-s every component of path below root, path included. The
+// root itself is trusted (an operator may monitor a link), as is anything above
+// it. A path outside root, or a component that cannot be examined, is refused.
+func CheckNoSymlink(root, path string) error {
+	return checkNoSymlink(root, path, false)
+}
+
+// CheckExistingNoSymlink is CheckNoSymlink for a path that may not exist yet:
+// it stops at the first missing component.
+func CheckExistingNoSymlink(root, path string) error {
+	return checkNoSymlink(root, path, true)
+}
+
+func checkNoSymlink(root, path string, allowMissing bool) error {
+	root, path = filepath.Clean(root), filepath.Clean(path)
+	if !Under(root, path) {
+		return fmt.Errorf("%w: %q is not under %q", ErrSymlinkInPath, path, root)
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." {
+		return err
+	}
+	cur := root
+	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
+		cur = filepath.Join(cur, part)
+		fi, err := os.Lstat(cur)
+		switch {
+		case err == nil:
+		case allowMissing && errors.Is(err, fs.ErrNotExist):
+			return nil
+		default:
+			return err
+		}
+		if isLinkLike(fi.Mode()) {
+			return fmt.Errorf("%w: %q", ErrSymlinkInPath, cur)
+		}
+	}
+	return nil
+}
+
+// isLinkLike reports whether mode is a symbolic link, or an irregular entry:
+// Go reports a Windows junction as irregular, without the symlink bit.
+func isLinkLike(mode fs.FileMode) bool {
+	return mode&(os.ModeSymlink|os.ModeIrregular) != 0
+}
+
+// IsLinkLike is isLinkLike for callers outside the package.
+func IsLinkLike(mode fs.FileMode) bool { return isLinkLike(mode) }
+
+// MaxLinks bounds the links CheckTrustedPath follows in one path.
+const MaxLinks = 8
+
+// CheckTrustedPath walks path from the filesystem root, component by
+// component, for a destination outside any monitored path. A link is followed
+// only when trusted(link, parentDir) allows it; the walk goes on through its
+// target and any further link, at most MaxLinks of them. A missing component
+// is an error: nothing is created there.
+func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) error {
+	path = filepath.Clean(path)
+	vol := filepath.VolumeName(path)
+	top := vol + string(filepath.Separator)
+	cur := top
+	remaining := splitPath(path[len(vol):])
+	links := 0
+	for len(remaining) > 0 {
+		comp := remaining[0]
+		remaining = remaining[1:]
+		switch comp {
+		case "", ".":
+			continue
+		case "..":
+			cur = filepath.Dir(cur)
+			continue
+		}
+		next := filepath.Join(cur, comp)
+		fi, err := os.Lstat(next)
+		if err != nil {
+			return err
+		}
+		if !isLinkLike(fi.Mode()) {
+			cur = next
+			continue
+		}
+		links++
+		if fi.Mode()&os.ModeSymlink == 0 || links > MaxLinks {
+			return fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
+		}
+		parent, err := os.Lstat(cur)
+		if err != nil {
+			return err
+		}
+		if !trusted(fi, parent) {
+			return fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return err
+		}
+		if filepath.IsAbs(target) {
+			tvol := filepath.VolumeName(target)
+			cur = tvol + string(filepath.Separator)
+			target = target[len(tvol):]
+		}
+		remaining = append(splitPath(target), remaining...)
+	}
+	return nil
+}
+
+func splitPath(p string) []string {
+	return strings.Split(p, string(filepath.Separator))
 }

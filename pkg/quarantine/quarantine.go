@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -47,6 +48,9 @@ type Config struct {
 	// Format is the container written for new quarantined files; the empty
 	// value means FormatTar. Existing files are restored whatever its value.
 	Format Format
+	// WatchedPaths are the monitored paths: Restore refuses a destination
+	// whose path crosses a symbolic link below the one that contains it.
+	WatchedPaths []string
 }
 
 // QuarantineHandler implements Quarantiner over a single quarantine
@@ -62,6 +66,7 @@ type QuarantineHandler struct {
 	locker   fileLocker
 	registry quarantineRegistry
 	location string
+	watched  []string
 
 	restoreLocks keyedMutex
 }
@@ -93,6 +98,7 @@ func NewQuarantineHandler(ctx context.Context, conf Config) (quarantineHandler *
 		registry: registry,
 		locker:   locker,
 		location: conf.Location,
+		watched:  slices.Clone(conf.WatchedPaths),
 	}
 	return
 }
@@ -135,6 +141,7 @@ func (q *QuarantineHandler) Reconfigure(ctx context.Context, newConfig Config) (
 
 	if newConfig.Location == q.location {
 		q.locker = newLocker
+		q.watched = slices.Clone(newConfig.WatchedPaths)
 		return
 	}
 
@@ -152,6 +159,7 @@ func (q *QuarantineHandler) Reconfigure(ctx context.Context, newConfig Config) (
 	}
 	q.locker = newLocker
 	q.location = newConfig.Location
+	q.watched = slices.Clone(newConfig.WatchedPaths)
 	return
 }
 
@@ -434,6 +442,7 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	q.mu.RLock()
 	locker := q.locker
 	location := q.location
+	watched := q.watched
 	q.mu.RUnlock()
 
 	lockPath := filepath.Join(location, id+".lock")
@@ -483,47 +492,12 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 		return
 	}
 
-	// os.OpenRoot follows a symlink given as its argument, so the final
-	// directory is checked before (plain directory, identity captured) and
-	// after (same file) opening it: swapping the final component for a link is
-	// caught. Parent components are not protected here.
 	restoreDir := filepath.Dir(dest)
-	preOpenInfo, statErr := os.Lstat(restoreDir)
-	switch {
-	case errors.Is(statErr, os.ErrNotExist):
-		logger.Debug("recreating dir tree for restore", slog.String("dir", restoreDir))
-		if err = os.MkdirAll(restoreDir, 0o750); err != nil {
-			return
-		}
-		if preOpenInfo, err = os.Lstat(restoreDir); err != nil {
-			return
-		}
-	case statErr != nil:
-		err = statErr
-		return
-	case preOpenInfo.Mode()&os.ModeSymlink != 0, !preOpenInfo.IsDir():
-		err = ErrRestoreDestinationUnsafe
-		return
-	}
-
-	root, err := os.OpenRoot(restoreDir)
+	root, closeRoot, err := openRestoreDir(watched, restoreDir)
 	if err != nil {
 		return
 	}
-	defer func() {
-		if e := root.Close(); e != nil {
-			logger.Error("Restore cannot close destination directory", slog.String("error", e.Error()))
-		}
-	}()
-
-	openedInfo, err := root.Lstat(".")
-	if err != nil {
-		return
-	}
-	if !os.SameFile(preOpenInfo, openedInfo) {
-		err = ErrRestoreDestinationUnsafe
-		return
-	}
+	defer closeRoot()
 
 	base := filepath.Base(dest)
 

@@ -33,6 +33,9 @@ type Config struct {
 	// the pre-scan and the periodic rescan (network filesystems where watches
 	// are not available or reliable). It requires a non-zero Period.
 	DisableWatcher bool
+	// FollowSymlinks makes the stability check follow links; without it the
+	// link itself is examined (a swapped folder must not lend its target's metadata).
+	FollowSymlinks bool
 	// Skip, when set, tells paths that must never be reported (the connector
 	// work directory): it is checked during the rescan walk and on events.
 	Skip     func(path string) bool
@@ -44,6 +47,7 @@ type Config struct {
 type Monitor struct {
 	watcher      *rfsnotify.RWatcher
 	skip         func(path string) bool
+	stat         func(path string) (fs.FileInfo, error)
 	wg           sync.WaitGroup
 	cb           OnNewFileFunc // callbacks
 	preScan      bool
@@ -75,6 +79,7 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 		watcher:      watcher,
 		cb:           onNewFile,
 		skip:         cfg.Skip,
+		stat:         statFor(cfg.FollowSymlinks),
 		preScan:      cfg.PreScan,
 		period:       cfg.Period,
 		modDelay:     cfg.ModDelay,
@@ -84,6 +89,13 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 		states:       new(sync.Map),
 		done:         make(chan struct{}),
 	}, nil
+}
+
+func statFor(followSymlinks bool) func(string) (fs.FileInfo, error) {
+	if followSymlinks {
+		return os.Stat
+	}
+	return os.Lstat
 }
 
 func (m *Monitor) Close() (err error) {
@@ -295,7 +307,7 @@ func (m *Monitor) scanFiles() {
 				return
 			}
 
-			info, statErr := os.Stat(path)
+			info, statErr := m.stat(path)
 			if statErr != nil {
 				m.pendingFiles.Delete(path)
 				m.states.Delete(path)

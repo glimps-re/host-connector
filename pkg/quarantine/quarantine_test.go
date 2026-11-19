@@ -685,6 +685,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				location: quarantineDir,
 				locker:   locker,
 				registry: registry,
+				watched:  []string{filepath.Dir(filepath.Dir(filepath.Dir(recreatedRestorePath)))},
 			}
 
 			// Execute

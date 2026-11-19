@@ -27,14 +27,14 @@ func checkWorkDir(conf *config.Config) error {
 	if dest := conf.Move.Destination; dest != "" {
 		for _, watched := range conf.Paths {
 			if pathutil.UnderResolved(watched, dest) {
-				warnWorkDir(fmt.Sprintf("move.destination %q is under the monitored path %q: files written there would be scanned again", dest, watched))
+				warnConfig("work_dir", fmt.Sprintf("move.destination %q is under the monitored path %q: files written there would be scanned again", dest, watched))
 			}
 		}
 	}
 	return nil
 }
 
-func warnWorkDir(msg string) {
-	logger.Warn(msg, slog.String("source", "work_dir"))
+func warnConfig(source, msg string) {
+	logger.Warn(msg, slog.String("source", source))
 	consoleLogger.Warn(msg)
 }

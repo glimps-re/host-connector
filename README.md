@@ -555,7 +555,7 @@ Some keys are declared by the configuration schema before this version supports 
 - **`extract`**: Enable archive extraction (archives are unpacked and contents scanned)
 - **`extract_min_size`**: Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB)
 - **`max_file_size`**: Maximum file size to send for analyze (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected
-- **`follow_symlinks`**: Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
+- **`follow_symlinks`**: Follow symbolic links when scanning directories (default: false: symlinks are skipped, and a file whose path crosses a symlink below its monitored path is refused when it is prepared and again right before the action, so a user cannot make the connector read, move, delete or quarantine another tree's files by swapping a folder for a link; a refused file is left in place with a warning). Enabling it switches these checks off: a warning is logged at start when move, delete or quarantine are active
 - **`paths`**: List of directories or files to monitor and scan (can be absolute or relative paths, required, minimum 1)
 - **`plugins_config`**: Path to plugins configuration file (required for host connector plugin functionality, GNU/Linux only)
 - **`debug`**: Enable debug logging (default: false)
@@ -835,7 +835,7 @@ Example log entry:
 - **Extract Workers**: Adjust `extract_workers` based on your archive extraction workload
 - **File size limits**: Adjust `max_file_size` based on your needs and GLIMPS Malware Detect limits
 - **Network timeouts**: Increase `gmalware_timeout` for large files or slow connections
-- **Symlinks**: Disable `follow_symlinks` if you don't need to scan linked directories to improve performance
+- **Symlinks**: Disable `follow_symlinks` (the default) if you don't need to scan linked directories: it improves performance and keeps the symbolic link checks on
 
 ## Troubleshooting
 

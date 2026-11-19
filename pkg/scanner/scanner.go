@@ -130,6 +130,9 @@ type Config struct {
 	MoveTo                   string
 	MoveFrom                 string
 	FollowSymlinks           bool
+	// Roots are the monitored paths: a path is checked for symbolic links from
+	// the root that contains it. Without a root, the scan argument is the root.
+	Roots []string
 	// WorkDir is the base under which the connector creates its private
 	// working directory; empty means os.TempDir().
 	WorkDir string
@@ -165,6 +168,12 @@ type Connector struct {
 
 	config Config
 	work   *workDir
+
+	// scanRoots holds the roots named by the operator for command line scans
+	// only: a monitoring connector never adds to it.
+	scanRoots sync.Map
+	rootsOnce sync.Once
+	absRoots  []string // Config.Roots made absolute, computed once
 
 	dispatchWg sync.WaitGroup
 	extractWg  sync.WaitGroup
@@ -349,6 +358,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 		return
 	}
 
+	c.noteScanRoot(input)
 	if info.IsDir() {
 		return c.scanDir(ctx, input)
 	}
@@ -391,6 +401,10 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	}
 	if newres := c.onFileScanned(location, sha256, res); newres != nil {
 		res = *newres
+	}
+	if pathErr := c.checkPath(location); pathErr != nil {
+		refusePath(location, pathErr)
+		return pathErr
 	}
 	report := &datamodel.Report{}
 	actionCtx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(size))
@@ -523,6 +537,12 @@ func (c *Connector) analysisWorker() {
 func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool) {
 	inputLogger := logger.With(slog.String("file", location))
 
+	if err := c.checkPath(location); err != nil {
+		refusePath(location, err)
+		skip = true
+		return
+	}
+
 	info, err := os.Stat(location)
 	if err != nil {
 		inputLogger.Error("could not stat file, stop processing", slog.String("error", err.Error()))
@@ -643,6 +663,11 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	}
 	if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
 		result = *newres
+	}
+	if pathErr := c.checkPath(input.location); pathErr != nil {
+		refusePath(input.location, pathErr)
+		c.finishAnalysis(input.location)
+		return
 	}
 	report := &datamodel.Report{}
 	actionCtx, actionCancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
@@ -1072,6 +1097,13 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	if newResult := c.onFileScanned(status.archiveLocation, status.result.SHA256, status.result); newResult != nil {
 		status.result = *newResult
 		// don't need to save it in status handler, because it's going to be deleted at func end
+	}
+
+	if runAction {
+		if pathErr := c.checkPath(status.archiveLocation); pathErr != nil {
+			refusePath(status.archiveLocation, pathErr)
+			runAction = false
+		}
 	}
 
 	if runAction {

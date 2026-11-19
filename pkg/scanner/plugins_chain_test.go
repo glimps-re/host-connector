@@ -150,14 +150,14 @@ func TestOnScanFile_shippedPluginConfigForbiddenPathBeatsTextPlain(t *testing.T)
 			c.RegisterOnScanFile(func(fn, loc, sha string, _ bool) *datamodel.Result {
 				for _, re := range forbidden {
 					if re.MatchString(loc) {
-						return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Malware: true, Score: 1000}
+						return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Malware: true, Score: 1000, MalwareReason: datamodel.FilteredFilePath}
 					}
 				}
 				return nil
 			})
 		}
 	}
-	if got := c.onScanFile("a.txt", "/tmp/a.txt", "sha", false); got == nil || !got.Malware {
+	if got := c.onScanFile("a.txt", "/tmp/a.txt", "sha", false); got == nil || !got.Malware || got.MalwareReason != datamodel.FilteredFilePath {
 		t.Errorf("text/plain at a forbidden path = %+v, want malicious", got)
 	}
 	if got := c.onScanFile("a.txt", "/home/u/a.txt", "sha", false); got == nil || got.Malware {

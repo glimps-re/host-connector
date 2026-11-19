@@ -1,0 +1,102 @@
+package plugins
+
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"reflect"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/go-viper/mapstructure/v2"
+)
+
+// ErrInvalidConfig is wrapped by every error DecodeConfig returns.
+var ErrInvalidConfig = errors.New("invalid plugin configuration")
+
+// removedConfigKeys maps a plugin name to its removed configuration keys and
+// the message explaining the replacement. It is consulted before the strict
+// decoding, so the operator reads the replacement rather than a generic
+// "unknown key".
+var removedConfigKeys = map[string]map[string]string{}
+
+// DecodeConfig decodes the raw configuration section of plugin pluginName
+// into dst (the value returned by Plugin.GetDefaultConfig). It first refuses
+// removed keys with a dedicated message, then decodes strictly: an unknown key
+// is an error, a typo would otherwise leave a filter silently inactive. Time
+// durations are accepted as strings ("30s"). Errors name keys, never values,
+// which may be secrets (e.g. passwords).
+func DecodeConfig(pluginName string, raw map[string]any, dst any) error {
+	if err := checkRemovedKeys(pluginName, raw); err != nil {
+		return err
+	}
+	var md mapstructure.Metadata
+	decoder, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		DecodeHook: decodeDuration,
+		Result:     dst,
+		Metadata:   &md,
+	})
+	if err != nil {
+		return fmt.Errorf("plugin %s: %w: create decoder", pluginName, ErrInvalidConfig)
+	}
+	if err = decoder.Decode(raw); err != nil {
+		return fmt.Errorf("plugin %s: %w: invalid value for key(s) %s", pluginName, ErrInvalidConfig, strings.Join(decodeErrKeys(err), ", "))
+	}
+	if len(md.Unused) > 0 {
+		unused := slices.Sorted(slices.Values(md.Unused))
+		return fmt.Errorf("plugin %s: %w: unknown config key(s) %s", pluginName, ErrInvalidConfig, strings.Join(unused, ", "))
+	}
+	return nil
+}
+
+func checkRemovedKeys(pluginName string, config map[string]any) error {
+	removed := removedConfigKeys[pluginName]
+	if len(removed) == 0 {
+		return nil
+	}
+	var errs []error
+	for _, key := range slices.Sorted(maps.Keys(config)) {
+		if msg, ok := removed[key]; ok {
+			errs = append(errs, fmt.Errorf("plugin %s: %w: key %q removed: %s", pluginName, ErrInvalidConfig, key, msg))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func decodeDuration(fromType reflect.Type, toType reflect.Type, from any) (any, error) {
+	if toType != reflect.TypeFor[time.Duration]() || fromType.Kind() != reflect.String {
+		return from, nil
+	}
+	str, ok := from.(string)
+	if !ok {
+		return from, nil
+	}
+	duration, err := time.ParseDuration(str)
+	if err != nil {
+		return nil, errors.New("invalid duration")
+	}
+	return duration, nil
+}
+
+func decodeErrKeys(err error) []string {
+	var keys []string
+	var walk func(error)
+	walk = func(e error) {
+		var de *mapstructure.DecodeError
+		if errors.As(e, &de) {
+			keys = append(keys, de.Name())
+			return
+		}
+		if multi, ok := e.(interface{ Unwrap() []error }); ok {
+			for _, sub := range multi.Unwrap() {
+				walk(sub)
+			}
+		}
+	}
+	walk(err)
+	if len(keys) == 0 {
+		return []string{"?"}
+	}
+	return keys
+}

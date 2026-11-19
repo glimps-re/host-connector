@@ -204,7 +204,7 @@ Plugins are configured via a separate YAML file referenced in the main configura
 plugins_config: /etc/gmhost/plugins.yml
 ```
 
-Plugins are loaded in the order of the file, and that order is the callback order: with the same file, the verdict is always the same. A plugin name must appear only once. Recommended order: filters, then `error_filter`, then `session`. An empty plugins file, a duplicate name, YAML aliases, merge keys and files over 1 MiB are refused at startup; on Windows, which does not support plugins, a configured plugin also refuses to start.
+Plugins are loaded in the order of the file, and that order is the callback order: with the same file, the verdict is always the same. A plugin name must appear only once. Recommended order: filters, then `error_filter`, then `session`. An empty plugins file, a duplicate name, YAML anchors, aliases and merge keys, unknown keys (only `file` and `config` per plugin, and the options each plugin documents), the same plugin file declared twice, and files over 1 MiB are refused at startup, with an error naming the key and never quoting a value; on Windows, which does not support plugins, a configured plugin also refuses to start.
 
 A complete example configuration is available at `rsc/plugin_config.yml`. Below are the configuration options for each built-in plugin:
 
@@ -372,6 +372,8 @@ type Plugin interface {
 }
 ```
 
+The `Register*` methods of `HCContext` are valid during `Init` only: later calls are ignored with a warning. The error returned by `Init` is logged and shown to the operator as is: never include a configuration value in it, it may be a secret.
+
 #### HCContext Interface
 
 Plugins interact with the host connector through the `HCContext` interface:
@@ -398,7 +400,7 @@ Plugins can register callbacks for different stages of the scanning pipeline:
 - **`OnStartScanFile`**: Called before a file begins scanning
 - **`OnScanFile`**: Replace GLIMPS Malware analysis with custom logic. Called in plugin file order. A result that is not malware, has no `Error` and no `AnalysisError` is a *waiver* (the file is not analyzed); any other non-nil result is a *refusal*. The first refusal wins and stops the chain. A waiver is kept but the following plugins are still called, so a deny-list placed after an allow-list still applies. Without refusal, the first waiver applies; without any result, the file is analyzed. When an archive is waived by its type or its path, its content is not filtered either
 - **`WithWaitForOptionsFunc`**: Modify submission options before analysis
-- **`OnFileScanned`**: Called after a file completes scanning. Every plugin is called, in plugin file order, each receiving the current result; a non-nil return replaces it. A plugin can harden a result, never soften it: a non-nil `Error`, `Malware=true` and a non-empty `AnalysisError` are restored by the connector (with a warning naming the plugin)
+- **`OnFileScanned`**: Called after a file completes scanning. Every plugin is called, in plugin file order, each receiving the current result; a non-nil return replaces it. A plugin can harden a result, never soften it: a non-nil `Error`, `Malware=true` and a non-empty `AnalysisError`, `MalwareReason`, `Malwares`, `MaliciousSubfiles` and `ErrorSubfiles` are restored by the connector (with a warning naming the plugin)
 - **`OnReport`**: Called when a scan report is generated
 - **`GenerateReport`**: Custom report generation function
 - **`ExtractFile`**: Custom archive extraction logic

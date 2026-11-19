@@ -122,3 +122,69 @@ func TestDecodePluginsConfig_shippedFile(t *testing.T) {
 		t.Errorf("shipped plugin order mismatch:\n%s", diff)
 	}
 }
+
+func TestDecodePluginsConfig_hardening(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr string
+	}{
+		{"alias in config", "a:\n  file: a.so\n  config:\n    x: &p [1]\n    y: *p\n", "aliases"},
+		{"alias as file", "a:\n  file: &f a.so\nb:\n  file: *f\n", "aliases"},
+		{"anchor alone", "a: &x\n  file: a.so\n", "aliases"},
+		{"nested merge", "a:\n  file: a.so\n  config:\n    <<: {k: v}\n", "merge"},
+		{"unknown entry key", "a:\n  file: a.so\n  confg:\n    k: v\n", `unknown key "confg"`},
+		{"entry key misspelled file", "a:\n  fle: a.so\n", `unknown key "fle"`},
+		{"settings not a mapping", "a: [file]\n", "mapping"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := decodePluginsConfig(strings.NewReader(tt.in))
+			if err == nil || !errors.Is(err, errPluginsConfigFormat) || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("decodePluginsConfig() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDecodePluginsConfig_errorsHideValues(t *testing.T) {
+	const secret = "S3CRET-pass"
+	inputs := map[string]string{
+		"file not a string": "a:\n  file: [" + secret + "]\n",
+		"config not a map":  "a:\n  file: a.so\n  config: " + secret + "\n",
+		"syntax":            "a:\n  file: a.so\n  config:\n    pw: [" + secret + "\n",
+		"tab indent":        "a:\n\tfile: " + secret + "\n",
+	}
+	for name, in := range inputs {
+		t.Run(name, func(t *testing.T) {
+			_, err := decodePluginsConfig(strings.NewReader(in))
+			if err == nil {
+				t.Fatal("decodePluginsConfig() error = nil")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Errorf("error leaks a value: %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodePluginsConfig_shippedExamplesAccepted(t *testing.T) {
+	b, err := os.ReadFile("../../rsc/plugin_config.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodePluginsConfig(strings.NewReader(string(b))); err != nil {
+		t.Errorf("rsc/plugin_config.yml refused: %v", err)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("disk exploded") }
+
+func TestDecodePluginsConfig_readErrorIsNotSyntaxError(t *testing.T) {
+	_, err := decodePluginsConfig(failingReader{})
+	if err == nil || !strings.Contains(err.Error(), "read plugins file") || strings.Contains(err.Error(), "syntax") {
+		t.Errorf("decodePluginsConfig() error = %v, want a read error", err)
+	}
+}

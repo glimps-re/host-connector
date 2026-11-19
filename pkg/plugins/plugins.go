@@ -34,8 +34,11 @@ type HCContext interface {
 	// The Register* methods are only valid during Init.
 	RegisterOnStartScanFile(f OnStartScanFile)
 	// RegisterOnScanFile callbacks run in plugin file order. A result that is
-	// not malware, has no Error and no AnalysisError is a waiver (the file is not
-	// analyzed); any other non-nil result is a refusal. The first refusal wins
+	// not malware, has no Error, no AnalysisError and no detection trace
+	// (MalwareReason, Malwares, MaliciousSubfiles, ErrorSubfiles) is a waiver
+	// (the file is not analyzed); any other non-nil result is a refusal. A
+	// refusal that sets none of Malware, Error and AnalysisError gets an
+	// "inconsistent plugin result" Error from the core. The first refusal wins
 	// and stops the chain; a waiver is kept while later callbacks still run, and
 	// the first waiver applies when there is no refusal. A waived archive waives
 	// its whole content.
@@ -44,7 +47,8 @@ type HCContext interface {
 	// RegisterOnFileScanned callbacks all run, in plugin file order, each one
 	// receiving the current result; a non-nil return replaces it. A callback can
 	// harden a result but not soften it: a non-nil Error, Malware=true and a
-	// non-empty AnalysisError are restored by the core.
+	// non-empty AnalysisError, MalwareReason, Malwares, MaliciousSubfiles and
+	// ErrorSubfiles are restored by the core. The result is a deep copy.
 	RegisterOnFileScanned(f OnFileScanned)
 	RegisterOnReport(f OnReport)
 

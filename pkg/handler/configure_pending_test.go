@@ -25,7 +25,6 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 		{"empty", `{"unanalyzable_policy":{"empty":"mitigate"}}`, "unanalyzable_policy.empty"},
 		{"encrypted", `{"unanalyzable_policy":{"encrypted":"pass"}}`, "unanalyzable_policy.encrypted"},
 		{"extract_error", `{"unanalyzable_policy":{"extract_error":"as_file"}}`, "unanalyzable_policy.extract_error"},
-		{"quarantine zip", `{"quarantine":{"format":"zip"}}`, "quarantine.format"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

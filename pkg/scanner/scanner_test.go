@@ -206,6 +206,48 @@ func TestNewConnector(t *testing.T) {
 			},
 		},
 		{
+			name: "restore temporary file is ignored, directly and in a folder",
+			fields: fields{
+				config: Config{
+					Actions: Actions{
+						Deleted:    true,
+						Quarantine: true,
+						Log:        true,
+						Inform:     true,
+					},
+					QuarantineFolder: t.TempDir(),
+				},
+			},
+			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
+				var started []string
+				c.RegisterOnStartScanFile(func(location, _ string) { started = append(started, filepath.Base(location)) })
+				folder := t.TempDir()
+				tmpPath := filepath.Join(folder, quarantine.TempPrefix+"victim.bin-0123456789abcdef")
+				if err := os.WriteFile(tmpPath, []byte(badFileContent), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				regular := filepath.Join(folder, "regular.bin")
+				if err := os.WriteFile(regular, []byte("clean content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.ScanFile(t.Context(), tmpPath); err != nil {
+					t.Errorf("ScanFile(temp file) error = %v", err)
+				}
+				if err := c.ScanFile(t.Context(), folder); err != nil {
+					t.Errorf("ScanFile(folder) error = %v", err)
+				}
+				c.Close(t.Context())
+				assertNoOutput(t, buff)
+				if len(started) != 1 || started[0] != "regular.bin" {
+					t.Errorf("submitted files = %v, want only regular.bin", started)
+				}
+				if _, err := os.Stat(tmpPath); err != nil {
+					t.Errorf("temporary file must be left untouched: %v", err)
+				}
+			},
+		},
+		{
 			name: "ok one malware file",
 			fields: fields{
 				config: Config{

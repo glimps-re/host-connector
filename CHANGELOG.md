@@ -8,12 +8,15 @@
 
 ### Added
 
+- quarantine: `quarantine.format: zip` writes password-protected ZIP files (ZipCrypto) openable with common archive tools; `tar` stays the default and both formats are always restorable. With `zip`, the quarantine password must be considered public (warning at each configuration)
 - monitoring: `monitoring.disable_fs_watcher` (flag `--disable-fs-watcher`) stops all filesystem watches, files are found by the pre-scan and the periodic rescan only; it requires `monitoring.period` (configuration refused otherwise). Settable from the console
 
 ### Changed
 
 - work directory: archives are extracted under a private `gmhost-<random>` directory (mode `0700`) of `work_dir` (default: the system temporary directory), removed at stop; crashed processes' leftovers are purged at start. It is never scanned nor monitored, a sub-archive no longer starts a scan of its own (one session per archive), and plugins can ask for it with `HCContext.GetWorkDir()` (new). The default base is the system temporary directory (`TMPDIR` honored): a site that monitors `/tmp` must set `work_dir` elsewhere. A `work_dir` that is, or lies under, a monitored path refuses to start; a warning is logged when it is on a memory filesystem, or when `move.destination` is under a monitored path. Windows: no orphan purge, no real lock, ACLs inherited from the parent
 - plugins: `session` ignores files under the work directory, and a folder named `..x` is no longer taken for a path outside its root
+- quarantine: restoration compares the SHA256 of the restored content with the registry before replacing anything: a wrong quarantine password (tar format has no integrity check) now fails and keeps the `.lock` instead of restoring random bytes. Only 64-character hexadecimal identifiers are accepted. Quarantining a file whose size changes while it is read fails and keeps nothing. Files named `.gmhost-tmp-*` are never scanned
+- quarantine: restoration refuses a content larger than its `.lock` file (the 5 GB fixed limit does not exist anymore) or whose size differs from the size recorded in the container; hardened restoration path (destination directory checked, exclusive temporary file named `.gmhost-tmp-<name>-<hex>`, `fsync`, atomic rename)
 - plugins: loaded in the order of the plugins file (same configuration, same verdict); a duplicate plugin name is a startup error. `scanner.PluginConfig` gains `Name` and `Connector.LoadPlugins` takes a `[]PluginConfig`
 - plugins: `OnScanFile` no longer lets an allow-list placed first hide a deny-list placed after: the first refusal (malware or error) wins, otherwise the first waiver applies
 - plugins: an empty plugins file, a plugin without `file`, or any configured plugin on Windows now stops the startup instead of loading nothing

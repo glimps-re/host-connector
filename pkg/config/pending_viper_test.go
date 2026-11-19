@@ -40,7 +40,6 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"empty", "unanalyzable_policy:\n  empty: mitigate\n", "unanalyzable_policy.empty"},
 		{"encrypted", "unanalyzable_policy:\n  encrypted: error\n", "unanalyzable_policy.encrypted"},
 		{"extract_error", "unanalyzable_policy:\n  extract_error: as_file\n", "unanalyzable_policy.extract_error"},
-		{"zip", "quarantine:\n  format: zip\n", "quarantine.format"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

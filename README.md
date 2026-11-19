@@ -546,7 +546,7 @@ debug: false
 
 ### Configuration Options
 
-Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
+Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `unanalyzable_policy.*`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
 
 #### Global Settings
 
@@ -593,6 +593,12 @@ Top-level configuration fields:
 - **`location`**: Directory path where quarantined files are stored (files are encrypted with .lock extension)
 - **`password`**: Password for encrypting quarantined files (required to restore files later, default: "infected")
 - **`registry`**: Path to the database that stores quarantined and restored file entries (leave empty for in-memory store which would be lost on restart)
+- **`format`**: Container written for new quarantined files: `tar` (default, encrypted tar) or `zip` (ZIP protected by a password with traditional PKWARE encryption, openable with Windows Explorer, 7-Zip and other common tools). Existing `.lock` files stay restorable whatever the value, and both formats can live in the same directory.
+
+**Using `format: zip`**
+- The quarantine password must be considered **public**. ZipCrypto can be broken with a few known plaintext bytes, and whoever deposited a quarantined file knows its content. Do not reuse this password anywhere else, and do not consider the existing `tar` files of the same directory confidential anymore. A warning is logged, and sent to the console, each time the configuration is applied with this format.
+- The entry in the ZIP keeps the name and extension of the original file (the name is sanitized). Opening the archive with the password therefore exposes the original file, executable included: handle it as malware.
+- Only ZIP files written by GMHost are read back: exactly the index and the payload, without compression.
 
 #### Move Action
 

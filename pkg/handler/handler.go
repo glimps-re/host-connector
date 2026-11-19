@@ -157,22 +157,31 @@ func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (
 		Location:         config.Quarantine.Location,
 		RegistryLocation: config.Quarantine.Registry,
 		LockPassword:     config.Quarantine.Password,
+		Format:           quarantine.Format(config.Quarantine.Format),
 	}
-
 	if h.Quarantiner != nil {
-		err = h.Quarantiner.Reconfigure(ctx, qConfig)
-		if err != nil {
+		if err = h.Quarantiner.Reconfigure(ctx, qConfig); err != nil {
 			return
 		}
-		return
+	} else {
+		quarantiner, newErr := quarantine.NewQuarantineHandler(ctx, qConfig)
+		if newErr != nil {
+			return newErr
+		}
+		h.Quarantiner = quarantiner
 	}
-
-	quarantiner, err := quarantine.NewQuarantineHandler(ctx, qConfig)
-	if err != nil {
-		return
+	if qConfig.Format == quarantine.FormatZip {
+		warnZipPasswordPublic()
 	}
-	h.Quarantiner = quarantiner
 	return
+}
+
+// warnZipPasswordPublic warns that the quarantine password is recoverable from
+// ZipCrypto files: whoever deposited a file knows its plaintext.
+func warnZipPasswordPublic() {
+	const msg = "with the zip quarantine format, the quarantine password must be considered public: do not reuse it elsewhere, existing tar quarantine files of this directory are no longer confidential either"
+	logger.Warn(msg)
+	consoleLogger.Warn(msg)
 }
 
 func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config) (err error) {

@@ -12,6 +12,7 @@ import (
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 	quarantinermock "github.com/glimps-re/host-connector/pkg/quarantine/mock"
 	"github.com/google/go-cmp/cmp"
 )
@@ -331,5 +332,12 @@ func TestRestoreHardened_malwareDetails(t *testing.T) {
 	got := c.onFileScanned("f", "sha", prev)
 	if got == nil || !got.Malware || len(got.Malwares) != 1 || got.MalwareReason != datamodel.MalwareDetected || got.Score != 900 {
 		t.Errorf("onFileScanned() = %+v, malware details must be restored", got)
+	}
+}
+
+func TestScanFile_skipsQuarantineTempFile(t *testing.T) {
+	c := &Connector{}
+	if err := c.ScanFile(t.Context(), "/nonexistent/"+quarantine.TempPrefix+"sample-0123456789abcdef"); err != nil {
+		t.Errorf("ScanFile() error = %v, want nil: temporary files are ignored before any access", err)
 	}
 }

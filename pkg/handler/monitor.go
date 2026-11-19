@@ -16,6 +16,7 @@ import (
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/rfsnotify"
 )
 
@@ -189,7 +190,7 @@ func (m *Monitor) walkRoot(root string, seen map[string]struct{}) (partial bool)
 			}
 			return nil
 		}
-		if d.IsDir() {
+		if d.IsDir() || quarantine.IsTempFile(path) {
 			return nil
 		}
 		seen[path] = struct{}{}
@@ -264,7 +265,7 @@ func (m *Monitor) dispatchEvents() {
 			if m.skip != nil && m.skip(event.Name) {
 				continue
 			}
-			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
+			if (event.Has(fsnotify.Create) || event.Has(fsnotify.Write)) && !quarantine.IsTempFile(event.Name) {
 				if _, loaded := m.pendingFiles.LoadOrStore(event.Name, struct{}{}); !loaded {
 					select {
 					case <-m.done:

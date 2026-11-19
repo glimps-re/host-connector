@@ -9,11 +9,13 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
 func TestNewMonitor(t *testing.T) {
@@ -524,4 +526,59 @@ func TestUnderAny(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestMonitor_ignoresQuarantineTempFiles(t *testing.T) {
+	t.Run("rescan", func(t *testing.T) {
+		root := t.TempDir()
+		realFile := filepath.Join(root, "real.txt")
+		writeTestFile(t, realFile)
+		writeTestFile(t, filepath.Join(root, quarantine.TempPrefix+"real.txt-0123456789abcdef"))
+		m := newTestMonitor(t, 0, func(string) error { return nil })
+		seen := map[string]struct{}{}
+		done := make(chan bool)
+		go func() { done <- m.walkRoot(root, seen) }()
+		if got := <-m.filesToScan; got != realFile {
+			t.Errorf("queued %q, want %q", got, realFile)
+		}
+		if <-done {
+			t.Error("walkRoot() = true, want false")
+		}
+		if len(seen) != 1 {
+			t.Errorf("seen = %v, want only the real file", seen)
+		}
+	})
+	t.Run("events", func(t *testing.T) {
+		root := t.TempDir()
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		var mu sync.Mutex
+		var got []string
+		m := newTestMonitor(t, 0, func(path string) error {
+			mu.Lock()
+			defer mu.Unlock()
+			got = append(got, filepath.Base(path))
+			if filepath.Base(path) == "real.txt" {
+				cancel()
+			}
+			return nil
+		})
+		m.Start()
+		if err := m.Add(root); err != nil {
+			t.Fatal(err)
+		}
+		writeTestFile(t, filepath.Join(root, quarantine.TempPrefix+"real.txt-0123456789abcdef"))
+		writeTestFile(t, filepath.Join(root, "real.txt"))
+		<-ctx.Done()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, name := range got {
+			if strings.HasPrefix(name, quarantine.TempPrefix) {
+				t.Errorf("temporary file %q was scanned", name)
+			}
+		}
+		if len(got) == 0 {
+			t.Error("real file was never scanned")
+		}
+	})
 }

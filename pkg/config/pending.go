@@ -29,7 +29,6 @@ var pendingKeys = []pendingKey{
 	{"unanalyzable_policy.empty", func(c *Config) string { return c.UnanalyzablePolicy.Empty }, []string{"skip"}},
 	{"unanalyzable_policy.encrypted", func(c *Config) string { return c.UnanalyzablePolicy.Encrypted }, nil},
 	{"unanalyzable_policy.extract_error", func(c *Config) string { return c.UnanalyzablePolicy.ExtractError }, nil},
-	{"quarantine.format", func(c *Config) string { return c.Quarantine.Format }, []string{"tar"}},
 }
 
 // CheckImplemented fails when conf sets a key this version does not support yet.

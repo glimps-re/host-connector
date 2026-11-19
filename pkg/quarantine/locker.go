@@ -1,223 +1,70 @@
 package quarantine
 
 import (
-	"archive/tar"
-	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/json"
-	"errors"
 	"io"
-	"io/fs"
-	"log/slog"
 	"os"
-
-	"golang.org/x/crypto/pbkdf2"
+	"time"
 )
 
-type fileLocker interface {
-	LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error
-	UnlockFile(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error)
-	GetHeader(in io.Reader) (entry LockEntry, err error)
-}
-
-type fileLock struct {
-	Password string
-}
-
-const lockPasswordIter = 4096
-
+// LockEntry is the public header information extracted from a quarantine
+// container without unlocking (decrypting) the payload. It is returned by
+// GetHeader and embedded in LockedFile and QuarantinedFile.
 type LockEntry struct {
 	Filepath string
 	Reason   string
 }
 
-var _ fileLocker = &fileLock{}
-
-func (l *fileLock) LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) (err error) {
-	tw := tar.NewWriter(out)
-	defer func() {
-		if e := tw.Close(); e != nil {
-			logger.Error("LockFile cannot close tar writer", slog.String("error", e.Error()))
-			err = errors.Join(err, e)
-			return
-		}
-	}()
-
-	// add index entry
-	entry := LockEntry{
-		Filepath: file,
-		Reason:   reason,
-	}
-	var buffer bytes.Buffer
-	err = json.NewEncoder(&buffer).Encode(entry)
-	if err != nil {
-		return
-	}
-
-	indexHeader := tar.Header{
-		Name:       "index",
-		Size:       int64(len(buffer.Bytes())),
-		ChangeTime: now(),
-		AccessTime: now(),
-	}
-	if err = tw.WriteHeader(&indexHeader); err != nil {
-		return
-	}
-
-	if _, err = tw.Write(buffer.Bytes()); err != nil {
-		return
-	}
-
-	// add encrypted file
-	entryHeader := tar.Header{
-		Name:    "file",
-		Size:    info.Size() + 48, // 48 == len(salt) + len(iv)
-		Mode:    int64(info.Mode()),
-		ModTime: info.ModTime(),
-	}
-	entryHeader.Uid = getUID(info)
-	entryHeader.Gid = getGid(info)
-
-	if err = tw.WriteHeader(&entryHeader); err != nil {
-		return
-	}
-	if err = cipherFile(l.Password, in, tw); err != nil {
-		return
-	}
-	return
+// LockedFile carries the full metadata restored together with the plaintext
+// payload of a quarantine container. It replaces the historical 4-value
+// UnlockFile return and the os.FileInfo.Sys() type assertion that silently
+// disabled chown/chtimes for any locker implementation other than the tar
+// one.
+//
+// AccessTime is intentionally absent: the tar container never stored an
+// access time for the payload entry, so restore has always effectively set
+// atime = mtime. LockedFile makes that contract explicit instead of leaving
+// it as an accident of the tar format.
+type LockedFile struct {
+	LockEntry
+	Mode     os.FileMode
+	UID, GID int
+	ModTime  time.Time
+	// Size is the plaintext payload size in bytes, as recorded by the
+	// container. Untrusted: Restore only uses it as a final consistency
+	// check against the bytes actually produced.
+	Size int64
 }
 
-func (l *fileLock) UnlockFile(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-	tr := tar.NewReader(in)
-	var entry LockEntry
-	indexFound := false
-	fileFound := false
-	for {
-		var hdr *tar.Header
-		hdr, err = tr.Next()
-		if errors.Is(err, io.EOF) {
-			err = nil
-			break // End of archive
-		}
-		if err != nil {
-			return
-		}
-		if hdr.Name == "index" {
-			if err = json.NewDecoder(tr).Decode(&entry); err != nil {
-				return
-			}
-			indexFound = true
-		}
-		if hdr.Name == "file" {
-			if err = decipherFile(l.Password, tr, out); err != nil {
-				return
-			}
-			info = &lockedFileInfo{hdr.FileInfo()}
-			fileFound = true
-		}
-	}
-	if !indexFound {
-		err = errIndexNotFound
-		return
-	}
+// fileLocker writes and reads quarantine containers. Every byte read back
+// from disk is hostile: implementations must validate lengths, offsets and
+// counts before trusting them, and must never buffer a whole file in memory.
+//
+// UnlockFile and GetHeader take an io.ReaderAt plus the container size
+// instead of an io.Reader so that:
+//   - a ZIP-backed implementation can seek to its central directory without
+//     buffering the archive;
+//   - a tar-backed implementation is unaffected (io.NewSectionReader adapts
+//     an io.ReaderAt into the io.Reader the tar package needs);
+//   - concurrent GetHeader/UnlockFile calls on a single open file handle
+//     (*os.File implements io.ReaderAt) are safe, removing the need for a
+//     shared Seek(0) before every read.
+type fileLocker interface {
+	// LockFile writes a quarantine container for in (the plaintext content
+	// of file, described by info) to out, recording reason in the
+	// container's cleartext index.
+	LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error
 
-	if !fileFound {
-		err = errFileNotFound
-		return
-	}
-	reason = entry.Reason
-	file = entry.Filepath
-	return
-}
+	// UnlockFile decrypts and verifies the payload of the container read
+	// from src (size bytes long), streaming the plaintext to out.
+	//
+	// Contract: any plaintext byte written to out before UnlockFile returns
+	// is unverified. A non-nil, non-io.EOF-wrapping error (including an
+	// integrity error detected only once the stream is fully read) means
+	// the caller MUST discard everything written to out so far; only a
+	// clean return with a nil error certifies out's content.
+	UnlockFile(src io.ReaderAt, size int64, out io.Writer) (LockedFile, error)
 
-func (l *fileLock) GetHeader(in io.Reader) (entry LockEntry, err error) {
-	tr := tar.NewReader(in)
-	for {
-		var hdr *tar.Header
-		hdr, err = tr.Next()
-		if errors.Is(err, io.EOF) {
-			break // End of archive
-		}
-		if err != nil {
-			return
-		}
-		if hdr.Name == "index" {
-			if err = json.NewDecoder(tr).Decode(&entry); err != nil {
-				return
-			}
-			return
-		}
-	}
-	err = errIndexNotFound
-	return
-}
-
-type lockedFileInfo struct {
-	fs.FileInfo
-}
-
-func (lfi *lockedFileInfo) Size() int64 {
-	return lfi.FileInfo.Size() - 48
-}
-
-var (
-	errIndexNotFound = errors.New("index part not found")
-	errFileNotFound  = errors.New("file part not found")
-)
-
-func cipherFile(password string, in io.Reader, out io.Writer) (err error) {
-	salt := make([]byte, 32)
-	if _, err := rand.Read(salt); err != nil {
-		return err
-	}
-	key := pbkdf2.Key([]byte(password), salt, lockPasswordIter, aes.BlockSize, sha256.New)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return err
-	}
-
-	iv := make([]byte, aes.BlockSize)
-	if _, err := rand.Read(iv); err != nil {
-		return err
-	}
-
-	if _, err = out.Write(salt); err != nil {
-		return err
-	}
-	if _, err = out.Write(iv); err != nil {
-		return err
-	}
-	wstream := &cipher.StreamWriter{S: cipher.NewCTR(block, iv), W: out}
-	defer func() {
-		if e := wstream.Close(); e != nil {
-			logger.Error("error closing cipher locker", slog.String("error", e.Error()))
-			err = errors.Join(e, err)
-		}
-	}()
-	_, err = io.Copy(wstream, in)
-	return
-}
-
-func decipherFile(password string, in io.Reader, out io.Writer) (err error) {
-	salt := make([]byte, 32)
-	// use io.ReadFull to ensure all salt is read (for example, io.Reader.Read may return fewer bytes than requested
-	// without error, which would silently corrupt cryptographic material)
-	if _, err = io.ReadFull(in, salt); err != nil {
-		return
-	}
-	iv := make([]byte, aes.BlockSize)
-	if _, err = io.ReadFull(in, iv); err != nil {
-		return
-	}
-	key := pbkdf2.Key([]byte(password), salt, lockPasswordIter, aes.BlockSize, sha256.New)
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return err
-	}
-	rstream := &cipher.StreamReader{S: cipher.NewCTR(block, iv), R: in}
-	_, err = io.Copy(out, rstream)
-	return
+	// GetHeader reads only the cleartext index of the container read from
+	// src (size bytes long), without touching the encrypted payload.
+	GetHeader(src io.ReaderAt, size int64) (LockEntry, error)
 }

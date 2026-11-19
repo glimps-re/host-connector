@@ -4,8 +4,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
 func TestMonitor_walkRootUnreadableDirIsPartial(t *testing.T) {
@@ -79,5 +82,52 @@ func TestMonitor_periodicalScanPurgeSkippedOnPartialRoot(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	if _, ok := m.states.Load(underMissing); !ok {
 		t.Error("state under a partially walked root must be kept")
+	}
+}
+
+func TestMonitor_ignoresRestoreTemporaryFiles(t *testing.T) {
+	root := t.TempDir()
+	tmpName := quarantine.TempPrefix + "victim.bin-0123456789abcdef"
+	writeTestFile(t, filepath.Join(root, tmpName))
+	writeTestFile(t, filepath.Join(root, "sub", tmpName))
+	writeTestFile(t, filepath.Join(root, "regular.bin"))
+
+	var mu sync.Mutex
+	got := map[string]struct{}{}
+	m := newTestMonitor(t, 5*time.Millisecond, func(path string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got[path] = struct{}{}
+		return nil
+	})
+	m.Start()
+	if err := m.Add(root); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	created := filepath.Join(root, "created.bin")
+	writeTestFile(t, created)
+	writeTestFile(t, filepath.Join(root, quarantine.TempPrefix+"event.bin-1"))
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		_, a := got[filepath.Join(root, "regular.bin")]
+		_, b := got[created]
+		mu.Unlock()
+		if a && b {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	for p := range got {
+		if quarantine.IsTempFile(p) {
+			t.Errorf("temporary file %q reached the callback", p)
+		}
+	}
+	if len(got) != 2 {
+		t.Errorf("callbacks = %v, want regular.bin and created.bin only", got)
 	}
 }

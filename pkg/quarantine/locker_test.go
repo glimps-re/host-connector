@@ -7,8 +7,18 @@ import (
 	"io"
 	mrand "math/rand"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+)
+
+// Metadata of testdata/legacy_v1.5.3.lock, see testdata/README.md for
+// provenance and how to regenerate it.
+const (
+	legacyFixturePassword = "infected"
+	legacyFixtureFilepath = "/home/user/malware/legacy_sample.exe"
+	legacyFixtureReason   = "malware: trojan.legacy.v1"
+	legacyFixtureContent  = "This is a synthetic payload standing in for a v1.5.3 quarantined sample.\n"
 )
 
 func Test_cipherFile(t *testing.T) {
@@ -46,8 +56,11 @@ func Test_cipherFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// ensure always the same random
-			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // ok for test
+			// The salt and IV come from rand.Reader: pin them to a seeded,
+			// non-cryptographic source so the expected output is reproducible.
+			origReader := rand.Reader
+			t.Cleanup(func() { rand.Reader = origReader })
+			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // deterministic salt and IV for golden outputs, never used outside tests
 			out := &bytes.Buffer{}
 			if err := cipherFile(tt.args.password, strings.NewReader(tt.args.input), out); (err != nil) != tt.wantErr {
 				t.Errorf("cipherFile() error = %v, wantErr %v", err, tt.wantErr)
@@ -96,8 +109,11 @@ func Test_decipherFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// ensure always the same random
-			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // ok for test
+			// The salt and IV come from rand.Reader: pin them to a seeded,
+			// non-cryptographic source so the expected output is reproducible.
+			origReader := rand.Reader
+			t.Cleanup(func() { rand.Reader = origReader })
+			rand.Reader = mrand.New(mrand.NewSource(tt.seed)) //nolint:gosec // deterministic salt and IV for golden outputs, never used outside tests
 
 			in := hex.NewDecoder(strings.NewReader(tt.args.input))
 			out := &bytes.Buffer{}
@@ -122,7 +138,7 @@ func Test_LockFile(t *testing.T) {
 			name: "test 1",
 			test: func(t *testing.T) {
 				t.Helper()
-				file, err := os.CreateTemp(os.TempDir(), "test_lock_*")
+				file, err := os.CreateTemp(t.TempDir(), "test_lock_*")
 				if err != nil {
 					t.Errorf("could not create temp file, error: %s", err)
 					return
@@ -131,12 +147,6 @@ func Test_LockFile(t *testing.T) {
 					err := file.Close()
 					if err != nil {
 						t.Fatalf("TestLockFile cannot close file : %s", err)
-					}
-				}()
-				defer func() {
-					err := os.Remove(file.Name())
-					if err != nil {
-						t.Fatalf("TestLockFile cannot remove file : %s", err)
 					}
 				}()
 				_, err = file.WriteString("my funny test content, long enough to require several blocks")
@@ -149,7 +159,7 @@ func Test_LockFile(t *testing.T) {
 				}
 				buffer := &bytes.Buffer{}
 
-				locker := fileLock{Password: "tst_password"}
+				locker := tarLocker{Password: "tst_password"}
 
 				_, err = file.Seek(0, io.SeekStart)
 				if err != nil {
@@ -167,8 +177,8 @@ func Test_LockFile(t *testing.T) {
 				}
 
 				// check get header
-
-				entry, err := locker.GetHeader(bytes.NewReader(buffer.Bytes()))
+				lockedBytes := buffer.Bytes()
+				entry, err := locker.GetHeader(bytes.NewReader(lockedBytes), int64(len(lockedBytes)))
 				if err != nil {
 					t.Errorf("could not get header of locked test file, error: %s", err)
 					return
@@ -183,19 +193,19 @@ func Test_LockFile(t *testing.T) {
 
 				buffer2 := &bytes.Buffer{}
 
-				fileOut, infoOut, reason, err := locker.UnlockFile(bytes.NewReader(buffer.Bytes()), buffer2)
+				locked, err := locker.UnlockFile(bytes.NewReader(lockedBytes), int64(len(lockedBytes)), buffer2)
 				if err != nil {
 					t.Errorf("could not unlock test file, error: %s", err)
 					return
 				}
-				if fileOut != file.Name() {
-					t.Errorf("invalid file path, got: %v, want: %v", fileOut, file.Name())
+				if locked.Filepath != file.Name() {
+					t.Errorf("invalid file path, got: %v, want: %v", locked.Filepath, file.Name())
 				}
-				if infoOut.Size() != stat.Size() {
-					t.Errorf("invalid stat size, got: %v, want: %v", infoOut.Size(), stat.Size())
+				if locked.Size != stat.Size() {
+					t.Errorf("invalid stat size, got: %v, want: %v", locked.Size, stat.Size())
 				}
-				if reason != "malicious test" {
-					t.Errorf("invalid reason, got: %v, want: %v", reason, "malicious test")
+				if locked.Reason != "malicious test" {
+					t.Errorf("invalid reason, got: %v, want: %v", locked.Reason, "malicious test")
 				}
 				if buffer2.String() != "my funny test content, long enough to require several blocks" {
 					t.Errorf("invalid content, got: %v", buffer2.String())
@@ -205,5 +215,64 @@ func Test_LockFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, tt.test)
+	}
+}
+
+// Test_UnlockFile_LegacyFixture exercises S1: a tar `.lock` produced by
+// GMHost <= v1.5.3 (testdata/legacy_v1.5.3.lock, generated with the
+// unchanged wire format and a pinned rand source, see testdata/README.md)
+// must still restore bit-for-bit with the refactored tarLocker.
+func Test_UnlockFile_LegacyFixture(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "legacy_v1.5.3.lock"))
+	if err != nil {
+		t.Fatalf("could not read legacy fixture: %s", err)
+	}
+
+	locker := tarLocker{Password: legacyFixturePassword}
+
+	entry, err := locker.GetHeader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("GetHeader() on legacy fixture failed: %s", err)
+	}
+	if entry.Filepath != legacyFixtureFilepath {
+		t.Errorf("GetHeader() filepath = %q, want %q", entry.Filepath, legacyFixtureFilepath)
+	}
+	if entry.Reason != legacyFixtureReason {
+		t.Errorf("GetHeader() reason = %q, want %q", entry.Reason, legacyFixtureReason)
+	}
+
+	var out bytes.Buffer
+	locked, err := locker.UnlockFile(bytes.NewReader(data), int64(len(data)), &out)
+	if err != nil {
+		t.Fatalf("UnlockFile() on legacy fixture failed: %s", err)
+	}
+	if out.String() != legacyFixtureContent {
+		t.Errorf("UnlockFile() content = %q, want %q", out.String(), legacyFixtureContent)
+	}
+	if locked.Filepath != legacyFixtureFilepath {
+		t.Errorf("UnlockFile() filepath = %q, want %q", locked.Filepath, legacyFixtureFilepath)
+	}
+	if locked.Size != int64(len(legacyFixtureContent)) {
+		t.Errorf("UnlockFile() size = %d, want %d", locked.Size, len(legacyFixtureContent))
+	}
+
+	// The tar format's "index" entry is cleartext (unchanged from the
+	// original format): GetHeader never touches the password, so it
+	// succeeds identically regardless of it.
+	badLocker := tarLocker{Password: "not-the-right-password"}
+	if _, err := badLocker.GetHeader(bytes.NewReader(data), int64(len(data))); err != nil {
+		t.Errorf("GetHeader() must not depend on the password, got error: %s", err)
+	}
+
+	// The payload is AES-CTR, which is unauthenticated: decrypting
+	// with the wrong password never errors, it silently produces garbage
+	// plaintext. The only requirement is that it must not panic and
+	// must not accidentally reproduce the real content.
+	var garbage bytes.Buffer
+	if _, err := badLocker.UnlockFile(bytes.NewReader(data), int64(len(data)), &garbage); err != nil {
+		t.Errorf("UnlockFile() with wrong password unexpectedly errored: %s", err)
+	}
+	if garbage.String() == legacyFixtureContent {
+		t.Errorf("UnlockFile() with wrong password unexpectedly recovered the real content")
 	}
 }

@@ -308,6 +308,10 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 
 	input = filepath.Clean(input)
 	inputLogger := logger.With(slog.String("input file", input))
+	if quarantine.IsTempFile(input) {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "temporary file"))
+		return
+	}
 
 	if c.IsInternalPath(input) {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "connector work directory"))

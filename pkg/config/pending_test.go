@@ -70,3 +70,13 @@ func TestREADMEExamplesAccepted(t *testing.T) {
 		t.Error("no core configuration example found in README.md")
 	}
 }
+
+func TestCheckImplemented_QuarantineFormats(t *testing.T) {
+	for _, format := range []string{"", "tar", "zip"} {
+		conf := &Config{}
+		conf.Quarantine.Format = format
+		if err := CheckImplemented(conf); err != nil {
+			t.Errorf("CheckImplemented(format=%q) error = %v", format, err)
+		}
+	}
+}

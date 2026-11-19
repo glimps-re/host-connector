@@ -56,7 +56,14 @@ var (
 	MetricCollecter metrics.MetricCollecter = metrics.NoopMetricCollecter{}
 
 	errFileTooBig    = errors.New("file is too big to be analyzed")
+	errEmptyFile     = errors.New("file is empty")
 	errScannerClosed = errors.New("scanner instance is closing and is no longer accepting new files")
+
+	// An archive with a failed extracted file is never moved. These sentinels
+	// only tell whether retrying can change the outcome: permanent wins when
+	// both apply.
+	errInnerTransient = errors.New("an extracted file could not be analyzed, will retry")
+	errInnerPermanent = errors.New("an extracted file cannot be analyzed")
 )
 
 // accepted MIME types for extraction.
@@ -403,7 +410,7 @@ func (c *Connector) checkExtractedFile(location string) (fileSHA256 string, file
 	}
 	fileSize = info.Size()
 	if info.Size() <= 0 {
-		err = errors.New("file is empty")
+		err = errEmptyFile
 		return
 	}
 	fileSHA256, err = getFileSHA256(location)
@@ -786,13 +793,21 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			if removeErr := os.Remove(fileLocation); removeErr != nil {
 				fileLogger.Warn("could not remove file")
 			}
-			finished, ok := c.archiveStatus.decreaseTotal(archiveID)
+			relName := innerName(outputDir, fileLocation)
+			var finished, ok bool
+			if errors.Is(err, errEmptyFile) {
+				finished, ok = c.archiveStatus.decreaseTotal(archiveID)
+			} else {
+				finished, ok = c.archiveStatus.addInnerError(archiveID, relName, memberCause(err))
+			}
+			// The member is dealt with: err must not leak out of the function,
+			// the archive lives on and is finished by whoever ends its last file.
+			err = nil
 			if !ok {
 				continue
 			}
 			if finished {
 				archiveLogger.Warn("all files from archive skipped")
-				err = nil
 				if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
 					archiveLogger.Error("could not finish archive analysis after all files skipped", slog.String(logErrorKey, finishErr.Error()))
 				}
@@ -825,12 +840,12 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 				return
 			}
 			fileLogger.Error("recursive extraction failed", slog.String(logErrorKey, err.Error()))
-			finished, ok := c.archiveStatus.decreaseTotal(archiveID)
+			finished, ok := c.archiveStatus.addInnerError(archiveID, innerName(outputDir, fileLocation), memberCause(err))
+			err = nil
 			if !ok {
 				continue
 			}
 			if finished {
-				err = nil
 				if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
 					archiveLogger.Error("could not finish archive analysis after all extractions failed", slog.String(logErrorKey, finishErr.Error()))
 				}
@@ -840,6 +855,25 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		}
 	}
 	return
+}
+
+// memberCause strips the location of the temporary file from an I/O error: the
+// member is already named by its path in the archive, and the temporary path
+// (inside the work directory) means nothing to the operator.
+func memberCause(err error) error {
+	var pathErr *fs.PathError
+	if errors.As(err, &pathErr) {
+		return fmt.Errorf("extracted file unreadable: %w", pathErr.Err)
+	}
+	return err
+}
+
+// innerName is the name of an extracted file inside its archive.
+func innerName(outputDir, location string) string {
+	if rel, err := filepath.Rel(outputDir, location); err == nil {
+		return rel
+	}
+	return location
 }
 
 func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err error) {
@@ -1016,17 +1050,22 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 
 	isSubArchive := status.parentArchive.statusID != ""
 
-	// SHA256 check, action and report only for top-level archives
+	// SHA256 check, action and report only for top-level archives. An archive
+	// that cannot be read again, or changed during the analysis, gets an Error
+	// and no action; the cleanup below still runs.
+	runAction := !isSubArchive
 	if !isSubArchive {
 		currentSHA256, getSHAErr := getFileSHA256(status.archiveLocation)
-		if getSHAErr != nil {
-			err = fmt.Errorf("could not compute archive sha256, err: %w", getSHAErr)
-			return
-		}
-		if currentSHA256 != status.result.SHA256 {
+		switch {
+		case getSHAErr != nil:
+			archiveLogger.Error("could not compute archive sha256", slog.String(logErrorKey, getSHAErr.Error()))
+			status.result.Error = fmt.Errorf("%w: could not compute archive sha256: %v", errInnerTransient, memberCause(getSHAErr))
+			runAction = false
+		case currentSHA256 != status.result.SHA256:
 			archiveLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("current sha256", currentSHA256), slog.String("input sha256", status.result.SHA256))
 			ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", status.archiveLocation))
-			return
+			status.result.Error = fmt.Errorf("%w: file SHA256 mismatch, file changed during analysis", errInnerTransient)
+			runAction = false
 		}
 	}
 
@@ -1035,7 +1074,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 		// don't need to save it in status handler, because it's going to be deleted at func end
 	}
 
-	if !isSubArchive {
+	if runAction {
 		report := &datamodel.Report{}
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(status.result.FileSize))
 		defer cancel()

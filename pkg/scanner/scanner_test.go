@@ -1802,19 +1802,16 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			},
 		},
 		{
-			name: "ko getFileSHA256 error",
+			name: "ko getFileSHA256 error: no action, temporary folder and status cleaned up",
 			fields: fields{
 				archiveFileDeleted: true,
 			},
-			wantErr:        true,
-			wantStatusKept: true,
 		},
 		{
-			name: "ko SHA256 mismatch",
+			name: "ko SHA256 mismatch: no action, temporary folder and status cleaned up",
 			fields: fields{
 				sha256Mismatch: true,
 			},
-			wantStatusKept: true,
 		},
 		{
 			name: "ko error handling action",

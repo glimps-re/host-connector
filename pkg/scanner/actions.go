@@ -335,7 +335,10 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	if result.Error != nil {
 		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination, error in analysis: %s", path, result.Error.Error()))
 		logger.Warn("file will not be moved to destination, error in analysis", slog.String("file", path), slog.String("error", result.Error.Error()))
-		return
+		// A detection is never lost behind an error: its report is still written.
+		if !result.Malware {
+			return
+		}
 	}
 
 	path, err = filepath.Abs(path)

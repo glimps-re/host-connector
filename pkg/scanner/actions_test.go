@@ -601,3 +601,42 @@ func TestQuarantineAction_Handle(t *testing.T) {
 		})
 	}
 }
+
+func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
+	var created []string
+	mkdirAll = func(string, os.FileMode) error { return nil }
+	create = func(name string) (*os.File, error) {
+		created = append(created, name)
+		return os.CreateTemp(t.TempDir(), "report*")
+	}
+	renamed := false
+	rename = func(string, string) error { renamed = true; return nil }
+	t.Cleanup(func() { mkdirAll, create, rename = os.MkdirAll, os.Create, os.Rename })
+
+	a, err := NewMoveAction("/dest", "/src")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name        string
+		result      datamodel.Result
+		wantReports int
+	}{
+		{"malware with an error: the detection is reported", datamodel.Result{Malware: true, Error: errors.New("a member failed")}, 1},
+		{"clean with an error: nothing written", datamodel.Result{Error: errors.New("a member failed")}, 0},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			created, renamed = nil, false
+			if err := a.Handle(t.Context(), "/src/dir/f.bin", tt.result, &datamodel.Report{}); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			if len(created) != tt.wantReports {
+				t.Errorf("report files = %v, want %d", created, tt.wantReports)
+			}
+			if renamed {
+				t.Error("a file in error must never be moved")
+			}
+		})
+	}
+}

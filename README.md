@@ -721,6 +721,7 @@ Examples: 1MB -> 30s ; 500MB -> 30s ; 1,2GB -> 60s ; 2GB -> 60s
 - **Effect**:
   - **Legitimate files**: Moves the file to the destination folder, preserving directory structure
   - **Malicious files**: Does not move the file, but creates a `.locked.json` report file at the destination path containing analysis details
+  - **Files in error**: Does not move the file. This includes an archive in which an extracted file could not be analyzed (submission failure, timeout, unreadable or lost file, inconsistent plugin result): the archive stays in place, the failed files are listed in the report (`error-subfiles`, at most 1000 entries). Empty files in an archive are still ignored, and files too big follow their own handling
 
 ### Print
 

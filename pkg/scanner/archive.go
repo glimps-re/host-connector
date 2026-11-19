@@ -1,7 +1,12 @@
 package scanner
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"sync"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -13,7 +18,27 @@ type parentArchive struct {
 	relPath  string // relative path within parent archive
 }
 
+const (
+	maxErrorSubfiles = 1000
+	maxErrorTextLen  = 1 << 10
+	truncatedMark    = "…[truncated]"
+	// moreErrorsKey stands in ErrorSubfiles for the failed files beyond
+	// maxErrorSubfiles; its value says how many.
+	moreErrorsKey = "…[more failed files]"
+)
+
+// innerErrors summarizes the extracted files that failed, for the archive
+// result: ErrorSubfiles is bounded, the count here is not.
+type innerErrors struct {
+	count         int
+	first         string
+	permanent     bool
+	analysisCount int
+	firstAnalysis string
+}
+
 type archiveStatus struct {
+	inner           innerErrors
 	started         bool
 	finished        bool
 	finishClaimed   bool
@@ -74,10 +99,32 @@ func (a *archiveStatusHandler) decreaseTotal(id string) (finished bool, ok bool)
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
-	if !ok {
-		return
+	if !ok || status.finishClaimed {
+		return finished, false
 	}
 	ok = true
+	status.total--
+	if status.total == status.analyzed {
+		status.finished = true
+	}
+	finished = status.finished
+	a.statusByID[id] = status
+	return
+}
+
+// addInnerError records an extracted file that was lost on its way to the
+// analysis (unreadable, sub-archive that could not be extracted): the archive
+// can no longer be taken for clean. It replaces decreaseTotal for such files.
+func (a *archiveStatusHandler) addInnerError(id string, filename string, err error) (finished bool, ok bool) {
+	a.Lock()
+	defer a.Unlock()
+	status, ok := a.statusByID[id]
+	if !ok || status.finishClaimed {
+		return finished, false
+	}
+	r := datamodel.Result{Error: err}
+	status.result.ErrorSubfiles = addErrorSubfile(status.result.ErrorSubfiles, filename, err.Error())
+	status.noteInner(filename, r)
 	status.total--
 	if status.total == status.analyzed {
 		status.finished = true
@@ -124,11 +171,12 @@ func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, re
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
-	if !ok {
-		return
+	if !ok || status.finishClaimed {
+		return finished, false
 	}
 	status.analyzed++
 	status.result = mergeResult(status.result, result, filename)
+	status.noteInner(filename, result)
 	if status.total == status.analyzed {
 		status.finished = true
 	}
@@ -154,6 +202,80 @@ func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Resu
 	return
 }
 
+// noteInner counts a failed extracted file and refreshes the archive Error and
+// AnalysisError. Any failure except "too big" (handled by its own policy) keeps
+// the archive from being treated as clean. A permanent cause wins over a
+// transient one; an unknown cause is transient: in doubt the archive is
+// retried.
+func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
+	if r.Error != nil && !errors.Is(r.Error, errFileTooBig) {
+		s.inner.count++
+		if s.inner.first == "" {
+			s.inner.first = truncateText(filename+": "+r.Error.Error(), maxErrorTextLen)
+		}
+		if errors.Is(r.Error, errInnerPermanent) || errors.Is(r.Error, errInconsistentPluginResult) {
+			s.inner.permanent = true
+		}
+		sentinel := errInnerTransient
+		if s.inner.permanent {
+			sentinel = errInnerPermanent
+		}
+		s.result.Error = fmt.Errorf("%w: %d extracted file(s) in error, first: %s", sentinel, s.inner.count, s.inner.first)
+		if listed := listedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= maxErrorSubfiles {
+			s.result.ErrorSubfiles[moreErrorsKey] = fmt.Sprintf("%d more failed file(s) not listed", s.inner.count-listed)
+		}
+	}
+	if r.AnalysisError != "" {
+		s.inner.analysisCount++
+		if s.inner.firstAnalysis == "" {
+			s.inner.firstAnalysis = truncateText(filename+": "+r.AnalysisError, maxErrorTextLen)
+		}
+		s.result.AnalysisError = s.inner.firstAnalysis
+		if s.inner.analysisCount > 1 {
+			s.result.AnalysisError = fmt.Sprintf("%s (and %d more)", s.inner.firstAnalysis, s.inner.analysisCount-1)
+		}
+	}
+}
+
+// truncateText cuts s to n bytes (on a character boundary) and marks the cut.
+func truncateText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.ToValidUTF8(s[:n], "") + truncatedMark
+}
+
+// truncateKey is truncateText for a name: a cut name gets a short hash of the
+// whole name, so two long names with the same beginning stay distinct.
+func truncateKey(name string) string {
+	if len(name) <= maxErrorTextLen {
+		return name
+	}
+	sum := sha256.Sum256([]byte(name))
+	return truncateText(name, maxErrorTextLen) + "-" + hex.EncodeToString(sum[:4])
+}
+
+// addErrorSubfile records a failed extracted file, bounded in count and in
+// text length: an archive can hold thousands of members with huge names.
+func addErrorSubfile(m map[string]string, filename, msg string) map[string]string {
+	if m == nil {
+		m = make(map[string]string)
+	}
+	key := truncateKey(filename)
+	if _, exists := m[key]; !exists && listedErrors(m) >= maxErrorSubfiles {
+		return m
+	}
+	m[key] = truncateText(msg, maxErrorTextLen)
+	return m
+}
+
+func listedErrors(m map[string]string) int {
+	if _, ok := m[moreErrorsKey]; ok {
+		return len(m) - 1
+	}
+	return len(m)
+}
+
 func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (result datamodel.Result) {
 	result = baseResult
 	for _, m := range resultToMerge.Malwares {
@@ -173,10 +295,10 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		result.MaliciousSubfiles[filename] = resultToMerge
 	}
 	if resultToMerge.Error != nil {
-		if result.ErrorSubfiles == nil {
-			result.ErrorSubfiles = make(map[string]string)
-		}
-		result.ErrorSubfiles[filename] = resultToMerge.Error.Error()
+		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, filename, resultToMerge.Error.Error())
+	}
+	if resultToMerge.AnalysisError != "" {
+		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, filename, resultToMerge.AnalysisError)
 	}
 	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
 	result.FilteredVolume += resultToMerge.FilteredVolume

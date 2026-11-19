@@ -17,7 +17,6 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 		raw     string
 		wantKey string
 	}{
-		{"work_dir", `{"work_dir":"/w"}`, "work_dir"},
 		{"move mode", `{"move":{"mode":"copy"}}`, "move.mode"},
 		{"min_throughput", `{"move":{"min_throughput":"10MiB"}}`, "move.min_throughput"},
 		{"max_tracked_memory", `{"monitoring":{"max_tracked_memory":"256MiB"}}`, "monitoring.max_tracked_memory"},
@@ -68,7 +67,7 @@ func TestHandler_ConfigureRefusalNotifiesAndKeepsState(t *testing.T) {
 	oldConf := &config.Config{}
 	oldConf.Debug = true
 	h := &Handler{conf: oldConf, needSetup: true}
-	err := h.Configure(t.Context(), json.RawMessage(`{"work_dir":"/w"}`))
+	err := h.Configure(t.Context(), json.RawMessage(`{"move":{"mode":"copy"}}`))
 	if !errors.Is(err, config.ErrNotImplemented) {
 		t.Fatalf("Configure() error = %v, want ErrNotImplemented", err)
 	}

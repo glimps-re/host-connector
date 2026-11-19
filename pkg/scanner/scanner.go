@@ -123,6 +123,9 @@ type Config struct {
 	MoveTo                   string
 	MoveFrom                 string
 	FollowSymlinks           bool
+	// WorkDir is the base under which the connector creates its private
+	// working directory; empty means os.TempDir().
+	WorkDir string
 }
 
 type fileToAnalyze struct {
@@ -154,6 +157,7 @@ type Connector struct {
 	stopOnce     sync.Once
 
 	config Config
+	work   *workDir
 
 	dispatchWg sync.WaitGroup
 	extractWg  sync.WaitGroup
@@ -224,7 +228,13 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		cfg.ExtractMinThreshold = defaultExtractMinThreshold
 	}
 
+	work, err := newWorkDir(cfg.WorkDir)
+	if err != nil {
+		return nil, err
+	}
+
 	return &Connector{
+		work:           work,
 		submitter:      submitter,
 		quarantiner:    quarantiner,
 		dispatchChan:   make(chan string, cfg.Workers),
@@ -299,6 +309,11 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	input = filepath.Clean(input)
 	inputLogger := logger.With(slog.String("input file", input))
 
+	if c.IsInternalPath(input) {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "connector work directory"))
+		return
+	}
+
 	// Use Lstat to check if it's a symlink without following it
 	linfo, err := os.Lstat(input)
 	if err != nil {
@@ -309,6 +324,10 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	if linfo.Mode()&os.ModeSymlink != 0 {
 		if !c.config.FollowSymlinks {
 			inputLogger.Debug("skip file", slog.String(logReasonKey, "symbolic link"))
+			return
+		}
+		if c.work != nil && c.work.containsResolved(input) {
+			inputLogger.Debug("skip file", slog.String(logReasonKey, "link to the connector work directory"))
 			return
 		}
 	}
@@ -397,6 +416,12 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 	err = filepath.WalkDir(input, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			logger.Error("could not access path during walk", slog.String("path", path), slog.String("err", walkErr.Error()))
+			return nil
+		}
+		if c.IsInternalPath(path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() {
@@ -658,7 +683,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		return
 	}
 
-	outputDir, outputDirErr := os.MkdirTemp(os.TempDir(), archive.sha256)
+	outputDir, outputDirErr := os.MkdirTemp(c.work.extractDir(), "x-")
 	if outputDirErr != nil {
 		err = outputDirErr
 		return
@@ -934,7 +959,8 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 		return
 	}
 	if started {
-		c.onStartScanFile(input.archiveLocation, input.archiveSHA256)
+		// No onStartScanFile here: a sub-archive belongs to the scan of its
+		// top-level archive and must not start a session of its own.
 		if archiveResult := c.onScanFile(input.archiveLocation, input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
 			ok := c.archiveStatus.setArchiveResult(input.archiveID, *archiveResult)
 			if !ok {
@@ -1220,6 +1246,10 @@ func (c *Connector) Close(ctx context.Context) {
 			if closeErr := plugin.Close(ctx); closeErr != nil {
 				logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
 			}
+		}
+
+		if closeErr := c.work.close(); closeErr != nil {
+			logger.Error("failed to remove work directory", slog.String(logErrorKey, closeErr.Error()))
 		}
 	})
 }

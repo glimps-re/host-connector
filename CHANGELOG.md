@@ -12,6 +12,8 @@
 
 ### Changed
 
+- work directory: archives are extracted under a private `gmhost-<random>` directory (mode `0700`) of `work_dir` (default: the system temporary directory), removed at stop; crashed processes' leftovers are purged at start. It is never scanned nor monitored, a sub-archive no longer starts a scan of its own (one session per archive), and plugins can ask for it with `HCContext.GetWorkDir()` (new). The default base is the system temporary directory (`TMPDIR` honored): a site that monitors `/tmp` must set `work_dir` elsewhere. A `work_dir` that is, or lies under, a monitored path refuses to start; a warning is logged when it is on a memory filesystem, or when `move.destination` is under a monitored path. Windows: no orphan purge, no real lock, ACLs inherited from the parent
+- plugins: `session` ignores files under the work directory, and a folder named `..x` is no longer taken for a path outside its root
 - plugins: loaded in the order of the plugins file (same configuration, same verdict); a duplicate plugin name is a startup error. `scanner.PluginConfig` gains `Name` and `Connector.LoadPlugins` takes a `[]PluginConfig`
 - plugins: `OnScanFile` no longer lets an allow-list placed first hide a deny-list placed after: the first refusal (malware or error) wins, otherwise the first waiver applies
 - plugins: an empty plugins file, a plugin without `file`, or any configured plugin on Windows now stops the startup instead of loading nothing

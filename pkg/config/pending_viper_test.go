@@ -32,7 +32,6 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"empty", "debug: true\n", ""},
 		{"tar", "quarantine:\n  format: tar\n", ""},
 		{"accepted explicit values", "move:\n  mode: rename\nunanalyzable_policy:\n  too_big: error\n  empty: skip\nmonitoring:\n  disable_fs_watcher: false\nwork_dir: \"\"\nquarantine:\n  format: tar\n", ""},
-		{"work_dir", "work_dir: /w\n", "work_dir"},
 		{"move.mode", "move:\n  mode: copy\n", "move.mode"},
 		{"min_throughput", "move:\n  min_throughput: 10MiB\n", "move.min_throughput"},
 		{"tracked mem", "monitoring:\n  max_tracked_memory: 256MiB\n", "monitoring.max_tracked_memory"},

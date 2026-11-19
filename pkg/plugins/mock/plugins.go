@@ -21,6 +21,7 @@ type MockHCContext struct {
 	ExtractFile        plugins.ExtractFile
 	ConsoleLogger      *slog.Logger
 	Logger             *slog.Logger
+	WorkDir            string
 }
 
 func NewMockHCContext() *MockHCContext {
@@ -41,6 +42,7 @@ func (m *MockHCContext) RegisterOnReport(f plugins.OnReport)             { m.OnR
 func (m *MockHCContext) RegisterGenerateReport(f plugins.GenerateReport) { m.GenerateReportFunc = f }
 func (m *MockHCContext) GetLogger() *slog.Logger                         { return m.Logger }
 func (m *MockHCContext) GetConsoleLogger() *slog.Logger                  { return m.ConsoleLogger }
+func (m *MockHCContext) GetWorkDir() string                              { return m.WorkDir }
 func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 	if m.GenerateReportFunc != nil {
 		return m.GenerateReportFunc(ctx, reportContext, reports)

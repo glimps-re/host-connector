@@ -546,7 +546,7 @@ debug: false
 
 ### Configuration Options
 
-Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
+Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
 
 #### Global Settings
 
@@ -559,6 +559,7 @@ Some keys are declared by the configuration schema before this version supports 
 - **`paths`**: List of directories or files to monitor and scan (can be absolute or relative paths, required, minimum 1)
 - **`plugins_config`**: Path to plugins configuration file (required for host connector plugin functionality, GNU/Linux only)
 - **`debug`**: Enable debug logging (default: false)
+- **`work_dir`**: Base directory of the connector private working directory (default: the system temporary directory, `TMPDIR` honored). A `gmhost-<random>` sub-directory (mode `0700`) is created there for archive extractions and plugin files, and removed at stop; the directories left by a crashed process are purged at the next start (only a real `gmhost-*` directory of the same user, mode `0700`, with a free `.lock`). The connector never scans this directory and plugins ignore it. It must not be a monitored path, nor lie under one (the start is refused: each extraction folder would get an inotify watch): a site that monitors `/tmp` must set `work_dir` elsewhere. A warning is logged when `move.destination` is under a monitored path. On Windows there is no orphan purge, no real lock, and the folder inherits the ACLs of its parent: choose a dedicated, restricted base. Use a local disk: a memory filesystem (`tmpfs`) uses RAM (warning at start), and file locks are unreliable on network filesystems (CephFS)
 
 #### Actions
 

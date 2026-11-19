@@ -12,12 +12,12 @@ import (
 func TestHandler_SetupRefusesPendingKey(t *testing.T) {
 	h := new(Handler)
 	conf := &config.Config{}
-	conf.WorkDir = t.TempDir()
+	conf.Move.Mode = "copy"
 	err := h.setup(t.Context(), conf)
 	if !errors.Is(err, config.ErrNotImplemented) {
 		t.Fatalf("setup() error = %v, want ErrNotImplemented", err)
 	}
-	if !strings.Contains(err.Error(), "work_dir") {
+	if !strings.Contains(err.Error(), "move.mode") {
 		t.Errorf("setup() error = %v, want key name", err)
 	}
 }

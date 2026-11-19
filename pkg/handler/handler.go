@@ -223,6 +223,10 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		}
 	}
 
+	if err = checkWorkDir(config); err != nil {
+		return
+	}
+
 	switch {
 	case maxFileSize > maxFileSizeDetect && !config.GMalwareSyndetect:
 		logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
@@ -279,6 +283,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		Password:            config.Quarantine.Password,
 		Timeout:             config.GMalwareTimeout,
 		FollowSymlinks:      config.FollowSymlinks,
+		WorkDir:             config.WorkDir,
 		Actions: scanner.Actions{
 			Log:        config.Actions.Log,
 			Quarantine: config.Actions.Quarantine,
@@ -334,6 +339,7 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 		h.OnNewFile(ctx),
 		Config{
 			DisableWatcher: config.Monitoring.DisableFSWatcher,
+			Skip:           h.Conn.IsInternalPath,
 			PreScan:        config.Monitoring.PreScan,
 			Period:         config.Monitoring.Period,
 			ModDelay:       config.Monitoring.ModificationDelay,

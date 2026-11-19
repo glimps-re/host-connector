@@ -2436,6 +2436,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			analysisChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
 
 			c := &Connector{
+				work: newTestWorkDir(t),
 				config: Config{
 					RecursiveExtractMaxDepth: tt.fields.recursiveExtractMaxDepth,
 					ExtractMinThreshold:      tt.fields.extractMinThreshold,
@@ -2639,6 +2640,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 			var onScanFileCalled atomic.Int64
 
 			c := &Connector{
+				work: newTestWorkDir(t),
 				config: Config{
 					RecursiveExtractMaxDepth: 10,
 					ExtractMinThreshold:      1,

@@ -25,7 +25,6 @@ var pendingKeys = []pendingKey{
 	{"monitoring.max_tracked_dir_percent", func(c *Config) string { return strconv.Itoa(c.Monitoring.MaxTrackedDirPercent) }, []string{"0"}},
 	{"move.mode", func(c *Config) string { return c.Move.Mode }, []string{"rename"}},
 	{"move.min_throughput", func(c *Config) string { return c.Move.MinThroughput }, nil},
-	{"work_dir", func(c *Config) string { return c.WorkDir }, nil},
 	{"unanalyzable_policy.too_big", func(c *Config) string { return c.UnanalyzablePolicy.TooBig }, []string{"error"}},
 	{"unanalyzable_policy.empty", func(c *Config) string { return c.UnanalyzablePolicy.Empty }, []string{"skip"}},
 	{"unanalyzable_policy.encrypted", func(c *Config) string { return c.UnanalyzablePolicy.Encrypted }, nil},

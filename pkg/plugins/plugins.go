@@ -57,6 +57,10 @@ type HCContext interface {
 
 	GetLogger() *slog.Logger
 	GetConsoleLogger() *slog.Logger
+
+	// GetWorkDir returns the connector private working directory. It never
+	// holds user deposits; plugins must ignore paths under it.
+	GetWorkDir() string
 }
 
 var PluginExportedName = "HCPlugin"

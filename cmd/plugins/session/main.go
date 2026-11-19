@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -26,6 +27,7 @@ type SessionPlugin struct {
 	sessions      map[string]*Session
 	mutex         sync.RWMutex
 	hcc           plugins.HCContext
+	workDir       string
 	stop          chan struct{}
 	done          chan struct{}
 	started       bool
@@ -87,7 +89,19 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		return fmt.Errorf("bad config passed to session plugin: %v", config)
 	}
 
+	workDir := hcc.GetWorkDir()
+	if workDir != "" && pathutil.Same(filepath.Dir(workDir), config.RootFolder) {
+		return fmt.Errorf("root_folder %q is the base of the connector work directory: set work_dir elsewhere", config.RootFolder)
+	}
+
+	if workDir != "" && pathutil.Under(config.RootFolder, workDir) {
+		msg := fmt.Sprintf("session: the connector work directory %q is under root_folder %q: it is ignored by the sessions, but a work_dir outside root_folder is safer", workDir, config.RootFolder)
+		hcc.GetLogger().Warn(msg)
+		hcc.GetConsoleLogger().Warn(msg)
+	}
+
 	p.config = *config
+	p.workDir = workDir
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc
 	p.stop = make(chan struct{})
@@ -194,8 +208,14 @@ func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
 }
 
 func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Session, created bool) {
+	if p.workDir != "" && pathutil.Under(p.workDir, filePath) {
+		return
+	}
+	if !pathutil.Under(p.config.RootFolder, filePath) {
+		return
+	}
 	relPath, err := filepath.Rel(p.config.RootFolder, filePath)
-	if err != nil || strings.HasPrefix(relPath, "..") {
+	if err != nil {
 		return
 	}
 

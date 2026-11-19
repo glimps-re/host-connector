@@ -32,13 +32,17 @@ type Config struct {
 	// the pre-scan and the periodic rescan (network filesystems where watches
 	// are not available or reliable). It requires a non-zero Period.
 	DisableWatcher bool
-	PreScan        bool
-	Period         sdk.Duration
-	ModDelay       sdk.Duration
+	// Skip, when set, tells paths that must never be reported (the connector
+	// work directory): it is checked during the rescan walk and on events.
+	Skip     func(path string) bool
+	PreScan  bool
+	Period   sdk.Duration
+	ModDelay sdk.Duration
 }
 
 type Monitor struct {
 	watcher      *rfsnotify.RWatcher
+	skip         func(path string) bool
 	wg           sync.WaitGroup
 	cb           OnNewFileFunc // callbacks
 	preScan      bool
@@ -69,6 +73,7 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 	return &Monitor{
 		watcher:      watcher,
 		cb:           onNewFile,
+		skip:         cfg.Skip,
 		preScan:      cfg.PreScan,
 		period:       cfg.Period,
 		modDelay:     cfg.ModDelay,
@@ -178,6 +183,12 @@ func (m *Monitor) walkRoot(root string, seen map[string]struct{}) (partial bool)
 			}
 			return nil
 		}
+		if m.skip != nil && m.skip(path) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
+		}
 		if d.IsDir() {
 			return nil
 		}
@@ -249,6 +260,9 @@ func (m *Monitor) dispatchEvents() {
 		case event, ok := <-m.watcher.Events:
 			if !ok {
 				return
+			}
+			if m.skip != nil && m.skip(event.Name) {
+				continue
 			}
 			if event.Has(fsnotify.Create) || event.Has(fsnotify.Write) {
 				if _, loaded := m.pendingFiles.LoadOrStore(event.Name, struct{}{}); !loaded {

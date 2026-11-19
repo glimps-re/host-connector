@@ -333,9 +333,10 @@ func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config)
 	mon, monErr := NewMonitor(
 		h.OnNewFile(ctx),
 		Config{
-			PreScan:  config.Monitoring.PreScan,
-			Period:   config.Monitoring.Period,
-			ModDelay: config.Monitoring.ModificationDelay,
+			DisableWatcher: config.Monitoring.DisableFSWatcher,
+			PreScan:        config.Monitoring.PreScan,
+			Period:         config.Monitoring.Period,
+			ModDelay:       config.Monitoring.ModificationDelay,
 		},
 	)
 	if monErr != nil {

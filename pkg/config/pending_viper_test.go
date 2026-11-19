@@ -35,7 +35,6 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"work_dir", "work_dir: /w\n", "work_dir"},
 		{"move.mode", "move:\n  mode: copy\n", "move.mode"},
 		{"min_throughput", "move:\n  min_throughput: 10MiB\n", "move.min_throughput"},
-		{"fs watcher", "monitoring:\n  disable_fs_watcher: true\n", "monitoring.disable_fs_watcher"},
 		{"tracked mem", "monitoring:\n  max_tracked_memory: 256MiB\n", "monitoring.max_tracked_memory"},
 		{"tracked pct", "monitoring:\n  max_tracked_dir_percent: 25\n", "monitoring.max_tracked_dir_percent"},
 		{"too_big", "unanalyzable_policy:\n  too_big: pass\n", "unanalyzable_policy.too_big"},

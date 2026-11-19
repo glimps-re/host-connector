@@ -7,6 +7,10 @@ import (
 	"github.com/glimps-re/connector-integration/sdk"
 )
 
+// ErrWatcherNeedsPeriod is returned by Validate when filesystem events are
+// disabled without a periodic rescan: no file would ever be discovered.
+var ErrWatcherNeedsPeriod = errors.New("monitoring.disable_fs_watcher requires monitoring.period: files would never be discovered")
+
 // Validate applies the SDK validation tags to the enumerations and bounds of
 // conf. Fields required only by some commands (paths, gmalware_api_url) are
 // not validated here: `quarantine` sub-commands run without them.
@@ -29,6 +33,9 @@ func Validate(conf *Config) error {
 		if err := v.Validate(s.value); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", s.name, err))
 		}
+	}
+	if conf.Monitoring.DisableFSWatcher && conf.Monitoring.Period == 0 {
+		errs = append(errs, ErrWatcherNeedsPeriod)
 	}
 	return errors.Join(errs...)
 }

@@ -1,8 +1,13 @@
 package config
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/glimps-re/connector-integration/sdk"
 )
@@ -82,5 +87,35 @@ func TestExplicitAcceptedValues(t *testing.T) {
 			t.Errorf("CheckImplemented() = nil after mutation, want refusal")
 		}
 		conf = &Config{}
+	}
+}
+
+func TestDisableFSWatcherSameInYAMLAndJSON(t *testing.T) {
+	fromYAML := loadViperYAML(t, "monitoring:\n  disable_fs_watcher: true\n  period: 1h\n")
+	fromJSON := new(Config)
+	if err := json.Unmarshal([]byte(`{"monitoring":{"disable_fs_watcher":true,"period":"1h"}}`), fromJSON); err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]*Config{"yaml": fromYAML, "json": fromJSON} {
+		if !c.Monitoring.DisableFSWatcher || c.Monitoring.Period != sdk.Duration(time.Hour) {
+			t.Errorf("%s: monitoring = %+v", name, c.Monitoring)
+		}
+		if err := errors.Join(Validate(c), CheckImplemented(c)); err != nil {
+			t.Errorf("%s: refused: %v", name, err)
+		}
+	}
+	if diff := cmp.Diff(fromYAML.Monitoring, fromJSON.Monitoring); diff != "" {
+		t.Errorf("effective monitoring differs (-yaml +json):\n%s", diff)
+	}
+	absent := new(Config)
+	if err := json.Unmarshal([]byte(`{"monitoring":{"period":"1h"}}`), absent); err != nil || absent.Monitoring.DisableFSWatcher {
+		t.Errorf("absent key must mean the default (false): %v %+v", err, absent.Monitoring)
+	}
+}
+
+func TestValidate_disableFSWatcherNeedsPeriod(t *testing.T) {
+	err := Validate(loadViperYAML(t, "monitoring:\n  disable_fs_watcher: true\n"))
+	if !errors.Is(err, ErrWatcherNeedsPeriod) {
+		t.Errorf("Validate() = %v, want ErrWatcherNeedsPeriod", err)
 	}
 }

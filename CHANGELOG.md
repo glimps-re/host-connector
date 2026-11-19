@@ -6,6 +6,10 @@
 
 - dependencies: echo 4.16.1, golang.org/x/crypto 0.59.0, x/net 0.62.0, x/text 0.44.0, x/sys 0.50.0, brotli 1.2.7, klauspost/compress 1.20.2. Three advisories have no upstream fix and are not reachable: GO-2026-6875 and GO-2026-6872 (echo proxy and rate limiter middlewares, unused) and GO-2026-5932 (golang.org/x/crypto/openpgp, pulled by the archive library at init only, never called)
 
+### Added
+
+- monitoring: `monitoring.disable_fs_watcher` (flag `--disable-fs-watcher`) stops all filesystem watches, files are found by the pre-scan and the periodic rescan only; it requires `monitoring.period` (configuration refused otherwise). Settable from the console
+
 ### Changed
 
 - plugins: loaded in the order of the plugins file (same configuration, same verdict); a duplicate plugin name is a startup error. `scanner.PluginConfig` gains `Name` and `Connector.LoadPlugins` takes a `[]PluginConfig`

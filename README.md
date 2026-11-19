@@ -122,6 +122,7 @@ Flags:
   -h, --help                   help for monitoring
       --mod-delay duration     Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes) (default 30s)
       --pre-scan               Immediately scan all existing files in monitored paths when monitoring starts
+      --disable-fs-watcher     Do not watch filesystem events, only pre-scan and periodic rescan (requires --scan-period)
       --scan-period duration   If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m') (default 0s - disabled)
 
 ```
@@ -545,7 +546,7 @@ debug: false
 
 ### Configuration Options
 
-Some keys are declared by the configuration schema before this version supports them (`monitoring.disable_fs_watcher`, `monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
+Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
 
 #### Global Settings
 
@@ -571,6 +572,7 @@ Configure what happens when malware is detected:
 #### Monitoring
 
 - **`prescan`**: Immediately scan all existing files in monitored paths when monitoring starts (default: false)
+- **`disable_fs_watcher`**: Do not watch filesystem events: files are found by the pre-scan and the periodic rescan only (default: false). Requires `period`. Meant for network filesystems (e.g. CephFS) where inotify watches are unavailable or too numerous; it also makes the start immediate. A configuration pushed by the console replaces the whole local configuration, so the key must be set there in agent mode
 - **`period`**: If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m', default: 0, disabled)
 - **`modification_delay`**: Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes, default: 30s)
 

@@ -21,7 +21,6 @@ type pendingKey struct {
 
 // Each task implementing a key removes its entry from this list.
 var pendingKeys = []pendingKey{
-	{"monitoring.disable_fs_watcher", func(c *Config) string { return strconv.FormatBool(c.Monitoring.DisableFSWatcher) }, []string{"false"}},
 	{"monitoring.max_tracked_memory", func(c *Config) string { return c.Monitoring.MaxTrackedMemory }, nil},
 	{"monitoring.max_tracked_dir_percent", func(c *Config) string { return strconv.Itoa(c.Monitoring.MaxTrackedDirPercent) }, []string{"0"}},
 	{"move.mode", func(c *Config) string { return c.Move.Mode }, []string{"rename"}},

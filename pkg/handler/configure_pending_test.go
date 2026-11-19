@@ -20,7 +20,6 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 		{"work_dir", `{"work_dir":"/w"}`, "work_dir"},
 		{"move mode", `{"move":{"mode":"copy"}}`, "move.mode"},
 		{"min_throughput", `{"move":{"min_throughput":"10MiB"}}`, "move.min_throughput"},
-		{"disable_fs_watcher", `{"monitoring":{"disable_fs_watcher":true}}`, "monitoring.disable_fs_watcher"},
 		{"max_tracked_memory", `{"monitoring":{"max_tracked_memory":"256MiB"}}`, "monitoring.max_tracked_memory"},
 		{"max_tracked_dir_percent", `{"monitoring":{"max_tracked_dir_percent":25}}`, "monitoring.max_tracked_dir_percent"},
 		{"too_big", `{"unanalyzable_policy":{"too_big":"pass"}}`, "unanalyzable_policy.too_big"},

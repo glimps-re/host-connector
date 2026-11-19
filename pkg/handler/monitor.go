@@ -14,6 +14,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/rfsnotify"
 )
@@ -27,9 +28,13 @@ type Monitorer interface {
 type OnNewFileFunc func(file string) error
 
 type Config struct {
-	PreScan  bool
-	Period   sdk.Duration
-	ModDelay sdk.Duration
+	// DisableWatcher turns off filesystem events: files are only found by
+	// the pre-scan and the periodic rescan (network filesystems where watches
+	// are not available or reliable). It requires a non-zero Period.
+	DisableWatcher bool
+	PreScan        bool
+	Period         sdk.Duration
+	ModDelay       sdk.Duration
 }
 
 type Monitor struct {
@@ -48,17 +53,25 @@ type Monitor struct {
 	started      atomic.Bool
 }
 
-func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
-	watcher, err := rfsnotify.NewWatcher()
-	if err != nil {
-		return nil, err
+func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
+	var watcher *rfsnotify.RWatcher
+	if cfg.DisableWatcher {
+		if cfg.Period == 0 {
+			return nil, config.ErrWatcherNeedsPeriod
+		}
+	} else {
+		var err error
+		watcher, err = rfsnotify.NewWatcher()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &Monitor{
 		watcher:      watcher,
 		cb:           onNewFile,
-		preScan:      config.PreScan,
-		period:       config.Period,
-		modDelay:     config.ModDelay,
+		preScan:      cfg.PreScan,
+		period:       cfg.Period,
+		modDelay:     cfg.ModDelay,
 		paths:        new(sync.Map),
 		filesToScan:  make(chan string),
 		pendingFiles: new(sync.Map),
@@ -69,9 +82,11 @@ func NewMonitor(onNewFile OnNewFileFunc, config Config) (*Monitor, error) {
 
 func (m *Monitor) Close() (err error) {
 	m.closeOnce.Do(func() {
-		if e := m.watcher.Close(); e != nil {
-			logger.Error("cannot close watcher", slog.String("error", e.Error()))
-			err = fmt.Errorf("cannot close watcher, error: %w", e)
+		if m.watcher != nil {
+			if e := m.watcher.Close(); e != nil {
+				logger.Error("cannot close watcher", slog.String("error", e.Error()))
+				err = fmt.Errorf("cannot close watcher, error: %w", e)
+			}
 		}
 		close(m.done)
 	})
@@ -81,9 +96,11 @@ func (m *Monitor) Close() (err error) {
 }
 
 func (m *Monitor) Start() {
-	m.wg.Go(func() {
-		m.dispatchEvents()
-	})
+	if m.watcher != nil {
+		m.wg.Go(func() {
+			m.dispatchEvents()
+		})
+	}
 	if m.period != 0 {
 		m.wg.Go(func() {
 			m.periodicalScan()
@@ -324,7 +341,11 @@ func (m *Monitor) Add(path string) error {
 	if _, ok := m.paths.Load(path); ok {
 		return nil
 	}
-	if err := m.watcher.AddRecursive(path); err != nil {
+	if m.watcher != nil {
+		if err := m.watcher.AddRecursive(path); err != nil {
+			return fmt.Errorf("error watching %s: %w", path, err)
+		}
+	} else if _, err := os.Stat(path); err != nil {
 		return fmt.Errorf("error watching %s: %w", path, err)
 	}
 	m.paths.Store(path, struct{}{})

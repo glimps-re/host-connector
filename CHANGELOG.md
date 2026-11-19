@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- configuration: connector-integration SDK v0.10.0 declares the new keys (`monitoring.*`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, `quarantine.format`); a key set to a value not supported yet by this version is refused instead of being silently ignored
+
 ### Fixed
 
 - monitoring: a directory that cannot be read during a periodic rescan no longer stops the walk of the other directories

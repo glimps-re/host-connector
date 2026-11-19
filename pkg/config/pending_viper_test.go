@@ -1,0 +1,65 @@
+package config
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/spf13/viper"
+)
+
+func loadViperYAML(t *testing.T, content string) *Config {
+	t.Helper()
+	v := viper.New()
+	v.SetConfigType("yaml")
+	if err := v.ReadConfig(strings.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	c := new(Config)
+	if err := v.Unmarshal(c, viper.DecodeHook(sdk.DurationMapstructureHook())); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func TestCheckImplemented_ViperYAML(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantKey string
+	}{
+		{"empty", "debug: true\n", ""},
+		{"tar", "quarantine:\n  format: tar\n", ""},
+		{"accepted explicit values", "move:\n  mode: rename\nunanalyzable_policy:\n  too_big: error\n  empty: skip\nmonitoring:\n  disable_fs_watcher: false\nwork_dir: \"\"\nquarantine:\n  format: tar\n", ""},
+		{"work_dir", "work_dir: /w\n", "work_dir"},
+		{"move.mode", "move:\n  mode: copy\n", "move.mode"},
+		{"min_throughput", "move:\n  min_throughput: 10MiB\n", "move.min_throughput"},
+		{"fs watcher", "monitoring:\n  disable_fs_watcher: true\n", "monitoring.disable_fs_watcher"},
+		{"tracked mem", "monitoring:\n  max_tracked_memory: 256MiB\n", "monitoring.max_tracked_memory"},
+		{"tracked pct", "monitoring:\n  max_tracked_dir_percent: 25\n", "monitoring.max_tracked_dir_percent"},
+		{"too_big", "unanalyzable_policy:\n  too_big: pass\n", "unanalyzable_policy.too_big"},
+		{"empty", "unanalyzable_policy:\n  empty: mitigate\n", "unanalyzable_policy.empty"},
+		{"encrypted", "unanalyzable_policy:\n  encrypted: error\n", "unanalyzable_policy.encrypted"},
+		{"extract_error", "unanalyzable_policy:\n  extract_error: as_file\n", "unanalyzable_policy.extract_error"},
+		{"zip", "quarantine:\n  format: zip\n", "quarantine.format"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assertPending(t, CheckImplemented(loadViperYAML(t, tt.yaml)), tt.wantKey)
+		})
+	}
+}
+
+func assertPending(t *testing.T, err error, wantKey string) {
+	t.Helper()
+	if wantKey == "" {
+		if err != nil {
+			t.Fatalf("error = %v, want nil", err)
+		}
+		return
+	}
+	if !errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), wantKey) {
+		t.Fatalf("error = %v, want ErrNotImplemented naming %q", err, wantKey)
+	}
+}

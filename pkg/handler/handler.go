@@ -79,8 +79,15 @@ func NewHandler(ctx context.Context, config *config.Config, consoleClient *sdk.C
 	return
 }
 
-func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) {
-	err = h.setupGMalwareClient(ctx, config)
+func (h *Handler) setup(ctx context.Context, conf *config.Config) (err error) {
+	if err = errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
+		err = fmt.Errorf("invalid configuration: %w", err)
+		if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
+			logger.Warn("could not push console error", slog.String("error", e.Error()))
+		}
+		return
+	}
+	err = h.setupGMalwareClient(ctx, conf)
 	if err != nil {
 		err = fmt.Errorf("setup gmalware client error: %w", err)
 		if e := eventHandler.NotifyError(ctx, events.GMalwareConfigError, err); e != nil {
@@ -88,7 +95,7 @@ func (h *Handler) setup(ctx context.Context, config *config.Config) (err error) 
 		}
 		return
 	}
-	err = h.setupHostConnector(ctx, config)
+	err = h.setupHostConnector(ctx, conf)
 	if err != nil {
 		err = fmt.Errorf("setup host connector error: %w", err)
 		if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {

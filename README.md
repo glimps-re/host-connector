@@ -541,6 +541,8 @@ debug: false
 
 ### Configuration Options
 
+Some keys are declared by the configuration schema before this version supports them (`monitoring.disable_fs_watcher`, `monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `work_dir`, `unanalyzable_policy.*`, and `quarantine.format: zip`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
+
 #### Global Settings
 
 - **`workers`**: Number of concurrent workers for file analysis (default: 4, affects CPU usage)

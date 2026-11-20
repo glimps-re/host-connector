@@ -4,6 +4,8 @@ package scanner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -119,7 +121,8 @@ func serviceSubmitter(f **swapFixture, hook func()) *gdetectMock.MockGDetectSubm
 		(*f).mu.Lock()
 		(*f).received = append((*f).received, content)
 		(*f).mu.Unlock()
-		return gdetect.Result{Malware: content == originalContent}, nil
+		sum := sha256.Sum256([]byte(content))
+		return gdetect.Result{Malware: content == originalContent, SHA256: hex.EncodeToString(sum[:])}, nil
 	}
 	return &gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
@@ -153,37 +156,81 @@ func skipWithoutProc(t *testing.T) {
 	}
 }
 
-func TestT10_D1_directorySwapDuringAnalysisSendsTheOriginalBytes(t *testing.T) {
+// afterService runs fn once the service has answered, which is when an attacker
+// would put the folders back.
+func afterService(t *testing.T, f *swapFixture, fn func()) {
+	t.Helper()
+	m, ok := f.c.submitter.(*gdetectMock.MockGDetectSubmitter)
+	if !ok {
+		t.Fatalf("submitter is %T", f.c.submitter)
+	}
+	inner := m.GetResultByUUIDWithWaitMock
+	m.GetResultByUUIDWithWaitMock = func(ctx context.Context, id string, wait int) (gdetect.Result, error) {
+		res, err := inner(ctx, id, wait)
+		fn()
+		return res, err
+	}
+}
+
+// The folders are exchanged while the service reads the file and put back as soon
+// as it answered: the service must have been given the original bytes, and what
+// the actions then receive is the verdict on those bytes (malware), never a clean
+// verdict on the swapped-in file.
+func TestT10_D1_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndActsOnTheirVerdict(t *testing.T) {
 	skipWithoutProc(t)
 	var f *swapFixture
 	var swapper *dirSwap
 	var once sync.Once
-	submitter := serviceSubmitter(&f, func() {
-		once.Do(swapper.swap)
-	})
-	f = newSwapFixture(t, submitter)
+	f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
 	swapper = newDirSwap(t, f.file)
-	// The swap is undone before the action, as an attacker would to leave no trace.
-	orig := f.c.action
-	f.c.action = &MockAction{HandleMock: func(ctx context.Context, p string, r datamodel.Result, rep *datamodel.Report) error {
-		swapper.undo()
-		return orig.Handle(ctx, p, r, rep)
-	}}
+	afterService(t, f, swapper.undo)
 	f.run(t)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if len(f.received) == 0 {
-		t.Fatal("the service received nothing")
+	if len(f.received) != 1 || f.received[0] != originalContent {
+		t.Fatalf("the service received %q, want exactly the bytes of the file that was hashed: the analysis must read the descriptor, never the path", f.received)
 	}
-	for _, got := range f.received {
-		if got != originalContent {
-			t.Errorf("the service received %q, want the bytes of the file that was hashed: the analysis must read the descriptor, never the path", got)
-		}
+	if len(f.acted) == 0 {
+		t.Fatal("no action ran although the folders were put back: the check below would prove nothing")
 	}
 	for _, r := range f.acted {
 		if !r.Malware {
 			t.Errorf("an action ran with a clean verdict on the original path: the malicious file would leave as clean")
 		}
+	}
+}
+
+// The folders are exchanged during the analysis and left exchanged: the identity
+// check stops the file before any action. It is observed explicitly: no action,
+// a retry outcome, and the file at the path is left where it is.
+func TestT10_D1_directorySwapLeftInPlaceStopsTheFileBeforeAnyAction(t *testing.T) {
+	skipWithoutProc(t)
+	var f *swapFixture
+	var swapper *dirSwap
+	var once sync.Once
+	f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
+	swapper = newDirSwap(t, f.file)
+	var mu sync.Mutex
+	var outcomes []FileOutcome
+	f.c.config.OnFileDone = func(o FileOutcome) {
+		mu.Lock()
+		defer mu.Unlock()
+		outcomes = append(outcomes, o)
+	}
+	f.run(t)
+	f.mu.Lock()
+	acted := len(f.acted)
+	f.mu.Unlock()
+	if acted != 0 {
+		t.Errorf("%d action(s) ran on a path whose folders were exchanged during the analysis", acted)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(outcomes) != 1 || outcomes[0].Kind != OutcomeRetry {
+		t.Errorf("outcomes = %+v, want exactly one retry: the changed file is reopened, not final", outcomes)
+	}
+	if b, err := os.ReadFile(filepath.Clean(f.file)); err != nil || string(b) != swappedContent {
+		t.Errorf("the file at the path = %q (%v), want it left untouched", b, err)
 	}
 }
 

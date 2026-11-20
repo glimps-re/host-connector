@@ -130,6 +130,7 @@ func refusal(pluginName, filepath string, r *datamodel.Result) *datamodel.Result
 func cloneResult(r datamodel.Result) datamodel.Result {
 	r.Malwares = slices.Clone(r.Malwares)
 	r.ErrorSubfiles = maps.Clone(r.ErrorSubfiles)
+	r.NotAnalyzedSubfiles = slices.Clone(r.NotAnalyzedSubfiles)
 	if r.MaliciousSubfiles != nil {
 		sub := make(map[string]datamodel.Result, len(r.MaliciousSubfiles))
 		for k, v := range r.MaliciousSubfiles {
@@ -187,6 +188,16 @@ func restoreHardened(prev datamodel.Result, next *datamodel.Result) (restored bo
 	}
 	if prev.MalwareReason != "" && next.MalwareReason == "" {
 		next.MalwareReason = prev.MalwareReason
+		restored = true
+	}
+	// What was let through unanalyzed stays visible: a plugin cannot erase it.
+	if prev.NotAnalyzedReason != "" && next.NotAnalyzedReason == "" {
+		next.NotAnalyzedReason = prev.NotAnalyzedReason
+		restored = true
+	}
+	if prev.NotAnalyzedSubfilesCount > next.NotAnalyzedSubfilesCount || (len(prev.NotAnalyzedSubfiles) > 0 && !slices.Equal(prev.NotAnalyzedSubfiles, next.NotAnalyzedSubfiles)) {
+		next.NotAnalyzedSubfiles = slices.Clone(prev.NotAnalyzedSubfiles)
+		next.NotAnalyzedSubfilesCount = max(prev.NotAnalyzedSubfilesCount, next.NotAnalyzedSubfilesCount)
 		restored = true
 	}
 	for _, m := range prev.Malwares {

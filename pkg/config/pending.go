@@ -20,10 +20,10 @@ type pendingKey struct {
 
 // Each task implementing a key removes its entry from this list.
 var pendingKeys = []pendingKey{
-	{"unanalyzable_policy.too_big", func(c *Config) string { return c.UnanalyzablePolicy.TooBig }, []string{"error"}},
-	{"unanalyzable_policy.empty", func(c *Config) string { return c.UnanalyzablePolicy.Empty }, []string{"skip"}},
-	{"unanalyzable_policy.encrypted", func(c *Config) string { return c.UnanalyzablePolicy.Encrypted }, nil},
-	{"unanalyzable_policy.extract_error", func(c *Config) string { return c.UnanalyzablePolicy.ExtractError }, nil},
+	{"unanalyzable_policy.too_big", func(c *Config) string { return c.UnanalyzablePolicy.TooBig }, []string{"error", "pass", "mitigate"}},
+	{"unanalyzable_policy.empty", func(c *Config) string { return c.UnanalyzablePolicy.Empty }, []string{"skip", "mitigate"}},
+	{"unanalyzable_policy.encrypted", func(c *Config) string { return c.UnanalyzablePolicy.Encrypted }, []string{"error", "pass", "mitigate"}},
+	{"unanalyzable_policy.extract_error", func(c *Config) string { return c.UnanalyzablePolicy.ExtractError }, []string{"error"}},
 }
 
 // CheckImplemented fails when conf sets a key this version does not support yet.

@@ -57,7 +57,8 @@ func TestArchive_memberErrorMakesArchiveFail(t *testing.T) {
 		{"unknown cause", errors.New("whatever"), errInnerTransient, true},
 		{"inconsistent plugin result", errInconsistentPluginResult, errInnerPermanent, true},
 		{"already permanent", errInnerPermanent, errInnerPermanent, true},
-		{"too big keeps its own policy", errFileTooBig, nil, false},
+		{"too big under the error policy", errFileTooBig, errInnerPermanent, true},
+		{"encrypted under the error policy", errEncrypted, errInnerPermanent, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -272,10 +273,13 @@ func TestRecursiveExtract_lostMemberKeepsArchiveInError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, src Source, r datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
 		handled = append(handled, r)
+		if src.TooBig {
+			t.Error("an extracted archive must not be marked too big, whatever its size")
+		}
 		return nil
 	}}
 	t.Cleanup(func() { c.Close(t.Context()) })

@@ -232,17 +232,17 @@ func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Resu
 }
 
 // noteInner counts a failed extracted file and refreshes the archive Error and
-// AnalysisError. Any failure except "too big" (handled by its own policy) keeps
-// the archive from being treated as clean. A permanent cause wins over a
-// transient one; an unknown cause is transient: in doubt the archive is
-// retried.
+// AnalysisError. Any failure keeps the archive from being treated as clean
+// (a member too big or encrypted under the "error" policy included, and for
+// good). A permanent cause wins over a transient one; an unknown cause is
+// transient: in doubt the archive is retried.
 func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
-	if r.Error != nil && !errors.Is(r.Error, errFileTooBig) {
+	if r.Error != nil {
 		s.inner.count++
 		if s.inner.first == "" {
 			s.inner.first = truncateText(filename+": "+r.Error.Error(), maxErrorTextLen)
 		}
-		if errors.Is(r.Error, errInnerPermanent) || errors.Is(r.Error, errInconsistentPluginResult) {
+		if errors.Is(r.Error, errInnerPermanent) || errors.Is(r.Error, errInconsistentPluginResult) || errors.Is(r.Error, errFileTooBig) || errors.Is(r.Error, errEncrypted) {
 			s.inner.permanent = true
 		}
 		sentinel := errInnerTransient
@@ -329,6 +329,7 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 	if resultToMerge.AnalysisError != "" {
 		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, filename, resultToMerge.AnalysisError)
 	}
+	result = mergeNotAnalyzed(result, resultToMerge, filename)
 	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
 	result.FilteredVolume += resultToMerge.FilteredVolume
 	if resultToMerge.Score > result.Score {
@@ -342,6 +343,10 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		result.MalwareReason = datamodel.AnalysisError
 	case resultToMerge.MalwareReason == datamodel.TooBig || baseResult.MalwareReason == datamodel.TooBig:
 		result.MalwareReason = datamodel.TooBig
+	case resultToMerge.MalwareReason == datamodel.Encrypted || baseResult.MalwareReason == datamodel.Encrypted:
+		result.MalwareReason = datamodel.Encrypted
+	case resultToMerge.MalwareReason == datamodel.Empty || baseResult.MalwareReason == datamodel.Empty:
+		result.MalwareReason = datamodel.Empty
 	case resultToMerge.MalwareReason == datamodel.FilteredFileType || baseResult.MalwareReason == datamodel.FilteredFileType:
 		result.MalwareReason = datamodel.FilteredFileType
 	case resultToMerge.MalwareReason == datamodel.FilteredFilePath || baseResult.MalwareReason == datamodel.FilteredFilePath:
@@ -350,4 +355,29 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		result.MalwareReason = ""
 	}
 	return
+}
+
+// mergeNotAnalyzed adds to base the members that merged did not analyze: the
+// member itself when it was let through, and what its own sub-archive listed.
+// The list is bounded, the count is exact.
+func mergeNotAnalyzed(base, merged datamodel.Result, filename string) datamodel.Result {
+	if merged.NotAnalyzedReason != "" {
+		base = appendNotAnalyzed(base, datamodel.NotAnalyzedFile{FileName: filename, Size: merged.FileSize, Reason: merged.NotAnalyzedReason})
+	}
+	for _, f := range merged.NotAnalyzedSubfiles {
+		base = appendNotAnalyzed(base, datamodel.NotAnalyzedFile{FileName: filename + "/" + f.FileName, Size: f.Size, Reason: f.Reason})
+	}
+	if extra := merged.NotAnalyzedSubfilesCount - len(merged.NotAnalyzedSubfiles); extra > 0 {
+		base.NotAnalyzedSubfilesCount += extra
+	}
+	return base
+}
+
+func appendNotAnalyzed(r datamodel.Result, f datamodel.NotAnalyzedFile) datamodel.Result {
+	r.NotAnalyzedSubfilesCount++
+	if len(r.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
+		f.FileName = truncateText(f.FileName, datamodel.MaxListedNameLen)
+		r.NotAnalyzedSubfiles = append(r.NotAnalyzedSubfiles, f)
+	}
+	return r
 }

@@ -523,6 +523,12 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		MoveFrom:                 conf.Move.Source,
 		MoveMode:                 scanner.MoveMode(conf.Move.Mode),
 		MoveMinThroughput:        p.moveMinThroughput,
+		Unanalyzable: scanner.Unanalyzable{
+			TooBig:       conf.UnanalyzablePolicy.TooBig,
+			Empty:        conf.UnanalyzablePolicy.Empty,
+			Encrypted:    conf.UnanalyzablePolicy.Encrypted,
+			ExtractError: conf.UnanalyzablePolicy.ExtractError,
+		},
 	}, quarantiner, h.submitter)
 }
 

@@ -39,6 +39,15 @@ type Report struct {
 	TotalExtractedFile      int               `json:"total-extracted-file,omitempty"`
 	MaliciousExtractedFiles []ExtractedFile   `json:"malicious-extracted-files,omitempty"`
 	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
+	// NotAnalyzedReason tells why the file reached its destination without a
+	// complete analysis.
+	NotAnalyzedReason NotAnalyzedReason `json:"not-analyzed-reason,omitempty"`
+	// NotAnalyzedExtractedFiles lists the members of an archive that were not
+	// analyzed, at most MaxListedSubfiles.
+	NotAnalyzedExtractedFiles []NotAnalyzedFile `json:"not-analyzed-extracted-files,omitempty"`
+	// NotAnalyzedExtractedCount is the exact number of such members, which the
+	// list may not hold entirely.
+	NotAnalyzedExtractedCount int `json:"not-analyzed-extracted-count,omitempty"`
 }
 
 // SessionReportPrefix starts the base name of every session report. A

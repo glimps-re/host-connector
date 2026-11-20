@@ -125,7 +125,7 @@ func (c *Connector) concludeOutcome(location string, run *ongoing, result result
 		c.setFinal(location, run)
 	case result.err == nil:
 		c.setFinal(location, run)
-	case errors.Is(result.err, errFileTooBig), errors.Is(result.err, errInconsistentPluginResult), errors.Is(result.err, errInnerPermanent):
+	case errors.Is(result.err, errFileTooBig), errors.Is(result.err, errEncrypted), errors.Is(result.err, errEmptyFile), errors.Is(result.err, errInconsistentPluginResult), errors.Is(result.err, errInnerPermanent):
 		c.setFinal(location, run)
 	case errors.Is(result.err, plugins.ErrExtractorUnavailable):
 		c.setResource(location, run)

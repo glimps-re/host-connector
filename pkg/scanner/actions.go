@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -64,7 +65,7 @@ func (a *ReportAction) Handle(ctx context.Context, src Source, result datamodel.
 	analysisReport.Filename = path
 	analysisReport.Malicious = result.Malware
 	analysisReport.SHA256 = result.SHA256
-	analysisReport.Malwares = result.Malwares
+	analysisReport.Malwares = slices.Clone(result.Malwares)
 	analysisReport.FileSize = result.FileSize
 	analysisReport.FileType = result.FileType
 	analysisReport.AnalyzedVolume = result.AnalyzedVolume
@@ -73,8 +74,15 @@ func (a *ReportAction) Handle(ctx context.Context, src Source, result datamodel.
 	analysisReport.TotalExtractedFile = result.TotalExtractedFile
 	analysisReport.GMalwareURL = result.GMalwareURL
 	analysisReport.MaliciousExtractedFiles = collectExtractedFiles(result.MaliciousSubfiles)
-	analysisReport.ErrorExtractedFiles = result.ErrorSubfiles
+	analysisReport.ErrorExtractedFiles = maps.Clone(result.ErrorSubfiles)
 	analysisReport.HasBeenRestored = result.Restored
+	analysisReport.NotAnalyzedReason = result.NotAnalyzedReason
+	analysisReport.NotAnalyzedExtractedFiles = slices.Clone(result.NotAnalyzedSubfiles)
+	analysisReport.NotAnalyzedExtractedCount = max(result.NotAnalyzedSubfilesCount, len(result.NotAnalyzedSubfiles))
+	if result.Error != nil {
+		analysisReport.Error = result.Error.Error()
+	}
+	analysisReport.Bound()
 	return
 }
 
@@ -110,6 +118,8 @@ func getMitigationReason(malwareReason datamodel.MalwareReason) (mitigationReaso
 		mitigationReason = events.ReasonFileType
 	case datamodel.FilteredFilePath:
 		mitigationReason = events.ReasonFilePath
+	case datamodel.Empty, datamodel.Encrypted:
+		mitigationReason = events.ReasonInvalid
 	}
 	return
 }
@@ -389,8 +399,14 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 	defer a.mu.Unlock()
 
 	reason := "seems safe"
-	if result.Malware {
+	switch {
+	case result.Malware:
 		reason = string(result.MalwareReason)
+	case result.NotAnalyzedReason != "":
+		reason = notAnalyzedLabel(result.NotAnalyzedReason)
+	}
+	if n := max(result.NotAnalyzedSubfilesCount, len(result.NotAnalyzedSubfiles)); n > 0 {
+		reason += fmt.Sprintf(" (%d extracted file(s) not analyzed)", n)
 	}
 	actions := []string{}
 	details := []string{}
@@ -408,13 +424,24 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 		actions = append(actions, "moved")
 	}
 	s := fmt.Sprintf("time: %s, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", now().UTC().Format(time.RFC3339), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
-	if result.Malware || a.Verbose || report.MovedTo != "" {
+	notAnalyzed := result.NotAnalyzedReason != "" || result.NotAnalyzedSubfilesCount > 0 || len(result.NotAnalyzedSubfiles) > 0
+	if result.Malware || a.Verbose || report.MovedTo != "" || notAnalyzed {
 		_, err = fmt.Fprintln(a.Out, s)
 		if err != nil {
 			return
 		}
 	}
 	return nil
+}
+
+// notAnalyzedLabel is how the console tells a file was let through unanalyzed.
+// A file too big is moved as it is: its content was not verified.
+func notAnalyzedLabel(reason datamodel.NotAnalyzedReason) string {
+	label := "not analyzed (" + strings.ReplaceAll(string(reason), "-", " ") + ")"
+	if reason == datamodel.NotAnalyzedTooBig {
+		label += ", content not verified"
+	}
+	return label
 }
 
 // MoveMode is the way the move action puts a file in the destination.
@@ -636,8 +663,7 @@ const (
 // classOf tells how a file is put in the destination in MoveModeCopy. Only the
 // pipeline's own decision sends a file by name (src.TooBig): a plugin can change
 // a result, the reason of a member too big is carried to its archive, and a
-// large archive that was extracted and analyzed is not too big. Nothing sets
-// TooBig yet, so no file goes by name.
+// large archive that was extracted and analyzed is not too big.
 func classOf(src Source) moveClass {
 	switch {
 	case src.Identity.Size == 0:

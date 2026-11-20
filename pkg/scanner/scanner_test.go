@@ -902,9 +902,11 @@ func TestConnector_analyzeFile(t *testing.T) {
 				},
 			},
 			wantResult: datamodel.Result{
-				Filename: "test.txt",
-				Location: "/path/test.txt",
-				SHA256:   "abc123",
+				Filename:          "test.txt",
+				Location:          "/path/test.txt",
+				SHA256:            "abc123",
+				FileSize:          100,
+				NotAnalyzedReason: datamodel.NotAnalyzedPolicySkipped,
 			},
 		},
 		{

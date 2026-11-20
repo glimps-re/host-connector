@@ -72,6 +72,7 @@ var (
 
 	errFileTooBig    = errors.New("file is too big to be analyzed")
 	errEmptyFile     = errors.New("file is empty")
+	errEncrypted     = errors.New("file is encrypted and cannot be analyzed")
 	errScannerClosed = errors.New("scanner instance is closing and is no longer accepting new files")
 
 	// An archive with a failed extracted file is never moved. These sentinels
@@ -166,6 +167,8 @@ type Config struct {
 	// dir have not finished processing; plugins read it through
 	// HCContext.PendingFiles. May be nil (the scan command): it is then 0.
 	PendingFiles func(dir string) int
+	// Unanalyzable is the policy for the files that cannot be analyzed.
+	Unanalyzable Unanalyzable
 }
 
 type fileToAnalyze struct {
@@ -183,6 +186,8 @@ type fileToAnalyze struct {
 	archiveLogicalPath string // logical path of archiveLocation, what plugins are told
 	archiveSHA256      string
 	archiveSize        int64
+	// encrypted is set by the extraction for a member whose password is unknown.
+	encrypted bool
 }
 
 // logical is the path plugins see for the file: its real path for a top-level
@@ -340,6 +345,11 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 
 	if cfg.ExtractMinThreshold <= 0 {
 		cfg.ExtractMinThreshold = defaultExtractMinThreshold
+	}
+
+	cfg.Unanalyzable = cfg.Unanalyzable.withDefaults()
+	if err := cfg.Unanalyzable.validate(); err != nil {
+		return nil, err
 	}
 
 	action, err := newAction(cfg, quarantiner)
@@ -550,7 +560,7 @@ func (c *Connector) SubmitFile(ctx context.Context, input string, want FileIdent
 // or already being processed.
 func (c *Connector) submit(ctx context.Context, input string, want FileIdentity, info fs.FileInfo) (accepted bool, err error) {
 	inputLogger := logger.With(slog.String("input file", input))
-	if info.Size() == 0 {
+	if info.Size() == 0 && c.config.Unanalyzable.Empty == PolicySkip {
 		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
 		return false, fmt.Errorf("%w: empty file", ErrRefused)
 	}
@@ -947,7 +957,8 @@ func (c *Connector) processFile(input fileToAnalyze) {
 
 	inputLogger.Debug("applying onStartScanFile() from plugins")
 	c.startScan(input.location, input.run, input.sha256)
-	result := c.analyzeFile(input)
+	var tooBig bool
+	result := c.analyze(input, &tooBig)
 	if errors.Is(result.Error, errSubmitContentMismatch) || errors.Is(result.Error, errNoDescriptorPath) {
 		// The service answered about another content: nothing is done to the file.
 		inputLogger.Error("the analysis was about another content, stop processing", slog.String(logErrorKey, result.Error.Error()))
@@ -976,7 +987,9 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	report := &datamodel.Report{}
 	actionCtx, actionCancel := context.WithTimeout(c.workContext(), c.actionTimeout(input.size))
 	defer actionCancel()
-	actionErr := c.action.Handle(actionCtx, input.input.source(input.location, input.identity, input.sha256), result, report)
+	src := input.input.source(input.location, input.identity, input.sha256)
+	src.TooBig = tooBig
+	actionErr := c.action.Handle(actionCtx, src, result, report)
 	if actionErr != nil {
 		inputLogger.Error("could not handle file action", slog.String(logErrorKey, actionErr.Error()))
 		ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, actionErr.Error()))
@@ -1201,15 +1214,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		c.startScan(archive.location, archive.run, archive.sha256)
 		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
 			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
-			ok := c.archiveStatus.setArchiveResult(archiveID, *archiveResult)
-			if !ok {
-				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", archive.location))
-				c.finishRun(archive.location, archive.run)
-				return
-			}
-			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
-				archiveLogger.Error("could not finish filtered archive analysis", slog.String(logErrorKey, finishErr.Error()))
-			}
+			c.endFilteredArchive(archiveID, *archiveResult, archive.location, archive.sha256, archive.size, archive.location, archive.run, archiveLogger)
 			return
 		}
 		archive.archiveTopLocation = archive.location
@@ -1467,16 +1472,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 		// No onStartScanFile here: a sub-archive belongs to the scan of its
 		// top-level archive and must not start a session of its own.
 		if archiveResult := c.onScanFile(input.archiveLogical(), input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
-			archiveResult.Filename = input.archiveLocation
-			ok := c.archiveStatus.setArchiveResult(input.archiveID, *archiveResult)
-			if !ok {
-				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
-				c.finishRun(input.archiveTopLocation, input.run)
-				return
-			}
-			if finishErr := c.finishArchiveAnalysis(input.archiveID); finishErr != nil {
-				archiveLogger.Error("could not finish archive analysis", slog.String(logErrorKey, finishErr.Error()))
-			}
+			c.endFilteredArchive(input.archiveID, *archiveResult, input.archiveLocation, input.archiveSHA256, input.archiveSize, input.archiveTopLocation, input.run, archiveLogger)
 			return
 		}
 	}
@@ -1499,6 +1495,26 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 		}
 	}
 	return
+}
+
+// endFilteredArchive ends an archive a plugin dispensed from analysis (a skipped
+// type, a path rule): whatever the plugin put in the result, the hash and the
+// size are the pipeline's (the checks before the action read them), the archive
+// is marked as passed without analysis unless the plugin refused it, and the
+// archive is finished at once: no member is analyzed.
+func (c *Connector) endFilteredArchive(archiveID string, result datamodel.Result, location, sha256 string, size int64, top string, run *ongoing, archiveLogger *slog.Logger) {
+	result.Filename = location
+	result.SHA256 = sha256
+	result.FileSize = size
+	markPolicySkipped(&result, location)
+	if !c.archiveStatus.setArchiveResult(archiveID, result) {
+		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", location))
+		c.finishRun(top, run)
+		return
+	}
+	if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+		archiveLogger.Error("could not finish filtered archive analysis", slog.String(logErrorKey, finishErr.Error()))
+	}
 }
 
 func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
@@ -1599,7 +1615,15 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	return
 }
 
-func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
+func (c *Connector) analyzeFile(input fileToAnalyze) datamodel.Result {
+	return c.analyze(input, nil)
+}
+
+// analyze decides what becomes of a file: its result. When the file is not
+// analyzed because it is larger than max_file_size, whatever the policy, it
+// sets *tooBig (if not nil): it is the pipeline's own decision, which travels
+// to the Source the actions are given, and is never read back from the result.
+func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel.Result) {
 	fileLogger := logger.With(slog.String("file", input.location))
 
 	defer func() {
@@ -1625,18 +1649,27 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		// the plugin put in Filename or Location.
 		result.Filename = input.filename
 		result.Location = input.location
+		if result.SHA256 == "" {
+			result.SHA256 = input.sha256
+		}
+		if result.FileSize == 0 {
+			result.FileSize = input.size
+		}
+		markPolicySkipped(&result, input.location)
 		return
 	}
 
+	if input.size == 0 {
+		return c.unanalyzedResult(input, datamodel.NotAnalyzedEmpty, c.config.Unanalyzable.Empty, errEmptyFile)
+	}
 	if input.size > c.config.MaxFileSize {
-		result = datamodel.Result{
-			Filename: input.filename,
-			Location: input.location,
-			SHA256:   input.sha256,
-			FileSize: input.size,
-			Error:    errFileTooBig,
+		if tooBig != nil {
+			*tooBig = true
 		}
-		return
+		if input.encrypted {
+			return c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+		}
+		return c.unanalyzedResult(input, datamodel.NotAnalyzedTooBig, c.config.Unanalyzable.TooBig, errFileTooBig)
 	}
 
 	// report metrics for every file actually analyzed.
@@ -1744,8 +1777,24 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		result.AnalysisError = analysisError
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected
+	case input.encrypted:
+		result = c.encryptedResult(input, result)
 	}
 	return
+}
+
+// encryptedResult applies the policy of the encrypted files to a result that
+// found nothing: a detection or an analysis error has priority.
+func (c *Connector) encryptedResult(input fileToAnalyze, analyzed datamodel.Result) datamodel.Result {
+	policied := c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+	analyzed.Error = policied.Error
+	analyzed.NotAnalyzedReason = policied.NotAnalyzedReason
+	if policied.Malware {
+		analyzed.Malware = true
+		analyzed.Score = policied.Score
+		analyzed.MalwareReason = policied.MalwareReason
+	}
+	return analyzed
 }
 
 // abortAnalysis ends an analysis without action nor report, still notifying plugins

@@ -79,7 +79,7 @@ func TestExplicitAcceptedValues(t *testing.T) {
 		t.Errorf("CheckImplemented(explicit accepted values) = %v", err)
 	}
 	for _, mutate := range []func(){
-		func() { conf.UnanalyzablePolicy.TooBig = "pass" },
+		func() { conf.UnanalyzablePolicy.ExtractError = "as_file" },
 		func() { conf.UnanalyzablePolicy.Empty = "pass" },
 	} {
 		mutate()

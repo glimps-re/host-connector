@@ -3,6 +3,7 @@ package scanner
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
@@ -12,12 +13,10 @@ import (
 func TestArchiveContract_errorIsOrderIndependent(t *testing.T) {
 	bad := datamodel.Result{Error: errors.New("submit failed")}
 	clean := datamodel.Result{}
-	tooBig := datamodel.Result{Error: errFileTooBig}
 	orders := map[string][]datamodel.Result{
-		"error first":                   {bad, clean, clean},
-		"error last":                    {clean, clean, bad},
-		"error mid":                     {clean, bad, clean},
-		"too big then error then clean": {tooBig, bad, clean},
+		"error first": {bad, clean, clean},
+		"error last":  {clean, clean, bad},
+		"error mid":   {clean, bad, clean},
 	}
 	for name, results := range orders {
 		t.Run(name, func(t *testing.T) {
@@ -38,15 +37,70 @@ func TestArchiveContract_errorIsOrderIndependent(t *testing.T) {
 	}
 }
 
-func TestArchiveContract_cleanAndTooBigMembersLeaveNoError(t *testing.T) {
+func TestArchiveContract_tooBigOrEncryptedMemberUnderErrorPolicyIsPermanentWhateverTheOrder(t *testing.T) {
+	bad := datamodel.Result{Error: errors.New("submit failed")}
+	for name, member := range map[string]datamodel.Result{
+		"too big":   {Error: errFileTooBig},
+		"encrypted": {Error: errEncrypted},
+	} {
+		for order, results := range map[string][]datamodel.Result{
+			"first": {member, bad, {}},
+			"last":  {{}, bad, member},
+		} {
+			t.Run(name+" "+order, func(t *testing.T) {
+				h := newArchiveStatusHandler()
+				id := newArchiveForTest(t, h, len(results))
+				for i, r := range results {
+					h.addInnerFileResult(id, fmt.Sprintf("m%d", i), r)
+				}
+				st, _ := h.getStatus(id)
+				if !errors.Is(st.result.Error, errInnerPermanent) || errors.Is(st.result.Error, errInnerTransient) {
+					t.Errorf("archive Error = %v, want errInnerPermanent", st.result.Error)
+				}
+			})
+		}
+	}
+}
+
+func TestArchiveContract_membersPassedWithoutAnalysisAreListedAndLeaveNoError(t *testing.T) {
 	h := newArchiveStatusHandler()
 	id := newArchiveForTest(t, h, 3)
-	for i, r := range []datamodel.Result{{}, {Error: errFileTooBig}, {}} {
+	passed := datamodel.Result{FileSize: 42, NotAnalyzedReason: datamodel.NotAnalyzedTooBig}
+	for i, r := range []datamodel.Result{{}, passed, {}} {
 		h.addInnerFileResult(id, fmt.Sprintf("m%d", i), r)
 	}
 	st, _ := h.getStatus(id)
 	if st.result.Error != nil {
-		t.Errorf("archive Error = %v, want nil (too big has its own policy)", st.result.Error)
+		t.Errorf("archive Error = %v, want nil", st.result.Error)
+	}
+	want := []datamodel.NotAnalyzedFile{{FileName: "m1", Size: 42, Reason: datamodel.NotAnalyzedTooBig}}
+	if !reflect.DeepEqual(st.result.NotAnalyzedSubfiles, want) || st.result.NotAnalyzedSubfilesCount != 1 {
+		t.Errorf("NotAnalyzedSubfiles = %+v (count %d), want %+v", st.result.NotAnalyzedSubfiles, st.result.NotAnalyzedSubfilesCount, want)
+	}
+}
+
+func TestArchiveContract_notAnalyzedListIsBoundedAndCountIsExact(t *testing.T) {
+	h := newArchiveStatusHandler()
+	n := datamodel.MaxListedSubfiles + 50
+	id := newArchiveForTest(t, h, n)
+	for i := range n {
+		h.addInnerFileResult(id, fmt.Sprintf("m%d", i), datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedEncrypted})
+	}
+	st, _ := h.getStatus(id)
+	if len(st.result.NotAnalyzedSubfiles) != datamodel.MaxListedSubfiles || st.result.NotAnalyzedSubfilesCount != n {
+		t.Errorf("listed %d, count %d, want %d and %d", len(st.result.NotAnalyzedSubfiles), st.result.NotAnalyzedSubfilesCount, datamodel.MaxListedSubfiles, n)
+	}
+}
+
+func BenchmarkMergeResult_fullNotAnalyzedLists(b *testing.B) {
+	base := datamodel.Result{}
+	for i := range datamodel.MaxListedSubfiles {
+		base = mergeResult(base, datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedTooBig}, fmt.Sprintf("m%d", i))
+	}
+	member := datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedTooBig}
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = mergeResult(base, member, "one-more")
 	}
 }
 

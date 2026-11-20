@@ -245,7 +245,7 @@
                 </tbody>
             </table>
         </div>
-        {{ if gt .MoreMitigatedFiles 0 }}<p class="more">… et {{ .MoreMitigatedFiles }} autres</p>{{ end }}
+        {{ if gt .MoreMitigatedFiles 0 }}<p class="more">… et {{ others .MoreMitigatedFiles "" "" }}</p>{{ end }}
     </section>
     {{ end }}
 
@@ -281,10 +281,10 @@
                     </table>
                 </div>
                 {{/* The rows of an archive are budgeted with archiveRows in main.go: keep both in step. */}}
-                {{ if gt .MoreExtracted 0 }}<p class="more">… et {{ .MoreExtracted }} autres fichiers de l'archive</p>{{ end }}
+                {{ if gt .MoreExtracted 0 }}<p class="more">… et {{ others .MoreExtracted " fichier de l'archive" " fichiers de l'archive" }}</p>{{ end }}
             </section>
         {{ end }}
-        {{ if gt .MoreMitigatedArchives 0 }}<p class="more">… et {{ .MoreMitigatedArchives }} autres archives</p>{{ end }}
+        {{ if gt .MoreMitigatedArchives 0 }}<p class="more">… et {{ others .MoreMitigatedArchives " archive" " archives" }}</p>{{ end }}
     </section>
     {{ end }}
 
@@ -314,7 +314,7 @@
                 </tbody>
             </table>
         </div>
-        {{ if gt .MoreNotAnalyzed 0 }}<p class="more">… et {{ .MoreNotAnalyzed }} autres</p>{{ end }}
+        {{ if gt .MoreNotAnalyzed 0 }}<p class="more">… et {{ others .MoreNotAnalyzed "" "" }}</p>{{ end }}
     </section>
     {{ end }}
 
@@ -340,7 +340,7 @@
                 </tbody>
             </table>
         </div>
-        {{ if gt .MoreErrorFiles 0 }}<p class="more">… et {{ .MoreErrorFiles }} autres</p>{{ end }}
+        {{ if gt .MoreErrorFiles 0 }}<p class="more">… et {{ others .MoreErrorFiles "" "" }}</p>{{ end }}
     </section>
     {{ end }}
 </body>

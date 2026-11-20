@@ -99,6 +99,7 @@ func parseTemplate(path string) (*template.Template, error) {
 	templ := template.New("report").Funcs(template.FuncMap{
 		"mergeArgsIntoSlice": mergeArgsIntoSlice,
 		"formatDuration":     formatDuration,
+		"others":             others,
 		"add":                func(a, b int) int { return a + b }, // used to increment depth for recursive calls
 		"mul":                func(a, b int) int { return a * b }, // used to calculates indentation (depth * 10px)
 		"min": func(a, b int) int { // used to cap indentation depth
@@ -152,6 +153,19 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 // Close cleans up plugin resources (no-op for this plugin).
 func (p *ReportPlugin) Close(context.Context) error {
 	return nil
+}
+
+// moreThreatsFormat is the last entry of the threats of a row, after the first
+// maxThreatNames: the count of the others, in the words of others.
+const moreThreatsFormat = "… (+%s)"
+
+// others says how many are left out, in French: "1 autre" and "N autres", the
+// noun after the word, in the form that goes with the count.
+func others(n int, one, many string) string {
+	if n == 1 {
+		return "1 autre" + one
+	}
+	return fmt.Sprintf("%d autres%s", n, many)
 }
 
 // mergeArgsIntoSlice is a template helper that combines arguments into a slice.
@@ -445,7 +459,7 @@ func displayable(r rune) rune {
 }
 
 // threatNames is what a row shows of the threats of a file: the first
-// maxThreatNames, as cellText, then "… (+N autres)" for the others. A depositor can
+// maxThreatNames, as cellText, then the count of the others (moreThreatsFormat). A depositor can
 // attach many names to a file; they weigh on the rendering as rows do.
 func threatNames(names []string) []string {
 	shown := make([]string, 0, min(len(names), maxThreatNames+1))
@@ -453,7 +467,7 @@ func threatNames(names []string) []string {
 		shown = append(shown, cellText(name))
 	}
 	if len(names) > maxThreatNames {
-		shown = append(shown, fmt.Sprintf("… (+%d autres)", len(names)-maxThreatNames))
+		shown = append(shown, fmt.Sprintf(moreThreatsFormat, others(len(names)-maxThreatNames, "", "")))
 	}
 	return shown
 }

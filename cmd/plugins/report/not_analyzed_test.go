@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"html/template"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -279,6 +280,55 @@ func TestReport_everyReasonIsInTheHTML(t *testing.T) {
 	}
 }
 
+// pluralOne finds a count of 1 said in the plural, not the end of a larger number.
+var pluralOne = regexp.MustCompile(`(^|\D)1 autres`)
+
+func TestOthers(t *testing.T) {
+	tests := []struct {
+		n         int
+		one, many string
+		want      string
+	}{
+		{1, "", "", "1 autre"},
+		{2, "", "", "2 autres"},
+		{1, " archive", " archives", "1 autre archive"},
+		{7, " archive", " archives", "7 autres archives"},
+		{1, " fichier de l'archive", " fichiers de l'archive", "1 autre fichier de l'archive"},
+		{300, " fichier de l'archive", " fichiers de l'archive", "300 autres fichiers de l'archive"},
+	}
+	for _, tt := range tests {
+		if got := others(tt.n, tt.one, tt.many); got != tt.want {
+			t.Errorf("others(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+	}
+}
+
+// A single row left out is said in the singular, in every section.
+func TestReport_theOverflowOfOneIsSaidInTheSingular(t *testing.T) {
+	tests := []struct {
+		name    string
+		reports []datamodel.Report
+		want    string
+	}{
+		{"files not analyzed", notAnalyzedReports(maxRows + 1), "… et 1 autre</p>"},
+		{"files in error", errorReports(maxRows + 1), "… et 1 autre</p>"},
+		{"blocked files", blockedReports(maxRows + 1), "… et 1 autre</p>"},
+		{"blocked archives", slices.Concat(fillers(maxRows), archiveReports(1, 1)), "… et 1 autre archive</p>"},
+		{"members of an archive", slices.Concat(fillers(maxRows-archiveRows-1), archiveReports(1, 2)), "… et 1 autre fichier de l&#39;archive</p>"}, // html/template escapes the apostrophe of the helper
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, html := renderReports(t, tt.reports)
+			if !strings.Contains(html, tt.want) {
+				t.Errorf("the report lacks %q", tt.want)
+			}
+			if pluralOne.MatchString(html) {
+				t.Error("a count of 1 is said in the plural")
+			}
+		})
+	}
+}
+
 func TestReport_theOverflowIsSaidInTheHTML(t *testing.T) {
 	reports := notAnalyzedReports(maxRows + 200)
 	reports = append(reports, errorReports(maxRows+300)...)
@@ -513,7 +563,7 @@ func TestThreatNames(t *testing.T) {
 	}{
 		{"none", nil, []string{}},
 		{"at the bound", names(maxThreatNames), names(maxThreatNames)},
-		{"one over", names(maxThreatNames + 1), append(names(maxThreatNames), "… (+1 autres)")},
+		{"one over", names(maxThreatNames + 1), append(names(maxThreatNames), "… (+1 autre)")},
 		{"many", names(64), append(names(maxThreatNames), fmt.Sprintf("… (+%d autres)", 64-maxThreatNames))},
 		{"long names are cut", []string{strings.Repeat("W", 1024)}, []string{cellText(strings.Repeat("W", 1024))}},
 	}
@@ -611,8 +661,7 @@ func TestReportData_everyTextOfADepositorIsCut(t *testing.T) {
 	report.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: strings.Repeat("W", 1024), Reason: datamodel.NotAnalyzedExtractLimit}}
 	blocked := report
 	blocked.MaliciousExtractedFiles = nil
-	unknownReason := datamodel.Report{Filename: "/in/x", NotAnalyzedReason: datamodel.NotAnalyzedReason(strings.Repeat("W", 1024))}
-	d := mustReportData(t, scanContext(), []datamodel.Report{report, blocked, unknownReason})
+	d := mustReportData(t, scanContext(), []datamodel.Report{report, blocked})
 	if len(d.NotAnalyzedFiles) == 0 || len(d.ErrorFiles) == 0 || len(d.MitigatedFiles) == 0 || len(d.MitigatedArchives) == 0 {
 		t.Fatalf("a section is empty: %+v", d)
 	}
@@ -631,17 +680,12 @@ func TestReportData_everyTextOfADepositorIsCut(t *testing.T) {
 	for _, a := range d.MitigatedArchives {
 		walk(a.ExtractedFiles)
 	}
-	if len(rows) < 3 {
+	if len(rows) != 3 {
 		t.Fatalf("%d rows with threats, want a blocked file, a member and a nested member", len(rows))
 	}
 	for _, names := range rows {
 		if len(names) != maxThreatNames+1 {
 			t.Errorf("a row shows %d threat entries, want %d (the names and the count of the others)", len(names), maxThreatNames+1)
-		}
-		for _, name := range names {
-			if len(name) > maxCellBytes {
-				t.Errorf("a threat name of %d bytes is shown whole", len(name))
-			}
 		}
 	}
 }

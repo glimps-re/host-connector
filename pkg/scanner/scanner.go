@@ -141,6 +141,11 @@ type Config struct {
 	// WorkDir is the base under which the connector creates its private
 	// working directory; empty means os.TempDir().
 	WorkDir string
+	// OnFileDone is called exactly once per file accepted by SubmitFile or
+	// ScanFile, from a pipeline goroutine, when its processing ends. It must
+	// not block (it is called while the pipeline holds nothing, but a slow stat
+	// on a network file system would hold a worker). May be nil.
+	OnFileDone func(FileOutcome)
 }
 
 type fileToAnalyze struct {
@@ -150,6 +155,7 @@ type fileToAnalyze struct {
 	logicalPath        string
 	identity           FileIdentity // observed by the monitor, checked before every action
 	input              *inputFD     // descriptor of the deposited file, nil for an extracted one
+	run                *ongoing     // the run of the top-level file this belongs to
 	size               int64
 	archiveTopLocation string
 	archiveID          string
@@ -208,6 +214,7 @@ type archiveToAnalyze struct {
 	location string
 	identity FileIdentity
 	input    *inputFD
+	run      *ongoing
 	size     int64
 }
 
@@ -215,6 +222,7 @@ type archiveToAnalyze struct {
 type submission struct {
 	location string
 	want     FileIdentity
+	run      *ongoing
 }
 
 type Connector struct {
@@ -248,8 +256,6 @@ type Connector struct {
 	analysisChan chan fileToAnalyze
 
 	action                 Action
-	reportMutex            sync.Mutex
-	reports                []*datamodel.Report
 	archiveStatus          *archiveStatusHandler
 	loadedPlugins          []plugins.Plugin
 	onStartScanFileCbs     []plugins.OnStartScanFile
@@ -395,46 +401,57 @@ var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, _ 
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	input, info, skip, err := c.examineInput(input)
-	if skip || err != nil {
+	input, info, err := c.examineInput(input)
+	if err != nil {
+		if errors.Is(err, ErrRefused) {
+			return nil
+		}
 		return err
 	}
 	if info.IsDir() {
 		return c.scanDir(ctx, input)
 	}
-	_, err = c.submit(ctx, input, IdentityOf(info), info)
+	if _, err = c.submit(ctx, input, IdentityOf(info), info); errors.Is(err, ErrRefused) {
+		return nil
+	}
 	return err
 }
 
-// examineInput cleans input and decides whether it is to be looked at: not
-// when the connector is closing (error), nor for a temporary file, a file of
-// the connector work directory or a link not to be followed (skip). It returns
-// what the connector will read, and remembers the root of a scan.
-func (c *Connector) examineInput(input string) (clean string, info fs.FileInfo, skip bool, err error) {
+// ErrRefused is returned, wrapped, by SubmitFile for a file that is refused
+// without failure: a symbolic link not followed, a temporary file, a file of
+// the work directory, an empty file or a folder. Its outcome is final until the
+// file changes: asking again would only be refused again.
+var ErrRefused = errors.New("file refused")
+
+// examineInput cleans input and describes what the connector will read. It
+// fails with ErrRefused for a temporary file, a file of the connector work
+// directory or a link not to be followed, and with errScannerClosed when the
+// connector is closing. It remembers the root of a scan.
+func (c *Connector) examineInput(input string) (clean string, info fs.FileInfo, err error) {
 	select {
 	case <-c.stopIncoming:
-		return input, nil, true, errScannerClosed
+		return input, nil, errScannerClosed
 	default:
 	}
 	clean = filepath.Clean(input)
 	inputLogger := logger.With(slog.String("input file", clean))
 	if quarantine.IsTempFile(clean) {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "temporary file"))
-		return clean, nil, true, nil
+		return clean, nil, fmt.Errorf("%w: temporary file", ErrRefused)
 	}
 	if c.IsInternalPath(clean) {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "connector work directory"))
-		return clean, nil, true, nil
+		return clean, nil, fmt.Errorf("%w: connector work directory", ErrRefused)
 	}
 	info, err = c.statInput(clean)
 	if err != nil {
 		if errors.Is(err, errSkippedLink) {
-			return clean, nil, true, nil
+			return clean, nil, fmt.Errorf("%w: symbolic link", ErrRefused)
 		}
-		return clean, nil, true, err
+		return clean, nil, err
 	}
 	c.noteScanRoot(clean)
-	return clean, info, false, nil
+	return clean, info, nil
 }
 
 // errFileReplaced is returned when a file no longer has the identity it was
@@ -482,17 +499,17 @@ func (c *Connector) statInput(input string) (fs.FileInfo, error) {
 }
 
 // SubmitFile queues one regular file whose stability was observed as want.
-// accepted is false, with a nil error, when the file is refused without
-// failure (symbolic link, internal path, temporary file, empty file, already in
-// progress). The file is analyzed only if it still has the identity want when
+// accepted is false with an error wrapping ErrRefused when the file is refused
+// without failure (symbolic link, internal path, temporary file, empty file),
+// and with a nil error when it is already in progress. The file is analyzed only if it still has the identity want when
 // the pipeline reads it, and acted upon only if it still has it afterwards.
 func (c *Connector) SubmitFile(ctx context.Context, input string, want FileIdentity) (accepted bool, err error) {
-	input, info, skip, err := c.examineInput(input)
-	if skip || err != nil {
+	input, info, err := c.examineInput(input)
+	if err != nil {
 		return false, err
 	}
 	if info.IsDir() {
-		return false, nil
+		return false, fmt.Errorf("%w: folder", ErrRefused)
 	}
 	return c.submit(ctx, input, want, info)
 }
@@ -503,10 +520,11 @@ func (c *Connector) submit(ctx context.Context, input string, want FileIdentity,
 	inputLogger := logger.With(slog.String("input file", input))
 	if info.Size() == 0 {
 		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
-		return false, nil
+		return false, fmt.Errorf("%w: empty file", ErrRefused)
 	}
 
-	if _, loaded := c.ongoingAnalysis.LoadOrStore(input, struct{}{}); loaded {
+	run := &ongoing{want: want}
+	if _, loaded := c.ongoingAnalysis.LoadOrStore(input, run); loaded {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "ongoing analysis"))
 		return false, nil
 	}
@@ -514,7 +532,7 @@ func (c *Connector) submit(ctx context.Context, input string, want FileIdentity,
 
 	defer func() {
 		if !accepted {
-			c.finishAnalysis(input)
+			c.discardAnalysis(input, run)
 		}
 	}()
 
@@ -523,12 +541,12 @@ func (c *Connector) submit(ctx context.Context, input string, want FileIdentity,
 		return false, context.Canceled
 	case <-c.stopIncoming:
 		return false, errScannerClosed
-	case c.dispatchChan <- submission{location: input, want: want}:
+	case c.dispatchChan <- submission{location: input, want: want, run: run}:
 		return true, nil
 	}
 }
 
-func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity) (err error) {
+func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity, run *ongoing) (err error) {
 	res := datamodel.Result{
 		Filename: filepath.Base(location),
 		Location: location,
@@ -536,11 +554,12 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 		FileSize: size,
 		Restored: true,
 	}
-	if newres := c.onFileScanned(location, sha256, res); newres != nil {
+	if newres := c.fileScanned(location, run, sha256, res); newres != nil {
 		res = *newres
 	}
 	if pathErr := c.checkPath(location); pathErr != nil {
 		refusePath(location, pathErr)
+		c.setFinal(location, run)
 		return pathErr
 	}
 	if idErr := c.checkIdentity(location, want); idErr != nil {
@@ -617,7 +636,7 @@ func (c *Connector) dispatchWorker() {
 			for {
 				select {
 				case sub := <-c.dispatchChan:
-					c.finishAnalysis(sub.location)
+					c.finishRun(sub.location, sub.run)
 				default:
 					return
 				}
@@ -637,7 +656,7 @@ func (c *Connector) extractWorker() {
 			for {
 				select {
 				case archive := <-c.extractChan:
-					c.finishAnalysis(archive.location)
+					c.finishRun(archive.location, archive.run)
 				default:
 					return
 				}
@@ -647,7 +666,8 @@ func (c *Connector) extractWorker() {
 			if err := c.tryExtract(archive); err != nil {
 				archiveLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
 				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
-				c.finishAnalysis(archive.location)
+				c.concludeOutcome(archive.location, archive.run, resultView{err: err}, nil)
+				c.finishRun(archive.location, archive.run)
 			}
 		}
 	}
@@ -662,10 +682,10 @@ func (c *Connector) analysisWorker() {
 				select {
 				case input := <-c.analysisChan:
 					if input.archiveID != "" {
-						c.finishAnalysis(input.archiveTopLocation)
+						c.finishRun(input.archiveTopLocation, input.run)
 						continue
 					}
-					c.finishAnalysis(input.location)
+					c.finishRun(input.location, input.run)
 				default:
 					return
 				}
@@ -678,11 +698,12 @@ func (c *Connector) analysisWorker() {
 
 // prepareFile stats the file, computes its SHA256, and checks quarantine restored status.
 // Returns the populated fileToAnalyze and whether the file should be skipped.
-func (c *Connector) prepareFile(location string, want FileIdentity) (file fileToAnalyze, skip bool) {
+func (c *Connector) prepareFile(location string, want FileIdentity, run *ongoing) (file fileToAnalyze, skip bool) {
 	inputLogger := logger.With(slog.String("file", location))
 
 	if err := c.checkPath(location); err != nil {
 		refusePath(location, err)
+		c.setFinal(location, run)
 		skip = true
 		return
 	}
@@ -740,7 +761,8 @@ func (c *Connector) prepareFile(location string, want FileIdentity) (file fileTo
 		// then closed, before the action.
 		if err = c.verifyContent(location, in, info.Size(), fileSHA256, identity); err == nil {
 			closeInput(in)
-			err = c.handleRestoredFile(location, fileSHA256, info.Size(), identity)
+			err = c.handleRestoredFile(location, fileSHA256, info.Size(), identity, run)
+			c.concludeOutcome(location, run, resultView{}, err)
 		}
 		if err != nil {
 			inputLogger.Error("could not handle restored file", slog.String(logErrorKey, err.Error()))
@@ -754,36 +776,67 @@ func (c *Connector) prepareFile(location string, want FileIdentity) (file fileTo
 		sha256:   fileSHA256,
 		identity: identity,
 		input:    in,
+		run:      run,
 		size:     info.Size(),
 	}
 	return
 }
 
-// finishAnalysis removes the file from ongoingAnalysis and signals the pipeline
-// that this top-level file is fully done. Only files registered via ScanFile
-// (LoadOrStore) are present in the map; extracted sub-files are no-ops.
-func (c *Connector) finishAnalysis(location string) {
-	if v, loaded := c.ongoingAnalysis.LoadAndDelete(location); loaded {
-		closeInput(v)
+// finishRun ends the processing of the run of the top-level file at location:
+// it is removed from ongoingAnalysis, the plugins that were told it started are
+// told it ended, and OnFileDone is called. It acts on that run only: the same
+// path may have been submitted again meanwhile (the monitor retries a file
+// after a backoff) and what is registered under it now is another run.
+// Extracted sub-files have no run of their own: they are no-ops.
+func (c *Connector) finishRun(location string, run *ongoing) {
+	var e *ongoing
+	if run != nil {
+		if !c.ongoingAnalysis.CompareAndDelete(location, run) {
+			return
+		}
+		e = run
+	} else {
+		v, loaded := c.ongoingAnalysis.LoadAndDelete(location)
+		if !loaded {
+			return
+		}
+		e, _ = v.(*ongoing)
+	}
+	if e != nil {
+		e.closeInput()
+		if sha, unpaired := e.unpaired(); unpaired {
+			// The plugins were told this file started: they must be told it ended,
+			// or a session would wait for it forever.
+			c.onFileScanned(location, sha, datamodel.Result{Filename: location, Location: location, SHA256: sha, Error: errAbandoned})
+		}
+		if c.config.OnFileDone != nil {
+			c.config.OnFileDone(e.outcome(location))
+		}
+	}
+	c.scansWg.Done()
+}
+
+// discardAnalysis forgets a run that was not accepted: nobody is told.
+func (c *Connector) discardAnalysis(location string, run *ongoing) {
+	if c.ongoingAnalysis.CompareAndDelete(location, run) {
+		run.closeInput()
 		c.scansWg.Done()
 	}
 }
 
-// closeInput releases the descriptor held for an ongoing analysis, if any.
-func closeInput(v any) {
-	if in, ok := v.(*inputFD); ok {
-		if err := in.Close(); err != nil {
-			logger.Warn("could not close file correctly", slog.String("error", err.Error()))
-		}
+// closeInput releases a descriptor held on a deposited file.
+func closeInput(in *inputFD) {
+	if err := in.Close(); err != nil {
+		logger.Warn("could not close file correctly", slog.String("error", err.Error()))
 	}
 }
 
-// releaseInput closes the descriptor of the top-level file at location: it
-// must be done after the last read of its content and before any action
-// (Windows refuses to move or delete a file that is open).
-func (c *Connector) releaseInput(location string) {
-	if v, ok := c.ongoingAnalysis.Load(location); ok {
-		closeInput(v)
+// releaseInput closes the descriptor of the run of the top-level file at
+// location: it must be done after the last read of its content and before any
+// action (Windows refuses to move or delete a file that is open).
+func (c *Connector) releaseInput(location string, run *ongoing) {
+	if e := c.runOf(location, run); e != nil {
+		e.closeInput()
 	}
 }
 
@@ -793,7 +846,7 @@ func (c *Connector) releaseInput(location string) {
 // closed. It returns an error when the file must not be acted upon. A file
 // without descriptor (tests) is hashed by path.
 func (c *Connector) finishReading(input fileToAnalyze) error {
-	defer c.releaseInput(input.location)
+	defer c.releaseInput(input.location, input.run)
 	return c.verifyContent(input.location, input.input, input.size, input.sha256, input.identity)
 }
 
@@ -833,19 +886,21 @@ func (c *Connector) dispatchFile(sub submission) {
 	location := sub.location
 	inputLogger := logger.With(slog.String("file", location))
 
-	input, skip := c.prepareFile(location, sub.want)
+	input, skip := c.prepareFile(location, sub.want, sub.run)
 	if skip {
-		c.finishAnalysis(location)
+		c.finishRun(location, sub.run)
 		return
 	}
-	c.ongoingAnalysis.CompareAndSwap(location, struct{}{}, input.input)
+	if sub.run != nil {
+		sub.run.setInput(input.input)
+	}
 
 	// Route to extraction if applicable
 	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
-		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, size: input.size}
+		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, run: input.run, size: input.size}
 		select {
 		case <-c.stopWorker:
-			c.finishAnalysis(location)
+			c.finishRun(location, sub.run)
 		case c.extractChan <- archive:
 			inputLogger.Debug("file sent to extract worker")
 		}
@@ -855,7 +910,7 @@ func (c *Connector) dispatchFile(sub submission) {
 	// Route to analysis
 	select {
 	case <-c.stopWorker:
-		c.finishAnalysis(location)
+		c.finishRun(location, sub.run)
 	case c.analysisChan <- input:
 		inputLogger.Debug("file sent to analysis worker")
 	}
@@ -874,7 +929,7 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	}
 
 	inputLogger.Debug("applying onStartScanFile() from plugins")
-	c.onStartScanFile(input.location, input.sha256)
+	c.startScan(input.location, input.run, input.sha256)
 	result := c.analyzeFile(input)
 	if errors.Is(result.Error, errSubmitContentMismatch) || errors.Is(result.Error, errNoDescriptorPath) {
 		// The service answered about another content: nothing is done to the file.
@@ -892,25 +947,31 @@ func (c *Connector) processFile(input fileToAnalyze) {
 		inputLogger.Error("could not analyze file", slog.Any(logErrorKey, result.Error.Error()))
 		ConsoleLogger.Error(fmt.Sprintf("could not analyze file %s: %s", input.location, result.Error.Error()))
 	}
-	if newres := c.onFileScanned(input.location, input.sha256, result); newres != nil {
+	if newres := c.fileScanned(input.location, input.run, input.sha256, result); newres != nil {
 		result = *newres
 	}
 	if pathErr := c.checkPath(input.location); pathErr != nil {
 		refusePath(input.location, pathErr)
-		c.finishAnalysis(input.location)
+		c.setFinal(input.location, input.run)
+		c.finishRun(input.location, input.run)
 		return
 	}
 	report := &datamodel.Report{}
 	actionCtx, actionCancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
 	defer actionCancel()
-	if err := c.action.Handle(actionCtx, input.location, result, report); err != nil {
-		inputLogger.Error("could not handle file action", slog.String(logErrorKey, err.Error()))
-		ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, err.Error()))
+	actionErr := c.action.Handle(actionCtx, input.location, result, report)
+	if actionErr != nil {
+		inputLogger.Error("could not handle file action", slog.String(logErrorKey, actionErr.Error()))
+		ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, actionErr.Error()))
 	} else {
 		inputLogger.Debug("file handled successfully")
 	}
 	c.addReport(report)
-	c.finishAnalysis(input.location)
+	if actionErr != nil {
+		c.noteOwnTrace(input.location, input.run, input.identity)
+	}
+	c.concludeOutcome(input.location, input.run, resultView{err: result.Error, analysisError: result.AnalysisError}, actionErr)
+	c.finishRun(input.location, input.run)
 }
 
 // extractorEvent is the console event raised while the extractor cannot run.
@@ -970,6 +1031,7 @@ func (c *Connector) tryExtract(archive archiveToAnalyze) (err error) {
 		sha256:   archive.sha256,
 		identity: archive.identity,
 		input:    archive.input,
+		run:      archive.run,
 		size:     archive.size,
 	}
 	var totalExtractedSize int64
@@ -1076,6 +1138,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		archiveLocation: archive.location,
 		identity:        archive.identity,
 		input:           archive.input,
+		run:             archive.run,
 		result: datamodel.Result{
 			SHA256:            archive.sha256,
 			MaliciousSubfiles: make(map[string]datamodel.Result),
@@ -1117,12 +1180,13 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		// Mark archive as started so that handleArchive won't call onStartScanFile/onScanFile
 		// a second time when extracted files arrive at workers.
 		c.archiveStatus.setStarted(archiveID)
-		c.onStartScanFile(archive.location, archive.sha256)
+		c.startScan(archive.location, archive.run, archive.sha256)
 		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
 			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
 			ok := c.archiveStatus.setArchiveResult(archiveID, *archiveResult)
 			if !ok {
 				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", archive.location))
+				c.finishRun(archive.location, archive.run)
 				return
 			}
 			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
@@ -1184,6 +1248,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			size:               fileSize,
 			archiveSize:        archive.size,
 			archiveTopLocation: archive.archiveTopLocation,
+			run:                archive.run,
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
@@ -1192,7 +1257,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 				// without a final result, like on shutdown, instead of ending in
 				// definitive error for a passing failure of the extractor.
 				fileLogger.Error("recursive extraction abandoned, the extractor is unavailable", slog.String(logErrorKey, err.Error()))
-				c.abandonArchive(archiveID, len(extractedFiles)-i, archiveLogger)
+				c.abandonArchive(archiveID, archive.archiveTopLocation, archive.run, len(extractedFiles)-i, archiveLogger)
 				return
 			}
 			if errors.Is(err, context.Canceled) {
@@ -1221,8 +1286,13 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 }
 
 // abandonArchive gives up an archive whose extraction was cut short: it gets no
-// result, and its folder goes as soon as the members already sent are done.
-func (c *Connector) abandonArchive(archiveID string, unsent int, archiveLogger *slog.Logger) {
+// result, and its folder goes as soon as the members already sent are done. The
+// top-level file at top is over: nothing will ever complete it (a sub-archive
+// that vanishes keeps its parent waiting for a member that never comes), and the
+// plugins that were told it started are told it ended.
+func (c *Connector) abandonArchive(archiveID, top string, run *ongoing, unsent int, archiveLogger *slog.Logger) {
+	c.setResource(top, run)
+	defer c.finishRun(top, run)
 	folder, removeNow, ok := c.archiveStatus.abandon(archiveID, unsent)
 	if !ok || !removeNow {
 		return
@@ -1373,6 +1443,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	}
 	if !ok {
 		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		c.finishRun(input.archiveTopLocation, input.run)
 		return
 	}
 	if started {
@@ -1383,6 +1454,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 			ok := c.archiveStatus.setArchiveResult(input.archiveID, *archiveResult)
 			if !ok {
 				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+				c.finishRun(input.archiveTopLocation, input.run)
 				return
 			}
 			if finishErr := c.finishArchiveAnalysis(input.archiveID); finishErr != nil {
@@ -1399,6 +1471,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	finished, archiveFound := c.archiveStatus.addInnerFileResult(input.archiveID, input.filename, result)
 	if !archiveFound {
 		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		c.finishRun(input.archiveTopLocation, input.run)
 		return
 	}
 
@@ -1425,7 +1498,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	archiveLogger = logger.With(slog.String("archive location", status.archiveLocation))
 
 	defer func() {
-		c.finishAnalysis(status.archiveLocation)
+		c.finishRun(status.archiveLocation, status.run)
 	}()
 
 	if status.abandoned {
@@ -1451,10 +1524,16 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 			status.result.Error = fmt.Errorf("%w: %w", errInnerTransient, memberCause(verifyErr))
 			runAction = false
 		}
-		c.releaseInput(status.archiveLocation)
+		c.releaseInput(status.archiveLocation, status.run)
 	}
 
-	if newResult := c.onFileScanned(status.archiveLocation, status.result.SHA256, status.result); newResult != nil {
+	// A sub-archive is not a file of its own for the plugins: only the
+	// top-level archive is paired with its start.
+	scanRun := status.run
+	if isSubArchive {
+		scanRun = nil
+	}
+	if newResult := c.fileScanned(status.archiveLocation, scanRun, status.result.SHA256, status.result); newResult != nil {
 		status.result = *newResult
 		// don't need to save it in status handler, because it's going to be deleted at func end
 	}
@@ -1462,6 +1541,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	if runAction {
 		if pathErr := c.checkPath(status.archiveLocation); pathErr != nil {
 			refusePath(status.archiveLocation, pathErr)
+			c.setFinal(status.archiveLocation, status.run)
 			runAction = false
 		}
 	}
@@ -1471,6 +1551,10 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(status.result.FileSize))
 		defer cancel()
 		err = c.action.Handle(ctx, status.archiveLocation, status.result, report)
+		if err != nil {
+			c.noteOwnTrace(status.archiveLocation, status.run, status.identity)
+		}
+		c.concludeOutcome(status.archiveLocation, status.run, resultView{err: status.result.Error, analysisError: status.result.AnalysisError}, err)
 		if err != nil {
 			archiveLogger.Error("could not handle archive action", slog.String(logErrorKey, err.Error()))
 			ConsoleLogger.Error(fmt.Sprintf("could not handle archive action for %s: %s", status.archiveLocation, err.Error()))
@@ -1649,16 +1733,13 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 // (e.g. session) that the scan started with onStartScanFile is over.
 func (c *Connector) abortAnalysis(input fileToAnalyze, result datamodel.Result, err error) {
 	result.Error = err
-	c.releaseInput(input.location)
-	c.onFileScanned(input.location, input.sha256, result)
-	c.finishAnalysis(input.location)
+	c.releaseInput(input.location, input.run)
+	c.fileScanned(input.location, input.run, input.sha256, result)
+	c.finishRun(input.location, input.run)
 }
 
 func (c *Connector) addReport(report *datamodel.Report) {
 	c.onReport(report)
-	c.reportMutex.Lock()
-	defer c.reportMutex.Unlock()
-	c.reports = append(c.reports, report)
 }
 
 // Close stops Connector instance:

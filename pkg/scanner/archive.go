@@ -49,6 +49,7 @@ type archiveStatus struct {
 	archiveLocation string
 	identity        FileIdentity // of the top-level archive, checked before its action
 	input           *inputFD     // descriptor of the top-level archive, closed before its action
+	run             *ongoing     // the run of the top-level file it belongs to
 	result          datamodel.Result
 	analyzed        int
 	total           int

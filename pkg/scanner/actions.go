@@ -277,6 +277,9 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datam
 	}
 	err = os.Remove(path)
 	if err != nil {
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS) {
+			err = fmt.Errorf("%w: %w", errPermanentAction, err)
+		}
 		return
 	}
 	report.Deleted = true
@@ -519,7 +522,7 @@ func hasReservedName(name string) bool {
 
 // classifyDestinationError marks the destination errors no retry can fix.
 func classifyDestinationError(err error) error {
-	if errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.EXDEV) || errors.Is(err, quarantine.ErrStagingUnsafe) {
+	if errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.EXDEV) || errors.Is(err, quarantine.ErrStagingUnsafe) || errors.Is(err, quarantine.ErrSourceNotRemovable) {
 		return fmt.Errorf("%w: %w", errPermanentAction, err)
 	}
 	return err

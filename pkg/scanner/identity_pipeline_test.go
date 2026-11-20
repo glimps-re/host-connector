@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,8 +64,8 @@ func TestSubmitFile_refusalsWithoutFailure(t *testing.T) {
 	}
 	for name, path := range map[string]string{"symbolic link": link, "empty file": empty, "directory": in} {
 		accepted, err := c.SubmitFile(t.Context(), path, FileIdentity{})
-		if accepted || err != nil {
-			t.Errorf("%s: SubmitFile() = %t, %v; want a refusal without error", name, accepted, err)
+		if accepted || !errors.Is(err, ErrRefused) {
+			t.Errorf("%s: SubmitFile() = %t, %v; want a refusal wrapping ErrRefused", name, accepted, err)
 		}
 		if _, loaded := c.ongoingAnalysis.Load(path); loaded {
 			t.Errorf("%s: the entry must be released", name)

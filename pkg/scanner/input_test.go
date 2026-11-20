@@ -342,7 +342,7 @@ func TestPipeline_aFileCannotKeepAWorkerReadingForever(t *testing.T) {
 func TestPrepareFile_staleIdentityClosesTheDescriptor(t *testing.T) {
 	noOpenInputs(t)
 	c, _, file, _ := newPathCheckFixture(t, false)
-	if _, skip := c.prepareFile(file, FileIdentity{}); !skip {
+	if _, skip := c.prepareFile(file, FileIdentity{}, nil); !skip {
 		t.Error("prepareFile() must skip a file that changed")
 	}
 	if n := openInputs.Load(); n != 0 {
@@ -354,13 +354,13 @@ func TestHandleRestoredFile_changedFileIsNotActedUpon(t *testing.T) {
 	c, _, file, handled := newPathCheckFixture(t, false)
 	stale := idOf(t, file)
 	stale.Size++
-	if err := c.handleRestoredFile(file, "sha", 12, stale); !errors.Is(err, errFileReplaced) {
+	if err := c.handleRestoredFile(file, "sha", 12, stale, nil); !errors.Is(err, errFileReplaced) {
 		t.Errorf("handleRestoredFile() error = %v, want errFileReplaced", err)
 	}
 	if len(*handled) != 0 {
 		t.Errorf("an action ran on %v", *handled)
 	}
-	if err := c.handleRestoredFile(file, "sha", 12, idOf(t, file)); err != nil || len(*handled) != 1 {
+	if err := c.handleRestoredFile(file, "sha", 12, idOf(t, file), nil); err != nil || len(*handled) != 1 {
 		t.Errorf("handleRestoredFile() = %v, handled %v; want the action on an unchanged file", err, *handled)
 	}
 }
@@ -555,6 +555,9 @@ func TestWaitForResult_requestsMatchTheClientInEachMode(t *testing.T) {
 			if syndetect {
 				client.SetSyndetect()
 			}
+			// A wide margin: the spacing is checked at a quarter of the pull time, so
+			// that a handler delayed under load cannot make the test fail.
+			const pull = 200 * time.Millisecond
 			c := &Connector{submitter: client}
 			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
 			defer cancel()
@@ -562,7 +565,7 @@ func TestWaitForResult_requestsMatchTheClientInEachMode(t *testing.T) {
 			if !syndetect {
 				id = "01234567-89ab-cdef-0123-456789abcdef"
 			}
-			res, err := c.waitForResult(ctx, id, 30*time.Millisecond)
+			res, err := c.waitForResult(ctx, id, pull)
 			if err != nil || !res.Done {
 				t.Fatalf("waitForResult() = %+v, %v", res, err)
 			}
@@ -579,7 +582,7 @@ func TestWaitForResult_requestsMatchTheClientInEachMode(t *testing.T) {
 			}
 			if syndetect {
 				for i := 1; i < len(times); i++ {
-					if gap := times[i].Sub(times[i-1]); gap < 25*time.Millisecond {
+					if gap := times[i].Sub(times[i-1]); gap < pull/4 {
 						t.Errorf("polls %d and %d are %v apart, want them spaced by the pull time", i, i+1, gap)
 					}
 				}

@@ -33,7 +33,10 @@ type trackedFile struct {
 	seen       time.Time
 	deadline   time.Time // phaseWaiting
 	retryAt    time.Time // phaseDone: zero means a final outcome
-	attempts   uint8
+	attempts   uint8     // failures counted against the cap
+	resource   uint8     // failures of a resource, not counted: they only lengthen the backoff
+	reopens    uint8     // consecutive outcomes that found the file changed by someone else
+	modified   bool      // an event showed a different identity while it was submitted
 	stamp      scanner.FileIdentity
 	missed     uint8 // consecutive rescans that could not read its folder
 	prev, next *trackedFile
@@ -404,11 +407,22 @@ func (t *fileTable) Track(path string, stamp scanner.FileIdentity, seen, deadlin
 	defer t.mu.Unlock()
 	if f, ok := t.files[path]; ok {
 		t.markSeen(f)
-		if f.phase == phaseWaiting && !f.stamp.Equal(stamp) {
+		switch {
+		case f.phase == phaseWaiting && !f.stamp.Equal(stamp):
 			f.stamp, f.seen, f.deadline = stamp, seen, deadline
 			f.list.remove(f)
 			f.owner.waiting.pushBack(f)
 			heap.Fix(&t.deadH, f.heapIdx)
+		case f.phase == phaseSubmitted && !f.stamp.Equal(stamp):
+			// A change received while it is processed: whatever the outcome
+			// is, the entry is reopened when it comes.
+			f.stamp, f.modified = stamp, true
+		case f.phase == phaseDone && !f.stamp.Equal(stamp):
+			t.reopen(f, stamp, seen, deadline, true)
+		case f.phase == phaseDone && !f.retryAt.IsZero() && !seen.Before(f.retryAt):
+			// Without a rescan, an event on a file is what brings back a failure
+			// whose delay is over.
+			t.reopen(f, f.stamp, seen, deadline, false)
 		}
 		return true
 	}
@@ -449,16 +463,154 @@ func (t *fileTable) Track(path string, stamp scanner.FileIdentity, seen, deadlin
 	return true
 }
 
-// Touch marks path as seen by the current rescan, without examining the file.
-// It reports whether path is tracked.
-func (t *fileTable) Touch(path string) bool {
+// touchResult tells what a rescan finding a path must do with it.
+type touchResult uint8
+
+const (
+	// touchUnknown: the path is not tracked.
+	touchUnknown touchResult = iota
+	// touchSeen: tracked and waiting or submitted, nothing to do.
+	touchSeen
+	// touchDone: tracked and processed; its metadata must be compared to find
+	// a change (a stat, never a read of the content).
+	touchDone
+	// touchReopened: a retry came due, the entry waits again.
+	touchReopened
+)
+
+// Touch marks path as seen by the rescan. A processed file whose retry came due
+// is reopened, keeping its count of attempts.
+func (t *fileTable) Touch(path string, now time.Time) touchResult {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	f, ok := t.files[path]
-	if ok {
-		t.markSeen(f)
+	if !ok {
+		return touchUnknown
 	}
-	return ok
+	t.markSeen(f)
+	if f.phase != phaseDone {
+		return touchSeen
+	}
+	if !f.retryAt.IsZero() && !now.Before(f.retryAt) {
+		t.reopen(f, f.stamp, now, now, false)
+		return touchReopened
+	}
+	return touchDone
+}
+
+// reopen makes a submitted or processed entry wait again for deadline. A change
+// of the file (resetCounters) also forgets its failures.
+func (t *fileTable) reopen(f *trackedFile, stamp scanner.FileIdentity, seen, deadline time.Time, resetCounters bool) {
+	switch f.phase {
+	case phaseDone:
+		f.owner.doneBytes -= f.cost()
+		f.list.remove(f)
+	case phaseSubmitted:
+		f.owner.submitted--
+	case phaseWaiting:
+		return
+	}
+	f.phase = phaseWaiting
+	f.stamp, f.seen, f.deadline, f.retryAt = stamp, seen, deadline, time.Time{}
+	if resetCounters {
+		f.attempts, f.resource = 0, 0
+	}
+	f.owner.waiting.pushBack(f)
+	heap.Push(&t.deadH, f)
+}
+
+// Retry limits (documented in the README): the delay before the next attempt
+// doubles with every failure, from the rescan period, up to retryCeiling, and
+// the file is given up after maxAttempts failures.
+const (
+	maxAttempts  = 8
+	retryCeiling = time.Hour
+	maxBackoff   = 6 // the delay stops doubling after 2^6 periods
+	// retryFloor is the delay of the first retry when there is no rescan period.
+	retryFloor = time.Minute
+)
+
+// finishArgs is what the end of the processing of a submitted file says.
+type finishArgs struct {
+	// Retry and Resource: the outcome is a failure worth another attempt; a
+	// resource failure is not counted against maxAttempts.
+	Retry, Resource bool
+	Now             time.Time
+	Base            time.Duration // delay of the first retry, before doubling
+	Jitter          float64       // a fraction, ±0.2
+	Submitted       scanner.FileIdentity
+	Current         scanner.FileIdentity // seen by a stat when the outcome came
+	Deadline        time.Time            // stability deadline if the file changed
+}
+
+// Finish records the end of the processing of a submitted file. A final outcome
+// is remembered until the file changes. A failure is retried after base × 2^n
+// (n failures so far, at most maxBackoff, never more than retryCeiling),
+// shifted by the jitter, unless it is the maxAttempts-th: then it becomes final
+// and gaveUp is true.
+//
+// A file that changed under its processing, by someone else (the stat taken
+// when the outcome came differs from the identity the outcome applies to, or an
+// event showed a change meanwhile), waits for its stability again whatever the
+// outcome says, the old failures forgotten: the outcome was about the old
+// content. The first two such reopenings in a row are immediate; the next ones
+// are pushed back by base × 2^(n-2), at most retryCeiling, so that a user who
+// rewrites a file during every analysis is processed at most once an hour, and
+// never abandoned. Finish with an outcome the monitor can trust (the pipeline
+// reports its own trace on the file in Submitted) resets that count.
+func (t *fileTable) Finish(path string, a finishArgs) (gaveUp, reopened bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	f, ok := t.files[path]
+	if !ok || f.phase != phaseSubmitted {
+		return false, false
+	}
+	if !a.Current.Equal(a.Submitted) || f.modified {
+		stamp := f.stamp
+		if !a.Current.Equal(a.Submitted) {
+			stamp = a.Current
+		}
+		if f.reopens < 255 {
+			f.reopens++
+		}
+		deadline := a.Deadline
+		if f.reopens > 2 {
+			base := min(a.Base, retryCeiling)
+			later := a.Now.Add(min(base<<min(int(f.reopens)-2, 20), retryCeiling))
+			if later.After(deadline) {
+				deadline = later
+			}
+		}
+		reopens := f.reopens
+		t.reopen(f, stamp, a.Now, deadline, true)
+		f.reopens, f.modified = reopens, false
+		return false, true
+	}
+	f.reopens = 0
+	if a.Current != (scanner.FileIdentity{}) {
+		// The state the connector itself left the file in (its action touched
+		// the change time) is the one a rescan must find unchanged.
+		f.stamp = a.Current
+	}
+	if !a.Retry {
+		t.complete(f, time.Time{})
+		return false, false
+	}
+	if a.Resource {
+		if f.resource < 255 {
+			f.resource++
+		}
+	} else if f.attempts < 255 {
+		f.attempts++
+	}
+	if f.attempts >= maxAttempts {
+		t.complete(f, time.Time{})
+		return true, false
+	}
+	base := min(a.Base, retryCeiling)
+	delay := min(base<<min(int(f.attempts)+int(f.resource), maxBackoff), retryCeiling)
+	t.complete(f, a.Now.Add(time.Duration(float64(delay)*(1+a.Jitter))))
+	return false, false
 }
 
 // makeRoom applies one step of the decision table; it returns false for a
@@ -620,7 +772,13 @@ func (t *fileTable) Done(path string, retryAt time.Time, attempts uint8) {
 	if !ok || f.phase != phaseSubmitted {
 		return
 	}
-	f.phase, f.retryAt, f.attempts = phaseDone, retryAt, attempts
+	f.attempts = attempts
+	t.complete(f, retryAt)
+}
+
+// complete records the outcome of a submitted entry: retryAt zero is final.
+func (t *fileTable) complete(f *trackedFile, retryAt time.Time) {
+	f.phase, f.retryAt = phaseDone, retryAt
 	f.owner.submitted--
 	f.owner.doneBytes += f.cost()
 	if retryAt.IsZero() {

@@ -25,7 +25,7 @@ func TestPrepareFile_fifoReplacingTheFileDoesNotBlock(t *testing.T) {
 	}
 	done := make(chan bool, 1)
 	go func() {
-		_, skip := c.prepareFile(file, want)
+		_, skip := c.prepareFile(file, want, nil)
 		done <- skip
 	}()
 	select {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/maphash"
 	"io/fs"
 	"log/slog"
 	"maps"
@@ -91,6 +92,7 @@ type Monitor struct {
 	closeOnce   sync.Once
 	table       *fileTable
 	wake        chan struct{} // a deadline earlier than the timer may exist
+	seed        maphash.Seed
 	walkMu      sync.Mutex
 	walkPending map[string]struct{} // folders waiting to be walked
 	walkWake    chan struct{}
@@ -146,6 +148,7 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 		paths:       new(sync.Map),
 		table:       newFileTable(maxBytes, quota, cfg.Owners, watched),
 		wake:        make(chan struct{}, 1),
+		seed:        maphash.MakeSeed(),
 		walkPending: make(map[string]struct{}),
 		walkWake:    make(chan struct{}, 1),
 		done:        make(chan struct{}),
@@ -318,8 +321,17 @@ func (m *Monitor) walkRoot(root string, room int) (unreadable []string, overflow
 // tracks (no stat); an event always examines the file, so that a change pushes
 // its deadline back.
 func (m *Monitor) discover(path string, examine bool) {
-	if !examine && m.table.Touch(path) {
-		return
+	if !examine {
+		switch m.table.Touch(path, time.Now()) {
+		case touchSeen:
+			return
+		case touchReopened:
+			m.wakeScan()
+			return
+		case touchDone, touchUnknown:
+			// a processed file is compared to its stamp below (one stat), an
+			// unknown one is tracked
+		}
 	}
 	info, err := m.stat(path)
 	if err != nil {
@@ -340,13 +352,19 @@ func (m *Monitor) discover(path string, examine bool) {
 	}
 	now := time.Now()
 	if m.table.Track(path, scanner.IdentityOf(info), now, now.Add(time.Duration(m.modDelay))) {
-		select {
-		case m.wake <- struct{}{}:
-		default:
-		}
+		m.wakeScan()
 	}
 	if m.period == 0 {
 		m.reportPressureIfDue(now)
+	}
+}
+
+// wakeScan tells the timer goroutine that a deadline earlier than its timer may
+// exist.
+func (m *Monitor) wakeScan() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
 	}
 }
 
@@ -453,10 +471,20 @@ func (m *Monitor) processDue() {
 			m.table.Track(path, cur, now, now.Add(time.Duration(m.modDelay)))
 			continue
 		}
-		if _, err := m.cb(path, stamp); err != nil {
+		accepted, err := m.cb(path, stamp)
+		switch {
+		case errors.Is(err, scanner.ErrRefused):
+			// Refused without failure (empty file, link): asking again at every
+			// rescan would be refused again, until the file changes.
+			logger.Debug("file refused", slog.String("path", path), slog.String("reason", err.Error()))
+			m.table.Finish(path, finishArgs{Now: time.Now(), Submitted: stamp, Current: stamp})
+		case err != nil:
 			logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
+			m.table.Forget(path)
+		case !accepted:
+			// Nothing will report an outcome: the file is found again later.
+			m.table.Forget(path)
 		}
-		m.table.Forget(path)
 	}
 }
 
@@ -641,4 +669,49 @@ func (m *Monitor) nextWalk() (string, bool) {
 		return root, true
 	}
 	return "", false
+}
+
+// FileDone records the end of the processing of a file the callback accepted:
+// the entry stays as it is (a processed file is not read again) until the file
+// changes, or until a failure is due for another attempt. It never blocks on
+// the pipeline: one stat outside any lock, then a short critical section.
+func (m *Monitor) FileDone(o scanner.FileOutcome) {
+	info, err := m.stat(o.Location)
+	if err != nil {
+		m.table.Forget(o.Location)
+		return
+	}
+	now := time.Now()
+	gaveUp, reopened := m.table.Finish(o.Location, finishArgs{
+		Retry:     o.Kind != scanner.OutcomeFinal,
+		Resource:  o.Kind == scanner.OutcomeResource,
+		Now:       now,
+		Base:      m.retryBase(),
+		Jitter:    m.jitter(o.Location),
+		Submitted: o.Identity,
+		Current:   scanner.IdentityOf(info),
+		Deadline:  now.Add(time.Duration(m.modDelay)),
+	})
+	if reopened {
+		m.wakeScan()
+	}
+	if gaveUp {
+		logger.Error("giving up on a file after repeated failures, it is left in place", slog.String("path", o.Location), slog.Int("attempts", maxAttempts))
+		consoleLogger.Error(fmt.Sprintf("giving up on %s after %d attempts: its processing keeps failing, the file is left in place", o.Location, maxAttempts))
+	}
+}
+
+// retryBase is the delay before the first retry: the rescan period, one minute
+// when there is none (the retry then waits for the next event on the file).
+func (m *Monitor) retryBase() time.Duration {
+	if m.period > 0 {
+		return time.Duration(m.period)
+	}
+	return retryFloor
+}
+
+// jitter spreads the retries of files that failed together: a fraction in
+// [-0.2, 0.2) that depends on the path.
+func (m *Monitor) jitter(path string) float64 {
+	return float64(maphash.String(m.seed, path)%1000)/1000*0.4 - 0.2
 }

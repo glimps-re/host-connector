@@ -217,9 +217,12 @@ func TestNewMonitor(t *testing.T) {
 
 			cbCalledOnMu := new(sync.Mutex)
 
-			cb := func(path string, _ scanner.FileIdentity) (bool, error) {
+			var m *Monitor
+			cb := func(path string, id scanner.FileIdentity) (bool, error) {
 				cbCalledOnMu.Lock()
 				defer cbCalledOnMu.Unlock()
+				// A transient failure: the file comes back at the next rescan.
+				defer m.FileDone(scanner.FileOutcome{Location: path, Identity: id, Kind: scanner.OutcomeResource})
 				name := filepath.Base(path)
 				if exp, ok := tt.wantCbCalledOn[name]; ok && exp.count > 0 {
 					exp.count--
@@ -234,7 +237,8 @@ func TestNewMonitor(t *testing.T) {
 				return true, nil
 			}
 
-			m, err := NewMonitor(cb, Config{
+			var err error
+			m, err = NewMonitor(cb, Config{
 				PreScan:  tt.fields.preScan,
 				Period:   tt.fields.period,
 				ModDelay: tt.fields.modDelay,

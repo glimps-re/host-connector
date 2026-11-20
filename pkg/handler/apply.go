@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -349,7 +350,12 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 		quarantineCreated = true
 	}
 
-	conn, err = h.newConnector(conf, p, informDest)
+	var monitorLink atomic.Pointer[Monitor]
+	conn, err = h.newConnector(conf, p, informDest, func(o scanner.FileOutcome) {
+		if m := monitorLink.Load(); m != nil {
+			m.FileDone(o)
+		}
+	})
 	if err != nil {
 		return err
 	}
@@ -380,6 +386,7 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 		return fmt.Errorf("could not init monitoring: %w", err)
 	}
 	h.monitor = mon
+	monitorLink.Store(mon)
 	if start {
 		if err = addWatches(mon, conf.Paths); err != nil {
 			return err
@@ -442,7 +449,7 @@ func (h *Handler) reconfigureQuarantine(ctx context.Context, conf *config.Config
 	return h.setupQuarantiner(ctx, conf)
 }
 
-func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.WriteCloser) (*scanner.Connector, error) {
+func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.WriteCloser, onFileDone func(scanner.FileOutcome)) (*scanner.Connector, error) {
 	customAction := make([]scanner.Action, 0)
 	if conf.Gui {
 		customAction = append(customAction, new(GuiHandleResult))
@@ -462,6 +469,7 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		FollowSymlinks:      conf.FollowSymlinks,
 		WorkDir:             conf.WorkDir,
 		Roots:               conf.Paths,
+		OnFileDone:          onFileDone,
 		Actions: scanner.Actions{
 			Log:        conf.Actions.Log,
 			Quarantine: conf.Actions.Quarantine,

@@ -74,7 +74,7 @@ func TestPrepareFile_refusesPathThroughLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	swapDirForLink(t, filepath.Join(in, "alice"), outside)
-	if _, skip := c.prepareFile(file, FileIdentity{}); !skip {
+	if _, skip := c.prepareFile(file, FileIdentity{}, nil); !skip {
 		t.Error("prepareFile() must skip a path that crosses a link: the file of another tree would be read")
 	}
 }
@@ -127,7 +127,7 @@ func TestProcessFile_parentSwappedBeforeQueueIsDropped(t *testing.T) {
 func TestHandleRestoredFile_refusesPathThroughLink(t *testing.T) {
 	c, in, file, handled := newPathCheckFixture(t, false)
 	swapDirForLink(t, filepath.Join(in, "alice"), t.TempDir())
-	if err := c.handleRestoredFile(file, "sha", 10, FileIdentity{}); !errors.Is(err, pathutil.ErrSymlinkInPath) {
+	if err := c.handleRestoredFile(file, "sha", 10, FileIdentity{}, nil); !errors.Is(err, pathutil.ErrSymlinkInPath) {
 		t.Errorf("handleRestoredFile() error = %v, want pathutil.ErrSymlinkInPath", err)
 	}
 	if len(*handled) != 0 {
@@ -235,7 +235,7 @@ func TestScanFile_commandLineScanChecksBelowTheArgument(t *testing.T) {
 	}
 	t.Cleanup(func() { c.Close(t.Context()) })
 	c.noteScanRoot(arg)
-	if _, skip := c.prepareFile(filepath.Join(arg, "link", "f.bin"), FileIdentity{}); !skip {
+	if _, skip := c.prepareFile(filepath.Join(arg, "link", "f.bin"), FileIdentity{}, nil); !skip {
 		t.Error("a file reached through a link below the scan argument must be skipped")
 	}
 }

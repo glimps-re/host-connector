@@ -34,6 +34,10 @@ var (
 	// ErrStagingUnsafe is returned when the transit directory is not a private
 	// directory of this process owner.
 	ErrStagingUnsafe = errors.New("transit directory is not a private directory")
+	// ErrSourceNotRemovable is returned when the source of a move cannot be
+	// removed for a lasting reason (permission, read-only file system): the
+	// moved file is taken back, retrying cannot help.
+	ErrSourceNotRemovable = errors.New("source cannot be removed")
 	// ErrSourceChanged is returned when the source changed while it was copied.
 	ErrSourceChanged = errors.New("source changed while it was moved")
 )
@@ -184,6 +188,9 @@ func removeSource(src, dst string, linked bool) error {
 		}
 	}
 	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS) {
+			err = fmt.Errorf("%w: %w", ErrSourceNotRemovable, err)
+		}
 		return rollback(dst, fmt.Errorf("could not remove %s after moving it: %w", src, err))
 	}
 	return nil

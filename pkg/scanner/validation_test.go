@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -225,15 +226,20 @@ func TestReservedEventKeysAreIgnored(t *testing.T) {
 
 type recordingEventHandler struct {
 	events.NoopEventHandler
+	mu                  sync.Mutex
 	errors, resolutions int
 }
 
 func (r *recordingEventHandler) NotifyError(context.Context, events.ErrorEventType, error) error {
+	r.mu.Lock()
 	r.errors++
+	r.mu.Unlock()
 	return nil
 }
 
 func (r *recordingEventHandler) NotifyResolution(context.Context, string, ...events.ErrorEventType) error {
+	r.mu.Lock()
 	r.resolutions++
+	r.mu.Unlock()
 	return nil
 }

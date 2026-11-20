@@ -42,6 +42,14 @@ type SessionPlugin struct {
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
 
+	// cleanupQueue feeds the one goroutine that removes the empty folders of
+	// the sessions whose report is written, so that no report ever waits for it;
+	// nil when the option is off. cleanupDone is closed when that goroutine ends.
+	cleanupQueue   chan string
+	cleanupDone    chan struct{}
+	cleanupDropped atomic.Bool
+	removeDirs     emptyDirsRemover
+
 	// runCtx is cancelled by Close: the attempts of the monitor stop and give
 	// their sessions back to the closing list.
 	runCtx    context.Context
@@ -75,16 +83,30 @@ type Config struct {
 	// InflightTimeout is how long files that never end, or files waiting for a
 	// worker, can hold a session open since its last activity.
 	InflightTimeout time.Duration `mapstructure:"inflight_timeout"`
+	// RemoveEmptyDirs removes the empty folders left below a session once its
+	// report is written (Linux only).
+	RemoveEmptyDirs bool `mapstructure:"remove_empty_dirs"`
+	// CleanupTimeout bounds the removal of the empty folders of one session.
+	CleanupTimeout time.Duration `mapstructure:"cleanup_timeout"`
 }
 
 const (
 	defaultReportTimeout   = 2 * time.Minute
 	defaultReportRetries   = 3
 	defaultInflightTimeout = 24 * time.Hour
+	defaultCleanupTimeout  = 2 * time.Minute
 
 	// maxClosing bounds the sessions kept waiting for their report after an
 	// attempt: past it the oldest get their fallback at once.
 	maxClosing = 64
+
+	// maxCleanupQueue bounds the sessions waiting for the removal of their
+	// empty folders; past it the removal is skipped for the newest.
+	maxCleanupQueue = 64
+
+	// cleanupStopWait is the longest Close waits for a removal of empty folders
+	// that does not end when cancelled.
+	cleanupStopWait = time.Second
 	// maxKnownErrors bounds the files remembered as failed after their session
 	// closed.
 	maxKnownErrors = 4096
@@ -171,6 +193,8 @@ func (p *SessionPlugin) GetDefaultConfig() (config any) {
 		ReportTimeout:   defaultReportTimeout,
 		ReportRetries:   defaultReportRetries,
 		InflightTimeout: defaultInflightTimeout,
+		RemoveEmptyDirs: true,
+		CleanupTimeout:  defaultCleanupTimeout,
 	}
 	return
 }
@@ -196,6 +220,13 @@ func checkConfig(config *Config, vc plugins.ValidationContext, warn bool) error 
 		return fmt.Errorf("inflight_timeout %s must be positive", config.InflightTimeout)
 	case config.ReportRetries < 0:
 		return fmt.Errorf("report_retries %d must not be negative", config.ReportRetries)
+	case config.RemoveEmptyDirs && config.CleanupTimeout <= 0:
+		return fmt.Errorf("cleanup_timeout %s must be positive", config.CleanupTimeout)
+	}
+	if warn && config.RemoveEmptyDirs && !cleanupSupported {
+		msg := "session: remove_empty_dirs is not supported on this system: the empty folders are left"
+		vc.GetLogger().Warn(msg)
+		vc.GetConsoleLogger().Warn(msg)
 	}
 	if warn && config.InflightTimeout < config.Delay {
 		msg := fmt.Sprintf("session: inflight_timeout %s is shorter than delay %s: files waiting never hold a session open", config.InflightTimeout, config.Delay)
@@ -257,6 +288,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	hcc.RegisterOnFileScanned(p.OnFileScanned)
 	hcc.RegisterOnReport(p.OnReport)
 
+	p.startCleanup()
 	go p.sessionMonitor()
 
 	p.logger.Info("plugin initialized",
@@ -283,8 +315,26 @@ func (p *SessionPlugin) Close(ctx context.Context) error {
 	close(p.stop)
 	<-p.done
 	p.closeAllSessions(ctx)
+	p.waitCleanup(ctx)
 	p.started = false
 	return nil
+}
+
+// waitCleanup gives the cleanup goroutine, already cancelled, a moment to end:
+// a file system call that ignores its context must not hold up the stop.
+func (p *SessionPlugin) waitCleanup(ctx context.Context) {
+	if p.cleanupDone == nil {
+		return
+	}
+	timer := time.NewTimer(cleanupStopWait)
+	defer timer.Stop()
+	select {
+	case <-p.cleanupDone:
+	case <-timer.C:
+		p.logger.Warn("a removal of empty folders is still running at stop: it is left behind")
+	case <-ctx.Done():
+		p.logger.Warn("a removal of empty folders is still running at stop: it is left behind")
+	}
 }
 
 // attach runs op on the session of file, asking for a new one when the session
@@ -707,9 +757,77 @@ func (p *SessionPlugin) tryReport(ctx context.Context, cs *closingSession) error
 	defer cancel()
 	err := p.writeSessionReport(attempt, cs, viaGenerator)
 	if err == nil {
-		p.rememberErrors(cs.session)
+		p.reported(cs.session)
 	}
 	return err
+}
+
+func (p *SessionPlugin) reported(s *Session) {
+	p.rememberErrors(s)
+	p.queueCleanup(s.ID)
+}
+
+// startCleanup starts the goroutine that removes empty folders, if the option
+// is set and the system supports it.
+func (p *SessionPlugin) startCleanup() {
+	if !p.config.RemoveEmptyDirs || !cleanupSupported {
+		return
+	}
+	p.removeDirs = removeEmptyDirs
+	p.cleanupQueue = make(chan string, maxCleanupQueue)
+	p.cleanupDone = make(chan struct{})
+	go p.cleanupLoop()
+}
+
+// queueCleanup asks for the removal of the empty folders of a session. It never
+// waits, and does nothing once the plugin is stopping: a report is never held
+// back by a cleanup, and a cleanup never runs in the time of Close.
+func (p *SessionPlugin) queueCleanup(id string) {
+	if p.cleanupQueue == nil || p.runCtx.Err() != nil {
+		return
+	}
+	select {
+	case p.cleanupQueue <- id:
+	default:
+		if p.cleanupDropped.CompareAndSwap(false, true) {
+			p.logger.Warn("too many sessions wait for the removal of their empty folders: some are left", slog.Int("queue", maxCleanupQueue))
+		}
+	}
+}
+
+func (p *SessionPlugin) cleanupLoop() {
+	defer close(p.cleanupDone)
+	for {
+		select {
+		case <-p.runCtx.Done():
+			return
+		case id := <-p.cleanupQueue:
+			if len(p.cleanupQueue) == 0 {
+				p.cleanupDropped.Store(false)
+			}
+			p.cleanup(id)
+		}
+	}
+}
+
+// cleanup removes the empty folders below the folder of a session within
+// cleanup_timeout. The root folder, the folder of the session and the work
+// directory stay.
+func (p *SessionPlugin) cleanup(id string) {
+	ctx, cancel := context.WithTimeout(p.runCtx, p.config.CleanupTimeout)
+	defer cancel()
+	stats, err := p.removeDirs(ctx, p.config.RootFolder, filepath.FromSlash(id), p.config.Delay, p.workDir)
+	attrs := []any{slog.String(sessionIDLogKey, id), slog.Int("removed", stats.removed), slog.Int("kept", stats.kept), slog.Int("failed", stats.failed)}
+	switch {
+	case errors.Is(err, errTooDeep):
+		p.logger.Warn("the removal of the empty folders of a session is incomplete: part of the tree is too deep", append(attrs, slog.String("error", err.Error()))...)
+	case err != nil:
+		p.logger.Warn("the removal of the empty folders of a session stopped", append(attrs, slog.String("error", err.Error()))...)
+	case stats.failed > 0:
+		p.logger.Warn("empty folders of a session could not be removed", append(attrs, slog.String("first_error", stats.firstErr.Error()))...)
+	case stats.removed > 0:
+		p.logger.Info("empty folders removed", attrs...)
+	}
 }
 
 // fallbackOrLose writes the JSON report of a session after cause made the normal
@@ -719,7 +837,7 @@ func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, 
 		slog.String(sessionIDLogKey, cs.session.ID), slog.String("error", cause.Error()))
 	err := p.writeSessionReport(ctx, cs, viaJSON)
 	if err == nil {
-		p.rememberErrors(cs.session)
+		p.reported(cs.session)
 		if p.fallback.CompareAndSwap(false, true) {
 			p.hcc.NotifyError(ctx, fallbackEvent, fmt.Errorf("session reports could not be generated, JSON reports are written instead: %w", cause))
 		}
@@ -795,7 +913,7 @@ func (p *SessionPlugin) relieve(ctx context.Context, sessions []*closingSession)
 	for _, cs := range sessions {
 		err := p.writeSessionReport(ctx, cs, viaJSON)
 		if err == nil {
-			p.rememberErrors(cs.session)
+			p.reported(cs.session)
 			continue
 		}
 		p.loseReport(ctx, cs, err)

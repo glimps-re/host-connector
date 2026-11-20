@@ -106,6 +106,7 @@ func newRetention(t *testing.T, cfg Config) *retentionFixture {
 	t.Cleanup(f.p.cancelRun)
 	f.p.logger = slog.New(slog.NewTextHandler(f.logs, nil))
 	f.p.consoleLogger = slog.New(slog.DiscardHandler)
+	f.p.startCleanup()
 	return f
 }
 

@@ -130,6 +130,15 @@ session:
     # closed with a warning and the waiting files open a new one
     # inflight_timeout: 24h
 
+    # Remove the empty folders left below a session once its report is written
+    # (default: true; Linux only). The root folder and the folders of the
+    # sessions are kept, as is a folder changed less than "delay" ago or one that
+    # holds a file. false leaves the empty folders where they are
+    # remove_empty_dirs: true
+
+    # Time given to the removal of the empty folders of one session (default: 2m)
+    # cleanup_timeout: 2m
+
 # Report Plugin - Report generation (PDF/HTML)
 # Generates comprehensive scan reports in PDF or HTML format
 report:

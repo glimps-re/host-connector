@@ -53,6 +53,16 @@ func actionTimeoutForSize(fileSize int64) time.Duration {
 	return time.Duration(fileSize/(1024*1024*1024)+1) * actionTimeoutPerGB
 }
 
+// actionTimeout is the time the action chain is given for a file of size
+// bytes: the move of a copy is given the time its own throughput floor allows.
+func (c *Connector) actionTimeout(size int64) time.Duration {
+	d := actionTimeoutForSize(size)
+	if c.config.Actions.Move && c.config.MoveMode.copies() {
+		d = satAdd(d, moveTimeout(size, c.config.MoveMinThroughput))
+	}
+	return d
+}
+
 var (
 	LogLevel                                = &slog.LevelVar{}
 	logger                                  = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: LogLevel}))
@@ -134,7 +144,13 @@ type Config struct {
 	RecursiveExtractMaxFiles int
 	MoveTo                   string
 	MoveFrom                 string
-	FollowSymlinks           bool
+	// MoveMode is how the move action puts files in MoveTo: copy (default when
+	// empty) or rename.
+	MoveMode MoveMode
+	// MoveMinThroughput is the throughput, in bytes per second, below which a
+	// copy is given up; DefaultMoveMinThroughput when not positive.
+	MoveMinThroughput int64
+	FollowSymlinks    bool
 	// Roots are the monitored paths: a path is checked for symbolic links from
 	// the root that contains it. Without a root, the scan argument is the root.
 	Roots []string
@@ -316,6 +332,10 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		cfg.ExtractMinThreshold = defaultExtractMinThreshold
 	}
 
+	action, err := newAction(cfg, quarantiner)
+	if err != nil {
+		return nil, err
+	}
 	work, err := newWorkDir(cfg.WorkDir)
 	if err != nil {
 		return nil, err
@@ -330,7 +350,7 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		analysisChan:   make(chan fileToAnalyze, cfg.Workers),
 		config:         cfg,
 		archiveStatus:  newArchiveStatusHandler(),
-		action:         newAction(cfg, quarantiner),
+		action:         action,
 		generateReport: defaultGenerateReport,
 		stopIncoming:   make(chan struct{}),
 		stopWorker:     make(chan struct{}),
@@ -338,7 +358,7 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 	}, nil
 }
 
-func newAction(cfg Config, quarantiner quarantine.Quarantiner) *MultiAction {
+func newAction(cfg Config, quarantiner quarantine.Quarantiner) (*MultiAction, error) {
 	action := NewMultiAction(&ReportAction{})
 	if cfg.Actions.Log {
 		action.Actions = append(action.Actions, &LogAction{logger: logger})
@@ -350,18 +370,17 @@ func newAction(cfg Config, quarantiner quarantine.Quarantiner) *MultiAction {
 		action.Actions = append(action.Actions, &RemoveFileAction{})
 	}
 	if cfg.Actions.Move {
-		move, err := NewMoveAction(cfg.MoveTo, cfg.MoveFrom)
-		if err == nil {
-			action.Actions = append(action.Actions, move)
-		} else {
-			logger.Error("could not add move legit action", slog.String(logErrorKey, err.Error()))
+		move, err := NewMoveActionWithMode(cfg.MoveTo, cfg.MoveFrom, cfg.MoveMode, cfg.MoveMinThroughput)
+		if err != nil {
+			return nil, fmt.Errorf("move action: %w", err)
 		}
+		action.Actions = append(action.Actions, move)
 	}
 	if cfg.Actions.Inform {
 		action.Actions = append(action.Actions, &PrintAction{Verbose: cfg.Actions.Verbose, Out: cfg.Actions.InformDest})
 	}
 	action.Actions = append(action.Actions, cfg.CustomActions...)
-	return action
+	return action, nil
 }
 
 func (c *Connector) Start() (err error) {
@@ -568,7 +587,7 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 		return idErr
 	}
 	report := &datamodel.Report{}
-	actionCtx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(size))
+	actionCtx, cancel := context.WithTimeout(context.Background(), c.actionTimeout(size))
 	defer cancel()
 	if err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report); err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
@@ -964,7 +983,7 @@ func (c *Connector) processFile(input fileToAnalyze) {
 		return
 	}
 	report := &datamodel.Report{}
-	actionCtx, actionCancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
+	actionCtx, actionCancel := context.WithTimeout(context.Background(), c.actionTimeout(input.size))
 	defer actionCancel()
 	actionErr := c.action.Handle(actionCtx, input.input.source(input.location, input.identity, input.sha256), result, report)
 	if actionErr != nil {
@@ -1557,7 +1576,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 
 	if runAction {
 		report := &datamodel.Report{}
-		ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(status.result.FileSize))
+		ctx, cancel := context.WithTimeout(context.Background(), c.actionTimeout(status.result.FileSize))
 		defer cancel()
 		err = c.action.Handle(ctx, status.input.source(status.archiveLocation, status.identity, status.sha256), status.result, report)
 		if err != nil {

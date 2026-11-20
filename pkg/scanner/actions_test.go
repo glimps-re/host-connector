@@ -518,7 +518,7 @@ func TestMoveAction_Handle(t *testing.T) {
 				}
 			}()
 			origRename := moveFile
-			moveFile = func(oldsrc quarantine.MoveSource, newpath, _ string, _ func() time.Time, _ int) (string, error) {
+			moveFile = func(_ context.Context, oldsrc quarantine.MoveSource, newpath, _ string, _ func() time.Time, _ int) (string, error) {
 				if oldpath := oldsrc.Path; oldpath != tt.samplePath {
 					return "", fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
 				}
@@ -623,7 +623,7 @@ func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
 		return os.CreateTemp(t.TempDir(), "report*")
 	}
 	renamed := false
-	moveFile = func(quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
+	moveFile = func(context.Context, quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
 		renamed = true
 		return "", nil
 	}

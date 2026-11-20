@@ -264,6 +264,7 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 	}
 	h.resolveRejected(ctx)
 	h.reportUnknownKeys(ctx, unknownKeys(rawConfig))
+	h.reportMoveMode(ctx, conf)
 	return
 }
 

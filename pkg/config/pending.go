@@ -20,8 +20,6 @@ type pendingKey struct {
 
 // Each task implementing a key removes its entry from this list.
 var pendingKeys = []pendingKey{
-	{"move.mode", func(c *Config) string { return c.Move.Mode }, []string{"rename"}},
-	{"move.min_throughput", func(c *Config) string { return c.Move.MinThroughput }, nil},
 	{"unanalyzable_policy.too_big", func(c *Config) string { return c.UnanalyzablePolicy.TooBig }, []string{"error"}},
 	{"unanalyzable_policy.empty", func(c *Config) string { return c.UnanalyzablePolicy.Empty }, []string{"skip"}},
 	{"unanalyzable_policy.encrypted", func(c *Config) string { return c.UnanalyzablePolicy.Encrypted }, nil},

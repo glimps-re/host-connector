@@ -120,7 +120,7 @@ func TestApply_firstStartInvalidThenStartDoesNotPanic(t *testing.T) {
 	h := new(Handler)
 	h.stopped = true
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.setup(t.Context(), bad); err == nil {
 		t.Fatal("setup() error = nil, want a refusal")
 	}
@@ -147,7 +147,7 @@ func TestApply_validationFailureTouchesNothing(t *testing.T) {
 	conn, mon := h.Conn, h.monitor
 
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Configure(t.Context(), rawConf(t, bad)); err == nil {
 		t.Fatal("Configure() error = nil, want a refusal")
 	}
@@ -255,7 +255,7 @@ func TestApply_rejectedEventSurvivesStopStartAndIsResolvedByConfigure(t *testing
 	good := validConf(t, t.TempDir())
 	h := newRunningHandler(t, good)
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Configure(t.Context(), rawConf(t, bad)); err == nil {
 		t.Fatal("Configure() error = nil")
 	}
@@ -288,7 +288,7 @@ func TestApply_rejectionReminder(t *testing.T) {
 
 	h := newRunningHandler(t, validConf(t, t.TempDir()))
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Configure(t.Context(), rawConf(t, bad)); err == nil {
 		t.Fatal("Configure() error = nil")
 	}
@@ -496,7 +496,7 @@ func TestApply_rejectionTextFollowsTheRealState(t *testing.T) {
 	good := validConf(t, t.TempDir())
 	h := newRunningHandler(t, good)
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Stop(t.Context()); err != nil {
 		t.Fatal(err)
 	}

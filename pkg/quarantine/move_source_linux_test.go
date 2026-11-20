@@ -3,8 +3,9 @@
 package quarantine
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -28,7 +29,12 @@ func verifiedSource(t *testing.T, src string) MoveSource {
 			t.Error(e)
 		}
 	})
-	return MoveSource{Path: src, File: h.OS(), Remove: h.Remove}
+	content, err := os.ReadFile(filepath.Clean(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(content)
+	return MoveSource{Path: src, File: h.OS(), SHA256: hex.EncodeToString(sum[:]), Remove: h.Remove}
 }
 
 func fixedNow() func() time.Time {
@@ -44,7 +50,7 @@ func TestMoveResolvingConflicts_aNameSwappedBeforeTheMoveLeavesTheFileInPlace(t 
 		t.Fatal(err)
 	}
 	writeFile(t, src, "UNVERIFIED content", 0o640)
-	_, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+	_, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 	if !errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("error = %v, want ErrSourceChanged: the verified inode keeps a name in the source folder", err)
 	}
@@ -59,7 +65,7 @@ func TestMoveResolvingConflicts_aNameSwappedBeforeTheMoveLeavesTheFileInPlace(t 
 func TestMoveResolvingConflicts_sourceWithoutDescriptorIsRefused(t *testing.T) {
 	src, dst, staging := newMoveDirs(t)
 	writeFile(t, src, "x", 0o640)
-	_, err := MoveResolvingConflicts(MoveSource{Path: src}, dst, staging, fixedNow(), 3)
+	_, err := MoveResolvingConflicts(t.Context(), MoveSource{Path: src}, dst, staging, fixedNow(), 3)
 	if !errors.Is(err, ErrNoVerifiedSource) {
 		t.Errorf("error = %v, want ErrNoVerifiedSource: no move by name on Linux", err)
 	}
@@ -72,7 +78,7 @@ func TestMoveResolvingConflicts_takenNamesGetConflictNames(t *testing.T) {
 	src, dst, staging := newMoveDirs(t)
 	writeFile(t, dst, "already there", 0o640)
 	writeFile(t, src, "verified", 0o640)
-	got, err := MoveResolvingConflicts(verifiedSource(t, src), dst, staging, fixedNow(), 3)
+	got, err := MoveResolvingConflicts(t.Context(), verifiedSource(t, src), dst, staging, fixedNow(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +101,7 @@ func TestMoveResolvingConflicts_linkRefusedFallsBackToACopyReadFromTheDescriptor
 				t.Fatal(err)
 			}
 			writeFile(t, src, "UNVERIFIED", 0o640)
-			got, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+			got, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +129,7 @@ func TestMoveResolvingConflicts_failedRemovalTakesTheDestinationBack(t *testing.
 			writeFile(t, src, "verified", 0o640)
 			ms := verifiedSource(t, src)
 			ms.Remove = func() error { return &os.PathError{Op: "remove", Path: src, Err: tc.cause} }
-			_, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+			_, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 			if err == nil || errors.Is(err, ErrSourceNotRemovable) != tc.permanent {
 				t.Fatalf("error = %v, want ErrSourceNotRemovable = %t", err, tc.permanent)
 			}
@@ -141,18 +147,16 @@ func TestMoveResolvingConflicts_aFileWrittenAfterTheCopyIsNotMoved(t *testing.T)
 	src, dst, staging := newMoveDirs(t)
 	writeFile(t, src, "verified content", 0o640)
 	ms := verifiedSource(t, src)
-	prevLink, prevCopy := linkFD, copyData
-	t.Cleanup(func() { linkFD, copyData = prevLink, prevCopy })
+	prevLink := linkFD
+	t.Cleanup(func() { linkFD = prevLink })
 	linkFD = func(*os.File, string) error { return syscall.EXDEV }
-	copyData = func(w io.Writer, r io.Reader) (int64, error) {
-		n, err := io.Copy(w, r)
-		// The depositor keeps writing while the copy is made.
+	// The depositor keeps writing while the copy is made.
+	withHooks(t, func(int64) {
 		if e := os.WriteFile(src, []byte("verified content, then more"), 0o600); e != nil {
 			t.Error(e)
 		}
-		return n, err
-	}
-	if _, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3); !errors.Is(err, ErrSourceChanged) {
+	}, nil)
+	if _, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3); !errors.Is(err, ErrSourceChanged) {
 		t.Errorf("error = %v, want ErrSourceChanged", err)
 	}
 	if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
@@ -167,7 +171,7 @@ func TestMoveResolvingConflicts_aSiblingHardLinkGetsACopy(t *testing.T) {
 	if err := os.Link(src, sibling); err != nil {
 		t.Fatal(err)
 	}
-	got, err := MoveResolvingConflicts(verifiedSource(t, src), dst, staging, fixedNow(), 3)
+	got, err := MoveResolvingConflicts(t.Context(), verifiedSource(t, src), dst, staging, fixedNow(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +196,7 @@ func TestMoveResolvingConflicts_aLinkMadeAfterThePublicationTakesTheDestinationB
 		}
 		return remove()
 	}
-	_, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+	_, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 	if !errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("error = %v, want ErrSourceChanged", err)
 	}
@@ -212,7 +216,7 @@ func TestMoveResolvingConflicts_aRenameDuringTheMoveTakesTheDestinationBack(t *t
 		}
 		return remove()
 	}
-	_, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+	_, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 	if !errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("error = %v, want ErrSourceChanged", err)
 	}
@@ -230,7 +234,7 @@ func TestMoveResolvingConflicts_copyFallbackWithoutExchangeMovesTheFile(t *testi
 			prev := linkFD
 			t.Cleanup(func() { linkFD = prev })
 			linkFD = func(*os.File, string) error { return errno }
-			got, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+			got, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -255,7 +259,7 @@ func TestMoveResolvingConflicts_copyFallbackKeepsTheCopyWhenTheSourceHasAnotherN
 	if err := os.Link(src, sibling); err != nil {
 		t.Fatal(err)
 	}
-	got, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+	got, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,7 +285,7 @@ func TestMoveResolvingConflicts_unreadableLinkCountTakesTheDestinationBack(t *te
 		}
 		return err
 	}
-	_, err = MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+	_, err = MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 	if !errors.Is(err, ErrSourceChanged) {
 		t.Fatalf("error = %v, want ErrSourceChanged", err)
 	}

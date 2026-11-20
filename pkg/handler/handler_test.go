@@ -12,12 +12,12 @@ import (
 func TestHandler_SetupRefusesPendingKey(t *testing.T) {
 	h := new(Handler)
 	conf := &config.Config{}
-	conf.Move.Mode = "copy"
+	conf.UnanalyzablePolicy.ExtractError = "pass"
 	err := h.setup(t.Context(), conf)
 	if !errors.Is(err, config.ErrNotImplemented) {
 		t.Fatalf("setup() error = %v, want ErrNotImplemented", err)
 	}
-	if !strings.Contains(err.Error(), "move.mode") {
+	if !strings.Contains(err.Error(), "unanalyzable_policy.extract_error") {
 		t.Errorf("setup() error = %v, want key name", err)
 	}
 }

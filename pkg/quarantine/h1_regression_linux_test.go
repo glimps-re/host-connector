@@ -41,7 +41,7 @@ func TestH1_aRenameBetweenThePublicationAndTheRemovalNeverLeavesTheDeliveredFile
 				}
 				return nil
 			}
-			final, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+			final, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 
 			published, statErr := os.Lstat(dst)
 			if err != nil || final == "" {
@@ -104,7 +104,7 @@ func TestH1_theCopyFallbackPublishesTheContentAndRemovesTheSource(t *testing.T) 
 				linkFD = func(*os.File, string) error {
 					return &os.LinkError{Op: "linkat", Old: src, New: dst, Err: refusal}
 				}
-				final, err := MoveResolvingConflicts(ms, dst, staging, fixedNow(), 3)
+				final, err := MoveResolvingConflicts(t.Context(), ms, dst, staging, fixedNow(), 3)
 				if err != nil {
 					t.Fatalf("MoveResolvingConflicts() error = %v, want the move to succeed", err)
 				}

@@ -32,8 +32,6 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"empty", "debug: true\n", ""},
 		{"tar", "quarantine:\n  format: tar\n", ""},
 		{"accepted explicit values", "move:\n  mode: rename\nunanalyzable_policy:\n  too_big: error\n  empty: skip\nmonitoring:\n  disable_fs_watcher: false\nwork_dir: \"\"\nquarantine:\n  format: tar\n", ""},
-		{"move.mode", "move:\n  mode: copy\n", "move.mode"},
-		{"min_throughput", "move:\n  min_throughput: 10MiB\n", "move.min_throughput"},
 		{"too_big", "unanalyzable_policy:\n  too_big: pass\n", "unanalyzable_policy.too_big"},
 		{"empty", "unanalyzable_policy:\n  empty: mitigate\n", "unanalyzable_policy.empty"},
 		{"encrypted", "unanalyzable_policy:\n  encrypted: error\n", "unanalyzable_policy.encrypted"},

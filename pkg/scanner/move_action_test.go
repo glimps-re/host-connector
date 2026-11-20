@@ -123,7 +123,7 @@ func TestMoveAction_conflictsExhausted(t *testing.T) {
 	p := f.deposit(t, "a.txt", "content")
 	prev := moveFile
 	attempts := 0
-	moveFile = func(quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
+	moveFile = func(context.Context, quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
 		attempts++
 		return "", quarantine.ErrDestinationExists
 	}

@@ -29,7 +29,12 @@ const (
 	// HostConfigUnknownKeys is raised when the console sends keys this version
 	// does not know, and resolved by the next Configure without such keys.
 	HostConfigUnknownKeys events.ErrorEventType = "host-config-unknown-keys"
+	// HostMoveRename is raised at each configuration applied with the move
+	// action in rename mode, and resolved by the next one that is not.
+	HostMoveRename events.ErrorEventType = "host-move-rename"
 )
+
+const moveRenameWarning = "move.mode is rename: files are moved as the inode that was analyzed, a writer that still holds one open can change what reaches the destination; use copy to publish exactly what was analyzed"
 
 const (
 	rejectedNotApplied  = "the previous configuration stays in service; the requested configuration is NOT applied; after a restart the connector will receive the rejected configuration and will not start"
@@ -56,6 +61,7 @@ type prepared struct {
 	extractMinSize          int64
 	recursiveExtractMaxSize int64
 	maxTracked              int64
+	moveMinThroughput       int64
 	pluginsConfig           []scanner.PluginConfig
 }
 
@@ -84,6 +90,15 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 		}
 		if p.maxTracked < minTrackedMemory {
 			return nil, fmt.Errorf("monitoring.max_tracked_memory %q is below the minimum of 1MiB", conf.Monitoring.MaxTrackedMemory)
+		}
+	}
+	p.moveMinThroughput = scanner.DefaultMoveMinThroughput
+	if conf.Move.MinThroughput != "" {
+		if p.moveMinThroughput, err = units.ParseStrictBytes(conf.Move.MinThroughput); err != nil {
+			return nil, fmt.Errorf("could not parse move.min_throughput %q: %w", conf.Move.MinThroughput, err)
+		}
+		if p.moveMinThroughput <= 0 {
+			return nil, fmt.Errorf("move.min_throughput %q must be greater than 0", conf.Move.MinThroughput)
 		}
 	}
 	switch {
@@ -494,6 +509,8 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		RecursiveExtractMaxFiles: conf.RecursiveExtractMaxFiles,
 		MoveTo:                   conf.Move.Destination,
 		MoveFrom:                 conf.Move.Source,
+		MoveMode:                 scanner.MoveMode(conf.Move.Mode),
+		MoveMinThroughput:        p.moveMinThroughput,
 	}, quarantiner, h.submitter)
 }
 
@@ -568,6 +585,24 @@ func (h *Handler) reportUnknownKeys(ctx context.Context, keys []string) {
 	msg := fmt.Sprintf("unknown configuration keys: %v; %s", capKeys(keys), unknownKeysNoEffect)
 	logger.Warn(msg)
 	if e := eventHandler.NotifyError(ctx, HostConfigUnknownKeys, errors.New(msg)); e != nil {
+		logger.Warn("could not push console error", slog.String("error", e.Error()))
+	}
+}
+
+// reportMoveMode keeps the rename mode of the move action visible for as long as
+// it is in service: files reach the destination as the very inode a writer may
+// still hold open, so what is published is not guaranteed to be what was analyzed.
+func (h *Handler) reportMoveMode(ctx context.Context, conf *config.Config) {
+	if !conf.Actions.Move || conf.Move.Mode != string(scanner.MoveModeRename) {
+		if e := eventHandler.NotifyResolution(ctx, "the move action copies files", HostMoveRename); e != nil {
+			logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
+		}
+		return
+	}
+	msg := moveRenameWarning
+	logger.Warn(msg)
+	scanner.ConsoleLogger.Warn(msg)
+	if e := eventHandler.NotifyError(ctx, HostMoveRename, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))
 	}
 }

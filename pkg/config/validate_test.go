@@ -70,6 +70,7 @@ func TestExplicitAcceptedValues(t *testing.T) {
 	conf.Monitoring.DisableFSWatcher = false
 	conf.Monitoring.MaxTrackedDirPercent = 0
 	conf.Move.Mode = "rename"
+	conf.Move.MinThroughput = "10MiB"
 	conf.WorkDir = ""
 	conf.UnanalyzablePolicy.TooBig = "error"
 	conf.UnanalyzablePolicy.Empty = "skip"
@@ -78,7 +79,6 @@ func TestExplicitAcceptedValues(t *testing.T) {
 		t.Errorf("CheckImplemented(explicit accepted values) = %v", err)
 	}
 	for _, mutate := range []func(){
-		func() { conf.Move.Mode = "copy" },
 		func() { conf.UnanalyzablePolicy.TooBig = "pass" },
 		func() { conf.UnanalyzablePolicy.Empty = "pass" },
 	} {

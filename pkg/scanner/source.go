@@ -65,6 +65,12 @@ type Source struct {
 	// by the pipeline itself (a plugin can replace the one of the result). The
 	// actions that delete, move or quarantine the source refuse one without it.
 	SHA256 string
+	// TooBig is true when the pipeline did not analyze the content because the
+	// file is larger than max_file_size (too_big policy, or an encrypted archive
+	// over the limit). Set by the pipeline from its own decision, never from the
+	// result or from the size alone: a large archive that was extracted and
+	// analyzed is not too big.
+	TooBig bool
 
 	// handle is the file the pipeline opened without following any link, set
 	// where the platform allows it.
@@ -251,7 +257,7 @@ func (s Source) removeLinked() error {
 
 // moveSource is the source as a move takes it.
 func (s Source) moveSource() quarantine.MoveSource {
-	ms := quarantine.MoveSource{Path: s.Path, Remove: s.removeLinked}
+	ms := quarantine.MoveSource{Path: s.Path, SHA256: s.SHA256, Remove: s.removeLinked}
 	if s.handle != nil {
 		ms.File = s.handle.OS()
 	}

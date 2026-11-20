@@ -181,7 +181,7 @@ func TestApplyContract_refusedConfigureKeepsProcessingWithOldConfig(t *testing.T
 	}
 
 	bad := validConf(t, watched)
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Configure(t.Context(), rawConf(t, bad)); err == nil {
 		t.Fatal("Configure() error = nil, want a refusal")
 	}
@@ -219,7 +219,10 @@ func TestApplyContract_prepareRefusals(t *testing.T) {
 			}
 			c.PluginsConfig = p
 		}, "plugins config"},
-		{"pending key", func(c *config.Config) { c.Move.Mode = "copy" }, "move.mode"},
+		{"unknown move mode", func(c *config.Config) { c.Move.Mode = "rnme" }, "mode"},
+		{"unparsable move throughput", func(c *config.Config) { c.Move.MinThroughput = "fast" }, "move.min_throughput"},
+		{"zero move throughput", func(c *config.Config) { c.Move.MinThroughput = "0" }, "move.min_throughput"},
+		{"pending key", func(c *config.Config) { c.UnanalyzablePolicy.ExtractError = "pass" }, "unanalyzable_policy.extract_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

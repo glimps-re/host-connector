@@ -17,8 +17,6 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 		raw     string
 		wantKey string
 	}{
-		{"move mode", `{"move":{"mode":"copy"}}`, "move.mode"},
-		{"min_throughput", `{"move":{"min_throughput":"10MiB"}}`, "move.min_throughput"},
 		{"too_big", `{"unanalyzable_policy":{"too_big":"pass"}}`, "unanalyzable_policy.too_big"},
 		{"empty", `{"unanalyzable_policy":{"empty":"mitigate"}}`, "unanalyzable_policy.empty"},
 		{"encrypted", `{"unanalyzable_policy":{"encrypted":"pass"}}`, "unanalyzable_policy.encrypted"},
@@ -66,7 +64,7 @@ func TestHandler_ConfigureRefusalNotifiesAndKeepsState(t *testing.T) {
 	oldConf.Debug = true
 	h := &Handler{conf: oldConf, needSetup: true, configured: true}
 	t.Cleanup(h.stopRejectReminder)
-	err := h.Configure(t.Context(), json.RawMessage(`{"move":{"mode":"copy"}}`))
+	err := h.Configure(t.Context(), json.RawMessage(`{"unanalyzable_policy":{"extract_error":"pass"}}`))
 	if !errors.Is(err, config.ErrNotImplemented) {
 		t.Fatalf("Configure() error = %v, want ErrNotImplemented", err)
 	}

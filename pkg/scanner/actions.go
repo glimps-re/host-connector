@@ -8,12 +8,14 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -411,12 +413,94 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 	return nil
 }
 
+// MoveMode is the way the move action puts a file in the destination.
+type MoveMode string
+
+const (
+	// MoveModeCopy writes a copy whose SHA256 is the one analyzed: the inode of
+	// the source never reaches the destination, so a writer that kept the file
+	// open cannot change what was published.
+	MoveModeCopy MoveMode = "copy"
+	// MoveModeRename moves the inode itself (link or rename, then removal of
+	// the old name): cheaper, but a writer holding the file open can still write
+	// to what reached the destination.
+	MoveModeRename MoveMode = "rename"
+)
+
+// copies tells whether the mode copies the file: everything but MoveModeRename,
+// the empty mode included.
+func (m MoveMode) copies() bool { return m != MoveModeRename }
+
+// DefaultMoveMinThroughput is the throughput, in bytes per second, below which
+// a copy is given up as a resource failure.
+const DefaultMoveMinThroughput int64 = 10 << 20
+
+// minThroughputOrDefault is the throughput a copy is held to: the configured
+// one, or the default when it is not positive.
+func minThroughputOrDefault(v int64) int64 {
+	if v <= 0 {
+		return DefaultMoveMinThroughput
+	}
+	return v
+}
+
+// satAdd adds two durations and saturates instead of wrapping around.
+func satAdd(a, b time.Duration) time.Duration {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+// moveGrace is added to the time a copy is given for its size.
+const moveGrace = time.Minute
+
+// errResourceAction marks a move that failed for lack of space or throughput at
+// the destination: the file is not at fault, it is retried without consuming an
+// attempt.
+var errResourceAction = errors.New("not enough space or throughput at the destination")
+
+// moveTimeout is the time a copy of size bytes is given: its size at the
+// minimum throughput, plus a grace. It saturates at the largest duration.
+func moveTimeout(size, minThroughput int64) time.Duration {
+	secs := size / minThroughputOrDefault(minThroughput)
+	if secs > math.MaxInt64/int64(time.Second) {
+		return math.MaxInt64
+	}
+	return satAdd(time.Duration(secs)*time.Second, moveGrace)
+}
+
+// MoveAction puts the analyzed files that are not malware in Dest, under the
+// same relative path as below Src.
 type MoveAction struct {
 	Dest string
 	Src  string
+	// Mode is how a file reaches Dest. Only MoveModeRename renames: the zero
+	// value copies, as the default of the connector does.
+	Mode MoveMode
+	// MinThroughput is the throughput in bytes per second below which a copy is
+	// given up; DefaultMoveMinThroughput when not positive.
+	MinThroughput int64
+
+	resourceDown atomic.Bool
 }
 
+// NewMoveAction is NewMoveActionWithMode in MoveModeRename: it is kept for the
+// callers and the tests that predate the copy mode, it is not the default.
 func NewMoveAction(dest string, src string) (a *MoveAction, err error) {
+	return NewMoveActionWithMode(dest, src, MoveModeRename, 0)
+}
+
+// NewMoveActionWithMode builds a move action. An empty mode is MoveModeCopy; any
+// other value than copy and rename is refused.
+func NewMoveActionWithMode(dest, src string, mode MoveMode, minThroughput int64) (a *MoveAction, err error) {
+	switch mode {
+	case "":
+		mode = MoveModeCopy
+	case MoveModeCopy, MoveModeRename:
+	default:
+		return nil, fmt.Errorf("unknown move mode %q", mode)
+	}
 	absDst, err := filepath.Abs(dest)
 	if err != nil {
 		return
@@ -426,8 +510,10 @@ func NewMoveAction(dest string, src string) (a *MoveAction, err error) {
 		return
 	}
 	a = &MoveAction{
-		Src:  absSrc,
-		Dest: absDst,
+		Src:           absSrc,
+		Dest:          absDst,
+		Mode:          mode,
+		MinThroughput: minThroughput,
 	}
 	return
 }
@@ -510,7 +596,7 @@ func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Re
 	if err = src.ready(); err != nil {
 		return
 	}
-	target, err := a.moveWithoutReplace(src, dest)
+	target, err := a.place(ctx, src, dest)
 	if err != nil {
 		return
 	}
@@ -527,11 +613,146 @@ func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Re
 
 // moveWithoutReplace moves path to dest, or when dest exists to a conflict name
 // next to it: a file already in the destination is never overwritten.
-func (a *MoveAction) moveWithoutReplace(src Source, dest string) (target string, err error) {
+// moveClass is how a file is put in the destination in MoveModeCopy.
+type moveClass int
+
+const (
+	// classCopy: the content is copied and verified against the analyzed
+	// SHA256 (analyzed files, archives, files skipped by type or path, restored
+	// files, encrypted files within the size limit).
+	classCopy moveClass = iota
+	// classEmpty: a new empty file is created; there is no content to copy.
+	classEmpty
+	// classByPath: the file is moved as in MoveModeRename. The only such file is
+	// one too big to be analyzed that the policy lets through: copying it would
+	// take longer than the analysis refused it for.
+	classByPath
+)
+
+// classOf tells how a file is put in the destination in MoveModeCopy. Only the
+// pipeline's own decision sends a file by name (src.TooBig): a plugin can change
+// a result, the reason of a member too big is carried to its archive, and a
+// large archive that was extracted and analyzed is not too big. Nothing sets
+// TooBig yet, so no file goes by name.
+func classOf(src Source) moveClass {
+	switch {
+	case src.Identity.Size == 0:
+		return classEmpty
+	case src.TooBig:
+		return classByPath
+	default:
+		return classCopy
+	}
+}
+
+// place puts the file in dest according to the mode, and returns the path it
+// has there.
+func (a *MoveAction) place(ctx context.Context, src Source, dest string) (string, error) {
+	class := classOf(src)
+	if !a.Mode.copies() || class == classByPath {
+		return a.moveWithoutReplace(ctx, src, dest)
+	}
 	if fi, statErr := lstat(dest); statErr == nil && fi.IsDir() {
 		return "", fmt.Errorf("%w: %s is a directory", errPermanentAction, dest)
 	}
-	target, err = moveFile(src.moveSource(), dest, filepath.Join(a.Dest, quarantine.StagingDir), now, maxMoveConflicts)
+	var (
+		target string
+		err    error
+	)
+	switch class {
+	case classEmpty:
+		target, err = a.moveEmpty(src, dest)
+	default:
+		target, err = a.moveCopy(ctx, src, dest)
+	}
+	if err != nil {
+		return "", a.classifyCopyError(ctx, err, dest)
+	}
+	a.resourceRecovered(ctx)
+	return target, nil
+}
+
+func (a *MoveAction) stagingDir() string { return filepath.Join(a.Dest, quarantine.StagingDir) }
+
+func (a *MoveAction) moveCopy(ctx context.Context, src Source, dest string) (string, error) {
+	f, release, err := src.Open()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	ctx, cancel := context.WithTimeout(ctx, moveTimeout(src.Identity.Size, a.MinThroughput))
+	defer cancel()
+	return quarantine.MoveVerifiedCopy(ctx, f, src.Remove, dest, a.stagingDir(), src.SHA256, now, maxMoveConflicts)
+}
+
+func (a *MoveAction) moveEmpty(src Source, dest string) (string, error) {
+	f, release, err := src.Open()
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if info.Size() != 0 {
+		return "", fmt.Errorf("%w: %s", quarantine.ErrSourceChanged, src.Path)
+	}
+	return quarantine.MoveEmpty(src.Remove, src.Path, info.Mode(), dest, now, maxMoveConflicts)
+}
+
+// classifyCopyError sorts the failure of a copy: no space or throughput is a
+// resource failure of the destination, names all taken is permanent, the rest is
+// as for any move.
+func (a *MoveAction) classifyCopyError(ctx context.Context, err error, dest string) error {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), isNoSpace(err):
+		a.resourceFailed(ctx, err)
+		return fmt.Errorf("%w: %w", errResourceAction, err)
+	case errors.Is(err, quarantine.ErrDestinationExists):
+		return fmt.Errorf("%w: %d names taken for %s", errPermanentAction, maxMoveConflicts+1, dest)
+	case errors.Is(err, quarantine.ErrNoExpectedHash):
+		return fmt.Errorf("%w: %w", errPermanentAction, err)
+	default:
+		return classifyDestinationError(err)
+	}
+}
+
+// moveResourceEvent is the console event raised while a move fails for lack of
+// space or throughput at the destination.
+const moveResourceEvent events.ErrorEventType = "host-move-resource"
+
+// resourceFailed raises the console error (once until it is resolved).
+func (a *MoveAction) resourceFailed(ctx context.Context, cause error) {
+	if !a.resourceDown.CompareAndSwap(false, true) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), eventTimeout)
+	defer cancel()
+	if e := EventHandler.NotifyError(ctx, moveResourceEvent, fmt.Errorf("not enough space or throughput at the destination of the move: %w", cause)); e != nil {
+		a.resourceDown.Store(false)
+		logger.Warn("could not push console error", slog.String(logErrorKey, e.Error()))
+	}
+}
+
+// resourceRecovered resolves the console error once a file was moved.
+func (a *MoveAction) resourceRecovered(ctx context.Context) {
+	if !a.resourceDown.CompareAndSwap(true, false) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), eventTimeout)
+	defer cancel()
+	if e := EventHandler.NotifyResolution(ctx, "the destination of the move accepts files again", moveResourceEvent); e != nil {
+		a.resourceDown.Store(true)
+		logger.Warn("could not push resolution event to connector manager", slog.String(logErrorKey, e.Error()))
+	}
+}
+
+func (a *MoveAction) moveWithoutReplace(ctx context.Context, src Source, dest string) (target string, err error) {
+	if fi, statErr := lstat(dest); statErr == nil && fi.IsDir() {
+		return "", fmt.Errorf("%w: %s is a directory", errPermanentAction, dest)
+	}
+	target, err = moveFile(ctx, src.moveSource(), dest, a.stagingDir(), now, maxMoveConflicts)
 	switch {
 	case err == nil:
 		return target, nil

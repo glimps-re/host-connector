@@ -1,6 +1,7 @@
 package quarantine
 
 import (
+	"context"
 	"errors"
 	"os"
 	"time"
@@ -20,6 +21,11 @@ type MoveSource struct {
 	// (Linux): the move publishes that very inode, whatever the name holds by
 	// then.
 	File *os.File
+	// SHA256 is the hash the file was analyzed with. A copy made by the move (a
+	// file system that refuses links, or another device) is verified against it
+	// before it is published, and refused with ErrNoExpectedHash when it is
+	// missing.
+	SHA256 string
 	// Remove removes the source through the verified handle: only the name the
 	// file was opened under, and only if it still is that file.
 	Remove func() error
@@ -28,14 +34,10 @@ type MoveSource struct {
 // MoveResolvingConflicts moves the source to dst, or when dst exists to a
 // ConflictName next to it, up to maxConflicts names (see
 // MoveFileResolvingConflicts). On Linux the verified descriptor is published
-// (hard link made from it, or a copy read from it when the file system refuses
-// links) and the source is then removed through the verified handle; a source
-// without descriptor is refused. Elsewhere the move goes by name.
-func MoveResolvingConflicts(src MoveSource, dst, stagingDir string, now func() time.Time, maxConflicts int) (string, error) {
-	return moveSource(src, dst, stagingDir, func(attempt int) (string, bool) {
-		if attempt >= maxConflicts {
-			return "", false
-		}
-		return ConflictName(dst, now(), attempt), true
-	})
+// (hard link made from it, or a verified copy read from it when the file system
+// refuses links) and the source is then removed through the verified handle; a
+// source without descriptor is refused. Elsewhere the move goes by name. A
+// copy is interrupted by ctx.
+func MoveResolvingConflicts(ctx context.Context, src MoveSource, dst, stagingDir string, now func() time.Time, maxConflicts int) (string, error) {
+	return moveSource(ctx, src, dst, stagingDir, conflictNames(dst, now, maxConflicts))
 }

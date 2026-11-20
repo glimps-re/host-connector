@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"sync"
-	"syscall"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -143,7 +142,7 @@ type resultView struct {
 // action: it timed out or the disk is full. A timeout of the analysis is not
 // one: a huge file would be retried for ever.
 func isResourceAction(err error) bool {
-	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, syscall.ENOSPC)
+	return errors.Is(err, errResourceAction) || errors.Is(err, context.DeadlineExceeded) || isNoSpace(err)
 }
 
 // errAbandoned is the Error given to the plugins of a file that was started and

@@ -1,6 +1,7 @@
 package quarantine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -46,6 +47,7 @@ var (
 // a system without atomic rename, a collision of transit names.
 var (
 	osLink           = os.Link
+	osRemove         = os.Remove
 	copyData         = io.Copy
 	atomicRename     = renameNoReplaceAtomicOS
 	stagedNameSuffix = randomHex
@@ -87,48 +89,76 @@ func MoveFileNoReplace(src, dst, stagingDir string) error {
 // file systems is made once and published under each candidate name. It
 // returns the path the file now has.
 func MoveFileResolvingConflicts(src, dst, stagingDir string, now func() time.Time, maxConflicts int) (string, error) {
-	return moveFile(src, dst, stagingDir, func(attempt int) (string, bool) {
-		if attempt >= maxConflicts {
-			return "", false
-		}
-		return ConflictName(dst, now(), attempt), true
-	})
+	return moveFile(src, dst, stagingDir, conflictNames(dst, now, maxConflicts))
 }
 
 // moveFile publishes src under dst, then under next(attempt) while the name is
 // taken. When src is on another device it is first copied into stagingDir.
-func moveFile(src, dst, stagingDir string, next func(attempt int) (string, bool)) (final string, err error) {
-	cur, staged, target := src, "", dst
-	var srcInfo fs.FileInfo
-	defer func() {
-		if staged != "" {
-			if e := os.Remove(staged); e != nil && !errors.Is(e, fs.ErrNotExist) {
-				logger.Error("move cannot remove the staged copy", slog.String("file", staged), slog.String("error", e.Error()))
-			}
-		}
-	}()
-	for attempt := 0; ; {
-		renamed, pubErr := publishNoReplace(cur, target)
+func moveFile(src, dst, stagingDir string, next func(attempt int) (string, bool)) (string, error) {
+	return runPublication(&pathMove{src: src, cur: src, stagingDir: stagingDir}, dst, next)
+}
+
+// pathMove moves a file known by its name. When verified is set, the copy made
+// across devices is read under ctx and must hash to sha256.
+type pathMove struct {
+	ctx                  context.Context
+	sha256               string
+	verified             bool
+	src, cur, stagingDir string
+	staged               string
+	srcInfo              fs.FileInfo
+	renamed              bool
+}
+
+func (m *pathMove) publish(target string) error {
+	for {
+		renamed, err := publishNoReplace(m.cur, target)
 		switch {
-		case pubErr == nil:
-			return target, finishMove(src, target, cur == src, renamed, srcInfo)
-		case errors.Is(pubErr, syscall.EXDEV) && staged == "":
-			if staged, srcInfo, err = stageCopy(src, stagingDir); err != nil {
-				return "", err
+		case err == nil:
+			m.renamed = renamed
+			return nil
+		case errors.Is(err, syscall.EXDEV) && m.staged == "":
+			if m.staged, m.srcInfo, err = m.stage(); err != nil {
+				return err
 			}
-			cur = staged
-		case errors.Is(pubErr, ErrDestinationExists):
-			name, ok := next(attempt)
-			if !ok {
-				return "", pubErr
-			}
-			target = name
-			attempt++
+			m.cur = m.staged
 		default:
-			return "", pubErr
+			return err
 		}
 	}
 }
+
+// stage copies the source into the transit directory.
+func (m *pathMove) stage() (string, fs.FileInfo, error) {
+	if !m.verified {
+		return stageCopy(m.src, m.stagingDir)
+	}
+	want, err := parseSHA256(m.sha256)
+	if err != nil {
+		return "", nil, err
+	}
+	in, err := os.Open(filepath.Clean(m.src))
+	if err != nil {
+		return "", nil, err
+	}
+	defer func() {
+		if e := in.Close(); e != nil {
+			logger.Error("move cannot close the source file", slog.String("file", m.src), slog.String("error", e.Error()))
+		}
+	}()
+	return stageVerified(m.ctx, in, m.stagingDir, want)
+}
+
+func (m *pathMove) finish(target string) error {
+	if m.cur != m.src {
+		if err := syncDir(filepath.Dir(target)); err != nil {
+			return rollback(target, fmt.Errorf("could not make %s durable: %w", target, err))
+		}
+	}
+	return finishMove(m.src, target, m.cur == m.src, m.renamed, m.srcInfo)
+}
+
+func (m *pathMove) cleanup() { removeStaged(m.staged) }
 
 // finishMove removes what is left of the source once the destination exists.
 func finishMove(src, dst string, linkedSource, renamed bool, copied fs.FileInfo) error {
@@ -203,7 +233,7 @@ func removeSource(src, dst string, linked bool) error {
 			return rollback(dst, fmt.Errorf("%w: %s is no longer the file that was moved", ErrSourceChanged, src))
 		}
 	}
-	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
+	if err := osRemove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return rollback(dst, fmt.Errorf("could not remove %s after moving it: %w", src, MarkRemovalRefused(err)))
 	}
 	return nil
@@ -245,17 +275,37 @@ func stageCopy(src, stagingDir string) (staged string, srcInfo fs.FileInfo, err 
 	return stageFrom(in, src, stagingDir, func(before fs.FileInfo) error { return checkUnchanged(in, before, src) })
 }
 
-// stageFrom copies in into a new file of the transit directory. verify is
-// called once the copy is made, with the file as it was when it began.
+// stageFrom copies in into a new file of the transit directory, without a
+// known hash: only the size read and verify, called once the copy is made with
+// the file as it was when it began, tell a source that changed. Only moves by
+// name, which have no hash, use it.
 func stageFrom(in *os.File, label, stagingDir string, verify func(before fs.FileInfo) error) (staged string, srcInfo fs.FileInfo, err error) {
+	return stagePrivate(in, label, stagingDir, func(out *os.File, info fs.FileInfo) error {
+		n, err := copyData(out, in)
+		if err == nil && n != info.Size() {
+			err = fmt.Errorf("%w: copied %d bytes of %d", ErrSourceChanged, n, info.Size())
+		}
+		return err
+	}, verify)
+}
+
+// copiedMode is what a copy keeps of the mode of the source: the permission
+// bits, without setuid, setgid or sticky, and without write for others (a file
+// the connector publishes must not be writable by anyone).
+const copiedMode = 0o775
+
+// stagePrivate creates a new private file in the transit directory, has fill
+// write the content of in into it, then verify check the source, and makes the
+// file durable. Nothing is left behind on failure.
+func stagePrivate(in *os.File, label, stagingDir string, fill func(out *os.File, info fs.FileInfo) error, verify func(info fs.FileInfo) error) (staged string, info fs.FileInfo, err error) {
 	if err = prepareStaging(stagingDir); err != nil {
 		return "", nil, err
 	}
-	srcInfo, err = in.Stat()
+	info, err = in.Stat()
 	if err != nil {
 		return "", nil, err
 	}
-	if !srcInfo.Mode().IsRegular() {
+	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("%s is not a regular file", label)
 	}
 	staged, out, err := createStaged(stagingDir)
@@ -264,23 +314,16 @@ func stageFrom(in *os.File, label, stagingDir string, verify func(before fs.File
 	}
 	defer func() {
 		if err != nil {
-			if e := os.Remove(staged); e != nil && !errors.Is(e, fs.ErrNotExist) {
-				logger.Error("move cannot remove the staged copy", slog.String("file", staged), slog.String("error", e.Error()))
-			}
+			removeStaged(staged)
 			staged = ""
 		}
 	}()
-	n, err := copyData(out, in)
-	if err == nil && n != srcInfo.Size() {
-		err = fmt.Errorf("%w: copied %d bytes of %d", ErrSourceChanged, n, srcInfo.Size())
+	err = fill(out, info)
+	if err == nil && verify != nil {
+		err = verify(info)
 	}
 	if err == nil {
-		err = verify(srcInfo)
-	}
-	if err == nil {
-		// Permission bits only, on the descriptor: setuid and setgid must not
-		// follow the copy.
-		err = out.Chmod(srcInfo.Mode() & 0o777)
+		err = out.Chmod(info.Mode() & copiedMode)
 	}
 	if err == nil {
 		err = out.Sync()
@@ -288,7 +331,7 @@ func stageFrom(in *os.File, label, stagingDir string, verify func(before fs.File
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
-	return staged, srcInfo, err
+	return staged, info, err
 }
 
 // checkUnchanged compares what the descriptor now says, and what the path now

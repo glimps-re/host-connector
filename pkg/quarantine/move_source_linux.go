@@ -3,11 +3,13 @@
 package quarantine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -56,74 +58,79 @@ func linkRefused(err error) bool {
 		errors.Is(err, syscall.EOPNOTSUPP) || errors.Is(err, syscall.EMLINK)
 }
 
-func moveSource(src MoveSource, dst, stagingDir string, next func(attempt int) (string, bool)) (final string, err error) {
+func moveSource(ctx context.Context, src MoveSource, dst, stagingDir string, next func(attempt int) (string, bool)) (string, error) {
 	if src.File == nil || src.Remove == nil {
 		return "", fmt.Errorf("%w: %s", ErrNoVerifiedSource, src.Path)
 	}
-	target, staged := dst, ""
-	var copied fs.FileInfo
-	defer func() {
-		if staged != "" {
-			if e := os.Remove(staged); e != nil && !errors.Is(e, fs.ErrNotExist) {
-				logger.Error("move cannot remove the staged copy", slog.String("file", staged), slog.String("error", e.Error()))
-			}
+	return runPublication(&fdMove{ctx: ctx, src: src, stagingDir: stagingDir}, dst, next)
+}
+
+// fdMove publishes the verified descriptor: a hard link made from it, or, when
+// the file system refuses links, a private copy.
+type fdMove struct {
+	ctx        context.Context
+	src        MoveSource
+	stagingDir string
+	staged     string
+	copied     fs.FileInfo
+	linked     bool
+}
+
+func (m *fdMove) publish(target string) error {
+	if m.staged != "" {
+		_, err := publishNoReplace(m.staged, target)
+		return err
+	}
+	var linkErr error
+	if shared, err := hasOtherLinks(m.src.File); err != nil {
+		return err
+	} else if shared {
+		// Another name of the same inode (a hard link made by the depositor):
+		// publishing the inode would let them rewrite what was verified, so a
+		// private copy is published instead.
+		linkErr = errSharedInode
+	} else {
+		linkErr = linkFD(m.src.File, target)
+	}
+	switch {
+	case linkErr == nil:
+		m.linked = true
+		return nil
+	case errors.Is(linkErr, fs.ErrExist):
+		return fmt.Errorf("%w: %s", ErrDestinationExists, target)
+	case linkRefused(linkErr):
+		var err error
+		if m.staged, m.copied, err = stageFromFD(m.ctx, m.src, m.stagingDir); err != nil {
+			return err
 		}
-	}()
-	for attempt := 0; ; {
-		var pubErr error
-		if staged == "" {
-			linkErr := error(nil)
-			if shared, err := hasOtherLinks(src.File); err != nil {
-				return "", err
-			} else if shared {
-				// Another name of the same inode (a hard link made by the
-				// depositor): publishing the inode would let them rewrite what was
-				// verified, so a private copy is published instead.
-				linkErr = errSharedInode
-			} else {
-				linkErr = linkFD(src.File, target)
-			}
-			switch {
-			case linkErr == nil:
-				return target, removeThroughHandle(src, target)
-			case errors.Is(linkErr, fs.ErrExist):
-				pubErr = fmt.Errorf("%w: %s", ErrDestinationExists, target)
-			case linkRefused(linkErr):
-				// Copied from the descriptor into the transit directory, then
-				// published by name: a private file of this process, not the source.
-				if staged, copied, err = stageFromFD(src, stagingDir); err != nil {
-					return "", err
-				}
-				continue
-			default:
-				return "", linkErr
-			}
-		} else {
-			var renamed bool
-			renamed, pubErr = publishNoReplace(staged, target)
-			if pubErr == nil {
-				if renamed {
-					staged = ""
-				}
-				return target, finishStaged(src, target, copied)
-			}
-		}
-		if !errors.Is(pubErr, ErrDestinationExists) {
-			return "", pubErr
-		}
-		name, ok := next(attempt)
-		if !ok {
-			return "", pubErr
-		}
-		target = name
-		attempt++
+		_, err = publishNoReplace(m.staged, target)
+		return err
+	default:
+		return linkErr
 	}
 }
 
+func (m *fdMove) finish(target string) error {
+	if m.linked {
+		return removeThroughHandle(m.src, target)
+	}
+	if err := syncDir(filepath.Dir(target)); err != nil {
+		return rollback(target, fmt.Errorf("could not make %s durable: %w", target, err))
+	}
+	return finishStaged(m.src, target, m.copied)
+}
+
+func (m *fdMove) cleanup() { removeStaged(m.staged) }
+
 // stageFromFD copies the verified file, read through a new descriptor on the
-// same inode, into the transit directory. The copy fails if the file changed
-// while it was read.
-func stageFromFD(src MoveSource, stagingDir string) (string, fs.FileInfo, error) {
+// same inode, into the transit directory. The copy must hash to the SHA256 the
+// file was analyzed with: without one it is refused, as is a file rewritten
+// since the analysis.
+func stageFromFD(ctx context.Context, src MoveSource, stagingDir string) (string, fs.FileInfo, error) {
+	want, err := parseSHA256(src.SHA256)
+	if err != nil {
+		return "", nil, err
+	}
 	in, err := safepath.Reopen(src.File)
 	if err != nil {
 		return "", nil, err
@@ -133,13 +140,7 @@ func stageFromFD(src MoveSource, stagingDir string) (string, fs.FileInfo, error)
 			logger.Error("move cannot close the source file", slog.String("file", src.Path), slog.String("error", e.Error()))
 		}
 	}()
-	return stageFrom(in, src.Path, stagingDir, func(before fs.FileInfo) error {
-		after, err := in.Stat()
-		if err != nil || !unchanged(before, after) {
-			return fmt.Errorf("%w: %s", ErrSourceChanged, src.Path)
-		}
-		return nil
-	})
+	return stageVerified(ctx, in, stagingDir, want)
 }
 
 // finishStaged removes the source once its copy is published, unless the file
@@ -177,13 +178,9 @@ func removeThroughHandle(src MoveSource, dst string) error {
 // copy must stay (taking it back could destroy the only one left), so a name
 // that remains is only reported.
 func removeAfterCopy(src MoveSource, dst string) error {
-	err := src.Remove()
-	switch {
-	case errors.Is(err, safepath.ErrChanged), errors.Is(err, fs.ErrNotExist):
-		logger.Warn("the source name no longer holds the file that was copied, it is left alone", slog.String("file", src.Path))
-		return nil
-	case err != nil:
-		return rollback(dst, fmt.Errorf("could not remove %s after moving it: %w", src.Path, MarkRemovalRefused(err)))
+	removed, err := removeNamed(dst, src.Path, src.Remove)
+	if err != nil || !removed {
+		return err
 	}
 	if n, countErr := linkCount(src.File); countErr != nil || n != 0 {
 		logger.Warn("the source file still has a name after its copy was moved", slog.String("file", src.Path))

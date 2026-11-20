@@ -204,7 +204,7 @@ func TestApplyCoverage_consoleErrorsNeverBreakTheFlow(t *testing.T) {
 	h.reportUnknownKeys(t.Context(), []string{"future_key"})
 	h.resolveRejected(t.Context())
 	bad := validConf(t, t.TempDir())
-	bad.Move.Mode = "copy"
+	bad.UnanalyzablePolicy.ExtractError = "pass"
 	if err := h.Configure(t.Context(), rawConf(t, bad)); err == nil {
 		t.Fatal("Configure() error = nil")
 	}

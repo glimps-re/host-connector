@@ -65,6 +65,12 @@ func TestApplyContract_step3FailureRollsBackQuarantineToo(t *testing.T) {
 	h := newRunningHandler(t, good)
 	oldQConf := h.qConf
 
+	realQuarantiner := h.Quarantiner
+	t.Cleanup(func() {
+		if err := realQuarantiner.Close(); err != nil {
+			t.Errorf("real quarantiner Close() error = %v", err)
+		}
+	})
 	fake := &fakeQuarantiner{current: oldQConf}
 	h.Quarantiner = fake
 

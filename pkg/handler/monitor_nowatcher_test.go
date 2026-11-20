@@ -105,6 +105,7 @@ func TestHandler_ConfigureAppliesDisableFSWatcher(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := &Handler{stopped: true}
+			t.Cleanup(func() { stopHandler(t, h) })
 			err := h.Configure(t.Context(), json.RawMessage(tt.json))
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -170,6 +171,7 @@ func TestHandler_ConfigureFullConsoleDefaults(t *testing.T) {
 				t.Fatal(err)
 			}
 			h := &Handler{stopped: true}
+			t.Cleanup(func() { stopHandler(t, h) })
 			if err := h.Configure(t.Context(), payload); err != nil {
 				t.Fatalf("Configure() error = %v", err)
 			}
@@ -414,4 +416,15 @@ func TestMonitor_relativeRootKeepsAUserAsOneOwner(t *testing.T) {
 	if got := m.table.Owners(); got != 2 {
 		t.Errorf("owners = %d, want 2 (alice and bob): sub-folders must not become owners", got)
 	}
+}
+
+// stopHandler releases what a test Handler started: the connector, the monitor
+// and the quarantine registry. Without it every test leaves its goroutines
+// behind and the package's goroutine count grows with -count.
+func stopHandler(t *testing.T, h *Handler) {
+	t.Helper()
+	if err := h.Stop(context.Background()); err != nil {
+		t.Errorf("Stop() error = %v", err)
+	}
+	h.Close()
 }

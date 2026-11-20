@@ -66,6 +66,9 @@ func TestMonitor_mkdirOfADeepTreeDoesNotSpawnAWalkPerLevel(t *testing.T) {
 // With links followed, a link to a folder under a monitored path must not lead
 // the walk out of it.
 func TestMonitor_linkToAFolderIsNeverWalked(t *testing.T) {
+	// Goroutines left behind by the other tests of the package are not ours:
+	// only the growth during this test counts.
+	base := runtime.NumGoroutine()
 	root := t.TempDir()
 	outside := t.TempDir()
 	writeTestFile(t, filepath.Join(outside, "secret.bin"))
@@ -104,7 +107,7 @@ func TestMonitor_linkToAFolderIsNeverWalked(t *testing.T) {
 			t.Errorf("%s reached the callback through a link to a folder", path)
 		}
 	}
-	if n := runtime.NumGoroutine(); n > 100 {
-		t.Errorf("%d goroutines: a link loop must not be walked", n)
+	if n := runtime.NumGoroutine(); n-base > 50 {
+		t.Errorf("%d goroutines, %d more than at the start: a link loop must not be walked", n, n-base)
 	}
 }

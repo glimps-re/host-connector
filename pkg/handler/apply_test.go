@@ -440,6 +440,12 @@ func TestApply_step4FailureReplaysPreviousQuarantine(t *testing.T) {
 	good.Quarantine.Location = filepath.Join(t.TempDir(), "old")
 	good.Quarantine.Password = "old"
 	h := newRunningHandler(t, good)
+	realQuarantiner := h.Quarantiner
+	t.Cleanup(func() {
+		if err := realQuarantiner.Close(); err != nil {
+			t.Errorf("real quarantiner Close() error = %v", err)
+		}
+	})
 	fake := &fakeQuarantiner{current: h.qConf}
 	h.Quarantiner = fake
 

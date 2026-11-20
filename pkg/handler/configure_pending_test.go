@@ -40,6 +40,7 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 
 func TestHandler_ConfigureInvalidJSON(t *testing.T) {
 	h := new(Handler)
+	t.Cleanup(h.Close)
 	if err := h.Configure(t.Context(), json.RawMessage(`{"work_dir":`)); err == nil {
 		t.Fatal("Configure() error = nil, want JSON error")
 	}

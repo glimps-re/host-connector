@@ -298,8 +298,9 @@ func TestMonitorT09_processDue(t *testing.T) {
 		}
 		old := time.Now().Add(-time.Second)
 		m.table.Track(p, scanner.IdentityOf(info), old, old)
-		close(m.done)
-		m.closeOnce.Do(func() {})
+		if err := m.Close(); err != nil {
+			t.Fatal(err)
+		}
 		m.processDue()
 		if called {
 			t.Error("a closed monitor must not call the callback")

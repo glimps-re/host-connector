@@ -68,7 +68,11 @@ type listSink struct {
 }
 
 type tableState struct {
-	selected      []string
+	selected []string
+	// dataEntries counts, by name, the selected members that carry data: a
+	// failed run of 7z names a member once, whichever homonym failed, and says
+	// nothing of an empty one.
+	dataEntries   map[string]int
 	selectedCount int
 	selectedSize  int64
 	skipped       skipList
@@ -275,6 +279,12 @@ func (s *listSink) addLine(line string) error {
 		t.selectedSize += max(size, 0)
 		t.selectedCount++
 		t.selected = append(t.selected, fp.Name)
+		if size != 0 {
+			if t.dataEntries == nil {
+				t.dataEntries = map[string]int{}
+			}
+			t.dataEntries[fp.Name]++
+		}
 	}
 	return nil
 }

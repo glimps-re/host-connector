@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -77,9 +78,12 @@ type extractResult struct {
 	// relaunches counts the runs of 7z started again after a member past the
 	// size limit, over the whole extraction.
 	relaunches int
-	// listed is the number of files in the listing.
-	listed     int
-	listedSize int64
+	// listed is the number of files in the listing; listedEntries all its entries.
+	listed        int
+	listedEntries int
+	// dataEntries counts, by name, the members of the listing that carry data.
+	dataEntries map[string]int
+	listedSize  int64
 	// tail is set when 7z reported data after the end of the archive.
 	tail bool
 	// produced and announced are the files found on disk and the files the
@@ -148,6 +152,7 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 	// -spd: member names are literal, a member named "*" or "?" is no wildcard.
 	args := []string{"-spd", "--", "l", archivePath}
 	var err error
+	var trace encTrace
 	for _, pwd := range sze.passwordCandidates(passwords) {
 		*sink = *newListSink(sink.maxFileSize, sink.maxFiles, sink.maxTotal)
 		_, err = sze.runStream(ctx, pwd, args, sink.scan, archivePath)
@@ -156,6 +161,10 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 		case errors.Is(err, errSevenZipRecoverable):
 			sze.recoverableAnomaly(&sink.anomalies, "list", err)
 		case errors.Is(err, ErrInvalidPassword):
+			trace.wrong++
+			continue
+		case errors.Is(err, errEncryptionHint):
+			trace.hintRuns++
 			continue
 		default:
 			return err
@@ -167,8 +176,140 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 		sink.finish()
 		return nil
 	}
-	return err
+	entries := 0
+	if sink.complete {
+		entries = sink.table.entries
+	}
+	return sze.decideEncryption(ctx, archivePath, trace, entries, err)
 }
+
+// encTrace is what the passwords tried said about an archive: how many runs
+// said a password is wrong for sure, how many only failed in a way an encryption
+// can explain, and whether a member was extracted cleanly.
+type encTrace struct {
+	wrong, hintRuns int
+	extracted       bool
+}
+
+// decideEncryption settles the failure of every password.
+//   - No run only suggested an encryption: a wrong password for sure is an
+//     encrypted archive if nothing was extracted; anything else is err.
+//   - Otherwise the technical listing decides. An archive that was opened is a
+//     corrupted one (extraction error, never encrypted): a run of hints named
+//     fewer members than the batch held (the others were extracted), or it is a
+//     zip in which a password passed the check of its members (a run with only
+//     data errors and no "Wrong password") and then failed. An archive that
+//     nothing opened is encrypted if a member says so or a password was refused
+//     for sure.
+//   - A listing that is not as expected, whichever path it is read on, leaves
+//     the extraction error. entries is the number of entries the listing
+//     announced, 0 when it did not get to say. When the context ends, its error
+//     is returned, as the timeout of the listing.
+//
+// A "Wrong password" for a member is partial encryption, however many members
+// were extracted before: the archive is encrypted. A 7z archive every member of
+// which is corrupted, with a known password, cannot be told from an unknown
+// password: it is taken for encrypted. A 7z archive that mixes a member with an
+// unknown password and a plain one is an extraction error. ZipCrypto checks a
+// password with one byte: about one wrong password in 256 passes the check of a
+// member and then fails on its data, as a run of hints.
+func (sze *sevenZipExtract) decideEncryption(ctx context.Context, archivePath string, trace encTrace, entries int, err error) error {
+	if trace.hintRuns == 0 {
+		if trace.wrong > 0 && !trace.extracted {
+			return ErrInvalidPassword
+		}
+		return err
+	}
+	failure := err
+	if !errors.Is(failure, errEncryptionHint) {
+		failure = errors.Join(errEncryptionHint, errors.New("a member failed in a way an encryption can explain"))
+	}
+	info, infoErr := sze.encryptionInfo(ctx, archivePath, entries)
+	switch {
+	case ctx.Err() != nil && infoErr != nil:
+		return ctx.Err()
+	case errors.Is(infoErr, errSevenZipTimeout):
+		return infoErr
+	case infoErr != nil:
+		sze.logger.Warn("the technical listing of an archive is not as expected", slog.String("error", infoErr.Error()))
+		return failure
+	case trace.extracted || info.zip:
+		return failure
+	case info.encrypted || trace.wrong > 0:
+		return ErrInvalidPassword
+	}
+	return failure
+}
+
+// encryptionInfo is what the technical listing of an archive says.
+type encryptionInfo struct {
+	zip       bool // the archive is a zip
+	encrypted bool // a member says Encrypted = +
+}
+
+const technicalSeparator = "----------"
+
+// encryptionInfo reads the technical listing of the archive, by block. What is
+// before the first separator is the archive's own (its comment is printed raw
+// and can hold any line): only its first "Type =" counts. After it, each member
+// is a block starting with "Path = ", of which only the first "Encrypted =" line
+// counts. The number of members must be the number the listing announced, when
+// that is known.
+func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath string, entries int) (info encryptionInfo, err error) {
+	var archiveType string
+	var records, separators int
+	inBlock, sawEncrypted := false, false
+	_, runErr := sze.runStream(ctx, "", []string{"-spd", "-slt", "--", "l", archivePath}, func(r io.Reader) error {
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, buffSize), maxListingLine)
+		sc.Split(splitLines)
+		for sc.Scan() {
+			line := sc.Bytes()
+			switch {
+			case separators == 0:
+				switch {
+				case string(line) == technicalSeparator:
+					separators++
+				case archiveType == "" && bytes.HasPrefix(line, []byte("Type = ")):
+					archiveType = string(bytes.TrimPrefix(line, []byte("Type = ")))
+				}
+			case string(line) == technicalSeparator:
+				// One separator, between the archive and its members: a second one is
+				// a comment's.
+				return fmt.Errorf("%w: more than one separator", errBadListing)
+			case bytes.HasPrefix(line, []byte("Path = ")):
+				records++
+				inBlock, sawEncrypted = true, false
+				if records > maxListedEntries {
+					return errTooManyEntries
+				}
+			case !inBlock && (bytes.HasPrefix(line, []byte("Type = ")) || bytes.HasPrefix(line, []byte("Encrypted = "))):
+				return fmt.Errorf("%w: a member field before the first member", errBadListing)
+			case inBlock && !sawEncrypted && bytes.HasPrefix(line, []byte("Encrypted = ")):
+				sawEncrypted = true
+				if string(line) == "Encrypted = +" {
+					info.encrypted = true
+				}
+			}
+		}
+		return sc.Err()
+	}, archivePath)
+	switch {
+	case runErr != nil:
+		return info, runErr
+	case separators == 0 || records == 0:
+		return info, fmt.Errorf("%w: no member in the technical listing", errBadListing)
+	case entries > 0 && records != entries:
+		return info, fmt.Errorf("%w: %d members in the technical listing, %d announced", errBadListing, records, entries)
+	}
+	info.zip = archiveType == "zip"
+	return info, nil
+}
+
+// maxListingLine bounds a line of a technical listing, as buffSize bounds a line
+// of the table: the technical listing prints the comment of the archive and the
+// names of the members, which are the archive's, and a longer line is an error.
+const maxListingLine = 1 << 20
 
 func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, extractLocation string, passwords []string, limits plugins.ExtractLimits) (extraction extractResult, err error) {
 	// we do not extract the all archive at once for security reasons
@@ -185,6 +326,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	extraction.anomalies = slices.Clone(baseAnomalies)
 	extraction.skipped = sink.table.skipped
 	extraction.listed = sink.table.files
+	extraction.listedEntries = sink.table.entries
 	extraction.listedSize = sink.table.totalSize
 	extraction.tail = sink.tail
 	t := &sink.table
@@ -197,6 +339,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 
 	filesToExtract := slices.Clone(t.selected)
 	slices.Sort(filesToExtract)
+	extraction.dataEntries = t.dataEntries
 	filesToExtract = slices.Compact(filesToExtract)
 	if len(filesToExtract) == 0 {
 		return
@@ -283,11 +426,22 @@ const (
 	maxTotalRelaunches = 8
 )
 
+// batchData is the number of members of the listing with data that a batch of
+// names stands for: with the homonyms of each name, and without the empty ones.
+func (e *extractResult) batchData(batch []string) int {
+	n := 0
+	for _, name := range batch {
+		n += e.dataEntries[name]
+	}
+	return n
+}
+
 // extractBatches extracts the names in groups, trying each password in turn.
 func (sze *sevenZipExtract) extractBatches(ctx context.Context, archivePath, extractLocation string, passwords, names []string, extraction *extractResult, ignoredLinks *[]string, baseAnomalies []string, lim plugins.ExtractLimits) error {
 	batches := batchNames(names, maxNamesPerRun, maxArgBytesPerRun)
 	baseSkips := extraction.saveSkips()
 	var err error
+	var trace encTrace
 PASSWORD_LOOP:
 	for _, pwd := range sze.passwordCandidates(passwords) {
 		aborted := false
@@ -301,7 +455,18 @@ PASSWORD_LOOP:
 			switch {
 			case err == nil:
 				extraction.passwordUsed = pwd
-			case errors.Is(err, ErrInvalidPassword):
+				trace.extracted = true
+			case errors.Is(err, ErrInvalidPassword), errors.Is(err, errEncryptionHint):
+				if errors.Is(err, ErrInvalidPassword) {
+					trace.wrong++
+				} else {
+					trace.hintRuns++
+					// A hint run that failed on fewer members than the batch held
+					// extracted the others cleanly: the password opened the archive.
+					if hint, ok := errors.AsType[*encryptionHintError](err); ok && hint.members > 0 && hint.members < extraction.batchData(batch) {
+						trace.extracted = true
+					}
+				}
 				if rmErr := os.RemoveAll(extractLocation); rmErr != nil {
 					return rmErr
 				}
@@ -325,7 +490,7 @@ PASSWORD_LOOP:
 		}
 		return nil
 	}
-	return err
+	return sze.decideEncryption(ctx, archivePath, trace, extraction.listedEntries, err)
 }
 
 // abandon reports members that will not be extracted because of an anomaly:

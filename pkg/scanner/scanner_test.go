@@ -1709,7 +1709,7 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 				location = testFile.Name()
 			}
 
-			err := c.checkBeforeExtract(location, tt.args.size, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
+			err := c.checkBeforeExtract(location, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("checkBeforeExtract() error = %v, wantErr %v", err, tt.wantErr)
@@ -2213,10 +2213,10 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			},
 		},
 		{
-			name: "ok with checkBeforeExtract error for input archive",
+			name: "ok an archive below extract_min_size is extracted all the same",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
-				extractMinThreshold:      100000, // so file size < extractMinThreshold, to provoke error checking before extract
+				extractMinThreshold:      100000, // the archive is far below it: its type decides, not its size
 				recursiveExtractMaxSize:  1000000,
 				recursiveExtractMaxFiles: 100,
 				createZipArchive:         []string{"content1"},
@@ -2225,7 +2225,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_*.zip"},
+				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
 			},
 		},
 		{
@@ -2321,7 +2321,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_2.zip"},
+				{filename: "archive_level_2.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2337,7 +2337,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip"},
+				{filename: "archive_level_0.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2353,7 +2353,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip"},
+				{filename: "archive_level_0.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2460,11 +2460,11 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				{filename: "level4/file_5-2.txt", archiveSHA256: ""},
 				{filename: "level5/file_6-1.txt", archiveSHA256: ""},
 				{filename: "level5/file_6-2.txt", archiveSHA256: ""},
-				{filename: "level5/level6.zip", archiveSHA256: ""},
+				{filename: "level5/level6.zip", archiveSHA256: "", limitSkipped: true},
 			},
 		},
 		{
-			name: "ok inner archive below threshold",
+			name: "ok an inner archive below extract_min_size is extracted all the same",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
 				extractMinThreshold:      200, // threshold between outer (~257B) and inner (~170B) archive sizes
@@ -2476,7 +2476,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
 			},
 		},
 	}

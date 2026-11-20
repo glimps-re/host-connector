@@ -188,6 +188,9 @@ type fileToAnalyze struct {
 	archiveSize        int64
 	// encrypted is set by the extraction for a member whose password is unknown.
 	encrypted bool
+	// limitSkipped is set for an archive the limits of the extraction did not let
+	// open: the policy of the files too big decides, as for the members left out.
+	limitSkipped bool
 }
 
 // logical is the path plugins see for the file: its real path for a top-level
@@ -699,10 +702,28 @@ func (c *Connector) extractWorker() {
 				archiveLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
 				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
 				c.concludeOutcome(archive.location, archive.run, resultView{err: err}, nil)
+				c.reportExtractFailure(archive, err)
 				c.finishRun(archive.location, archive.run)
 			}
 		}
 	}
+}
+
+// reportExtractFailure gives a report with its error to an archive that failed for
+// good (a permanent error): it stays in INPUT, and the failure is as visible as
+// the one of a file analyzed in error. A transient failure is retried and says
+// nothing yet; one that is a cut or an extractor down says nothing about the file.
+func (c *Connector) reportExtractFailure(archive archiveToAnalyze, err error) {
+	if !errors.Is(err, errInnerPermanent) && !errors.Is(err, errFileTooBig) && !errors.Is(err, errEncrypted) {
+		return
+	}
+	result := datamodel.Result{Filename: archive.location, Location: archive.location, SHA256: archive.sha256, FileSize: archive.size, Error: err}
+	report := &datamodel.Report{}
+	if e := (&ReportAction{}).Handle(context.Background(), archive.input.source(archive.location, archive.identity, archive.sha256), result, report); e != nil {
+		logger.Error("could not report the failure of an archive", slog.String("file", archive.location), slog.String(logErrorKey, e.Error()))
+		return
+	}
+	c.addReport(report)
 }
 
 // analysisWorker consumes from analysisChan and performs malware analysis.
@@ -923,7 +944,7 @@ func (c *Connector) dispatchFile(sub submission) {
 	}
 
 	// Route to extraction if applicable
-	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
+	if c.config.Extract && (input.size > c.config.ExtractMinThreshold || c.isSmallArchive(input)) {
 		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, run: input.run, size: input.size}
 		select {
 		case <-c.stopWorker:
@@ -1087,13 +1108,16 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		err = fmt.Errorf("extract-error: %w", pathErr)
 		return
 	}
-	checkErr := c.checkBeforeExtract(archivePath, archive.size, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
+	checkErr := c.checkBeforeExtract(archivePath, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
 	if checkErr != nil {
 		archiveLogger.Debug("file cannot be extracted", slog.String(logReasonKey, checkErr.Error()))
 		file := archive
 		if file.filename == "" {
 			file.filename = file.location
 		}
+		// An archive the limits do not let us open is left out, not analyzed as a
+		// plain file: submitting it whole would let its members through unseen.
+		file.limitSkipped = errors.Is(checkErr, errExtractLimit) && c.isArchiveType(archivePath)
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -1154,6 +1178,10 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if file.filename == "" {
 			file.filename = file.location
 		}
+		// An archive whose password is unknown is not a plain file: the policy
+		// of the encrypted files decides what becomes of it, as a member too if
+		// it is a sub-archive.
+		file.encrypted = errors.Is(extractErr, plugins.ErrEncrypted)
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -1186,13 +1214,15 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		},
 	}
 
-	if len(extractedFiles) == 0 && extraction.SkippedCount > 0 {
-		// Members were left out and none was extracted: submitting the archive
-		// whole would let those members through unanalyzed.
-		err = fmt.Errorf("extract-error: %d members of the archive were not extracted and none was", extraction.SkippedCount)
-		return
+	skipped := max(extraction.SkippedCount, len(extraction.Skipped))
+	if skipped > 0 {
+		// Members were left out by the limits of the extraction: they follow the
+		// policy of the files too big, and are never let through unseen.
+		if err = c.applyLimitSkips(extraction, skipped, &eStatus.result, archive.location); err != nil {
+			return
+		}
 	}
-	if len(extractedFiles) == 0 {
+	if len(extractedFiles) == 0 && skipped == 0 {
 		file := archive
 		if file.filename == "" {
 			file.filename = file.location
@@ -1218,6 +1248,13 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			return
 		}
 		archive.archiveTopLocation = archive.location
+	}
+
+	if len(extractedFiles) == 0 {
+		// Nothing to analyze: every member was left out and the policy lets the
+		// archive end with what it lists.
+		c.endArchive(archiveID, eStatus.result, archive.location, archive.archiveTopLocation, archive.run, archiveLogger)
+		return
 	}
 
 	depth += 1
@@ -1356,19 +1393,15 @@ func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err
 
 // checkBeforeExtract checks following conditions for file at location:
 //   - depth is < to max depth
-//   - size is above minimum extraction threshold
 //   - total extracted size/files are below limits
 //   - type is an accepted extractable type
 //
-// returns an error if any of the conditions are not met.
-func (c *Connector) checkBeforeExtract(location string, size int64, totalExtractedSize *int64, totalExtractedFiles *int, depth int, logger *slog.Logger) (err error) {
+// returns an error if any of the conditions are not met; one that is a limit
+// wraps errExtractLimit. The size of the file does not matter: an archive is
+// extracted, or listed to find out it is encrypted, whatever extract_min_size.
+func (c *Connector) checkBeforeExtract(location string, totalExtractedSize *int64, totalExtractedFiles *int, depth int, logger *slog.Logger) (err error) {
 	if depth >= c.config.RecursiveExtractMaxDepth {
-		err = fmt.Errorf("max depth reached: %d", depth)
-		return
-	}
-
-	if size <= c.config.ExtractMinThreshold {
-		err = fmt.Errorf("file size (%vB) below extract threshold (%vB)", size, c.config.ExtractMinThreshold)
+		err = fmt.Errorf("%w: max depth reached: %d", errExtractLimit, depth)
 		return
 	}
 
@@ -1379,7 +1412,7 @@ func (c *Connector) checkBeforeExtract(location string, size int64, totalExtract
 	// because size is added to totalExtractedSize after extraction completes, the actual
 	// total may exceed RecursiveExtractMaxSize by up to one archive's extracted content.
 	if *totalExtractedSize > c.config.RecursiveExtractMaxSize {
-		err = fmt.Errorf("total extracted size (%vB) reached limit (%vB)", *totalExtractedSize, c.config.RecursiveExtractMaxSize)
+		err = fmt.Errorf("%w: total extracted size (%vB) reached limit (%vB)", errExtractLimit, *totalExtractedSize, c.config.RecursiveExtractMaxSize)
 		return
 	}
 	if totalExtractedFiles == nil {
@@ -1387,7 +1420,7 @@ func (c *Connector) checkBeforeExtract(location string, size int64, totalExtract
 		return
 	}
 	if *totalExtractedFiles > c.config.RecursiveExtractMaxFiles {
-		err = fmt.Errorf("total extracted files (%v) reached limit (%v)", *totalExtractedFiles, c.config.RecursiveExtractMaxFiles)
+		err = fmt.Errorf("%w: total extracted files (%v) reached limit (%v)", errExtractLimit, *totalExtractedFiles, c.config.RecursiveExtractMaxFiles)
 		return
 	}
 
@@ -1416,6 +1449,62 @@ func (c *Connector) checkBeforeExtract(location string, size int64, totalExtract
 	}
 	return
 }
+
+// errExtractLimit marks a limit of the extraction (depth, files, total size).
+var errExtractLimit = errors.New("limit of the extraction reached")
+
+// isKnownArchiveType tells whether a MIME type is one of an archive format: the
+// types to extract without application/octet-stream, which stands for any binary
+// and is only tried by the extraction of the files large enough to be worth it.
+func (c *Connector) isKnownArchiveType(mime string) bool {
+	if mime == mimeOctetStream {
+		return false
+	}
+	_, ok := c.typesToExtract[mime]
+	return ok
+}
+
+// mimeOctetStream is the type of a binary file nothing more precise is known of.
+const mimeOctetStream = "application/octet-stream"
+
+// isArchiveType tells whether the file at path is an archive of a known format.
+func (c *Connector) isArchiveType(path string) bool {
+	mtype, err := mimetype.DetectFile(path) // cannot use libmagic, to remain compatible with Windows
+	if err != nil || mtype == nil {
+		return false
+	}
+	return c.isKnownArchiveType(mtype.String())
+}
+
+// isSmallArchive tells whether a file too small for extract_min_size is an
+// archive all the same: it must reach the extractor, which is what tells that its
+// password is unknown, instead of being submitted as a plain file.
+func (c *Connector) isSmallArchive(input fileToAnalyze) bool {
+	if input.input != nil {
+		// The verified descriptor is read: no second open, and no other file.
+		buf, ok := probeBuffers.Get().(*[]byte)
+		if !ok {
+			return false
+		}
+		defer probeBuffers.Put(buf)
+		n, err := input.input.f.ReadAt(*buf, 0)
+		if n == 0 && err != nil {
+			return false
+		}
+		return c.isKnownArchiveType(mimetype.Detect((*buf)[:n]).String())
+	}
+	path, err := c.readPath(input)
+	return err == nil && c.isArchiveType(path)
+}
+
+// smallTypeProbe is how many bytes of a small file are read to know its type
+// (what mimetype reads by default).
+const smallTypeProbe = 3072
+
+var probeBuffers = sync.Pool{New: func() any {
+	b := make([]byte, smallTypeProbe)
+	return &b
+}}
 
 var sha256BufferPool = sync.Pool{
 	New: func() any {
@@ -1499,21 +1588,27 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 
 // endFilteredArchive ends an archive a plugin dispensed from analysis (a skipped
 // type, a path rule): whatever the plugin put in the result, the hash and the
-// size are the pipeline's (the checks before the action read them), the archive
-// is marked as passed without analysis unless the plugin refused it, and the
-// archive is finished at once: no member is analyzed.
+// size are the pipeline's (the checks before the action read them), and the
+// archive is marked as passed without analysis unless the plugin refused it.
 func (c *Connector) endFilteredArchive(archiveID string, result datamodel.Result, location, sha256 string, size int64, top string, run *ongoing, archiveLogger *slog.Logger) {
 	result.Filename = location
 	result.SHA256 = sha256
 	result.FileSize = size
 	markPolicySkipped(&result, location)
+	c.endArchive(archiveID, result, location, top, run, archiveLogger)
+}
+
+// endArchive ends an archive at once, with no member left to analyze: it gets
+// the result as it is, then is finished. When the archive is gone from the
+// handler, the run of its top-level file is ended instead.
+func (c *Connector) endArchive(archiveID string, result datamodel.Result, location, top string, run *ongoing, archiveLogger *slog.Logger) {
 	if !c.archiveStatus.setArchiveResult(archiveID, result) {
 		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", location))
 		c.finishRun(top, run)
 		return
 	}
 	if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
-		archiveLogger.Error("could not finish filtered archive analysis", slog.String(logErrorKey, finishErr.Error()))
+		archiveLogger.Error("could not finish archive analysis", slog.String(logErrorKey, finishErr.Error()))
 	}
 }
 
@@ -1669,6 +1764,9 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		if input.encrypted {
 			return c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
 		}
+		if input.limitSkipped {
+			return c.unanalyzedResult(input, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
+		}
 		return c.unanalyzedResult(input, datamodel.NotAnalyzedTooBig, c.config.Unanalyzable.TooBig, errFileTooBig)
 	}
 
@@ -1778,15 +1876,36 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected
 	case input.encrypted:
-		result = c.encryptedResult(input, result)
+		result = c.policiedResult(input, result, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+	case input.limitSkipped:
+		result = c.policiedResult(input, result, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
 	}
 	return
 }
 
-// encryptedResult applies the policy of the encrypted files to a result that
-// found nothing: a detection or an analysis error has priority.
-func (c *Connector) encryptedResult(input fileToAnalyze, analyzed datamodel.Result) datamodel.Result {
-	policied := c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+// errLimitSkipped is the failure of an archive the limits of the extraction did
+// not let open, under the policy that fails.
+var errLimitSkipped = fmt.Errorf("%w: the limits of the extraction left the archive unopened", errInnerPermanent)
+
+// limitSkippedPolicy is the policy of an archive the limits of the extraction
+// did not let open: its content is unknown, and it may well be encrypted, so the
+// stricter of the policies of the files too big and of the encrypted files
+// applies (error, then mitigate, then pass).
+func (c *Connector) limitSkippedPolicy() string {
+	a, b := c.config.Unanalyzable.TooBig, c.config.Unanalyzable.Encrypted
+	for _, p := range []string{PolicyError, PolicyMitigate} {
+		if a == p || b == p {
+			return p
+		}
+	}
+	return PolicyPass
+}
+
+// policiedResult applies a policy to a result that found nothing: a detection or
+// an analysis error has priority, and the file is marked or failed as the policy
+// says. reason and failure are the file's: what the policy puts in the result.
+func (c *Connector) policiedResult(input fileToAnalyze, analyzed datamodel.Result, reason datamodel.NotAnalyzedReason, policy string, failure error) datamodel.Result {
+	policied := c.unanalyzedResult(input, reason, policy, failure)
 	analyzed.Error = policied.Error
 	analyzed.NotAnalyzedReason = policied.NotAnalyzedReason
 	if policied.Malware {

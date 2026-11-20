@@ -30,6 +30,10 @@ var (
 	ErrFileNotFound      = errors.New("file not found")
 
 	errSevenZipRecoverable = errors.New("recoverable sevenzip error")
+	// errEncryptionHint is the failure of a password for a reason an encryption
+	// can explain: it is an encrypted archive only if the listing says a member is
+	// encrypted and no password opened it.
+	errEncryptionHint = errors.New("7z failed on a member in a way an encryption can explain")
 )
 
 var (
@@ -37,6 +41,21 @@ var (
 		"Dangerous link path was ignored",
 		"Dangerous link via another link was ignored",
 		"Dangerous symbolic link path was ignored",
+	}
+	// wrongPasswordLabels are the labels with which 7z says, for sure, that a
+	// password is wrong; encryptedOpenLines are what it says, after the path of
+	// the archive, when the headers themselves are encrypted (the second spelling
+	// is p7zip 16.02's). encryptionHintLabels only suggest an encryption: 7z uses
+	// them for a corrupted member as well, or for a compression it does not know.
+	wrongPasswordLabels = []string{"Wrong password"}
+	encryptedOpenLines  = []string{
+		"Cannot open encrypted archive. Wrong password?",
+		"Can not open encrypted archive. Wrong password?",
+	}
+	encryptionHintLabels = []string{
+		"Unsupported Method",
+		"Data Error in encrypted file. Wrong password?",
+		"CRC Failed in encrypted file. Wrong password?",
 	}
 	recoverableLabels = []string{"Headers Error", "Data Error", "Unexpected end of archive"}
 	// recoverableLines are the lines 7z prints alone, under its ERRORS: or WARNINGS: blocks.
@@ -46,12 +65,30 @@ var (
 	}
 )
 
+// encryptionHintError is the failure of a run that only suggested an encryption:
+// how many distinct members it named, and what 7z said.
+type encryptionHintError struct {
+	members int
+	quoted  string
+}
+
+func (e *encryptionHintError) Error() string {
+	return errEncryptionHint.Error() + ": " + e.quoted
+}
+
+func (e *encryptionHintError) Is(target error) bool { return target == errEncryptionHint }
+
 // sevenZipOutput is what a failed 7z run said, classified line by line.
 type sevenZipOutput struct {
 	wrongPassword bool
-	notAnArchive  bool
-	notFound      bool
-	recoverable   bool
+	// encryptionHint is set by a line that an encryption can explain, without
+	// proving it.
+	encryptionHint bool
+	// hintMembers are the distinct members named by the hint lines.
+	hintMembers  map[string]struct{}
+	notAnArchive bool
+	notFound     bool
+	recoverable  bool
 	// links are the members 7z refused to create as links.
 	links []string
 	// other is set when an error line is none of the above.
@@ -85,8 +122,18 @@ func classifyStderr(stderr string, paths []string) sevenZipOutput {
 func (o *sevenZipOutput) classifyError(body string) {
 	label, rest, hasRest := strings.Cut(body, labelSep)
 	switch {
-	case label == "Wrong password":
+	case slices.Contains(wrongPasswordLabels, label), label == pathToken && slices.Contains(encryptedOpenLines, rest):
+		// Only whole labels count, never a part of what follows: the names of the
+		// members are the archive's.
 		o.wrongPassword = true
+	case slices.Contains(encryptionHintLabels, label):
+		o.encryptionHint = true
+		if hasRest {
+			if o.hintMembers == nil {
+				o.hintMembers = map[string]struct{}{}
+			}
+			o.hintMembers[rest] = struct{}{}
+		}
 	case slices.Contains(linkLabels, label) && hasRest:
 		name, _, _ := strings.Cut(rest, labelSep)
 		o.links = append(o.links, name)
@@ -152,6 +199,8 @@ func handleSevenZipError(sevenZipErr error, stderr string, logger *slog.Logger, 
 	switch {
 	case out.wrongPassword:
 		return nil, ErrInvalidPassword
+	case out.encryptionHint && !out.other:
+		return nil, &encryptionHintError{members: len(out.hintMembers), quoted: quoted}
 	case out.notAnArchive:
 		return nil, ErrUnsupportedFormat
 	case out.notFound:

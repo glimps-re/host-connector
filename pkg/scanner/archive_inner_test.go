@@ -670,13 +670,13 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 		{"not an archive is a plain file", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrUnsupportedFormat)
 		}, false},
-		{"encrypted keeps the current behavior", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		{"encrypted goes to the policy of the encrypted files", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrEncrypted)
 		}, false},
 		{"any other failure is an extract error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{}, errors.New("7z killed")
 		}, true},
-		{"nothing extracted while members were skipped is an error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		{"nothing extracted while members were left out by the limits is an error under the default policy", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "big.bin", Reason: datamodel.NotAnalyzedTooBig}}, SkippedCount: 1}, nil
 		}, true},
 		{"an extract-error entry is an error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
@@ -711,7 +711,7 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 			var files int
 			archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 			err = c.recursiveExtract(archive, 0, &size, &files, logger)
-			if tt.wantErr != (err != nil && strings.Contains(err.Error(), "extract-error")) {
+			if tt.wantErr != (err != nil && (strings.Contains(err.Error(), "extract-error") || strings.Contains(err.Error(), "limits of the extraction"))) {
 				t.Errorf("recursiveExtract() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if tt.wantErr && submitted.Load() != 0 {

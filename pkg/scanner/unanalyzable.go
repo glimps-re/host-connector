@@ -3,8 +3,12 @@ package scanner
 import (
 	"fmt"
 	"log/slog"
+	"math"
+	"sort"
+	"strings"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
 // Policies of the unanalyzable files, the values of Unanalyzable.
@@ -117,9 +121,56 @@ func mitigationReason(reason datamodel.NotAnalyzedReason) datamodel.MalwareReaso
 // neither malware nor an error) reaches its destination without analysis: the
 // reports say so, and so does the log.
 func markPolicySkipped(r *datamodel.Result, location string) {
-	if r.Malware || r.Error != nil || r.NotAnalyzedReason != "" {
+	if r.Malware || r.Error != nil || r.AnalysisError != "" || r.NotAnalyzedReason != "" {
 		return
 	}
 	r.NotAnalyzedReason = datamodel.NotAnalyzedPolicySkipped
 	logger.Warn("file passed without analysis", slog.String("file", location), slog.String(logReasonKey, string(datamodel.NotAnalyzedPolicySkipped)))
+}
+
+// applyLimitSkips applies the policy of the files too big to the members the
+// extraction left out because of its limits (a member over max_file_size, too
+// many members, too large a total). With PolicyError the archive fails for good:
+// it stays where it is, and nothing is let through unseen. With PolicyPass the
+// members are listed as not analyzed, with an exact count; with PolicyMitigate
+// the archive is malware with the reason TooBig, and they are listed too.
+func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, result *datamodel.Result, location string) error {
+	policy := c.config.Unanalyzable.TooBig
+	if policy == PolicyError {
+		return fmt.Errorf("%w: %d members were left out by the limits of the extraction", errInnerPermanent, count)
+	}
+	reasons := map[datamodel.NotAnalyzedReason]bool{}
+	for _, f := range extraction.Skipped {
+		reasons[f.Reason] = true
+		// The sizes are what the archive declares: the sum saturates.
+		if f.Size > 0 && result.FilteredVolume > math.MaxInt64-f.Size {
+			result.FilteredVolume = math.MaxInt64
+		} else if f.Size > 0 {
+			result.FilteredVolume += f.Size
+		}
+		if len(result.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
+			f.FileName = truncateText(f.FileName, datamodel.MaxListedNameLen)
+			result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
+		}
+	}
+	result.NotAnalyzedSubfilesCount += count
+	reason := strings.Join(sortedReasons(reasons), ",")
+	if policy == PolicyMitigate {
+		result.Malware = true
+		result.Score = max(result.Score, mitigationScore)
+		result.MalwareReason = datamodel.TooBig
+		logger.Warn("archive mitigated: members were left out by the limits of the extraction", slog.String("file", location), slog.Int("members", count), slog.String(logReasonKey, reason))
+		return nil
+	}
+	logger.Warn("archive passed with members left out by the limits of the extraction", slog.String("file", location), slog.Int("members", count), slog.String(logReasonKey, reason))
+	return nil
+}
+
+func sortedReasons(set map[datamodel.NotAnalyzedReason]bool) []string {
+	out := make([]string, 0, len(set))
+	for r := range set {
+		out = append(out, string(r))
+	}
+	sort.Strings(out)
+	return out
 }

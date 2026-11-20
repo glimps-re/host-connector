@@ -495,10 +495,11 @@ func (h *Handler) startRejectReminder(message string) {
 	if h.remindStop != nil {
 		return
 	}
-	stop := make(chan struct{})
-	h.remindStop = stop
+	stop, done := make(chan struct{}), make(chan struct{})
+	h.remindStop, h.remindDone = stop, done
 	every := rejectReminderEvery
 	go func() {
+		defer close(done)
 		t := time.NewTicker(every)
 		defer t.Stop()
 		for {
@@ -515,13 +516,18 @@ func (h *Handler) startRejectReminder(message string) {
 	}()
 }
 
+// stopRejectReminder returns once the reminder goroutine has exited. It waits
+// after releasing remindMu, which the goroutine takes before logging.
 func (h *Handler) stopRejectReminder() {
 	h.remindMu.Lock()
-	defer h.remindMu.Unlock()
-	if h.remindStop != nil {
-		close(h.remindStop)
-		h.remindStop = nil
+	stop, done := h.remindStop, h.remindDone
+	h.remindStop, h.remindDone = nil, nil
+	h.remindMu.Unlock()
+	if stop == nil {
+		return
 	}
+	close(stop)
+	<-done
 }
 
 // reportUnknownKeys keeps the unknown keys of the last Configure visible: they

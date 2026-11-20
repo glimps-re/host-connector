@@ -48,6 +48,7 @@ type Handler struct {
 
 	remindMu     sync.Mutex
 	remindStop   chan struct{}
+	remindDone   chan struct{}
 	lastRejected string
 
 	// validatePlugins replaces scanner.ValidatePlugins when set (tests).

@@ -17,7 +17,6 @@ func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
 		raw     string
 		wantKey string
 	}{
-		{"empty pass", `{"unanalyzable_policy":{"empty":"pass"}}`, "unanalyzable_policy.empty"},
 		{"extract_error", `{"unanalyzable_policy":{"extract_error":"as_file"}}`, "unanalyzable_policy.extract_error"},
 	}
 	for _, tt := range tests {

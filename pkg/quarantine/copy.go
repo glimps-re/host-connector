@@ -100,7 +100,22 @@ func (e *emptyFile) publish(target string) error {
 	return nil
 }
 
-func (e *emptyFile) finish(target string) error { return finishCopy(target, e.label, e.remove) }
+// finish makes the new empty file durable, then removes the source. A source that
+// is no longer the empty file it was (it was written to meanwhile) is left alone,
+// and so the empty copy is taken back: it would stand for a file that has content.
+func (e *emptyFile) finish(target string) error {
+	if err := syncDir(filepath.Dir(target)); err != nil {
+		return rollback(target, fmt.Errorf("could not make %s durable: %w", target, err))
+	}
+	if e.remove == nil {
+		return nil
+	}
+	removed, err := removeNamed(target, e.label, e.remove)
+	if err == nil && !removed {
+		return rollback(target, fmt.Errorf("%w: %s is no longer the empty file that was moved", ErrSourceChanged, e.label))
+	}
+	return err
+}
 
 func (*emptyFile) cleanup() {}
 

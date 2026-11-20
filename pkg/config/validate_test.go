@@ -80,7 +80,6 @@ func TestExplicitAcceptedValues(t *testing.T) {
 	}
 	for _, mutate := range []func(){
 		func() { conf.UnanalyzablePolicy.ExtractError = "as_file" },
-		func() { conf.UnanalyzablePolicy.Empty = "pass" },
 	} {
 		mutate()
 		if err := CheckImplemented(conf); err == nil {

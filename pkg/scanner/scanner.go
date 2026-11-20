@@ -350,9 +350,15 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		cfg.ExtractMinThreshold = defaultExtractMinThreshold
 	}
 
-	cfg.Unanalyzable = cfg.Unanalyzable.withDefaults()
-	if err := cfg.Unanalyzable.validate(); err != nil {
+	resolved, fallback, err := cfg.Unanalyzable.resolve(EffectiveMoveMode(cfg.Actions.Move, cfg.MoveMode))
+	if err != nil {
 		return nil, err
+	}
+	cfg.Unanalyzable = resolved
+	if fallback {
+		const msg = "unanalyzable_policy.empty is not set and move.mode is rename: empty files are skipped (set move.mode to copy to deliver them as new empty files)"
+		logger.Warn(msg)
+		ConsoleLogger.Warn(msg)
 	}
 
 	action, err := newAction(cfg, quarantiner)
@@ -563,6 +569,12 @@ func (c *Connector) SubmitFile(ctx context.Context, input string, want FileIdent
 // or already being processed.
 func (c *Connector) submit(ctx context.Context, input string, want FileIdentity, info fs.FileInfo) (accepted bool, err error) {
 	inputLogger := logger.With(slog.String("input file", input))
+	if !info.Mode().IsRegular() {
+		inputLogger.Warn("skip file", slog.String(logReasonKey, "not a regular file"), slog.String("mode", info.Mode().String()))
+		// What is not a regular file (a FIFO swapped in, a device) is never read:
+		// its size says nothing, and an empty policy that delivers must not let it by.
+		return false, fmt.Errorf("%w: not a regular file", ErrRefused)
+	}
 	if info.Size() == 0 && c.config.Unanalyzable.Empty == PolicySkip {
 		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
 		return false, fmt.Errorf("%w: empty file", ErrRefused)

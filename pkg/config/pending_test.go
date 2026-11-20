@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -13,11 +14,19 @@ import (
 )
 
 func TestCheckImplemented_Multiple(t *testing.T) {
+	prev := pendingKeys
+	t.Cleanup(func() { pendingKeys = prev })
+	pendingKeys = append(slices.Clone(pendingKeys), pendingKey{"debug", func(c *Config) string {
+		if c.Debug {
+			return "on"
+		}
+		return ""
+	}, nil})
 	c := &Config{}
-	c.UnanalyzablePolicy.Empty = "pass"
+	c.Debug = true
 	c.UnanalyzablePolicy.ExtractError = "pass"
 	err := CheckImplemented(c)
-	if err == nil || !strings.Contains(err.Error(), "unanalyzable_policy.empty") || !strings.Contains(err.Error(), "unanalyzable_policy.extract_error") {
+	if err == nil || !strings.Contains(err.Error(), "debug") || !strings.Contains(err.Error(), "unanalyzable_policy.extract_error") {
 		t.Errorf("CheckImplemented() = %v, want both keys named", err)
 	}
 }

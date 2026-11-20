@@ -51,6 +51,7 @@ func TestSubmitFile_currentIdentityIsProcessed(t *testing.T) {
 
 func TestSubmitFile_refusalsWithoutFailure(t *testing.T) {
 	c, in, file, _ := newPathCheckFixture(t, false)
+	c.config.Unanalyzable.Empty = PolicySkip // the default delivers empty files: skipping them is a choice
 	link := filepath.Join(in, "link.bin")
 	if err := os.Symlink(file, link); err != nil {
 		t.Skipf("symlinks unavailable: %v", err)

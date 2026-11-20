@@ -35,7 +35,7 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"too_big pass", "unanalyzable_policy:\n  too_big: pass\n", ""},
 		{"too_big mitigate", "unanalyzable_policy:\n  too_big: mitigate\n", ""},
 		{"empty mitigate", "unanalyzable_policy:\n  empty: mitigate\n", ""},
-		{"empty pass", "unanalyzable_policy:\n  empty: pass\n", "unanalyzable_policy.empty"},
+		{"empty pass", "unanalyzable_policy:\n  empty: pass\n", ""},
 		{"encrypted pass", "unanalyzable_policy:\n  encrypted: pass\n", ""},
 		{"encrypted mitigate", "unanalyzable_policy:\n  encrypted: mitigate\n", ""},
 		{"extract_error", "unanalyzable_policy:\n  extract_error: as_file\n", "unanalyzable_policy.extract_error"},

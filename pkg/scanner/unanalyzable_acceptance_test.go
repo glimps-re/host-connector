@@ -372,10 +372,17 @@ func TestT16a_emptyFile(t *testing.T) {
 			t.Error("an empty file must not be submitted")
 		}
 	})
-	t.Run("pass is refused until T16-b", func(t *testing.T) {
-		_, err := NewConnector(Config{Unanalyzable: Unanalyzable{Empty: PolicyPass}, WorkDir: t.TempDir()}, nil, cleanSubmitter())
-		if err == nil {
-			t.Error("NewConnector accepted empty: pass, which T16-a must refuse (delivered by T16-b)")
+	t.Run("pass is accepted with copy and refused with rename", func(t *testing.T) {
+		if _, err := NewConnector(Config{Unanalyzable: Unanalyzable{Empty: PolicyPass}, MoveMode: MoveModeCopy, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err != nil {
+			t.Errorf("empty: pass with copy refused: %v", err)
+		}
+		rename := Config{Unanalyzable: Unanalyzable{Empty: PolicyPass}, MoveMode: MoveModeRename, Actions: Actions{Move: true}, MoveTo: t.TempDir(), MoveFrom: t.TempDir(), WorkDir: t.TempDir()}
+		if _, err := NewConnector(rename, nil, cleanSubmitter()); err == nil {
+			t.Error("empty: pass with rename and the move on accepted")
+		}
+		rename.Actions.Move = false
+		if _, err := NewConnector(rename, nil, cleanSubmitter()); err != nil {
+			t.Errorf("the mode means nothing with the move off: %v", err)
 		}
 	})
 }

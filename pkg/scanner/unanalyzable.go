@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -24,7 +25,8 @@ const (
 )
 
 // Unanalyzable is what becomes of the files that cannot be analyzed. A field
-// left empty takes its default: PolicyError, and PolicySkip for Empty.
+// left empty takes its default: PolicyError, and for Empty PolicyPass, or
+// PolicySkip when the move action renames files (see resolve).
 type Unanalyzable struct {
 	// TooBig is the policy of a file over max_file_size that is not extracted.
 	TooBig string
@@ -37,12 +39,20 @@ type Unanalyzable struct {
 	ExtractError string
 }
 
-func (u Unanalyzable) withDefaults() Unanalyzable {
+// resolve gives each empty field its default and checks the result. An empty
+// file is delivered (PolicyPass) as a new empty file, which only the move by copy
+// can make: with MoveModeRename an absent Empty becomes PolicySkip, so that a site
+// kept in that mode still starts (fallback is then true), and an explicit
+// PolicyPass is refused.
+func (u Unanalyzable) resolve(mode MoveMode) (resolved Unanalyzable, fallback bool, err error) {
 	if u.TooBig == "" {
 		u.TooBig = PolicyError
 	}
 	if u.Empty == "" {
-		u.Empty = PolicySkip
+		u.Empty = PolicyPass
+		if mode == MoveModeRename {
+			u.Empty, fallback = PolicySkip, true
+		}
 	}
 	if u.Encrypted == "" {
 		u.Encrypted = PolicyError
@@ -50,16 +60,36 @@ func (u Unanalyzable) withDefaults() Unanalyzable {
 	if u.ExtractError == "" {
 		u.ExtractError = PolicyError
 	}
-	return u
+	return u, fallback, u.validate(mode)
 }
 
-func (u Unanalyzable) validate() error {
+// EffectiveMoveMode is the mode that counts for the empty files: the one of the
+// move action when it is on, and the copy when it is off (there is no move to
+// rename anything then).
+func EffectiveMoveMode(moveOn bool, mode MoveMode) MoveMode {
+	if !moveOn {
+		return MoveModeCopy
+	}
+	return mode
+}
+
+// CheckUnanalyzable tells whether the policies and the mode of the move action
+// can be applied together, before anything is stopped to apply them.
+func CheckUnanalyzable(u Unanalyzable, mode MoveMode) error {
+	_, _, err := u.resolve(mode)
+	return err
+}
+
+func (u Unanalyzable) validate(mode MoveMode) error {
+	if u.Empty == PolicyPass && mode == MoveModeRename {
+		return errors.New("unanalyzable_policy.empty: pass delivers an empty file as a new empty file, which needs move.mode copy: it is refused with rename while the move action is on (leave the key out to skip empty files in that mode)")
+	}
 	for _, c := range []struct {
 		key, value string
 		allowed    []string
 	}{
 		{"too_big", u.TooBig, []string{PolicyError, PolicyPass, PolicyMitigate}},
-		{"empty", u.Empty, []string{PolicySkip, PolicyMitigate}}, // pass is refused: delivering an empty file needs the move by copy to be the rule, which the validation does not know yet
+		{"empty", u.Empty, []string{PolicySkip, PolicyPass, PolicyMitigate}},
 		{"encrypted", u.Encrypted, []string{PolicyError, PolicyPass, PolicyMitigate}},
 		{"extract_error", u.ExtractError, []string{PolicyError}},
 	} {

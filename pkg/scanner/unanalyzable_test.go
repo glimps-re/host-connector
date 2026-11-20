@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
@@ -38,7 +39,7 @@ func malwareSubmitter() *gdetectMock.MockGDetectSubmitter {
 
 func TestUnanalyzable_defaultsAndValidation(t *testing.T) {
 	c := policyConnector(t, Unanalyzable{}, 100, cleanSubmitter())
-	if got := c.config.Unanalyzable; got != (Unanalyzable{TooBig: PolicyError, Empty: PolicySkip, Encrypted: PolicyError, ExtractError: PolicyError}) {
+	if got := c.config.Unanalyzable; got != (Unanalyzable{TooBig: PolicyError, Empty: PolicyPass, Encrypted: PolicyError, ExtractError: PolicyError}) {
 		t.Errorf("defaults = %+v", got)
 	}
 	for _, bad := range []Unanalyzable{{TooBig: "skip"}, {Empty: "error"}, {Encrypted: "skip"}, {ExtractError: "as_file"}, {TooBig: "bogus"}} {
@@ -88,7 +89,6 @@ func TestAnalyzeFile_emptyPolicies(t *testing.T) {
 	}
 	in := fileToAnalyze{filename: "empty", location: path, sha256: shaOf(""), size: 0}
 	c := policyConnector(t, Unanalyzable{}, 100, cleanSubmitter())
-	c.config.Unanalyzable.Empty = PolicyPass // refused by the validation until T16-b; the decision is ready
 	if r := c.analyzeFile(in); r.Error != nil || r.Malware || r.NotAnalyzedReason != datamodel.NotAnalyzedEmpty {
 		t.Errorf("pass: result = %+v", r)
 	}
@@ -539,5 +539,110 @@ func TestRecursiveExtract_aTopLevelArchiveLetThroughByAPluginIsMarkedAndKeepsIts
 				t.Errorf("result = %+v, want policy-skipped, no error, size %d and the pipeline's hash", r, info.Size())
 			}
 		})
+	}
+}
+
+// The empty policy by move mode: an empty file is delivered as a new empty file
+// (pass) unless the move renames, where only skipping is available; leaving the
+// key out is never a reason to refuse the start.
+func TestUnanalyzable_resolveByMoveMode(t *testing.T) {
+	tests := []struct {
+		name         string
+		empty        string
+		mode         MoveMode
+		want         string
+		wantFallback bool
+		wantErr      bool
+	}{
+		{"absent with copy delivers", "", MoveModeCopy, PolicyPass, false, false},
+		{"absent with no mode delivers", "", "", PolicyPass, false, false},
+		{"absent with rename skips and warns", "", MoveModeRename, PolicySkip, true, false},
+		{"explicit pass with copy", PolicyPass, MoveModeCopy, PolicyPass, false, false},
+		{"explicit pass with rename is refused", PolicyPass, MoveModeRename, "", false, true},
+		{"explicit skip with rename", PolicySkip, MoveModeRename, PolicySkip, false, false},
+		{"explicit mitigate with rename", PolicyMitigate, MoveModeRename, PolicyMitigate, false, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, fallback, err := Unanalyzable{Empty: tt.empty}.resolve(tt.mode)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("resolve() error = %v, want error %v", err, tt.wantErr)
+			}
+			if err == nil && (got.Empty != tt.want || fallback != tt.wantFallback) {
+				t.Errorf("resolve() = %q, fallback %v; want %q, %v", got.Empty, fallback, tt.want, tt.wantFallback)
+			}
+			if (CheckUnanalyzable(Unanalyzable{Empty: tt.empty}, tt.mode) != nil) != tt.wantErr {
+				t.Error("CheckUnanalyzable disagrees with resolve")
+			}
+		})
+	}
+}
+
+type captured struct {
+	mu   sync.Mutex
+	logs []string
+}
+
+func (c *captured) Enabled(context.Context, slog.Level) bool { return true }
+func (c *captured) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.logs = append(c.logs, r.Level.String()+" "+r.Message)
+	return nil
+}
+func (c *captured) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *captured) WithGroup(string) slog.Handler      { return c }
+
+// The fallback to skip is said in a Warn at each start.
+func TestNewConnector_theFallbackToSkipWarns(t *testing.T) {
+	prev := logger
+	t.Cleanup(func() { logger = prev })
+	rec := &captured{}
+	logger = slog.New(rec)
+	for _, tt := range []struct {
+		mode     MoveMode
+		wantWarn bool
+	}{{MoveModeRename, true}, {MoveModeCopy, false}} {
+		rec.mu.Lock()
+		rec.logs = nil
+		rec.mu.Unlock()
+		cfg := Config{MoveMode: tt.mode, Actions: Actions{Move: true}, MoveTo: t.TempDir(), MoveFrom: t.TempDir(), WorkDir: t.TempDir()}
+		if _, err := NewConnector(cfg, nil, cleanSubmitter()); err != nil {
+			t.Fatal(err)
+		}
+		rec.mu.Lock()
+		warned := slices.ContainsFunc(rec.logs, func(l string) bool {
+			return strings.HasPrefix(l, "WARN ") && strings.Contains(l, "unanalyzable_policy.empty")
+		})
+		rec.mu.Unlock()
+		if warned != tt.wantWarn {
+			t.Errorf("mode %q: warned = %v, want %v (%v)", tt.mode, warned, tt.wantWarn, rec.logs)
+		}
+	}
+}
+
+// With the move action off the mode means nothing: pass is accepted with rename,
+// and an empty policy left out is not turned into skip.
+func TestNewConnector_theMoveModeCountsOnlyWhileTheMoveIsOn(t *testing.T) {
+	prev := logger
+	t.Cleanup(func() { logger = prev })
+	rec := &captured{}
+	logger = slog.New(rec)
+	c, err := NewConnector(Config{MoveMode: MoveModeRename, Unanalyzable: Unanalyzable{Empty: PolicyPass}, WorkDir: t.TempDir()}, nil, cleanSubmitter())
+	if err != nil || c.config.Unanalyzable.Empty != PolicyPass {
+		t.Fatalf("NewConnector(rename, pass, move off) = %v, %v; want pass accepted", c, err)
+	}
+	c, err = NewConnector(Config{MoveMode: MoveModeRename, WorkDir: t.TempDir()}, nil, cleanSubmitter())
+	if err != nil || c.config.Unanalyzable.Empty != PolicyPass {
+		t.Fatalf("NewConnector(rename, absent, move off) = %v, %v; want the default pass", c, err)
+	}
+	rec.mu.Lock()
+	warned := slices.ContainsFunc(rec.logs, func(l string) bool { return strings.Contains(l, "unanalyzable_policy.empty") })
+	rec.mu.Unlock()
+	if warned {
+		t.Errorf("a Warn about the empty policy with the move off: %v", rec.logs)
+	}
+	if _, err = NewConnector(Config{MoveMode: MoveModeRename, Actions: Actions{Move: true}, MoveTo: t.TempDir(), MoveFrom: t.TempDir(), Unanalyzable: Unanalyzable{Empty: PolicyPass}, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
+		t.Error("pass with rename and the move on must be refused")
 	}
 }

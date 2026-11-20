@@ -101,6 +101,9 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 			return nil, fmt.Errorf("move.min_throughput %q must be greater than 0", conf.Move.MinThroughput)
 		}
 	}
+	if err = scanner.CheckUnanalyzable(unanalyzablePolicy(conf), effectiveMoveMode(conf)); err != nil {
+		return nil, err
+	}
 	switch {
 	case p.maxFileSize > maxFileSizeDetect && !conf.GMalwareSyndetect:
 		logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", conf.MaxFileSize))
@@ -521,14 +524,9 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		RecursiveExtractMaxFiles: conf.RecursiveExtractMaxFiles,
 		MoveTo:                   conf.Move.Destination,
 		MoveFrom:                 conf.Move.Source,
-		MoveMode:                 scanner.MoveMode(conf.Move.Mode),
+		MoveMode:                 effectiveMoveMode(conf),
 		MoveMinThroughput:        p.moveMinThroughput,
-		Unanalyzable: scanner.Unanalyzable{
-			TooBig:       conf.UnanalyzablePolicy.TooBig,
-			Empty:        conf.UnanalyzablePolicy.Empty,
-			Encrypted:    conf.UnanalyzablePolicy.Encrypted,
-			ExtractError: conf.UnanalyzablePolicy.ExtractError,
-		},
+		Unanalyzable:             unanalyzablePolicy(conf),
 	}, quarantiner, h.submitter)
 }
 
@@ -611,7 +609,7 @@ func (h *Handler) reportUnknownKeys(ctx context.Context, keys []string) {
 // it is in service: files reach the destination as the very inode a writer may
 // still hold open, so what is published is not guaranteed to be what was analyzed.
 func (h *Handler) reportMoveMode(ctx context.Context, conf *config.Config) {
-	if !conf.Actions.Move || conf.Move.Mode != string(scanner.MoveModeRename) {
+	if effectiveMoveMode(conf) != scanner.MoveModeRename {
 		if e := eventHandler.NotifyResolution(ctx, "the move action copies files", HostMoveRename); e != nil {
 			logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
 		}
@@ -622,6 +620,23 @@ func (h *Handler) reportMoveMode(ctx context.Context, conf *config.Config) {
 	scanner.ConsoleLogger.Warn(msg)
 	if e := eventHandler.NotifyError(ctx, HostMoveRename, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))
+	}
+}
+
+// effectiveMoveMode is the mode of the move action that counts: the copy when the
+// action is off, whatever the mode says.
+func effectiveMoveMode(conf *config.Config) scanner.MoveMode {
+	return scanner.EffectiveMoveMode(conf.Actions.Move, scanner.MoveMode(conf.Move.Mode))
+}
+
+// unanalyzablePolicy is what the configuration says of the unanalyzable files;
+// a key left out stays empty, the connector gives it its default.
+func unanalyzablePolicy(conf *config.Config) scanner.Unanalyzable {
+	return scanner.Unanalyzable{
+		TooBig:       conf.UnanalyzablePolicy.TooBig,
+		Empty:        conf.UnanalyzablePolicy.Empty,
+		Encrypted:    conf.UnanalyzablePolicy.Encrypted,
+		ExtractError: conf.UnanalyzablePolicy.ExtractError,
 	}
 }
 

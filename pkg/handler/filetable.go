@@ -16,13 +16,6 @@ const (
 	ownerOverhead = 256
 )
 
-// fileStamp is what the monitor compares to tell that a file changed: the
-// three values it compares today.
-type fileStamp struct {
-	size                int64
-	modTime, changeTime time.Time
-}
-
 type filePhase uint8
 
 const (
@@ -41,7 +34,7 @@ type trackedFile struct {
 	deadline   time.Time // phaseWaiting
 	retryAt    time.Time // phaseDone: zero means a final outcome
 	attempts   uint8
-	stamp      fileStamp
+	stamp      scanner.FileIdentity
 	missed     uint8 // consecutive rescans that could not read its folder
 	prev, next *trackedFile
 	list       *fileList
@@ -405,13 +398,13 @@ func (t *fileTable) Get(path string) (trackedFile, bool) {
 // seen; when its stamp changed and it still
 // waits, its deadline is pushed back to the given one, which also moves it to
 // the end of its owner's waiting list: the list stays in deadline order.
-func (t *fileTable) Track(path string, stamp fileStamp, seen, deadline time.Time) (admitted bool) {
+func (t *fileTable) Track(path string, stamp scanner.FileIdentity, seen, deadline time.Time) (admitted bool) {
 	ownerName := scanner.OwnerOf(path, t.rules, t.watched)
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if f, ok := t.files[path]; ok {
 		t.markSeen(f)
-		if f.phase == phaseWaiting && !sameStamp(f.stamp, stamp) {
+		if f.phase == phaseWaiting && !f.stamp.Equal(stamp) {
 			f.stamp, f.seen, f.deadline = stamp, seen, deadline
 			f.list.remove(f)
 			f.owner.waiting.pushBack(f)
@@ -466,10 +459,6 @@ func (t *fileTable) Touch(path string) bool {
 		t.markSeen(f)
 	}
 	return ok
-}
-
-func sameStamp(a, b fileStamp) bool {
-	return a.size == b.size && a.modTime.Equal(b.modTime) && a.changeTime.Equal(b.changeTime)
 }
 
 // makeRoom applies one step of the decision table; it returns false for a
@@ -608,11 +597,11 @@ func (t *fileTable) NextDeadline() (time.Time, bool) {
 
 // PopDue marks as submitted the waiting entry whose deadline is the earliest
 // and has passed, and returns its path and stamp.
-func (t *fileTable) PopDue(now time.Time) (path string, stamp fileStamp, ok bool) {
+func (t *fileTable) PopDue(now time.Time) (path string, stamp scanner.FileIdentity, ok bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if len(t.deadH) == 0 || t.deadH[0].deadline.After(now) {
-		return "", fileStamp{}, false
+		return "", scanner.FileIdentity{}, false
 	}
 	f, _ := heap.Pop(&t.deadH).(*trackedFile)
 	f.owner.waiting.remove(f)

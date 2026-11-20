@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -162,9 +163,15 @@ func TestApplyContract_refusedConfigureKeepsProcessingWithOldConfig(t *testing.T
 	mock.ExtractExpertViewURLMock = func(*gdetect.Result) (string, error) { return "", nil }
 	mock.ExtractTokenViewURLMock = func(*gdetect.Result) (string, error) { return "", nil }
 	mock.WaitForFileMock = waitFile
-	mock.WaitForReaderMock = func(context.Context, io.Reader, gdetect.WaitForOptions) (gdetect.Result, error) {
+	mock.GetResultBySHA256Mock = func(context.Context, string) (gdetect.Result, error) {
+		return gdetect.Result{}, gdetect.HTTPError{Code: http.StatusNotFound}
+	}
+	mock.SubmitReaderMock = func(context.Context, io.Reader, gdetect.SubmitOptions) (string, error) {
 		submitted.Add(1)
-		return gdetect.Result{}, nil
+		return "uuid", nil
+	}
+	mock.GetResultByUUIDWithWaitMock = func(context.Context, string, int) (gdetect.Result, error) {
+		return gdetect.Result{Done: true}, nil
 	}
 
 	bad := validConf(t, watched)

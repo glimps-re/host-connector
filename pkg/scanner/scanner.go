@@ -10,10 +10,12 @@ import (
 	"io/fs"
 	"log/slog"
 	"math"
+	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -146,6 +148,8 @@ type fileToAnalyze struct {
 	location           string
 	filename           string
 	logicalPath        string
+	identity           FileIdentity // observed by the monitor, checked before every action
+	input              *inputFD     // descriptor of the deposited file, nil for an extracted one
 	size               int64
 	archiveTopLocation string
 	archiveID          string
@@ -202,7 +206,15 @@ func memberLogicalPath(parent, rel string, inside bool, location string) string 
 type archiveToAnalyze struct {
 	sha256   string
 	location string
+	identity FileIdentity
+	input    *inputFD
 	size     int64
+}
+
+// submission is one file queued by SubmitFile.
+type submission struct {
+	location string
+	want     FileIdentity
 }
 
 type Connector struct {
@@ -231,7 +243,7 @@ type Connector struct {
 	extractWg  sync.WaitGroup
 	analysisWg sync.WaitGroup
 
-	dispatchChan chan string
+	dispatchChan chan submission
 	extractChan  chan archiveToAnalyze
 	analysisChan chan fileToAnalyze
 
@@ -251,6 +263,7 @@ type Connector struct {
 	onReportCbs            []plugins.OnReport
 	generateReport         plugins.GenerateReport
 	ongoingAnalysis        sync.Map
+	fdLinks                bool           // plugins and the extractor read through /proc/<pid>/fd (set at Start)
 	scansWg                sync.WaitGroup // tracks files from ScanFile entry to ongoingAnalysis removal
 	typesToExtract         map[string]struct{}
 }
@@ -306,7 +319,7 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		work:           work,
 		submitter:      submitter,
 		quarantiner:    quarantiner,
-		dispatchChan:   make(chan string, cfg.Workers),
+		dispatchChan:   make(chan submission, cfg.Workers),
 		extractChan:    make(chan archiveToAnalyze, cfg.ExtractWorkers),
 		analysisChan:   make(chan fileToAnalyze, cfg.Workers),
 		config:         cfg,
@@ -346,6 +359,9 @@ func newAction(cfg Config, quarantiner quarantine.Quarantiner) *MultiAction {
 }
 
 func (c *Connector) Start() (err error) {
+	if err = c.checkDescriptorLinks(); err != nil {
+		return err
+	}
 	for range c.config.Workers {
 		c.dispatchWg.Go(func() { c.dispatchWorker() })
 		c.analysisWg.Go(func() { c.analysisWorker() })
@@ -379,83 +395,140 @@ var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, _ 
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
-	select {
-	case <-c.stopIncoming:
-		err = errScannerClosed
-		return
-	default:
+	input, info, skip, err := c.examineInput(input)
+	if skip || err != nil {
+		return err
 	}
-
-	input = filepath.Clean(input)
-	inputLogger := logger.With(slog.String("input file", input))
-	if quarantine.IsTempFile(input) {
-		inputLogger.Debug("skip file", slog.String(logReasonKey, "temporary file"))
-		return
-	}
-
-	if c.IsInternalPath(input) {
-		inputLogger.Debug("skip file", slog.String(logReasonKey, "connector work directory"))
-		return
-	}
-
-	// Use Lstat to check if it's a symlink without following it
-	linfo, err := os.Lstat(input)
-	if err != nil {
-		return
-	}
-
-	// Handle symbolic links
-	if linfo.Mode()&os.ModeSymlink != 0 {
-		if !c.config.FollowSymlinks {
-			inputLogger.Debug("skip file", slog.String(logReasonKey, "symbolic link"))
-			return
-		}
-		if c.work != nil && c.work.containsResolved(input) {
-			inputLogger.Debug("skip file", slog.String(logReasonKey, "link to the connector work directory"))
-			return
-		}
-	}
-
-	// Now get info about the actual file (following symlink if needed)
-	info, err := os.Stat(input)
-	if err != nil {
-		return
-	}
-
-	c.noteScanRoot(input)
 	if info.IsDir() {
 		return c.scanDir(ctx, input)
 	}
+	_, err = c.submit(ctx, input, IdentityOf(info), info)
+	return err
+}
 
+// examineInput cleans input and decides whether it is to be looked at: not
+// when the connector is closing (error), nor for a temporary file, a file of
+// the connector work directory or a link not to be followed (skip). It returns
+// what the connector will read, and remembers the root of a scan.
+func (c *Connector) examineInput(input string) (clean string, info fs.FileInfo, skip bool, err error) {
+	select {
+	case <-c.stopIncoming:
+		return input, nil, true, errScannerClosed
+	default:
+	}
+	clean = filepath.Clean(input)
+	inputLogger := logger.With(slog.String("input file", clean))
+	if quarantine.IsTempFile(clean) {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "temporary file"))
+		return clean, nil, true, nil
+	}
+	if c.IsInternalPath(clean) {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "connector work directory"))
+		return clean, nil, true, nil
+	}
+	info, err = c.statInput(clean)
+	if err != nil {
+		if errors.Is(err, errSkippedLink) {
+			return clean, nil, true, nil
+		}
+		return clean, nil, true, err
+	}
+	c.noteScanRoot(clean)
+	return clean, info, false, nil
+}
+
+// errFileReplaced is returned when a file no longer has the identity it was
+// submitted with: it is not acted upon.
+var errFileReplaced = errors.New("file changed during analysis")
+
+// checkIdentity returns errFileReplaced unless location still has the
+// identity want.
+func (c *Connector) checkIdentity(location string, want FileIdentity) error {
+	info, err := c.statInput(location)
+	if err != nil {
+		return fmt.Errorf("%w: %w", errFileReplaced, err)
+	}
+	if !IdentityOf(info).Equal(want) {
+		ConsoleLogger.Error(fmt.Sprintf("file %s changed during analysis, it is left untouched", location))
+		return errFileReplaced
+	}
+	return nil
+}
+
+// errSkippedLink marks a symbolic link that must not be followed.
+var errSkippedLink = errors.New("symbolic link not followed")
+
+// statInput describes input as the connector will read it: the link itself
+// unless links are followed. A link that must not be followed, or that leads
+// into the connector work directory, is reported as errSkippedLink.
+func (c *Connector) statInput(input string) (fs.FileInfo, error) {
+	linfo, err := os.Lstat(input)
+	if err != nil {
+		return nil, err
+	}
+	if linfo.Mode()&os.ModeSymlink == 0 {
+		return linfo, nil
+	}
+	inputLogger := logger.With(slog.String("input file", input))
+	if !c.config.FollowSymlinks {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "symbolic link"))
+		return nil, errSkippedLink
+	}
+	if c.work != nil && c.work.containsResolved(input) {
+		inputLogger.Debug("skip file", slog.String(logReasonKey, "link to the connector work directory"))
+		return nil, errSkippedLink
+	}
+	return os.Stat(input)
+}
+
+// SubmitFile queues one regular file whose stability was observed as want.
+// accepted is false, with a nil error, when the file is refused without
+// failure (symbolic link, internal path, temporary file, empty file, already in
+// progress). The file is analyzed only if it still has the identity want when
+// the pipeline reads it, and acted upon only if it still has it afterwards.
+func (c *Connector) SubmitFile(ctx context.Context, input string, want FileIdentity) (accepted bool, err error) {
+	input, info, skip, err := c.examineInput(input)
+	if skip || err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	return c.submit(ctx, input, want, info)
+}
+
+// submit queues the regular file input, described by info, unless it is empty
+// or already being processed.
+func (c *Connector) submit(ctx context.Context, input string, want FileIdentity, info fs.FileInfo) (accepted bool, err error) {
+	inputLogger := logger.With(slog.String("input file", input))
 	if info.Size() == 0 {
 		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
-		return
+		return false, nil
 	}
 
 	if _, loaded := c.ongoingAnalysis.LoadOrStore(input, struct{}{}); loaded {
 		inputLogger.Debug("skip file", slog.String(logReasonKey, "ongoing analysis"))
-		return
+		return false, nil
 	}
 	c.scansWg.Add(1)
 
 	defer func() {
-		if err != nil {
+		if !accepted {
 			c.finishAnalysis(input)
 		}
 	}()
 
 	select {
 	case <-ctx.Done():
-		return context.Canceled
+		return false, context.Canceled
 	case <-c.stopIncoming:
-		err = errScannerClosed
-		return
-	case c.dispatchChan <- input:
-		return
+		return false, errScannerClosed
+	case c.dispatchChan <- submission{location: input, want: want}:
+		return true, nil
 	}
 }
 
-func (c *Connector) handleRestoredFile(location string, sha256 string, size int64) (err error) {
+func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity) (err error) {
 	res := datamodel.Result{
 		Filename: filepath.Base(location),
 		Location: location,
@@ -469,6 +542,9 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	if pathErr := c.checkPath(location); pathErr != nil {
 		refusePath(location, pathErr)
 		return pathErr
+	}
+	if idErr := c.checkIdentity(location, want); idErr != nil {
+		return idErr
 	}
 	report := &datamodel.Report{}
 	actionCtx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(size))
@@ -516,6 +592,10 @@ func (c *Connector) scanDir(ctx context.Context, input string) (err error) {
 		if d.IsDir() {
 			return nil
 		}
+		if d.Type()&fs.ModeSymlink != 0 && IsLinkToFolder(path) {
+			logger.Warn("link to a folder ignored", slog.String("path", path), slog.String(datamodel.LogSourceKey, "scanDir"))
+			return nil
+		}
 
 		err := c.ScanFile(ctx, path)
 		if err != nil {
@@ -536,14 +616,14 @@ func (c *Connector) dispatchWorker() {
 			// must call finishAnalysis for any item in channel before exiting, to ensure scansWg is properly decremented
 			for {
 				select {
-				case location := <-c.dispatchChan:
-					c.finishAnalysis(location)
+				case sub := <-c.dispatchChan:
+					c.finishAnalysis(sub.location)
 				default:
 					return
 				}
 			}
-		case location := <-c.dispatchChan:
-			c.dispatchFile(location)
+		case sub := <-c.dispatchChan:
+			c.dispatchFile(sub)
 		}
 	}
 }
@@ -598,7 +678,7 @@ func (c *Connector) analysisWorker() {
 
 // prepareFile stats the file, computes its SHA256, and checks quarantine restored status.
 // Returns the populated fileToAnalyze and whether the file should be skipped.
-func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool) {
+func (c *Connector) prepareFile(location string, want FileIdentity) (file fileToAnalyze, skip bool) {
 	inputLogger := logger.With(slog.String("file", location))
 
 	if err := c.checkPath(location); err != nil {
@@ -607,14 +687,35 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 		return
 	}
 
-	info, err := os.Stat(location)
+	// One descriptor for the identity, the hash and everything read later:
+	// what is read is what was observed, whatever happens to the name meanwhile.
+	// It never blocks on a FIFO put there after the stability check.
+	f, err := openRegular(location, c.config.FollowSymlinks)
+	if err != nil {
+		inputLogger.Error("could not open file, stop processing", slog.String("error", err.Error()))
+		skip = true
+		return
+	}
+	in := newInputFD(f)
+	defer func() {
+		if skip {
+			closeInput(in)
+		}
+	}()
+	info, err := f.Stat()
 	if err != nil {
 		inputLogger.Error("could not stat file, stop processing", slog.String("error", err.Error()))
 		skip = true
 		return
 	}
+	identity := IdentityOf(info)
+	if !identity.Equal(want) {
+		inputLogger.Info("skip file", slog.String(logReasonKey, "changed since its stability was observed"), slog.String("differs", identity.Diff(want)))
+		skip = true
+		return
+	}
 
-	fileSHA256, err := getFileSHA256(location)
+	fileSHA256, err := hashSection(f, info.Size())
 	if err != nil {
 		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
 		skip = true
@@ -635,10 +736,14 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 	if restored {
 		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
 		skip = true
-		err = c.handleRestoredFile(location, fileSHA256, info.Size())
+		// The content was read for the last time: the descriptor is checked,
+		// then closed, before the action.
+		if err = c.verifyContent(location, in, info.Size(), fileSHA256, identity); err == nil {
+			closeInput(in)
+			err = c.handleRestoredFile(location, fileSHA256, info.Size(), identity)
+		}
 		if err != nil {
 			inputLogger.Error("could not handle restored file", slog.String(logErrorKey, err.Error()))
-			return
 		}
 		return
 	}
@@ -647,6 +752,8 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 		filename: location,
 		location: location,
 		sha256:   fileSHA256,
+		identity: identity,
+		input:    in,
 		size:     info.Size(),
 	}
 	return
@@ -656,25 +763,86 @@ func (c *Connector) prepareFile(location string) (file fileToAnalyze, skip bool)
 // that this top-level file is fully done. Only files registered via ScanFile
 // (LoadOrStore) are present in the map; extracted sub-files are no-ops.
 func (c *Connector) finishAnalysis(location string) {
-	if _, loaded := c.ongoingAnalysis.LoadAndDelete(location); loaded {
+	if v, loaded := c.ongoingAnalysis.LoadAndDelete(location); loaded {
+		closeInput(v)
 		c.scansWg.Done()
 	}
 }
 
+// closeInput releases the descriptor held for an ongoing analysis, if any.
+func closeInput(v any) {
+	if in, ok := v.(*inputFD); ok {
+		if err := in.Close(); err != nil {
+			logger.Warn("could not close file correctly", slog.String("error", err.Error()))
+		}
+	}
+}
+
+// releaseInput closes the descriptor of the top-level file at location: it
+// must be done after the last read of its content and before any action
+// (Windows refuses to move or delete a file that is open).
+func (c *Connector) releaseInput(location string) {
+	if v, ok := c.ongoingAnalysis.Load(location); ok {
+		closeInput(v)
+	}
+}
+
+// finishReading ends the reading of the top-level file input: the content read
+// last (the second hash) is the one that was analyzed, the descriptor still is
+// the file that was identified, and so is the name; then the descriptor is
+// closed. It returns an error when the file must not be acted upon. A file
+// without descriptor (tests) is hashed by path.
+func (c *Connector) finishReading(input fileToAnalyze) error {
+	defer c.releaseInput(input.location)
+	return c.verifyContent(input.location, input.input, input.size, input.sha256, input.identity)
+}
+
+// verifyContent checks, on the descriptor, the hash and the identity of a file
+// that was analyzed, then the identity of the name.
+func (c *Connector) verifyContent(location string, in *inputFD, size int64, wantSHA256 string, want FileIdentity) error {
+	var actual string
+	var err error
+	if in != nil {
+		actual, err = hashSection(in.f, size)
+	} else {
+		actual, err = getFileSHA256(location)
+	}
+	if err != nil {
+		return fmt.Errorf("could not compute file SHA256: %w", err)
+	}
+	if actual != wantSHA256 {
+		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", location))
+		return errors.New("file SHA256 mismatch, file changed during analysis")
+	}
+	if in != nil {
+		info, statErr := in.f.Stat()
+		if statErr != nil {
+			return fmt.Errorf("%w: %w", errFileReplaced, statErr)
+		}
+		if !IdentityOf(info).Equal(want) {
+			ConsoleLogger.Error(fmt.Sprintf("file %s changed during analysis, it is left untouched", location))
+			return errFileReplaced
+		}
+	}
+	return c.checkIdentity(location, want)
+}
+
 // dispatchFile performs prepareFile (SHA256, size, restored check) and routes the
 // file to either extractChan (for extraction) or analysisChan (for analysis).
-func (c *Connector) dispatchFile(location string) {
+func (c *Connector) dispatchFile(sub submission) {
+	location := sub.location
 	inputLogger := logger.With(slog.String("file", location))
 
-	input, skip := c.prepareFile(location)
+	input, skip := c.prepareFile(location, sub.want)
 	if skip {
 		c.finishAnalysis(location)
 		return
 	}
+	c.ongoingAnalysis.CompareAndSwap(location, struct{}{}, input.input)
 
 	// Route to extraction if applicable
 	if input.size > c.config.ExtractMinThreshold && c.config.Extract {
-		archive := archiveToAnalyze{location: location, sha256: input.sha256, size: input.size}
+		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, size: input.size}
 		select {
 		case <-c.stopWorker:
 			c.finishAnalysis(location)
@@ -708,16 +876,15 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	inputLogger.Debug("applying onStartScanFile() from plugins")
 	c.onStartScanFile(input.location, input.sha256)
 	result := c.analyzeFile(input)
-	actualSHA256, err := getFileSHA256(input.location)
-	if err != nil {
-		inputLogger.Error("could not compute file SHA256, stop processing", slog.String("error", err.Error()))
-		c.abortAnalysis(input, result, fmt.Errorf("could not compute file SHA256: %w", err))
+	if errors.Is(result.Error, errSubmitContentMismatch) || errors.Is(result.Error, errNoDescriptorPath) {
+		// The service answered about another content: nothing is done to the file.
+		inputLogger.Error("the analysis was about another content, stop processing", slog.String(logErrorKey, result.Error.Error()))
+		c.abortAnalysis(input, result, result.Error)
 		return
 	}
-	if actualSHA256 != input.sha256 {
-		inputLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("actual sha256", actualSHA256), slog.String("input sha256", input.sha256))
-		ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", input.location))
-		c.abortAnalysis(input, result, errors.New("file SHA256 mismatch, file changed during analysis"))
+	if err := c.finishReading(input); err != nil {
+		inputLogger.Error("file changed during analysis, stop processing", slog.String(logErrorKey, err.Error()))
+		c.abortAnalysis(input, result, err)
 		return
 	}
 
@@ -801,6 +968,8 @@ func (c *Connector) tryExtract(archive archiveToAnalyze) (err error) {
 	file := fileToAnalyze{
 		location: archive.location,
 		sha256:   archive.sha256,
+		identity: archive.identity,
+		input:    archive.input,
 		size:     archive.size,
 	}
 	var totalExtractedSize int64
@@ -821,7 +990,12 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		err = errors.New("totalExtractedFiles is nil")
 		return
 	}
-	checkErr := c.checkBeforeExtract(archive.location, archive.size, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
+	archivePath, pathErr := c.readPath(archive)
+	if pathErr != nil {
+		err = fmt.Errorf("extract-error: %w", pathErr)
+		return
+	}
+	checkErr := c.checkBeforeExtract(archivePath, archive.size, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
 	if checkErr != nil {
 		archiveLogger.Debug("file cannot be extracted", slog.String(logReasonKey, checkErr.Error()))
 		file := archive
@@ -853,7 +1027,14 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		MaxFiles:     c.config.RecursiveExtractMaxFiles - *totalExtractedFiles,
 		MaxTotalSize: c.config.RecursiveExtractMaxSize - *totalExtractedSize,
 	}
-	extraction, extractErr := ExtractFile(archive.location, outputDir, limits)
+	source, cleanupSource, sourceErr := c.extractSource(archive)
+	if sourceErr != nil {
+		err = fmt.Errorf("extract-error: %w", sourceErr)
+		return
+	}
+	defer cleanupSource()
+	extraction, extractErr := ExtractFile(source, outputDir, limits)
+	cleanupSource()
 	extractedSize, extractedFiles := extraction.Size, extraction.Files
 	if extractErr == nil {
 		extractErr = extractionAnomaly(extraction)
@@ -893,6 +1074,8 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	archiveLogger.Debug("archive extraction successful", slog.String("extracted files", fmt.Sprintf("%v", extractedFiles)))
 	eStatus := archiveStatus{
 		archiveLocation: archive.location,
+		identity:        archive.identity,
+		input:           archive.input,
 		result: datamodel.Result{
 			SHA256:            archive.sha256,
 			MaliciousSubfiles: make(map[string]datamodel.Result),
@@ -1151,8 +1334,7 @@ var sha256BufferPool = sync.Pool{
 }
 
 func getFileSHA256(location string) (fileSHA256 string, err error) {
-	hash := sha256.New()
-	f, err := os.Open(filepath.Clean(location))
+	f, err := openRegular(location, true)
 	if err != nil {
 		return
 	}
@@ -1161,7 +1343,12 @@ func getFileSHA256(location string) (fileSHA256 string, err error) {
 			logger.Warn("could not close file correctly", slog.String("file", location), slog.String("error", e.Error()))
 		}
 	}()
+	return hashFile(f)
+}
 
+// hashFile returns the SHA256 of what is left to read of f.
+func hashFile(f io.Reader) (fileSHA256 string, err error) {
+	hash := sha256.New()
 	sha256Buf, ok := sha256BufferPool.Get().(*[]byte)
 	if !ok {
 		err = errors.New("error with sha256 computing, could not get correct buffer type from pool")
@@ -1257,18 +1444,14 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	// and no action; the cleanup below still runs.
 	runAction := !isSubArchive
 	if !isSubArchive {
-		currentSHA256, getSHAErr := getFileSHA256(status.archiveLocation)
-		switch {
-		case getSHAErr != nil:
-			archiveLogger.Error("could not compute archive sha256", slog.String(logErrorKey, getSHAErr.Error()))
-			status.result.Error = fmt.Errorf("%w: could not compute archive sha256: %v", errInnerTransient, memberCause(getSHAErr))
-			runAction = false
-		case currentSHA256 != status.result.SHA256:
-			archiveLogger.Error("file SHA256 mismatch: current hash differs from analyzed version, stop processing", slog.String("current sha256", currentSHA256), slog.String("input sha256", status.result.SHA256))
-			ConsoleLogger.Error(fmt.Sprintf("file %s SHA256 mismatch: current hash differs from analyzed version, stop processing", status.archiveLocation))
-			status.result.Error = fmt.Errorf("%w: file SHA256 mismatch, file changed during analysis", errInnerTransient)
+		// The last read of the content is over: its hash, the descriptor and
+		// the name are checked, then the descriptor is closed, before the action.
+		if verifyErr := c.verifyContent(status.archiveLocation, status.input, status.result.FileSize, status.result.SHA256, status.identity); verifyErr != nil {
+			archiveLogger.Error("archive changed during analysis, stop processing", slog.String(logErrorKey, verifyErr.Error()))
+			status.result.Error = fmt.Errorf("%w: %w", errInnerTransient, memberCause(verifyErr))
 			runAction = false
 		}
+		c.releaseInput(status.archiveLocation)
 	}
 
 	if newResult := c.onFileScanned(status.archiveLocation, status.result.SHA256, status.result); newResult != nil {
@@ -1320,19 +1503,25 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		fileLogger.Debug("file handled", slog.Any("result", result))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(c.config.Timeout))
+	ctx, cancel := context.WithTimeout(context.Background(), c.analysisTimeout())
 	defer cancel()
 
 	opts := c.config.WaitOpts
 	opts.Filename = input.location
 
+	readLocation, locErr := c.readPath(input)
+	if locErr != nil {
+		result = datamodel.Result{Filename: input.filename, Location: input.location, SHA256: input.sha256, FileSize: input.size, Error: locErr}
+		return
+	}
 	fileLogger.Debug("applying onScanFile() from plugins")
-	res := c.onScanFile(input.logical(), input.location, input.sha256, false)
+	res := c.onScanFile(input.logical(), readLocation, input.sha256, false)
 	if res != nil {
 		result = *res
 		// Reports and MaliciousSubfiles are keyed by the internal name, whatever
-		// the plugin put in Filename.
+		// the plugin put in Filename or Location.
 		result.Filename = input.filename
+		result.Location = input.location
 		return
 	}
 
@@ -1368,7 +1557,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	}
 	c.withWaitForOptions(&opts, location)
 	fileLogger.Debug("sending file to detect ...")
-	gdetectResult, err := c.submitter.WaitForFile(ctx, input.location, opts)
+	gdetectResult, err := c.submitContent(ctx, input, opts)
 	var logArgs []any
 	if err != nil {
 		err = fmt.Errorf("%s: %w", errSubmitPrefix, err)
@@ -1383,6 +1572,9 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		if errEvent := EventHandler.NotifyResolution(ctx, "last analysis succeeded", events.GMalwareConfigError, events.GMalwareError); errEvent != nil {
 			fileLogger.Error("cannot push resolution event", slog.String("error", errEvent.Error()))
 		}
+
+	case errors.Is(err, errSubmitContentMismatch):
+		// the file changed under the analysis: not a GMalware error
 
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, gdetect.ErrTimeout):
 		// not a GMalware error (can be file-specific) so don't send error notification
@@ -1457,6 +1649,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 // (e.g. session) that the scan started with onStartScanFile is over.
 func (c *Connector) abortAnalysis(input fileToAnalyze, result datamodel.Result, err error) {
 	result.Error = err
+	c.releaseInput(input.location)
 	c.onFileScanned(input.location, input.sha256, result)
 	c.finishAnalysis(input.location)
 }
@@ -1515,4 +1708,189 @@ func (c *Connector) GetLogger() *slog.Logger {
 
 func (c *Connector) GetConsoleLogger() *slog.Logger {
 	return ConsoleLogger
+}
+
+// readPath is the path plugins read a file by: the one backed by the verified
+// descriptor when descriptors are used (Linux, checked at start), else the path
+// the file was deposited at. When descriptors are used and the path cannot be
+// built the file is in error: giving the deposit path to the plugins would let
+// them read, and waive, another file.
+func (c *Connector) readPath(input fileToAnalyze) (string, error) {
+	if input.input == nil || !c.fdLinks {
+		return input.location, nil
+	}
+	p, ok := descriptorPath(input.input.f)
+	if !ok {
+		return "", fmt.Errorf("%w: %s", errNoDescriptorPath, input.location)
+	}
+	return p, nil
+}
+
+var errNoDescriptorPath = errors.New("no usable descriptor path")
+
+// submitContent sends the file to the analysis and checks that the service
+// answered about the file that was identified: the SHA256 it reports must be the
+// one computed here, whatever the way the content was given.
+func (c *Connector) submitContent(ctx context.Context, input fileToAnalyze, opts gdetect.WaitForOptions) (gdetect.Result, error) {
+	var res gdetect.Result
+	var err error
+	if input.input == nil {
+		res, err = c.submitter.WaitForFile(ctx, input.location, opts)
+	} else {
+		res, err = c.waitForDescriptor(ctx, input, opts)
+	}
+	if err != nil {
+		return res, err
+	}
+	if !strings.EqualFold(res.SHA256, input.sha256) {
+		return res, fmt.Errorf("%w: the analyzed content is not the file that was identified (sha256 %q, want %q)", errSubmitContentMismatch, res.SHA256, input.sha256)
+	}
+	return res, nil
+}
+
+// waitForDescriptor is WaitForFile for a file held by a descriptor, with the
+// public API of the client: the client's WaitForReader would copy the file to
+// the temporary directory first. It looks the SHA256 up (unless the cache is
+// bypassed), submits the content read from the descriptor when it is unknown,
+// then waits for the result until the timeout.
+func (c *Connector) waitForDescriptor(ctx context.Context, input fileToAnalyze, opts gdetect.WaitForOptions) (gdetect.Result, error) {
+	timeout := opts.Timeout
+	if timeout == 0 {
+		timeout = 180 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	pull := opts.PullTime
+	if pull == 0 {
+		pull = 2 * time.Second
+	}
+	id := ""
+	if !opts.BypassCache {
+		res, err := c.submitter.GetResultBySHA256(ctx, input.sha256)
+		var httpErr gdetect.HTTPError
+		switch {
+		case errors.As(err, &httpErr) && httpErr.Code == http.StatusNotFound:
+		case err != nil:
+			return res, fmt.Errorf("error getting result from cache: %w", err)
+		case res.Done:
+			return res, nil
+		default:
+			id = res.UUID
+			if id == "" {
+				id = res.ID
+			}
+		}
+	}
+	if id == "" {
+		var err error
+		if id, err = c.submitter.SubmitReader(ctx, input.input.reader(input.size), opts.SubmitOptions); err != nil {
+			return gdetect.Result{}, fmt.Errorf("error submitting file: %w", err)
+		}
+	}
+	return c.waitForResult(ctx, id, pull)
+}
+
+// waitForResult polls the analysis id until it is done or ctx ends. The server
+// holds the connection for up to the time left (Detect), or answers at once
+// (SynDetect): then the polls are pull apart.
+func (c *Connector) waitForResult(ctx context.Context, id string, pull time.Duration) (gdetect.Result, error) {
+	for {
+		wait := gdetect.MaxWaitSeconds
+		if deadline, ok := ctx.Deadline(); ok {
+			wait = min(int(time.Until(deadline).Seconds()), gdetect.MaxWaitSeconds)
+		}
+		if wait <= 0 || ctx.Err() != nil {
+			return gdetect.Result{}, gdetect.ErrTimeout
+		}
+		start := time.Now()
+		res, err := c.submitter.GetResultByUUIDWithWait(ctx, id, wait)
+		if err != nil {
+			return res, fmt.Errorf("error waiting for result: %w", err)
+		}
+		if res.Done {
+			return res, nil
+		}
+		if time.Since(start) < pull {
+			select {
+			case <-ctx.Done():
+				return gdetect.Result{}, gdetect.ErrTimeout
+			case <-time.After(pull - time.Since(start)):
+			}
+		}
+	}
+}
+
+var errSubmitContentMismatch = errors.New("analysis of another content")
+
+// extractSource is the path the extractor reads a deposited archive by: a link
+// <folder>/<base name> to the verified descriptor, in a folder of its own beside
+// the output folder (the extractor counts what it finds in the output folder),
+// so that the archive extracted is the one that was identified. The base name
+// keeps the extension the extractor may rely on. cleanup removes the link, it is
+// safe to call more than once. Where descriptors have no path (not Linux) it is
+// the path the file was deposited at.
+func (c *Connector) extractSource(archive fileToAnalyze) (source string, cleanup func(), err error) {
+	if archive.input == nil || !c.fdLinks {
+		return archive.location, func() {}, nil
+	}
+	target, ok := descriptorPath(archive.input.f)
+	if !ok {
+		return "", func() {}, fmt.Errorf("no usable descriptor path for %s", archive.location)
+	}
+	dir, err := os.MkdirTemp(c.work.extractDir(), "src-")
+	if err != nil {
+		return "", func() {}, err
+	}
+	cleanup = func() {
+		if e := os.RemoveAll(dir); e != nil {
+			logger.Warn("could not remove the source link folder", slog.String("folder", dir), slog.String(logErrorKey, e.Error()))
+		}
+	}
+	link := filepath.Join(dir, filepath.Base(archive.location))
+	if err = os.Symlink(target, link); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	return link, cleanup, nil
+}
+
+// checkDescriptorLinks decides, once, how files are read by their descriptor.
+// On Linux /proc must give a path to an open file: without it the guarantee
+// that plugins and the extractor read the verified file cannot be given, and
+// the connector refuses to start. Elsewhere there is no such path, the deposit
+// path is used and the operator is told.
+func (c *Connector) checkDescriptorLinks() error {
+	if runtime.GOOS != "linux" {
+		msg := "descriptors have no path on this system: plugins and the extractor read files by the path they were deposited at, which a user may redirect while they work"
+		logger.Warn(msg)
+		ConsoleLogger.Warn(msg)
+		return nil
+	}
+	f, err := os.Open(os.DevNull)
+	if err != nil {
+		return fmt.Errorf("cannot check /proc: %w", err)
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			logger.Warn("could not close file correctly", slog.String(logErrorKey, e.Error()))
+		}
+	}()
+	if _, ok := descriptorPath(f); !ok {
+		return errNoDescriptorLinks
+	}
+	c.fdLinks = true
+	return nil
+}
+
+var errNoDescriptorLinks = errors.New("/proc/<pid>/fd cannot be used (is /proc mounted, and not hidden from this process?): without it the connector cannot make sure it reads the file it identified; mount /proc or run on another system")
+
+// defaultAnalysisTimeout is the time given to the analysis of a file when the
+// configuration says none: the one of the client.
+const defaultAnalysisTimeout = 180 * time.Second
+
+func (c *Connector) analysisTimeout() time.Duration {
+	if t := time.Duration(c.config.Timeout); t > 0 {
+		return t
+	}
+	return defaultAnalysisTimeout
 }

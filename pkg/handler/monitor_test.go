@@ -16,6 +16,7 @@ import (
 
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 func TestNewMonitor(t *testing.T) {
@@ -216,52 +217,21 @@ func TestNewMonitor(t *testing.T) {
 
 			cbCalledOnMu := new(sync.Mutex)
 
-			cb := func(path string) error {
+			cb := func(path string, _ scanner.FileIdentity) (bool, error) {
 				cbCalledOnMu.Lock()
 				defer cbCalledOnMu.Unlock()
-				t.Helper()
-				info, err := os.Stat(path)
-				if err != nil {
-					t.Errorf("could not stat %s, error: %v", path, err)
+				name := filepath.Base(path)
+				if exp, ok := tt.wantCbCalledOn[name]; ok && exp.count > 0 {
+					exp.count--
+					if exp.count == 0 {
+						delete(tt.wantCbCalledOn, name)
+					}
+					if len(tt.wantCbCalledOn) == 0 {
+						cancel()
+					}
+					return true, exp.err
 				}
-				// skip dir
-				if !info.IsDir() {
-					name := filepath.Base(path)
-					if exp, ok := tt.wantCbCalledOn[name]; ok && exp.count > 0 {
-						exp.count--
-						if exp.count == 0 {
-							delete(tt.wantCbCalledOn, name)
-						}
-						if len(tt.wantCbCalledOn) == 0 {
-							cancel()
-						}
-						return exp.err
-					}
-				}
-				err = filepath.WalkDir(path, func(path string, d fs.DirEntry, err error) error {
-					if err != nil {
-						return err
-					}
-					if d.IsDir() {
-						return nil
-					}
-					name := filepath.Base(path)
-					if exp, ok := tt.wantCbCalledOn[name]; ok && exp.count > 0 {
-						exp.count--
-						if exp.count == 0 {
-							delete(tt.wantCbCalledOn, name)
-						}
-						if len(tt.wantCbCalledOn) == 0 {
-							cancel()
-						}
-						return exp.err
-					}
-					return nil
-				})
-				if err != nil {
-					t.Errorf("error walk dir, error: %v", err)
-				}
-				return nil
+				return true, nil
 			}
 
 			m, err := NewMonitor(cb, Config{
@@ -289,6 +259,8 @@ func TestNewMonitor(t *testing.T) {
 				t.Error("timeout waiting for callbacks")
 			}
 
+			cbCalledOnMu.Lock()
+			defer cbCalledOnMu.Unlock()
 			for name, exp := range tt.wantCbCalledOn {
 				t.Errorf("callback not called enough times on %s, remaining: %d", name, exp.count)
 			}
@@ -345,14 +317,14 @@ func TestMonitor_periodicalScanContinuesAfterWalkError(t *testing.T) {
 	defer cancel()
 	var mu sync.Mutex
 	got := map[string]struct{}{}
-	m := newTestMonitor(t, time.Millisecond, func(path string) error {
+	m := newTestMonitor(t, time.Millisecond, func(path string, _ scanner.FileIdentity) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		got[filepath.Base(path)] = struct{}{}
 		if len(got) == 2 {
 			cancel()
 		}
-		return nil
+		return true, nil
 	})
 	m.Start()
 	m.paths.Store(root, struct{}{})
@@ -372,7 +344,7 @@ func TestMonitor_periodicalScanContinuesAfterWalkError(t *testing.T) {
 
 func TestMonitor_walkRoot(t *testing.T) {
 	t.Run("missing root is partial", func(t *testing.T) {
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		missing := filepath.Join(t.TempDir(), "missing")
 		unreadable, _ := m.walkRoot(missing, maxUnreadableDirs)
 		if m.table.Len() != 0 {
@@ -386,7 +358,7 @@ func TestMonitor_walkRoot(t *testing.T) {
 		root := t.TempDir()
 		f := filepath.Join(root, "d", "f.txt")
 		writeTestFile(t, f)
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		if u, _ := m.walkRoot(root+string(filepath.Separator), maxUnreadableDirs); len(u) != 0 {
 			t.Errorf("unreadable = %v, want none", u)
 		}
@@ -398,7 +370,7 @@ func TestMonitor_walkRoot(t *testing.T) {
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "a1.txt"))
 		writeTestFile(t, filepath.Join(root, "c", "last.txt"))
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		unreadable, _ := m.walkRoot(root, maxUnreadableDirs)
 		if m.table.Len() != 2 || len(unreadable) != 0 {
 			t.Errorf("tracked = %d, unreadable = %v", m.table.Len(), unreadable)
@@ -407,7 +379,7 @@ func TestMonitor_walkRoot(t *testing.T) {
 	t.Run("closed monitor interrupts the walk as partial", func(t *testing.T) {
 		root := t.TempDir()
 		writeTestFile(t, filepath.Join(root, "f.txt"))
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		if err := m.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
 		}
@@ -434,7 +406,7 @@ func TestMonitor_walkRoot(t *testing.T) {
 				t.Fatalf("could not create symlink, error: %v", err)
 			}
 		}
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		if u, _ := m.walkRoot(root, maxUnreadableDirs); len(u) != 0 {
 			t.Errorf("unreadable = %v, want none", u)
 		}
@@ -454,7 +426,7 @@ func TestMonitor_walkRoot(t *testing.T) {
 
 func TestMonitor_Add_cleansPath(t *testing.T) {
 	dir := t.TempDir()
-	m := newTestMonitor(t, 0, func(string) error { return nil })
+	m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 	if err := m.Add(dir + string(filepath.Separator) + "."); err != nil {
 		t.Fatalf("Add() error = %v", err)
 	}
@@ -469,7 +441,7 @@ func TestMonitor_ignoresQuarantineTempFiles(t *testing.T) {
 		realFile := filepath.Join(root, "real.txt")
 		writeTestFile(t, realFile)
 		writeTestFile(t, filepath.Join(root, quarantine.TempPrefix+"real.txt-0123456789abcdef"))
-		m := newTestMonitor(t, 0, func(string) error { return nil })
+		m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 		if u, _ := m.walkRoot(root, maxUnreadableDirs); len(u) != 0 {
 			t.Errorf("unreadable = %v, want none", u)
 		}
@@ -483,14 +455,14 @@ func TestMonitor_ignoresQuarantineTempFiles(t *testing.T) {
 		defer cancel()
 		var mu sync.Mutex
 		var got []string
-		m := newTestMonitor(t, 0, func(path string) error {
+		m := newTestMonitor(t, 0, func(path string, _ scanner.FileIdentity) (bool, error) {
 			mu.Lock()
 			defer mu.Unlock()
 			got = append(got, filepath.Base(path))
 			if filepath.Base(path) == "real.txt" {
 				cancel()
 			}
-			return nil
+			return true, nil
 		})
 		m.Start()
 		if err := m.Add(root); err != nil {

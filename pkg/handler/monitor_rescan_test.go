@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/quarantine"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 func TestMonitor_walkRootUnreadableDirIsPartial(t *testing.T) {
@@ -28,7 +29,7 @@ func TestMonitor_walkRootUnreadableDirIsPartial(t *testing.T) {
 			t.Errorf("could not restore permissions: %v", err)
 		}
 	})
-	m := newTestMonitor(t, 0, func(string) error { return nil })
+	m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 	unreadable, _ := m.walkRoot(root, maxUnreadableDirs)
 	if _, ok := m.table.Get(filepath.Join(root, "ok", "f.txt")); !ok {
 		t.Errorf("sibling file not tracked")
@@ -50,10 +51,10 @@ func TestMonitor_rescanPurgesTheGoneAndKeepsWhatAnUnreadableFolderHides(t *testi
 	underMissing := filepath.Join(missing, "sub", "f.txt")
 	siblingPrefix := missing + "-other/f.txt"
 
-	m := newTestMonitor(t, 0, func(string) error { return nil })
+	m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 	now := time.Now()
 	for _, p := range []string{staleComplete, underMissing, siblingPrefix} {
-		m.table.Track(p, fileStamp{size: 1}, now, now.Add(time.Hour))
+		m.table.Track(p, scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	}
 	m.paths.Store(complete, struct{}{})
 	m.paths.Store(missing, struct{}{})
@@ -82,11 +83,11 @@ func TestMonitor_ignoresRestoreTemporaryFiles(t *testing.T) {
 
 	var mu sync.Mutex
 	got := map[string]struct{}{}
-	m := newTestMonitor(t, 5*time.Millisecond, func(path string) error {
+	m := newTestMonitor(t, 5*time.Millisecond, func(path string, _ scanner.FileIdentity) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		got[path] = struct{}{}
-		return nil
+		return true, nil
 	})
 	m.Start()
 	if err := m.Add(root); err != nil {
@@ -137,7 +138,7 @@ func TestMonitor_walkRootCapsTheUnreadableList(t *testing.T) {
 			}
 		})
 	}
-	m := newTestMonitor(t, 0, func(string) error { return nil })
+	m := newTestMonitor(t, 0, func(string, scanner.FileIdentity) (bool, error) { return true, nil })
 	got, overflow := m.walkRoot(root, 3)
 	if len(got) != 3 || !overflow {
 		t.Errorf("walkRoot() = %d folders, overflow %v; want 3 and true", len(got), overflow)

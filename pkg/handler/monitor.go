@@ -32,7 +32,10 @@ type Monitorer interface {
 	Add(path string) error
 }
 
-type OnNewFileFunc func(file string) error
+// OnNewFileFunc receives a file whose identity id was observed stable. It
+// reports whether the file was accepted for processing; a refusal without
+// failure leaves the file to be found again by the next rescan.
+type OnNewFileFunc func(file string, id scanner.FileIdentity) (accepted bool, err error)
 
 type Config struct {
 	// DisableWatcher turns off filesystem events: files are only found by
@@ -75,25 +78,28 @@ const (
 )
 
 type Monitor struct {
-	watcher    *rfsnotify.RWatcher
-	skip       func(path string) bool
-	stat       func(path string) (fs.FileInfo, error)
-	wg         sync.WaitGroup
-	cb         OnNewFileFunc // callbacks
-	preScan    bool
-	period     sdk.Duration
-	modDelay   sdk.Duration // modification delay
-	paths      *sync.Map
-	done       chan struct{}
-	closeOnce  sync.Once
-	table      *fileTable
-	wake       chan struct{} // a deadline earlier than the timer may exist
-	ctx        context.Context
-	repMu      sync.Mutex // guards pressured, tableFull and lastReport
-	pressured  bool
-	tableFull  bool
-	lastReport time.Time
-	started    atomic.Bool
+	watcher     *rfsnotify.RWatcher
+	skip        func(path string) bool
+	stat        func(path string) (fs.FileInfo, error)
+	wg          sync.WaitGroup
+	cb          OnNewFileFunc // callbacks
+	preScan     bool
+	period      sdk.Duration
+	modDelay    sdk.Duration // modification delay
+	paths       *sync.Map
+	done        chan struct{}
+	closeOnce   sync.Once
+	table       *fileTable
+	wake        chan struct{} // a deadline earlier than the timer may exist
+	walkMu      sync.Mutex
+	walkPending map[string]struct{} // folders waiting to be walked
+	walkWake    chan struct{}
+	ctx         context.Context
+	repMu       sync.Mutex // guards pressured, tableFull and lastReport
+	pressured   bool
+	tableFull   bool
+	lastReport  time.Time
+	started     atomic.Bool
 }
 
 func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
@@ -129,18 +135,20 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 		base = context.Background()
 	}
 	return &Monitor{
-		ctx:      context.WithoutCancel(base),
-		watcher:  watcher,
-		cb:       onNewFile,
-		skip:     cfg.Skip,
-		stat:     statFor(cfg.FollowSymlinks),
-		preScan:  cfg.PreScan,
-		period:   cfg.Period,
-		modDelay: cfg.ModDelay,
-		paths:    new(sync.Map),
-		table:    newFileTable(maxBytes, quota, cfg.Owners, watched),
-		wake:     make(chan struct{}, 1),
-		done:     make(chan struct{}),
+		ctx:         context.WithoutCancel(base),
+		watcher:     watcher,
+		cb:          onNewFile,
+		skip:        cfg.Skip,
+		stat:        statFor(cfg.FollowSymlinks),
+		preScan:     cfg.PreScan,
+		period:      cfg.Period,
+		modDelay:    cfg.ModDelay,
+		paths:       new(sync.Map),
+		table:       newFileTable(maxBytes, quota, cfg.Owners, watched),
+		wake:        make(chan struct{}, 1),
+		walkPending: make(map[string]struct{}),
+		walkWake:    make(chan struct{}, 1),
+		done:        make(chan struct{}),
 	}, nil
 }
 
@@ -179,6 +187,9 @@ func (m *Monitor) Start() {
 	}
 	m.wg.Go(func() {
 		m.scanFiles()
+	})
+	m.wg.Go(func() {
+		m.walkQueue()
 	})
 	m.started.Store(true)
 	if m.preScan {
@@ -315,8 +326,20 @@ func (m *Monitor) discover(path string, examine bool) {
 		m.table.Forget(path)
 		return
 	}
+	if info.IsDir() {
+		// A folder created or moved in: its files may predate the watch placed
+		// on it, so they are walked like at a rescan. A link to a folder is never
+		// walked: it would lead out of the monitored tree (the work directory,
+		// /etc, a parent), or loop.
+		if scanner.IsLinkToFolder(path) {
+			logger.Warn("link to a folder ignored", slog.String("path", path))
+			return
+		}
+		m.preScanPath(path)
+		return
+	}
 	now := time.Now()
-	if m.table.Track(path, stampOf(info), now, now.Add(time.Duration(m.modDelay))) {
+	if m.table.Track(path, scanner.IdentityOf(info), now, now.Add(time.Duration(m.modDelay))) {
 		select {
 		case m.wake <- struct{}{}:
 		default:
@@ -340,10 +363,6 @@ func (m *Monitor) reportPressureIfDue(now time.Time) {
 	notes := m.collectPressure(now)
 	m.repMu.Unlock()
 	m.push(m.ctx, notes)
-}
-
-func stampOf(info fs.FileInfo) fileStamp {
-	return fileStamp{size: info.Size(), modTime: info.ModTime(), changeTime: changeTime(info)}
 }
 
 func withSeparator(path string) string {
@@ -428,13 +447,13 @@ func (m *Monitor) processDue() {
 			m.table.Forget(path)
 			continue
 		}
-		if cur := stampOf(info); !sameStamp(cur, stamp) {
+		if cur := scanner.IdentityOf(info); !cur.Equal(stamp) {
 			m.table.Forget(path)
 			now := time.Now()
 			m.table.Track(path, cur, now, now.Add(time.Duration(m.modDelay)))
 			continue
 		}
-		if err := m.cb(path); err != nil {
+		if _, err := m.cb(path, stamp); err != nil {
 			logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
 		}
 		m.table.Forget(path)
@@ -555,11 +574,71 @@ func (m *Monitor) Add(path string) error {
 	return nil
 }
 
-// preScanPath hands root to the callback in the background.
+// preScanPath asks for the files already under root to be tracked (at start,
+// when a path is added, or when a folder appears). A single goroutine walks, one
+// folder at a time; a folder whose walk is already waiting, or whose parent's
+// is, is not queued again: `mkdir -p` of depth N asks for one walk, not N.
 func (m *Monitor) preScanPath(root string) {
-	m.wg.Go(func() {
-		if err := m.cb(root); err != nil {
-			logger.Error("could not scan file", slog.String("path", root), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
+	root = filepath.Clean(root)
+	m.walkMu.Lock()
+	for dir := root; ; {
+		if _, covered := m.walkPending[dir]; covered {
+			m.walkMu.Unlock()
+			return
 		}
-	})
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	m.dropBelow(root)
+	m.walkPending[root] = struct{}{}
+	m.walkMu.Unlock()
+	select {
+	case m.walkWake <- struct{}{}:
+	default:
+	}
+}
+
+// walkQueue is the only consumer of the folders to walk. The unreadable
+// folders it meets are not reported: only a rescan purges, and only a rescan
+// needs them.
+func (m *Monitor) walkQueue() {
+	for {
+		select {
+		case <-m.done:
+			return
+		case <-m.walkWake:
+		}
+		for {
+			root, ok := m.nextWalk()
+			if !ok {
+				break
+			}
+			m.walkRoot(root, 0)
+		}
+	}
+}
+
+// dropBelow removes from the queue the folders below root: its walk covers
+// them. The caller holds walkMu.
+func (m *Monitor) dropBelow(root string) {
+	prefix := withSeparator(root)
+	for other := range m.walkPending {
+		if strings.HasPrefix(other, prefix) {
+			delete(m.walkPending, other)
+		}
+	}
+}
+
+// nextWalk takes a folder to walk.
+func (m *Monitor) nextWalk() (string, bool) {
+	m.walkMu.Lock()
+	defer m.walkMu.Unlock()
+	for root := range m.walkPending {
+		delete(m.walkPending, root)
+		return root, true
+	}
+	return "", false
 }

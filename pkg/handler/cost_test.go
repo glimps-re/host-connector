@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 func heapInUse() uint64 {
@@ -31,7 +33,7 @@ func TestCostMatchesRealHeap(t *testing.T) {
 			pad := strings.Repeat("x", plen)
 			before := heapInUse()
 			for i := range n {
-				tab.Track(fmt.Sprintf("/in/u%d/%s%d", i%1000, pad, i), fileStamp{}, now, now.Add(time.Hour))
+				tab.Track(fmt.Sprintf("/in/u%d/%s%d", i%1000, pad, i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 			}
 			after := heapInUse()
 			measured, counted := float64(after)-float64(before), float64(tab.Used())
@@ -47,4 +49,4 @@ func TestCostMatchesRealHeap(t *testing.T) {
 }
 
 // expectedTrackedFileSize is the size fileOverhead was calibrated on (64-bit).
-const expectedTrackedFileSize = 232
+const expectedTrackedFileSize = 248

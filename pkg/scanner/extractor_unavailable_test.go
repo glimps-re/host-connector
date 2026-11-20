@@ -53,6 +53,7 @@ func newExtractorFixture(t *testing.T, extract plugins.ExtractFile) *extractorFi
 		f.submitted.Add(1)
 		return gdetect.Result{}, nil
 	}
+	echoReader(submitter)
 	c.submitter = submitter
 	if err := c.Start(); err != nil {
 		t.Fatal(err)

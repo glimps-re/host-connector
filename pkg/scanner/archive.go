@@ -47,6 +47,8 @@ type archiveStatus struct {
 	// the last member in flight is done.
 	abandoned       bool
 	archiveLocation string
+	identity        FileIdentity // of the top-level archive, checked before its action
+	input           *inputFD     // descriptor of the top-level archive, closed before its action
 	result          datamodel.Result
 	analyzed        int
 	total           int

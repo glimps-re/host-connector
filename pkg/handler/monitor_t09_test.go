@@ -14,7 +14,7 @@ import (
 )
 
 func TestMonitorT09_oneTimerWhateverTheNumberOfWaitingFiles(t *testing.T) {
-	m, err := NewMonitor(func(string) error { return nil }, Config{ModDelay: sdk.Duration(time.Hour), MaxTrackedBytes: 1 << 40})
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(time.Hour), MaxTrackedBytes: 1 << 40})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,11 +25,11 @@ func TestMonitorT09_oneTimerWhateverTheNumberOfWaitingFiles(t *testing.T) {
 	})
 	m.Start()
 	now := time.Now()
-	m.table.Track("/in/u/first", fileStamp{size: 1}, now, now.Add(time.Hour))
+	m.table.Track("/in/u/first", scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	time.Sleep(50 * time.Millisecond)
 	withOne := runtime.NumGoroutine()
 	for n := range 100_000 {
-		m.table.Track(fmt.Sprintf("/in/u%d/f%d", n%20, n), fileStamp{size: 1}, now, now.Add(time.Hour))
+		m.table.Track(fmt.Sprintf("/in/u%d/f%d", n%20, n), scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	}
 	select {
 	case m.wake <- struct{}{}:
@@ -46,7 +46,7 @@ func TestMonitorT09_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 	if err := conn.SetTrackingOwners("/in", 2); err != nil {
 		t.Fatal(err)
 	}
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		ModDelay: sdk.Duration(time.Hour),
 		Owners:   conn.TrackingOwners(),
 		Watched:  []string{"/in"},
@@ -61,7 +61,7 @@ func TestMonitorT09_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 	})
 	now := time.Now()
 	for _, p := range []string{"/in/eq1/alice/a", "/in/eq1/alice/b", "/in/eq1/bob/a", "/in/eq2/carol/a", "/in/eq1/team.txt"} {
-		m.table.Track(p, fileStamp{size: 1}, now, now.Add(time.Hour))
+		m.table.Track(p, scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	}
 	m.table.mu.Lock()
 	var owners []string
@@ -92,7 +92,7 @@ func TestMonitorT09_pressureEventInEventOnlyModeIsRateLimited(t *testing.T) {
 	}
 	entry := int64(len(paths[0])) + fileOverhead
 	limit := 10*entry + int64(len(dir)) + ownerOverhead
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		ModDelay:        sdk.Duration(time.Hour),
 		MaxTrackedBytes: limit,
 		Watched:         []string{dir},
@@ -148,7 +148,7 @@ func TestFileTableT09_endRescanNeverBlocksTheOthersForLong(t *testing.T) {
 	tab := newFileTable(1<<40, 25, nil, []string{"/in"})
 	now := time.Now()
 	for n := range entries {
-		tab.Track(fmt.Sprintf("/in/u%d/d%d/f%d", n%1000, n%97, n), fileStamp{size: 1}, now, now.Add(time.Hour))
+		tab.Track(fmt.Sprintf("/in/u%d/d%d/f%d", n%1000, n%97, n), scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	}
 	for _, unreadable := range [][]string{nil, ctUnreadableDirs(1024)} {
 		tab.BeginRescan()
@@ -183,13 +183,13 @@ func TestFileTableT09_endRescanNeverBlocksTheOthersForLong(t *testing.T) {
 			default:
 			}
 			path := fmt.Sprintf("/in/probe%d/f%d", n%10, n)
-			probe(func() { tab.Track(path, fileStamp{size: 1}, now, now.Add(time.Hour)) })
+			probe(func() { tab.Track(path, scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour)) })
 			probe(func() { tab.Forget(path) })
 			probe(func() { tab.Done(path, time.Time{}, 1) })
 		}
 	next:
 		for n := range entries {
-			tab.Track(fmt.Sprintf("/in/u%d/d%d/f%d", n%1000, n%97, n), fileStamp{size: 1}, now, now.Add(time.Hour))
+			tab.Track(fmt.Sprintf("/in/u%d/d%d/f%d", n%1000, n%97, n), scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 		}
 	}
 }
@@ -228,11 +228,11 @@ func TestMonitorT09_processDue(t *testing.T) {
 	t.Run("a file changed while waiting waits again, then is handed over once", func(t *testing.T) {
 		var mu sync.Mutex
 		var got []string
-		m := newBareMonitor(t, func(p string) error {
+		m := newBareMonitor(t, func(p string, _ scanner.FileIdentity) (bool, error) {
 			mu.Lock()
 			got = append(got, p)
 			mu.Unlock()
-			return nil
+			return true, nil
 		}, Config{ModDelay: sdk.Duration(time.Millisecond)})
 		p := write("changing.txt", "v1")
 		info, err := os.Lstat(p)
@@ -240,7 +240,7 @@ func TestMonitorT09_processDue(t *testing.T) {
 			t.Fatal(err)
 		}
 		old := time.Now().Add(-time.Second)
-		m.table.Track(p, stampOf(info), old, old)
+		m.table.Track(p, scanner.IdentityOf(info), old, old)
 		write("changing.txt", "version two")
 		m.processDue()
 		mu.Lock()
@@ -262,10 +262,10 @@ func TestMonitorT09_processDue(t *testing.T) {
 	})
 	t.Run("a vanished file is forgotten without callback", func(t *testing.T) {
 		called := false
-		m := newBareMonitor(t, func(string) error { called = true; return nil }, Config{ModDelay: sdk.Duration(time.Millisecond)})
+		m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { called = true; return true, nil }, Config{ModDelay: sdk.Duration(time.Millisecond)})
 		gone := filepath.Join(dir, "gone.txt")
 		old := time.Now().Add(-time.Second)
-		m.table.Track(gone, fileStamp{size: 1}, old, old)
+		m.table.Track(gone, scanner.FileIdentity{Size: 1}, old, old)
 		m.processDue()
 		if called {
 			t.Error("the callback ran for a missing file")
@@ -275,14 +275,14 @@ func TestMonitorT09_processDue(t *testing.T) {
 		}
 	})
 	t.Run("a failing callback does not keep the entry", func(t *testing.T) {
-		m := newBareMonitor(t, func(string) error { return os.ErrPermission }, Config{ModDelay: sdk.Duration(time.Millisecond)})
+		m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return false, os.ErrPermission }, Config{ModDelay: sdk.Duration(time.Millisecond)})
 		p := write("failing.txt", "x")
 		info, err := os.Lstat(p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		old := time.Now().Add(-time.Second)
-		m.table.Track(p, stampOf(info), old, old)
+		m.table.Track(p, scanner.IdentityOf(info), old, old)
 		m.processDue()
 		if _, ok := m.table.Get(p); ok {
 			t.Error("the entry must be forgotten after the callback, whatever its result")
@@ -290,14 +290,14 @@ func TestMonitorT09_processDue(t *testing.T) {
 	})
 	t.Run("a closed monitor stops handing files over", func(t *testing.T) {
 		called := false
-		m := newBareMonitor(t, func(string) error { called = true; return nil }, Config{ModDelay: sdk.Duration(time.Millisecond)})
+		m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { called = true; return true, nil }, Config{ModDelay: sdk.Duration(time.Millisecond)})
 		p := write("late.txt", "x")
 		info, err := os.Lstat(p)
 		if err != nil {
 			t.Fatal(err)
 		}
 		old := time.Now().Add(-time.Second)
-		m.table.Track(p, stampOf(info), old, old)
+		m.table.Track(p, scanner.IdentityOf(info), old, old)
 		close(m.done)
 		m.closeOnce.Do(func() {})
 		m.processDue()
@@ -312,10 +312,10 @@ func TestMonitorT09_pressureEventsAreRaisedThenResolved(t *testing.T) {
 	const delay = time.Hour
 	entry := int64(len(ctPath("aaa", 0))) + fileOverhead
 	limit := 10*entry + int64(len("/in/aaa")) + ownerOverhead
-	m := newBareMonitor(t, func(string) error { return nil }, Config{ModDelay: sdk.Duration(delay), MaxTrackedBytes: limit, Watched: []string{"/in"}})
+	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(delay), MaxTrackedBytes: limit, Watched: []string{"/in"}})
 	now := time.Now()
 	for n := range 10 {
-		m.table.Track(ctPath("aaa", n), fileStamp{size: 1}, now, now.Add(delay-time.Duration(10-n)*time.Minute))
+		m.table.Track(ctPath("aaa", n), scanner.FileIdentity{Size: 1}, now, now.Add(delay-time.Duration(10-n)*time.Minute))
 	}
 	for range 6 {
 		p, _, ok := m.table.PopDue(now.Add(delay))
@@ -325,9 +325,9 @@ func TestMonitorT09_pressureEventsAreRaisedThenResolved(t *testing.T) {
 		m.table.Done(p, time.Time{}, 1)
 	}
 	for n := range 3 {
-		m.table.Track(ctPath("aaa", 100+n), fileStamp{size: 1}, now, now.Add(delay))
+		m.table.Track(ctPath("aaa", 100+n), scanner.FileIdentity{Size: 1}, now, now.Add(delay))
 	}
-	if m.table.Track(ctPath("aaa", 200), fileStamp{size: 1}, now, now.Add(delay)) {
+	if m.table.Track(ctPath("aaa", 200), scanner.FileIdentity{Size: 1}, now, now.Add(delay)) {
 		t.Fatal("the largest owner with waiting entries must be refused")
 	}
 	m.reportPressure()
@@ -370,7 +370,7 @@ func TestMonitorT09_walkRootCapsTheUnreadableFolders(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "ok.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	m := newBareMonitor(t, func(string) error { return nil }, Config{ModDelay: sdk.Duration(time.Hour)})
+	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(time.Hour)})
 	dirs, over := m.walkRoot(root, 50)
 	if len(dirs) != 50 || !over {
 		t.Errorf("walkRoot(room 50) = %d folders, overflow %t, want the slice capped at 50 and overflow", len(dirs), over)
@@ -387,7 +387,7 @@ func TestMonitorT09_walkRootCapsTheUnreadableFolders(t *testing.T) {
 func TestFileTableT09_overflowProtectsEveryFileForTenRescansOnly(t *testing.T) {
 	c := newCTTable(40)
 	p := "/in/u/a.bin"
-	c.Track(p, fileStamp{size: 1}, c.now, c.now.Add(time.Hour))
+	c.Track(p, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(time.Hour))
 	for rescan := 1; rescan <= 10; rescan++ {
 		c.BeginRescan()
 		c.EndRescan(nil, true)
@@ -416,7 +416,7 @@ func TestFileTableT09_pressureReportNamesAtMost32Owners(t *testing.T) {
 	const owners = 100_000
 	refused := 0
 	for n := range owners {
-		if !c.Track(fmt.Sprintf("/in/user%06d/f", n), fileStamp{size: 1}, c.now, c.now.Add(delay)) {
+		if !c.Track(fmt.Sprintf("/in/user%06d/f", n), scanner.FileIdentity{Size: 1}, c.now, c.now.Add(delay)) {
 			refused++
 		}
 	}
@@ -446,7 +446,7 @@ func TestMonitorT09_pressureEndIsRaisedInEventOnlyMode(t *testing.T) {
 		}
 	}
 	limit := 10*fileCost(paths[0]) + ownerCost(dir)
-	m := newBareMonitor(t, func(string) error { return nil }, Config{ModDelay: sdk.Duration(time.Hour), MaxTrackedBytes: limit, Watched: []string{dir}})
+	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(time.Hour), MaxTrackedBytes: limit, Watched: []string{dir}})
 	for _, p := range paths {
 		m.discover(p, true)
 	}
@@ -493,7 +493,7 @@ func TestMonitorT09_relativeWatchedPathKeepsUsersApart(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	m := newBareMonitor(t, func(string) error { return nil }, Config{ModDelay: sdk.Duration(time.Hour), DisableWatcher: true, Period: sdk.Duration(time.Hour), Watched: []string{"in"}})
+	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(time.Hour), DisableWatcher: true, Period: sdk.Duration(time.Hour), Watched: []string{"in"}})
 	if err := m.Add("in"); err != nil {
 		t.Fatal(err)
 	}
@@ -526,7 +526,7 @@ func TestFileTableT09_countedCostMatchesTheRealHeap(t *testing.T) {
 	tab := newFileTable(1<<40, 25, nil, []string{"/data/input"})
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	for _, p := range paths {
-		tab.Track(p, fileStamp{size: 1, modTime: now, changeTime: now}, now, now.Add(time.Hour))
+		tab.Track(p, scanner.FileIdentity{Size: 1, ModTime: now, ChangeTime: now}, now, now.Add(time.Hour))
 	}
 	runtime.GC()
 	runtime.ReadMemStats(&after)

@@ -19,12 +19,12 @@ import (
 )
 
 func cleanSubmitter() *gdetectMock.MockGDetectSubmitter {
-	return &gdetectMock.MockGDetectSubmitter{
+	return echoReader(&gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
 		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
 			return gdetect.Result{}, nil
 		},
-	}
+	})
 }
 
 // swapDirForLink replaces dir by a link to target, keeping dir's content aside.
@@ -74,7 +74,7 @@ func TestPrepareFile_refusesPathThroughLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	swapDirForLink(t, filepath.Join(in, "alice"), outside)
-	if _, skip := c.prepareFile(file); !skip {
+	if _, skip := c.prepareFile(file, FileIdentity{}); !skip {
 		t.Error("prepareFile() must skip a path that crosses a link: the file of another tree would be read")
 	}
 }
@@ -127,7 +127,7 @@ func TestProcessFile_parentSwappedBeforeQueueIsDropped(t *testing.T) {
 func TestHandleRestoredFile_refusesPathThroughLink(t *testing.T) {
 	c, in, file, handled := newPathCheckFixture(t, false)
 	swapDirForLink(t, filepath.Join(in, "alice"), t.TempDir())
-	if err := c.handleRestoredFile(file, "sha", 10); !errors.Is(err, pathutil.ErrSymlinkInPath) {
+	if err := c.handleRestoredFile(file, "sha", 10, FileIdentity{}); !errors.Is(err, pathutil.ErrSymlinkInPath) {
 		t.Errorf("handleRestoredFile() error = %v, want pathutil.ErrSymlinkInPath", err)
 	}
 	if len(*handled) != 0 {
@@ -235,7 +235,7 @@ func TestScanFile_commandLineScanChecksBelowTheArgument(t *testing.T) {
 	}
 	t.Cleanup(func() { c.Close(t.Context()) })
 	c.noteScanRoot(arg)
-	if _, skip := c.prepareFile(filepath.Join(arg, "link", "f.bin")); !skip {
+	if _, skip := c.prepareFile(filepath.Join(arg, "link", "f.bin"), FileIdentity{}); !skip {
 		t.Error("a file reached through a link below the scan argument must be skipped")
 	}
 }

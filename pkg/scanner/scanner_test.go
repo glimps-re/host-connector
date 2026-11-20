@@ -783,7 +783,7 @@ func TestNewConnector(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &gdetectMock.MockGDetectSubmitter{
+			submitter := echoReader(&gdetectMock.MockGDetectSubmitter{
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) {
 					if tt.fields.errExtractExpertViewURL {
 						err = errors.New("error extracting expert view url")
@@ -818,7 +818,7 @@ func TestNewConnector(t *testing.T) {
 					}
 					return
 				},
-			}
+			})
 			quarantiner := quarantinemock.QuarantineMock{
 				QuarantineMock: func(ctx context.Context, file, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
 					if tt.fields.errQuarantine {
@@ -1344,14 +1344,18 @@ func TestConnector_analyzeFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &gdetectMock.MockGDetectSubmitter{
+			submitter := echoReader(&gdetectMock.MockGDetectSubmitter{
 				WaitForFileMock: func(ctx context.Context, filepath string, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
-					return tt.fields.submitterWaitForFileResp.result, tt.fields.submitterWaitForFileResp.err
+					res := tt.fields.submitterWaitForFileResp.result
+					if res.SHA256 == "" {
+						res.SHA256 = tt.args.input.sha256
+					}
+					return res, tt.fields.submitterWaitForFileResp.err
 				},
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) {
 					return tt.fields.submitterExtractURLResp.url, tt.fields.submitterExtractURLResp.err
 				},
-			}
+			})
 
 			c := &Connector{
 				submitter: submitter,
@@ -1894,7 +1898,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 				parentID = c.archiveStatus.addStatus(archiveStatus{
 					started:         true,
 					finished:        false,
-					archiveLocation: parentLocation,
+					archiveLocation: parentLocation, identity: idOf(t, parentLocation),
 					result: datamodel.Result{
 						SHA256:   parentSHA256,
 						FileSize: parentInfo.Size(),
@@ -1941,7 +1945,7 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
 					started:         true,
 					finished:        true,
-					archiveLocation: location,
+					archiveLocation: location, identity: idOf(t, location),
 					result: datamodel.Result{
 						SHA256:   storedSHA256,
 						FileSize: info.Size(),
@@ -2083,7 +2087,7 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
 					started:         true,
 					finished:        false,
-					archiveLocation: location,
+					archiveLocation: location, identity: idOf(t, location),
 					result: datamodel.Result{
 						SHA256:   fileSHA256,
 						Location: location,

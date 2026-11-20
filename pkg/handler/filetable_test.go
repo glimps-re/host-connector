@@ -76,7 +76,7 @@ func tp(owner string, n int) string { return fmt.Sprintf("/in/%s/f%04d", owner, 
 func TestFileTable_adminAndCounting(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
-	if !tab.Track(tp("a", 1), fileStamp{}, now, now.Add(time.Second)) || !tab.Track(tp("b", 1), fileStamp{}, now, now.Add(2*time.Second)) {
+	if !tab.Track(tp("a", 1), scanner.FileIdentity{}, now, now.Add(time.Second)) || !tab.Track(tp("b", 1), scanner.FileIdentity{}, now, now.Add(2*time.Second)) {
 		t.Fatal("room available: must be admitted")
 	}
 	if tab.Len() != 2 || tab.Owners() != 2 {
@@ -113,14 +113,14 @@ func TestFileTable_singleOwnerFillsTheTableWithoutRefusal(t *testing.T) {
 	limit := int64(len("/in/solo")) + ownerOverhead + 50*entry
 	tab := newTestTable(limit, 25)
 	for i := 0; i < 50; i++ {
-		if !tab.Track(tp("solo", i), fileStamp{}, now, now.Add(time.Second)) {
+		if !tab.Track(tp("solo", i), scanner.FileIdentity{}, now, now.Add(time.Second)) {
 			t.Fatalf("file %d refused while the table has room: the quota applies under pressure only", i)
 		}
 	}
 	if tab.Used() > limit {
 		t.Fatalf("used %d > %d", tab.Used(), limit)
 	}
-	if tab.Track(tp("solo", 50), fileStamp{}, now, now.Add(time.Second)) {
+	if tab.Track(tp("solo", 50), scanner.FileIdentity{}, now, now.Add(time.Second)) {
 		t.Error("a single owner holding only waiting entries is refused when the table is full")
 	}
 	if tab.Used() > limit {
@@ -134,20 +134,20 @@ func TestFileTable_fairSharingUnderPressure(t *testing.T) {
 	own := int64(len("/in/aaa")) + ownerOverhead
 	limit := 2*own + 40*entry
 	tab := newTestTable(limit, 25)
-	for i := 0; tab.Track(tp("aaa", i), fileStamp{}, now, now.Add(time.Hour)); i++ {
+	for i := 0; tab.Track(tp("aaa", i), scanner.FileIdentity{}, now, now.Add(time.Hour)); i++ {
 		if i > 1000 {
 			t.Fatal("the table never fills")
 		}
 	}
 	// aaa filled the table; a new owner is admitted by evicting aaa's newest waiting entry.
-	if !tab.Track(tp("bob", 1), fileStamp{}, now, now.Add(time.Hour)) {
+	if !tab.Track(tp("bob", 1), scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Fatal("bob must be admitted: aaa yields")
 	}
 	if tab.Owners() != 2 {
 		t.Errorf("owners = %d, want 2", tab.Owners())
 	}
 	// aaa's own new files are refused.
-	if tab.Track(tp("aaa", 5000), fileStamp{}, now, now.Add(time.Hour)) {
+	if tab.Track(tp("aaa", 5000), scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Error("aaa must be refused: it is the largest and has waiting entries")
 	}
 	rep := tab.TakePressure()
@@ -165,7 +165,7 @@ func TestFileTable_neverEvictsSubmitted(t *testing.T) {
 	entry := int64(len(tp("aaa", 0))) + fileOverhead
 	own := int64(len("/in/aaa")) + ownerOverhead
 	tab := newTestTable(2*own+10*entry, 25)
-	for i := 0; tab.Track(tp("aaa", i), fileStamp{}, now, now); i++ {
+	for i := 0; tab.Track(tp("aaa", i), scanner.FileIdentity{}, now, now); i++ {
 		if i > 1000 {
 			t.Fatal("never full")
 		}
@@ -177,7 +177,7 @@ func TestFileTable_neverEvictsSubmitted(t *testing.T) {
 		}
 		_ = p
 	}
-	if tab.Track(tp("bob", 1), fileStamp{}, now, now) {
+	if tab.Track(tp("bob", 1), scanner.FileIdentity{}, now, now) {
 		t.Error("the largest owner holds only submitted entries: the incoming file is refused")
 	}
 	if tab.Len() == 0 {
@@ -190,14 +190,14 @@ func TestFileTable_evictedWaitingEntryLeavesTheDeadlineHeap(t *testing.T) {
 	entry := int64(len(tp("aaa", 0))) + fileOverhead
 	own := int64(len("/in/aaa")) + ownerOverhead
 	tab := newTestTable(2*own+10*entry, 25)
-	for i := 0; tab.Track(tp("aaa", i), fileStamp{}, now, now.Add(time.Duration(i)*time.Second)); i++ {
+	for i := 0; tab.Track(tp("aaa", i), scanner.FileIdentity{}, now, now.Add(time.Duration(i)*time.Second)); i++ {
 		if i > 1000 {
 			t.Fatal("never full")
 		}
 	}
 	count := tab.Len()
 	newest := tp("aaa", count-1)
-	if !tab.Track(tp("bob", 1), fileStamp{}, now, now.Add(time.Hour)) {
+	if !tab.Track(tp("bob", 1), scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Fatal("bob must be admitted")
 	}
 	if _, ok := tab.Get(newest); ok {
@@ -219,7 +219,7 @@ func TestFileTable_doneEntriesGoBeforeNothingElseAndRetryBeforeFinal(t *testing.
 	entry := int64(len(tp("aaa", 0))) + fileOverhead
 	own := int64(len("/in/aaa")) + ownerOverhead
 	tab := newTestTable(2*own+8*entry, 25)
-	for i := 0; tab.Track(tp("aaa", i), fileStamp{}, now, now); i++ {
+	for i := 0; tab.Track(tp("aaa", i), scanner.FileIdentity{}, now, now); i++ {
 		if i > 1000 {
 			t.Fatal("never full")
 		}
@@ -237,7 +237,7 @@ func TestFileTable_doneEntriesGoBeforeNothingElseAndRetryBeforeFinal(t *testing.
 		}
 		n++
 	}
-	if !tab.Track(tp("bob", 1), fileStamp{}, now, now) {
+	if !tab.Track(tp("bob", 1), scanner.FileIdentity{}, now, now) {
 		t.Fatal("bob must be admitted: aaa holds only done entries")
 	}
 	rep := tab.TakePressure()
@@ -251,15 +251,15 @@ func TestFileTable_rescanPurge(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
 	tab.BeginRescan()
-	tab.Track("/in/a/seen", fileStamp{}, now, now)
-	tab.Track("/in/a/gone", fileStamp{}, now, now)
-	tab.Track("/in/b/unreadable/x", fileStamp{}, now, now)
-	tab.Track("/in/c/submitted", fileStamp{}, now, now)
+	tab.Track("/in/a/seen", scanner.FileIdentity{}, now, now)
+	tab.Track("/in/a/gone", scanner.FileIdentity{}, now, now)
+	tab.Track("/in/b/unreadable/x", scanner.FileIdentity{}, now, now)
+	tab.Track("/in/c/submitted", scanner.FileIdentity{}, now, now)
 	tab.PopDue(now) // submits the earliest due entry, whichever
 	tab.EndRescan(nil, false)
 
 	tab.BeginRescan()
-	tab.Track("/in/a/seen", fileStamp{}, now, now.Add(time.Hour))
+	tab.Track("/in/a/seen", scanner.FileIdentity{}, now, now.Add(time.Hour))
 	tab.EndRescan([]string{"/in/b/unreadable"}, false)
 	if _, ok := tab.Get("/in/a/gone"); ok {
 		t.Error("a file that is gone must be purged")
@@ -270,7 +270,7 @@ func TestFileTable_rescanPurge(t *testing.T) {
 	// Protected for 10 consecutive rescans, then purged.
 	for i := 0; i < maxProtectedScans+1; i++ {
 		tab.BeginRescan()
-		tab.Track("/in/a/seen", fileStamp{}, now, now.Add(time.Hour))
+		tab.Track("/in/a/seen", scanner.FileIdentity{}, now, now.Add(time.Hour))
 		tab.EndRescan([]string{"/in/b/unreadable"}, false)
 	}
 	if _, ok := tab.Get("/in/b/unreadable/x"); ok {
@@ -282,7 +282,7 @@ func TestFileTable_tooManyUnreadableDirsProtectEverythingForAWhile(t *testing.T)
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
 	tab.BeginRescan()
-	tab.Track("/in/a/f", fileStamp{}, now, now.Add(time.Hour))
+	tab.Track("/in/a/f", scanner.FileIdentity{}, now, now.Add(time.Hour))
 	tab.EndRescan(nil, false)
 	for i := range maxProtectedScans {
 		tab.BeginRescan()
@@ -329,7 +329,7 @@ func runPropertyRound(t *testing.T, rng *prng) {
 			path := "/in/" + owner + "/" + strings.Repeat("x", 10+rng.IntN(300)) + fmt.Sprint(step)
 			before := snapshot(tab)
 			var added int64
-			if tab.Track(path, fileStamp{}, now, now.Add(time.Duration(rng.IntN(100))*time.Second)) {
+			if tab.Track(path, scanner.FileIdentity{}, now, now.Add(time.Duration(rng.IntN(100))*time.Second)) {
 				added = fileCost(path)
 			}
 			checkEvictions(t, before, tab, "/in/"+owner, added)
@@ -581,8 +581,8 @@ func (r *prng) IntN(n int) int {
 func TestFileTable_ownerSurvivesWhileSubmittedEntriesRemain(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
-	tab.Track(tp("u", 1), fileStamp{}, now, now)
-	tab.Track(tp("u", 2), fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(tp("u", 1), scanner.FileIdentity{}, now, now)
+	tab.Track(tp("u", 2), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	first, _, ok := tab.PopDue(now)
 	if !ok {
 		t.Fatal("nothing due")
@@ -603,9 +603,9 @@ func TestFileTable_changedStampPushesTheDeadlineBackInOrder(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
 	a, b := tp("u", 1), tp("u", 2)
-	tab.Track(a, fileStamp{size: 1}, now, now.Add(time.Second))
-	tab.Track(b, fileStamp{size: 1}, now, now.Add(2*time.Second))
-	tab.Track(a, fileStamp{size: 2}, now, now.Add(10*time.Second)) // a changed
+	tab.Track(a, scanner.FileIdentity{Size: 1}, now, now.Add(time.Second))
+	tab.Track(b, scanner.FileIdentity{Size: 1}, now, now.Add(2*time.Second))
+	tab.Track(a, scanner.FileIdentity{Size: 2}, now, now.Add(10*time.Second)) // a changed
 	if p, _, ok := tab.PopDue(now.Add(3 * time.Second)); !ok || p != b {
 		t.Errorf("PopDue() = %q, %t; want b first: a was pushed back", p, ok)
 	}
@@ -623,7 +623,7 @@ func TestFileTable_doneBytesOverHalfIsReported(t *testing.T) {
 	entry := int64(len(tp("solo", 0))) + fileOverhead
 	own := int64(len("/in/solo")) + ownerOverhead
 	tab := newTestTable(own+20*entry, 25)
-	for i := 0; tab.Track(tp("solo", i), fileStamp{}, now, now); i++ {
+	for i := 0; tab.Track(tp("solo", i), scanner.FileIdentity{}, now, now); i++ {
 		if i > 100 {
 			t.Fatal("never full")
 		}
@@ -636,7 +636,7 @@ func TestFileTable_doneBytesOverHalfIsReported(t *testing.T) {
 		tab.Done(p, time.Time{}, 1)
 	}
 	tab.TakePressure()
-	if tab.Track(tp("solo", 500), fileStamp{}, now, now) && tab.Track(tp("solo", 501), fileStamp{}, now, now) && tab.Track(tp("solo", 502), fileStamp{}, now, now) {
+	if tab.Track(tp("solo", 500), scanner.FileIdentity{}, now, now) && tab.Track(tp("solo", 501), scanner.FileIdentity{}, now, now) && tab.Track(tp("solo", 502), scanner.FileIdentity{}, now, now) {
 		t.Fatal("a table full of final entries admits one file per eviction, not many")
 	}
 	rep := tab.TakePressure()
@@ -659,7 +659,7 @@ func TestFileTable_purgeWorksInBoundedBatches(t *testing.T) {
 	tab := newFileTable(1<<40, 25, nil, []string{"/in"})
 	const n = 20 * purgeBatch
 	for i := range n {
-		tab.Track(fmt.Sprintf("/in/u%d/f%d", i%100, i), fileStamp{}, now, now.Add(time.Hour))
+		tab.Track(fmt.Sprintf("/in/u%d/f%d", i%100, i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	}
 	tab.BeginRescan()
 	batches := 0
@@ -683,8 +683,8 @@ func TestFileTable_submittedEntriesAreNeverPurged(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
 	const sub = "/in/c/submitted"
-	tab.Track(sub, fileStamp{}, now, now)
-	tab.Track("/in/a/gone", fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(sub, scanner.FileIdentity{}, now, now)
+	tab.Track("/in/a/gone", scanner.FileIdentity{}, now, now.Add(time.Hour))
 	if p, _, ok := tab.PopDue(now); !ok || p != sub {
 		t.Fatalf("PopDue() = %q, %t; want the submitted entry", p, ok)
 	}
@@ -710,7 +710,7 @@ func FuzzFileTable(f *testing.F) {
 
 func fillOwner(tab *fileTable, owner string, now time.Time, deadline time.Time) int {
 	n := 0
-	for tab.Track(tp(owner, n), fileStamp{}, now, deadline) {
+	for tab.Track(tp(owner, n), scanner.FileIdentity{}, now, deadline) {
 		n++
 		if n > 100000 {
 			break
@@ -725,18 +725,18 @@ func TestFileTable_depthTwoSharing(t *testing.T) {
 	entry := int64(len("/in/eq1/alice/f0000")) + fileOverhead
 	own := int64(len("/in/eq1/alice")) + ownerOverhead
 	tab := newFileTable(3*own+30*entry, 25, rules, []string{"/in"})
-	for i := 0; tab.Track(fmt.Sprintf("/in/eq1/alice/f%04d", i), fileStamp{}, now, now.Add(time.Hour)); i++ {
+	for i := 0; tab.Track(fmt.Sprintf("/in/eq1/alice/f%04d", i), scanner.FileIdentity{}, now, now.Add(time.Hour)); i++ {
 		if i > 10000 {
 			t.Fatal("never full")
 		}
 	}
-	if !tab.Track("/in/eq1/bob/f0", fileStamp{}, now, now.Add(time.Hour)) {
+	if !tab.Track("/in/eq1/bob/f0", scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Error("bob (same team) must be admitted: alice yields")
 	}
-	if !tab.Track("/in/eq2/carol/f0", fileStamp{}, now, now.Add(time.Hour)) {
+	if !tab.Track("/in/eq2/carol/f0", scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Error("carol (other team) must be admitted: alice yields")
 	}
-	if !tab.Track("/in/eq1/loose", fileStamp{}, now, now.Add(time.Hour)) {
+	if !tab.Track("/in/eq1/loose", scanner.FileIdentity{}, now, now.Add(time.Hour)) {
 		t.Error("a file at the team level is admitted too")
 	}
 	tab.mu.Lock()
@@ -755,16 +755,16 @@ func TestFileTable_smallerOwnerIsNeverEvicted(t *testing.T) {
 	tab := newTestTable(2*own+60*entry, 25)
 	fillOwner(tab, "aaa", now, now.Add(time.Hour))
 	for i := 0; i < 5; i++ {
-		tab.Track(tp("bob", i), fileStamp{}, now, now.Add(time.Hour))
+		tab.Track(tp("bob", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	}
 	bobBefore := bobEntries(tab)
 	for rescan := 0; rescan < 20; rescan++ {
 		tab.BeginRescan()
 		for i := 0; i < 10; i++ {
-			tab.Track(tp("aaa", 10000+rescan*10+i), fileStamp{}, now, now.Add(time.Hour))
+			tab.Track(tp("aaa", 10000+rescan*10+i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 		}
 		for i := 0; i < 5; i++ {
-			tab.Track(tp("bob", i), fileStamp{}, now, now.Add(time.Hour))
+			tab.Track(tp("bob", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 		}
 		tab.EndRescan(nil, false)
 		if got := bobEntries(tab); got != bobBefore {
@@ -790,7 +790,7 @@ func TestFileTable_doneEntriesOfAnOwnerThatWaitsAreNeverEvicted(t *testing.T) {
 	own := int64(len("/in/victim")) + ownerOverhead
 	tab := newTestTable(2*own+80*entry, 25)
 	for i := 0; i < 20; i++ {
-		tab.Track(tp("victim", i), fileStamp{}, now, now)
+		tab.Track(tp("victim", i), scanner.FileIdentity{}, now, now)
 	}
 	for i := 0; i < 20; i++ {
 		if p, _, ok := tab.PopDue(now); ok {
@@ -802,7 +802,7 @@ func TestFileTable_doneEntriesOfAnOwnerThatWaitsAreNeverEvicted(t *testing.T) {
 	for rescan := 0; rescan < 20; rescan++ {
 		for i := 0; i < 8; i++ {
 			p := tp("mallory", rescan*8+i)
-			tab.Track(p, fileStamp{}, now, now.Add(time.Hour))
+			tab.Track(p, scanner.FileIdentity{}, now, now.Add(time.Hour))
 			tab.Forget(p)
 		}
 		if got := victimDone(tab); got != doneBefore {
@@ -827,7 +827,7 @@ func TestFileTable_nothingWaitingSingleOwnerEvictsFinalEntriesFirst(t *testing.T
 	entry := int64(len(tp("solo", 0))) + fileOverhead
 	own := int64(len("/in/solo")) + ownerOverhead
 	tab := newTestTable(own+10*entry, 25)
-	for i := 0; tab.Track(tp("solo", i), fileStamp{}, now, now); i++ {
+	for i := 0; tab.Track(tp("solo", i), scanner.FileIdentity{}, now, now); i++ {
 		if i > 100 {
 			t.Fatal("never full")
 		}
@@ -839,10 +839,10 @@ func TestFileTable_nothingWaitingSingleOwnerEvictsFinalEntriesFirst(t *testing.T
 		}
 		tab.Done(p, time.Time{}, 1)
 	}
-	if !tab.Track(tp("solo", 900), fileStamp{}, now, now) {
+	if !tab.Track(tp("solo", 900), scanner.FileIdentity{}, now, now) {
 		t.Error("a new file must be admitted by evicting a final entry")
 	}
-	if tab.Track(tp("solo", 901), fileStamp{}, now, now) {
+	if tab.Track(tp("solo", 901), scanner.FileIdentity{}, now, now) {
 		t.Error("with a waiting entry the owner is now refused: it yields only when nothing waits")
 	}
 }
@@ -861,7 +861,7 @@ func BenchmarkMonitorDiscover(b *testing.B) {
 			tab := newFileTable(budget, 25, nil, []string{"/in"})
 			b.ReportAllocs()
 			for i := 0; b.Loop(); i++ {
-				tab.Track(tc.path(i), fileStamp{}, now, now.Add(time.Hour))
+				tab.Track(tc.path(i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 			}
 			if tab.Used() > budget {
 				b.Fatalf("used %d exceeds %d", tab.Used(), budget)
@@ -879,12 +879,12 @@ func BenchmarkOwnersUnderPressure(b *testing.B) {
 			perOwner := int64(len("/in/u000000/f")) + fileOverhead
 			tab := newFileTable(int64(owners)*(perOwner+int64(len("/in/u000000"))+ownerOverhead), 25, nil, []string{"/in"})
 			for i := 0; i < owners; i++ {
-				tab.Track(fmt.Sprintf("/in/u%06d/f", i), fileStamp{}, now, now.Add(time.Hour))
+				tab.Track(fmt.Sprintf("/in/u%06d/f", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 			}
 			b.ReportAllocs()
 			for i := 0; b.Loop(); i++ {
 				p := fmt.Sprintf("/in/n%06d/f", i%owners)
-				tab.Track(p, fileStamp{}, now, now.Add(time.Hour))
+				tab.Track(p, scanner.FileIdentity{}, now, now.Add(time.Hour))
 				tab.Done(p, time.Time{}, 1)
 			}
 		})
@@ -895,7 +895,7 @@ func TestFileTable_pressureReportIsBoundedWhateverTheOwners(t *testing.T) {
 	now := time.Unix(1000, 0)
 	tab := newFileTable(1<<20, 25, nil, []string{"/in"})
 	for i := range 100_000 {
-		tab.Track(fmt.Sprintf("/in/u%d/f", i), fileStamp{}, now, now.Add(time.Hour))
+		tab.Track(fmt.Sprintf("/in/u%d/f", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	}
 	rep := tab.TakePressure()
 	if len(rep.Owners) != maxPressureOwners {
@@ -913,8 +913,8 @@ func TestFileTable_entryLargerThanTheBudgetIsRefusedWithoutEvicting(t *testing.T
 	now := time.Unix(1000, 0)
 	tab := newTestTable(2000, 25)
 	small := tp("u", 1)
-	tab.Track(small, fileStamp{}, now, now.Add(time.Hour))
-	if tab.Track("/in/v/"+strings.Repeat("x", 4000), fileStamp{}, now, now) {
+	tab.Track(small, scanner.FileIdentity{}, now, now.Add(time.Hour))
+	if tab.Track("/in/v/"+strings.Repeat("x", 4000), scanner.FileIdentity{}, now, now) {
 		t.Fatal("an entry that alone exceeds the budget must be refused")
 	}
 	if _, ok := tab.Get(small); !ok {
@@ -932,7 +932,7 @@ func BenchmarkPurgeBatch(b *testing.B) {
 	tab := newFileTable(1<<40, 25, nil, []string{"/in"})
 	deep := "/in/u/" + strings.Repeat("d/", 8)
 	for i := range purgeBatch {
-		tab.Track(fmt.Sprintf("%sf%d", deep, i), fileStamp{}, now, now.Add(time.Hour))
+		tab.Track(fmt.Sprintf("%sf%d", deep, i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	}
 	dirs := map[string]struct{}{"/in/u": {}}
 	b.ReportAllocs()
@@ -954,15 +954,15 @@ func TestFileTable_beginRescanKeepsTheLeftoverOfAnUnfinishedRescan(t *testing.T)
 	now := time.Unix(1000, 0)
 	tab := newTestTable(1<<20, 25)
 	seen, left := tp("u", 1), tp("u", 2)
-	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
-	tab.Track(left, fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(seen, scanner.FileIdentity{}, now, now.Add(time.Hour))
+	tab.Track(left, scanner.FileIdentity{}, now, now.Add(time.Hour))
 	tab.BeginRescan()
-	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(seen, scanner.FileIdentity{}, now, now.Add(time.Hour))
 	// The rescan stops before EndRescan: "left" was never visited and must
 	// still be accounted for by the next one.
 	tab.BeginRescan()
 	checkConsistency(t, tab)
-	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(seen, scanner.FileIdentity{}, now, now.Add(time.Hour))
 	tab.EndRescan(nil, false)
 	if _, ok := tab.Get(left); ok {
 		t.Error("an entry not seen by two rescans must be purged")

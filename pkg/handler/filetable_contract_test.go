@@ -102,7 +102,7 @@ func newCTTable(files int, owners ...string) *ctTable {
 func ctPath(owner string, n int) string { return fmt.Sprintf("/in/%s/f%04d", owner, n) }
 
 func (c *ctTable) track(owner string, n int, delay time.Duration) bool {
-	return c.Track(ctPath(owner, n), fileStamp{size: int64(n)}, c.now, c.now.Add(delay))
+	return c.Track(ctPath(owner, n), scanner.FileIdentity{Size: int64(n)}, c.now, c.now.Add(delay))
 }
 
 func (c *ctTable) count(owner string) int {
@@ -144,7 +144,7 @@ func TestFileTableContract_V1_oldestEntriesOfTheVictimAreSubmitted(t *testing.T)
 			}
 		}
 		small := ctPath("small", rescan)
-		c.Track(small, fileStamp{size: 1}, c.now, c.now.Add(delay))
+		c.Track(small, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(delay))
 		c.EndRescan(nil, false)
 		c.now = c.now.Add(time.Second)
 		for _, p := range c.popDue() {
@@ -235,7 +235,7 @@ func TestFileTableContract_V4_doneEntriesOfAnOwnerWithWaitingWorkStay(t *testing
 			c.track("big", n, delay)
 		}
 		small := ctPath("small", rescan)
-		c.Track(small, fileStamp{size: 1}, c.now, c.now.Add(delay))
+		c.Track(small, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(delay))
 		c.EndRescan(nil, false)
 		c.Forget(small)
 		done := 0
@@ -285,7 +285,7 @@ func TestFileTableContract_hundredThousandWaitingFilesAddNoGoroutine(t *testing.
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
 	before := runtime.NumGoroutine()
 	for n := range 100_000 {
-		if !tab.Track(fmt.Sprintf("/in/u%d/f%d", n%50, n), fileStamp{size: 1}, now, now.Add(time.Hour)) {
+		if !tab.Track(fmt.Sprintf("/in/u%d/f%d", n%50, n), scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour)) {
 			t.Fatalf("file %d refused with a huge bound", n)
 		}
 	}
@@ -326,8 +326,8 @@ func TestFileTableContract_pressureNamesTheFloodingOwner(t *testing.T) {
 func TestFileTableContract_unreadableFolderProtectsOnlyItsSubtreeForTenRescans(t *testing.T) {
 	c := newCTTable(40)
 	locked, gone := "/in/u/locked/a.bin", "/in/u/other/b.bin"
-	c.Track(locked, fileStamp{size: 1}, c.now, c.now.Add(time.Hour))
-	c.Track(gone, fileStamp{size: 1}, c.now, c.now.Add(time.Hour))
+	c.Track(locked, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(time.Hour))
+	c.Track(gone, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(time.Hour))
 	c.BeginRescan()
 	c.EndRescan([]string{"/in/u/locked"}, false)
 	if _, ok := c.Get(gone); ok {
@@ -353,19 +353,19 @@ func TestFileTableContract_depth2TeamMembersShareTheAdmission(t *testing.T) {
 	limit := 3*(int64(len("/in/eq1/alice"))+ownerOverhead) + 40*entry
 	tab := newFileTable(limit, 25, rules, []string{"/in"})
 	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
-	for n := 0; tab.Track(path("eq1", "alice", n), fileStamp{size: 1}, now, now.Add(delay)); n++ {
+	for n := 0; tab.Track(path("eq1", "alice", n), scanner.FileIdentity{Size: 1}, now, now.Add(delay)); n++ {
 		if n > 1000 {
 			t.Fatal("the table never fills")
 		}
 	}
-	if !tab.Track(path("eq1", "bob", 0), fileStamp{size: 1}, now, now.Add(delay)) {
+	if !tab.Track(path("eq1", "bob", 0), scanner.FileIdentity{Size: 1}, now, now.Add(delay)) {
 		t.Error("bob, same team as alice, must be admitted: the owner is the user folder")
 	}
-	if !tab.Track(path("eq2", "carol", 0), fileStamp{size: 1}, now, now.Add(delay)) {
+	if !tab.Track(path("eq2", "carol", 0), scanner.FileIdentity{Size: 1}, now, now.Add(delay)) {
 		t.Error("carol, another team, must be admitted")
 	}
 	teamFile := "/in/eq1/team.txt"
-	tab.Track(teamFile, fileStamp{size: 1}, now, now.Add(delay))
+	tab.Track(teamFile, scanner.FileIdentity{Size: 1}, now, now.Add(delay))
 	if got := scanner.OwnerOf(teamFile, rules, []string{"/in"}); got != "/in/eq1" {
 		t.Errorf("owner of a file in the team folder = %q, want /in/eq1", got)
 	}

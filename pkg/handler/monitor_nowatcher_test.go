@@ -20,7 +20,7 @@ import (
 )
 
 func TestNewMonitor_disabledWatcherNeedsPeriod(t *testing.T) {
-	_, err := NewMonitor(func(string) error { return nil }, Config{DisableWatcher: true})
+	_, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{DisableWatcher: true})
 	if !errors.Is(err, config.ErrWatcherNeedsPeriod) {
 		t.Errorf("NewMonitor() error = %v, want ErrWatcherNeedsPeriod", err)
 	}
@@ -30,11 +30,11 @@ func TestMonitor_disabledWatcherPlacesNoWatch(t *testing.T) {
 	root := t.TempDir()
 	var mu sync.Mutex
 	got := map[string]struct{}{}
-	m, err := NewMonitor(func(path string) error {
+	m, err := NewMonitor(func(path string, _ scanner.FileIdentity) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		got[filepath.Base(path)] = struct{}{}
-		return nil
+		return true, nil
 	}, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
@@ -65,11 +65,11 @@ func TestMonitor_disabledWatcherRescanFindsFile(t *testing.T) {
 	writeTestFile(t, filepath.Join(root, "a.txt"))
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	m, err := NewMonitor(func(path string) error {
+	m, err := NewMonitor(func(path string, _ scanner.FileIdentity) (bool, error) {
 		if filepath.Base(path) == "a.txt" {
 			cancel()
 		}
-		return nil
+		return true, nil
 	}, Config{DisableWatcher: true, Period: sdk.Duration(10 * time.Millisecond)})
 	if err != nil {
 		t.Fatal(err)
@@ -202,7 +202,7 @@ func TestHandler_ConsoleDefaultsFileAcceptedAsIs(t *testing.T) {
 }
 
 func TestMonitor_disabledWatcherAddMissingPath(t *testing.T) {
-	m, err := NewMonitor(func(string) error { return nil }, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour)})
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -222,7 +222,7 @@ func TestMonitor_disabledWatcherAddMissingPath(t *testing.T) {
 
 func TestMonitor_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 	root := t.TempDir()
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		DisableWatcher: true,
 		Period:         sdk.Duration(time.Hour),
 		ModDelay:       sdk.Duration(time.Hour),
@@ -250,7 +250,7 @@ func TestMonitor_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 func TestMonitor_eventOnlyModeReportsPressureOncePerMinute(t *testing.T) {
 	rec := recordEvents(t)
 	root := t.TempDir()
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		MaxTrackedBytes: 1200,
 		ModDelay:        sdk.Duration(time.Hour),
 		Watched:         []string{root},
@@ -290,7 +290,7 @@ func TestMonitor_eventOnlyModeReportsPressureOncePerMinute(t *testing.T) {
 func TestMonitor_eventOnlyModeReportsTheEndOfThePressure(t *testing.T) {
 	rec := recordEvents(t)
 	root := t.TempDir()
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		MaxTrackedBytes: 1200,
 		ModDelay:        sdk.Duration(time.Hour),
 		Watched:         []string{root},
@@ -329,7 +329,7 @@ func TestMonitor_eventOnlyModeReportsTheEndOfThePressure(t *testing.T) {
 
 func TestNewMonitor_relativeWatchedPathsAreResolved(t *testing.T) {
 	t.Chdir(t.TempDir())
-	m, err := NewMonitor(func(string) error { return nil }, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour), Watched: []string{"in"}})
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour), Watched: []string{"in"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +342,7 @@ func TestNewMonitor_relativeWatchedPathsAreResolved(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m.table.Track(filepath.Join(abs, "alice", "f.bin"), fileStamp{}, time.Now(), time.Now())
+	m.table.Track(filepath.Join(abs, "alice", "f.bin"), scanner.FileIdentity{}, time.Now(), time.Now())
 	if _, ok := m.table.owners[filepath.Join(abs, "alice")]; !ok {
 		t.Errorf("owners = %v, want the folder of alice: the relative watched path must be resolved", m.table.owners)
 	}
@@ -359,7 +359,7 @@ func (fakeInfo) Sys() any           { return nil }
 
 func TestMonitor_goroutinesDoNotGrowWithTheFiles(t *testing.T) {
 	root := t.TempDir()
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		DisableWatcher: true,
 		Period:         sdk.Duration(time.Hour),
 		ModDelay:       sdk.Duration(time.Hour),
@@ -393,7 +393,7 @@ func TestMonitor_relativeRootKeepsAUserAsOneOwner(t *testing.T) {
 	for _, p := range []string{"in/alice/a.txt", "in/alice/sub/b.txt", "in/bob/c.txt"} {
 		writeTestFile(t, p)
 	}
-	m, err := NewMonitor(func(string) error { return nil }, Config{
+	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{
 		DisableWatcher: true,
 		Period:         sdk.Duration(time.Hour),
 		ModDelay:       sdk.Duration(time.Hour),

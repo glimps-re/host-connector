@@ -14,6 +14,7 @@ import (
 
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/host-connector/pkg/config"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 func captureHandlerLogs(t *testing.T) *bytes.Buffer {
@@ -82,11 +83,11 @@ func TestMonitor_skipsInternalPaths(t *testing.T) {
 
 	var mu sync.Mutex
 	got := map[string]struct{}{}
-	m, err := NewMonitor(func(path string) error {
+	m, err := NewMonitor(func(path string, _ scanner.FileIdentity) (bool, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		got[filepath.Base(path)] = struct{}{}
-		return nil
+		return true, nil
 	}, Config{
 		Period: sdk.Duration(5 * time.Millisecond),
 		Skip:   func(p string) bool { return p == internal || strings.HasPrefix(p, internal+string(filepath.Separator)) },

@@ -25,12 +25,12 @@ import (
 )
 
 func archiveCleanSubmitter() *gdetectMock.MockGDetectSubmitter {
-	return &gdetectMock.MockGDetectSubmitter{
+	return echoReader(&gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
 		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
 			return gdetect.Result{}, nil
 		},
-	}
+	})
 }
 
 func newArchiveForTest(t *testing.T, h *archiveStatusHandler, total int) string {
@@ -206,7 +206,7 @@ func TestFinishArchiveAnalysis_memberErrorBlocksAction(t *testing.T) {
 	location, sha := createTestFile(t, t.TempDir(), "archive content")
 	tmp := t.TempDir()
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: location, tmpFolder: tmp, total: 1,
+		started: true, archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1,
 		result: datamodel.Result{SHA256: sha},
 	})
 	c.archiveStatus.addInnerFileResult(id, "bad.bin", datamodel.Result{Error: errors.New("submit failed")})
@@ -245,7 +245,7 @@ func TestFinishArchiveAnalysis_changedArchiveNotifiesObserversWithError(t *testi
 	location, _ := createTestFile(t, t.TempDir(), "archive content")
 	tmp := t.TempDir()
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: location, tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
+		started: true, archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
 		result: datamodel.Result{SHA256: "stale-sha"},
 	})
 	if err := c.finishArchiveAnalysis(id); err != nil {
@@ -287,7 +287,7 @@ func TestRecursiveExtract_lostMemberKeepsArchiveInError(t *testing.T) {
 	}
 	var size int64
 	var files int
-	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 	if err := c.recursiveExtract(archive, 0, &size, &files, logger); err != nil {
 		t.Fatalf("recursiveExtract() error = %v", err)
 	}
@@ -366,7 +366,7 @@ func TestRecursiveExtract_subArchiveWithoutTempDirKeepsArchiveInError(t *testing
 	}
 	var size int64
 	var files int
-	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 	if err := c.recursiveExtract(archive, 0, &size, &files, logger); err != nil {
 		t.Fatalf("recursiveExtract() error = %v", err)
 	}
@@ -396,12 +396,12 @@ func runArchiveWithMembers(t *testing.T, register func(c *Connector)) []datamode
 		}
 		return 24, files, nil
 	})
-	submitter := &gdetectMock.MockGDetectSubmitter{
+	submitter := echoReader(&gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
 		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
 			return gdetect.Result{}, nil
 		},
-	}
+	})
 	c, err := NewConnector(Config{Extract: true, ExtractMinThreshold: 1, Workers: 2, ExtractWorkers: 1, WorkDir: t.TempDir()}, nil, submitter)
 	if err != nil {
 		t.Fatal(err)
@@ -494,7 +494,7 @@ func TestRecursiveExtract_emptyMemberIsStillIgnored(t *testing.T) {
 	}
 	var size int64
 	var files int
-	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 	if err := c.recursiveExtract(archive, 0, &size, &files, logger); err != nil {
 		t.Fatal(err)
 	}
@@ -515,7 +515,7 @@ func TestFinishArchiveAnalysis_subArchiveErrorReachesTopLevelArchive(t *testing.
 	}
 	topLocation, topSHA := createTestFile(t, t.TempDir(), "top archive")
 	topID := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: topLocation, tmpFolder: t.TempDir(), total: 1,
+		started: true, archiveLocation: topLocation, identity: idOf(t, topLocation), tmpFolder: t.TempDir(), total: 1,
 		result: datamodel.Result{SHA256: topSHA},
 	})
 	subID := c.archiveStatus.addStatus(archiveStatus{
@@ -618,7 +618,7 @@ func TestRecursiveExtract_lastMemberLostWhileOthersAreInFlight(t *testing.T) {
 	}
 	var size int64
 	var files int
-	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+	archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 	if err := c.recursiveExtract(archive, 0, &size, &files, logger); err != nil {
 		t.Fatalf("recursiveExtract() = %v, want nil: the lost member was recorded, the archive lives on", err)
 	}
@@ -696,6 +696,7 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 				submitted.Add(1)
 				return gdetect.Result{}, nil
 			}
+			echoReader(submitter)
 			c.submitter = submitter
 			location, sha := createArchive(t, []string{"content"})
 			info, err := os.Stat(location)
@@ -704,7 +705,7 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 			}
 			var size int64
 			var files int
-			archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+			archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 			err = c.recursiveExtract(archive, 0, &size, &files, logger)
 			if tt.wantErr != (err != nil && strings.Contains(err.Error(), "extract-error")) {
 				t.Errorf("recursiveExtract() error = %v, wantErr %v", err, tt.wantErr)
@@ -785,6 +786,7 @@ func TestRecursiveExtract_unavailableExtractorIsNotAnArchiveVerdict(t *testing.T
 		submitted.Add(1)
 		return gdetect.Result{}, nil
 	}
+	echoReader(submitter)
 	c.submitter = submitter
 	t.Cleanup(func() { c.Close(t.Context()) })
 

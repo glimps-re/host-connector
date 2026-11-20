@@ -144,8 +144,8 @@ func warnZipPasswordPublic() {
 }
 
 func (h *Handler) OnNewFile(ctx context.Context) OnNewFileFunc {
-	return func(file string) error {
-		return h.Conn.ScanFile(ctx, file)
+	return func(file string, id scanner.FileIdentity) (bool, error) {
+		return h.Conn.SubmitFile(ctx, file, id)
 	}
 }
 

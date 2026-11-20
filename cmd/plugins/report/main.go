@@ -13,8 +13,13 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"maps"
 	"path/filepath"
+	"slices"
+	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/dustin/go-humanize"
@@ -184,6 +189,9 @@ type ArchiveReportData struct {
 	QuarantineLocation string
 	FileCount          int
 	ExtractedFiles     []ExtractedFileData
+	// MoreExtracted is the number of malicious members of the archive left out of
+	// ExtractedFiles by the budget of the section.
+	MoreExtracted int
 }
 
 // ExtractedFileData contains extracted file information from archives.
@@ -203,22 +211,60 @@ type ErrorFileData struct {
 	Error string
 }
 
+// maxRows bounds every section of the report: a hostile archive cannot make the
+// PDF as long as it has members. The blocked archives and their malicious members
+// share one budget, an archive costing archiveRows rows more than its members. The
+// counters stay exact, and what is not listed is counted in the More fields.
+const (
+	maxRows = 300
+	// archiveRows is what an archive costs in its section, on top of one row for
+	// each of its members shown: its title, its details and the head of its table.
+	archiveRows = 3
+	// maxCellBytes bounds every text of a depositor shown in the PDF (a name, an
+	// error, a threat): the time to render grows with the length of the texts,
+	// and a name can be 1 KiB. The full texts stay in the JSON report.
+	maxCellBytes = 100
+	// maxThreatNames bounds the threat names shown in a row.
+	maxThreatNames = 2
+)
+
+// NotAnalyzedFileData is a file, or a member of an archive, that reached the
+// output without a complete analysis.
+type NotAnalyzedFileData struct {
+	Name   string
+	Size   string
+	Reason string
+	// Origin is the archive the file was found in, "" for a file of its own.
+	Origin string
+}
+
 // ReportData contains complete scan report data for template rendering.
 type ReportData struct {
-	ScanID            string
-	NbFileSubmitted   int
-	NbFileAnalyzed    int
-	FileVolume        string
-	AnalyzedVolume    string
-	FilteredVolume    string
-	TotalMitigated    int
-	TotalMalware      int
-	TotalErrors       int
-	MitigatedFiles    []FileReportData
-	MitigatedArchives []ArchiveReportData
-	ErrorFiles        []ErrorFileData
-	ScanStartTime     string
-	Duration          string
+	ScanID          string
+	NbFileSubmitted int
+	// NbFileAnalyzed counts the reports of files that were analyzed: not those
+	// passed without analysis, nor those in error.
+	NbFileAnalyzed int
+	// NbFileNotAnalyzed is the exact number of files and members not analyzed,
+	// whatever the number listed.
+	NbFileNotAnalyzed int
+	NotAnalyzedFiles  []NotAnalyzedFileData
+	// More* are the numbers of rows left out of the lists, which are cut at maxRows.
+	MoreNotAnalyzed       int
+	MoreMitigatedFiles    int
+	MoreMitigatedArchives int
+	MoreErrorFiles        int
+	FileVolume            string
+	AnalyzedVolume        string
+	FilteredVolume        string
+	TotalMitigated        int
+	TotalMalware          int
+	TotalErrors           int
+	MitigatedFiles        []FileReportData
+	MitigatedArchives     []ArchiveReportData
+	ErrorFiles            []ErrorFileData
+	ScanStartTime         string
+	Duration              string
 }
 
 // GenerateReport generates a PDF report from scan results. The reports are read
@@ -244,31 +290,53 @@ func toUint(n int64) uint64 {
 }
 
 // reportDataFrom converts scan results to ReportData for template rendering, in
-// a single pass over the reports. A report that fails to be read ends it.
+// a single pass over the reports. A report that fails to be read ends it. Every
+// section stops at maxRows rows; the More fields are what the counters hold
+// beyond what is listed.
 func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (reportData ReportData, err error) {
 	reportData = ReportData{
 		ScanID:        reportContext.ScanID,
 		ScanStartTime: reportContext.Start.Format(time.RFC3339),
 		Duration:      reportContext.End.Sub(reportContext.Start).Round(time.Second).String(),
 	}
-	var totalSizeAnalyzed int64 = 0
-	var totalSizeFile int64 = 0
-	var totalSizeFiltered int64 = 0
+	var totalSizeAnalyzed, totalSizeFile, totalSizeFiltered int64
+	var blockedFiles, blockedArchives int
+	archiveBudget := maxRows
 	for report, readErr := range reports {
 		if readErr != nil {
 			return ReportData{}, readErr
 		}
 		reportData.NbFileSubmitted++
-		reportData.NbFileAnalyzed++
+		// A file whose action failed carries an Error too: it is listed among the
+		// errors and not counted as analyzed.
+		if report.NotAnalyzedReason == "" && report.Error == "" {
+			reportData.NbFileAnalyzed++
+		}
 		totalSizeAnalyzed += report.AnalyzedVolume
 		totalSizeFiltered += report.FilteredVolume
 		totalSizeFile += report.FileSize
-		for filename, errMsg := range report.ErrorExtractedFiles {
-			reportData.ErrorFiles = append(reportData.ErrorFiles, ErrorFileData{
-				Name:  filename,
-				Error: errMsg,
+		reportData.addErrors(report)
+		if report.NotAnalyzedReason != "" {
+			reportData.NbFileNotAnalyzed++
+			reportData.NotAnalyzedFiles = appendCapped(reportData.NotAnalyzedFiles, func() NotAnalyzedFileData {
+				return NotAnalyzedFileData{
+					Name:   cellText(report.Filename),
+					Size:   sizeText(report.FileSize, report.NotAnalyzedReason),
+					Reason: notAnalyzedText(report.NotAnalyzedReason),
+				}
 			})
-			reportData.TotalErrors++
+		}
+		// datamodel.Report.Bound cuts the list of the members, the count stays exact.
+		reportData.NbFileNotAnalyzed += max(report.NotAnalyzedExtractedCount, len(report.NotAnalyzedExtractedFiles))
+		for _, member := range report.NotAnalyzedExtractedFiles {
+			reportData.NotAnalyzedFiles = appendCapped(reportData.NotAnalyzedFiles, func() NotAnalyzedFileData {
+				return NotAnalyzedFileData{
+					Name:   cellText(member.FileName),
+					Size:   sizeText(member.Size, member.Reason),
+					Reason: notAnalyzedText(member.Reason),
+					Origin: cellText(report.Filename),
+				}
+			})
 		}
 		if !report.Malicious {
 			continue
@@ -278,56 +346,195 @@ func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datam
 			reportData.TotalMalware++
 		}
 		if len(report.MaliciousExtractedFiles) == 0 {
-			fReport := FileReportData{
-				Name:               report.Filename,
-				SHA256:             report.SHA256,
-				Size:               humanize.Bytes(toUint(report.FileSize)),
-				Malwares:           report.Malwares,
-				QuarantineLocation: report.QuarantineLocation,
-				GMalwareURL:        report.GMalwareURL,
-				MitigationReason:   getCompleteReason(report.MalwareReason),
-			}
-			reportData.MitigatedFiles = append(reportData.MitigatedFiles, fReport)
+			blockedFiles++
+			reportData.MitigatedFiles = appendCapped(reportData.MitigatedFiles, func() FileReportData {
+				return FileReportData{
+					Name:               cellText(report.Filename),
+					SHA256:             report.SHA256,
+					Size:               humanize.Bytes(toUint(report.FileSize)),
+					Malwares:           threatNames(report.Malwares),
+					QuarantineLocation: cellText(report.QuarantineLocation),
+					GMalwareURL:        report.GMalwareURL,
+					MitigationReason:   getCompleteReason(report.MalwareReason),
+				}
+			})
 			continue
 		}
-
+		blockedArchives++
+		if archiveBudget < archiveRows {
+			continue
+		}
+		archiveBudget -= archiveRows
 		aReport := ArchiveReportData{
-			Name:               report.Filename,
+			Name:               cellText(report.Filename),
 			SHA256:             report.SHA256,
 			Size:               humanize.Bytes(toUint(report.FileSize)),
-			QuarantineLocation: report.QuarantineLocation,
+			QuarantineLocation: cellText(report.QuarantineLocation),
 			FileCount:          report.TotalExtractedFile,
 		}
-
-		aReport.ExtractedFiles = convertExtractedFiles(report.MaliciousExtractedFiles)
+		before := archiveBudget
+		aReport.ExtractedFiles = convertExtractedFiles(report.MaliciousExtractedFiles, &archiveBudget)
+		aReport.MoreExtracted = countMalicious(report.MaliciousExtractedFiles) - (before - archiveBudget)
 		reportData.MitigatedArchives = append(reportData.MitigatedArchives, aReport)
 	}
+	reportData.MoreNotAnalyzed = reportData.NbFileNotAnalyzed - len(reportData.NotAnalyzedFiles)
+	reportData.MoreErrorFiles = reportData.TotalErrors - len(reportData.ErrorFiles)
+	reportData.MoreMitigatedFiles = blockedFiles - len(reportData.MitigatedFiles)
+	reportData.MoreMitigatedArchives = blockedArchives - len(reportData.MitigatedArchives)
 	reportData.AnalyzedVolume = humanize.Bytes(toUint(totalSizeAnalyzed))
 	reportData.FileVolume = humanize.Bytes(toUint(totalSizeFile))
 	reportData.FilteredVolume = humanize.Bytes(toUint(totalSizeFiltered))
 	return reportData, nil
 }
 
-// convertExtractedFiles recursively converts datamodel.ExtractedFile to ExtractedFileData.
-func convertExtractedFiles(files []datamodel.ExtractedFile) (result []ExtractedFileData) {
+// addErrors counts and lists the errors of a report: its own, unless it is the
+// summary of its failed members (which are not counted again), then those of its
+// extracted files, in the order of their names.
+func (d *ReportData) addErrors(report datamodel.Report) {
+	isSummary := len(report.ErrorExtractedFiles) > 0 && datamodel.IsExtractedErrorsSummary(report.Error)
+	if report.Error != "" && !isSummary {
+		d.addError(report.Filename, report.Error)
+	}
+	for _, name := range slices.Sorted(maps.Keys(report.ErrorExtractedFiles)) {
+		d.addError(name, report.ErrorExtractedFiles[name])
+	}
+}
+
+func (d *ReportData) addError(name, text string) {
+	d.TotalErrors++
+	d.ErrorFiles = appendCapped(d.ErrorFiles, func() ErrorFileData { return ErrorFileData{Name: cellText(name), Error: cellText(text)} })
+}
+
+// cellText is a text of a depositor as the PDF shows it. Its control characters
+// and those that reorder text (the bidirectional controls, which can make a name
+// ending in "exe.txt" read the other way) are replaced by U+FFFD; then it is
+// shortened to maxCellBytes bytes, head and tail around a "…", never splitting a
+// character. It is a cut for display; the storage cut of the reports is the one
+// of package datamodel.
+func cellText(s string) string {
+	const ellipsis = "…"
+	s = strings.Map(displayable, s)
+	if len(s) <= maxCellBytes {
+		return s
+	}
+	keep := maxCellBytes - len(ellipsis)
+	head, tail := keep/2, keep-keep/2
+	for head > 0 && !utf8.RuneStart(s[head]) {
+		head--
+	}
+	start := len(s) - tail
+	for start < len(s) && !utf8.RuneStart(s[start]) {
+		start++
+	}
+	return s[:head] + ellipsis + s[start:]
+}
+
+// displayable replaces the runes that must not reach the PDF as they are:
+// control characters, formatting characters (bidirectional controls, zero-width
+// and tag characters), line and paragraph separators, and the fillers that draw
+// as blanks.
+func displayable(r rune) rune {
+	if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
+		return utf8.RuneError
+	}
+	switch r {
+	case 0x2028, 0x2029, 0x115F, 0x1160, 0x3164, 0x180E:
+		return utf8.RuneError
+	}
+	return r
+}
+
+// threatNames is what a row shows of the threats of a file: the first
+// maxThreatNames, as cellText, then "… (+N)" for the others. A depositor can
+// attach many names to a file; they weigh on the rendering as rows do.
+func threatNames(names []string) []string {
+	shown := make([]string, 0, min(len(names), maxThreatNames+1))
+	for _, name := range names[:min(len(names), maxThreatNames)] {
+		shown = append(shown, cellText(name))
+	}
+	if len(names) > maxThreatNames {
+		shown = append(shown, fmt.Sprintf("… (+%d)", len(names)-maxThreatNames))
+	}
+	return shown
+}
+
+// sizeText is a size for the report. A member of which the archive does not
+// say the size shows "—"; only an empty one is 0.
+func sizeText(size int64, reason datamodel.NotAnalyzedReason) string {
+	if size <= 0 && reason != datamodel.NotAnalyzedEmpty {
+		return "—"
+	}
+	return humanize.Bytes(toUint(size))
+}
+
+// appendCapped appends the row built by row unless the list already holds
+// maxRows rows: a row left out is not built.
+func appendCapped[T any](list []T, row func() T) []T {
+	if len(list) >= maxRows {
+		return list
+	}
+	return append(list, row())
+}
+
+// notAnalyzedText says in plain words why a file was not analyzed.
+func notAnalyzedText(reason datamodel.NotAnalyzedReason) string {
+	switch reason {
+	case datamodel.NotAnalyzedTooBig:
+		return "Trop volumineux (contenu non vérifié)"
+	case datamodel.NotAnalyzedEmpty:
+		return "Fichier vide"
+	case datamodel.NotAnalyzedEncrypted:
+		return "Chiffré (mot de passe inconnu)"
+	case datamodel.NotAnalyzedExtractLimit:
+		return "Écarté à l'extraction (limites)"
+	case datamodel.NotAnalyzedExtractError:
+		return "Anomalie d'extraction"
+	case datamodel.NotAnalyzedPolicySkipped:
+		return "Liste blanche (non analysé)"
+	case datamodel.NotAnalyzedRestored:
+		return "Restauré (précédemment bloqué)"
+	default:
+		return cellText(string(reason))
+	}
+}
+
+// convertExtractedFiles recursively converts datamodel.ExtractedFile to
+// ExtractedFileData, one row of budget for each malicious file; what the budget
+// does not cover is left out. The depth of the recursion is that of the tree,
+// which datamodel.Report.Bound keeps to at most a thousand nodes.
+func convertExtractedFiles(files []datamodel.ExtractedFile, budget *int) (result []ExtractedFileData) {
 	for _, f := range files {
 		if !f.Malicious {
 			continue
 		}
+		if *budget <= 0 {
+			return result
+		}
+		*budget--
 		efd := ExtractedFileData{
-			Name:             f.FileName,
+			Name:             cellText(f.FileName),
 			SHA256:           f.SHA256,
-			Malwares:         f.Malwares,
+			Malwares:         threatNames(f.Malwares),
 			MitigationReason: getCompleteReason(f.MalwareReason),
 			Size:             humanize.Bytes(toUint(f.Size)),
 			GMalwareURL:      f.GMalwareURL,
 		}
 		if len(f.ExtractedFiles) > 0 {
-			efd.ExtractedFiles = convertExtractedFiles(f.ExtractedFiles)
+			efd.ExtractedFiles = convertExtractedFiles(f.ExtractedFiles, budget)
 		}
 		result = append(result, efd)
 	}
 	return
+}
+
+// countMalicious is the number of malicious files of a tree.
+func countMalicious(files []datamodel.ExtractedFile) (n int) {
+	for _, f := range files {
+		if f.Malicious {
+			n += 1 + countMalicious(f.ExtractedFiles)
+		}
+	}
+	return n
 }
 
 // generateHTMLReport renders the configured template with report data.

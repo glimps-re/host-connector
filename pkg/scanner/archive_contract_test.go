@@ -33,6 +33,9 @@ func TestArchiveContract_errorIsOrderIndependent(t *testing.T) {
 			if !errors.Is(st.result.Error, errInnerTransient) {
 				t.Errorf("archive Error = %v, want errInnerTransient whatever the order", st.result.Error)
 			}
+			if !datamodel.IsExtractedErrorsSummary(st.result.Error.Error()) {
+				t.Errorf("archive Error %q is not recognized as the summary of its failed members", st.result.Error)
+			}
 		})
 	}
 }
@@ -56,6 +59,9 @@ func TestArchiveContract_tooBigOrEncryptedMemberUnderErrorPolicyIsPermanentWhate
 				st, _ := h.getStatus(id)
 				if !errors.Is(st.result.Error, errInnerPermanent) || errors.Is(st.result.Error, errInnerTransient) {
 					t.Errorf("archive Error = %v, want errInnerPermanent", st.result.Error)
+				}
+				if !datamodel.IsExtractedErrorsSummary(st.result.Error.Error()) {
+					t.Errorf("archive Error %q is not recognized as the summary of its failed members", st.result.Error)
 				}
 			})
 		}

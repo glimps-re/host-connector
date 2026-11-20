@@ -97,6 +97,10 @@
             font-size: 1.3rem;
         }
 
+        p.more {
+            font-style: italic;
+        }
+
         ul.details {
             list-style: none;
             padding: 0;
@@ -177,6 +181,7 @@
         <ul class="details">
             <li><strong>Fichiers listés : </strong>{{ .NbFileSubmitted }}</li>
             <li><strong>Fichiers analysés : </strong>{{ .NbFileAnalyzed }}</li>
+            <li><strong>Fichiers non analysés (membres d'archives inclus) : </strong>{{ .NbFileNotAnalyzed }}</li>
             <li><strong>Taille totale des fichiers (avant extraction) : </strong>{{ .FileVolume }}</li>
             <li><strong>Volume analysé : </strong>{{ .AnalyzedVolume }}</li>
             <li><strong>Volume filtré : </strong>{{ .FilteredVolume }}</li>
@@ -199,6 +204,9 @@
         </p>
         {{ end }}
         <p>Seuls les fichiers analysés comme sains ont pu être déplacés par l'application sur le support de destination.</p>
+        {{ if gt .NbFileNotAnalyzed 0 }}
+        <p>Des fichiers non analysés (voir la rubrique « Fichiers non analysés ») ont pu être transmis sans analyse complète, selon la politique choisie (<code>unanalyzable_policy</code>) : leur contenu n'a pas été vérifié.</p>
+        {{ end }}
     </section>
 
     {{ if gt (len .MitigatedFiles) 0 }}
@@ -237,6 +245,7 @@
                 </tbody>
             </table>
         </div>
+        {{ if gt .MoreMitigatedFiles 0 }}<p class="more">… et {{ .MoreMitigatedFiles }} autres</p>{{ end }}
     </section>
     {{ end }}
 
@@ -271,8 +280,41 @@
                         </tbody>
                     </table>
                 </div>
+                {{/* The rows of an archive are budgeted with archiveRows in main.go: keep both in step. */}}
+                {{ if gt .MoreExtracted 0 }}<p class="more">… et {{ .MoreExtracted }} autres fichiers de l'archive</p>{{ end }}
             </section>
         {{ end }}
+        {{ if gt .MoreMitigatedArchives 0 }}<p class="more">… et {{ .MoreMitigatedArchives }} autres archives</p>{{ end }}
+    </section>
+    {{ end }}
+
+    {{ if gt .NbFileNotAnalyzed 0 }}
+    <section id="not-analyzed-files">
+        <h2>Fichiers non analysés</h2>
+        <p>Ces fichiers n'ont pas été analysés complètement : leur contenu n'a pas été vérifié. Total : {{ .NbFileNotAnalyzed }}.</p>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Fichier</th>
+                        <th>Taille</th>
+                        <th>Raison</th>
+                        <th>Archive d'origine</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range .NotAnalyzedFiles }}
+                    <tr>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .Reason }}</td>
+                        <td>{{ .Origin }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+        {{ if gt .MoreNotAnalyzed 0 }}<p class="more">… et {{ .MoreNotAnalyzed }} autres</p>{{ end }}
     </section>
     {{ end }}
 
@@ -298,6 +340,7 @@
                 </tbody>
             </table>
         </div>
+        {{ if gt .MoreErrorFiles 0 }}<p class="more">… et {{ .MoreErrorFiles }} autres</p>{{ end }}
     </section>
     {{ end }}
 </body>

@@ -249,7 +249,7 @@ func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
 		if s.inner.permanent {
 			sentinel = errInnerPermanent
 		}
-		s.result.Error = fmt.Errorf("%w: %d extracted file(s) in error, first: %s", sentinel, s.inner.count, s.inner.first)
+		s.result.Error = fmt.Errorf("%w: %s", sentinel, datamodel.ExtractedErrorsSummary(s.inner.count, s.inner.first))
 		if listed := listedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= maxErrorSubfiles {
 			s.result.ErrorSubfiles[moreErrorsKey] = fmt.Sprintf("%d more failed file(s) not listed", s.inner.count-listed)
 		}

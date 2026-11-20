@@ -78,8 +78,8 @@ var (
 	// An archive with a failed extracted file is never moved. These sentinels
 	// only tell whether retrying can change the outcome: permanent wins when
 	// both apply.
-	errInnerTransient = errors.New("an extracted file could not be analyzed, will retry")
-	errInnerPermanent = errors.New("an extracted file cannot be analyzed")
+	errInnerTransient = errors.New(datamodel.ExtractedErrorsTransient)
+	errInnerPermanent = errors.New(datamodel.ExtractedErrorsPermanent)
 )
 
 // accepted MIME types for extraction.

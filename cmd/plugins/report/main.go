@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/chromedp/cdproto/page"
-	"github.com/chromedp/chromedp"
 	"github.com/dustin/go-humanize"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -25,6 +24,7 @@ import (
 // ReportPlugin generates PDF and HTML reports from scan results.
 type ReportPlugin struct {
 	templ         *template.Template
+	browser       *browserRunner
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
 }
@@ -45,6 +45,8 @@ var (
 // Config defines the template path for report generation.
 type Config struct {
 	TemplatePath string `mapstructure:"template_path"`
+	// ChromePath is the browser that renders the PDF; empty: found in PATH.
+	ChromePath string `mapstructure:"chrome_path"`
 }
 
 // GetDefaultConfig returns the default configuration.
@@ -53,14 +55,36 @@ func (p *ReportPlugin) GetDefaultConfig() (config any) {
 	return
 }
 
-// Validate loads the template like Init does, without any effect.
-func (p *ReportPlugin) Validate(rawConfig any, _ plugins.ValidationContext) error {
+// Validate loads the template and starts the browser on an empty page like
+// Init does, without any effect: the browser profile lives in the scratch
+// directory of the validation.
+func (p *ReportPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		return errors.New("bad config passed to report")
 	}
-	_, err := parseTemplate(config.TemplatePath)
+	if _, err := parseTemplate(config.TemplatePath); err != nil {
+		return err
+	}
+	_, err := startBrowser(config.ChromePath, vc)
 	return err
+}
+
+// startBrowser refuses root, declares the browser and proves it renders a PDF.
+func startBrowser(chromePath string, vc plugins.ValidationContext) (*browserRunner, error) {
+	if err := refuseRoot(); err != nil {
+		return nil, err
+	}
+	path, err := declareBrowser(chromePath, vc)
+	if err != nil {
+		return nil, err
+	}
+	runner := &browserRunner{execPath: path, workDir: vc.GetWorkDir(), logger: vc.GetLogger()}
+	if err := checkBrowser(context.Background(), runner); err != nil {
+		return nil, err
+	}
+	vc.GetLogger().Info("report browser checked", slog.String("path", path), slog.Bool("configured", chromePath != ""))
+	return runner, nil
 }
 
 // parseTemplate parses the template at path, or the embedded one when path is
@@ -85,29 +109,31 @@ func parseTemplate(path string) (*template.Template, error) {
 	return templ.Parse(defaultTemplate)
 }
 
-// Init loads the template and registers the report generator.
-func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
+// Init loads the template, checks the browser and registers the report
+// generator. The plugin is changed only when everything succeeded.
+func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	config, ok := rawConfig.(*Config)
 	if !ok {
-		err = errors.New("bad config passed to report")
-		return
+		return errors.New("bad config passed to report")
+	}
+	templ, err := parseTemplate(config.TemplatePath)
+	if err != nil {
+		return err
+	}
+	runner, err := startBrowser(config.ChromePath, hcc)
+	if err != nil {
+		return err
 	}
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "report"))
 	p.consoleLogger = hcc.GetConsoleLogger()
+	p.templ, p.browser = templ, runner
 
-	if p.templ, err = parseTemplate(config.TemplatePath); err != nil {
-		return
-	}
+	template := "default"
 	if config.TemplatePath != "" {
-		p.logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
-		p.consoleLogger.Info("report plugin initialized, template: " + config.TemplatePath)
-
-		hcc.RegisterGenerateReport(p.GenerateReport)
-		return
+		template = config.TemplatePath
 	}
-	p.logger.Info("plugin initialized", slog.String("template", "default"))
-	p.consoleLogger.Info("report plugin initialized, default template")
-
+	p.logger.Info("plugin initialized", slog.String("template", template))
+	p.consoleLogger.Info("report plugin initialized, template: " + template)
 	hcc.RegisterGenerateReport(p.GenerateReport)
 	return nil
 }
@@ -307,47 +333,24 @@ func (p *ReportPlugin) generatePDFReport(ctx context.Context, reportContext data
 		return
 	}
 
-	ctx, cancel := chromedp.NewContext(ctx)
-	defer cancel()
-
-	if err = chromedp.Run(
-		ctx,
-		chromedp.Navigate("about:blank"),
-		chromedp.ActionFunc(func(ctx context.Context) (err error) {
-			frameTree, err := page.GetFrameTree().Do(ctx)
-			if err != nil {
-				return
-			}
-
-			return page.SetDocumentContent(frameTree.Frame.ID, htmlBuf.String()).Do(ctx)
-		}),
-		chromedp.ActionFunc(func(ctx context.Context) (err error) {
-			buf, _, err := page.PrintToPDF().
-				WithPreferCSSPageSize(false).
-				WithScale(0.9).
-				WithDisplayHeaderFooter(true).
-				WithPaperWidth(8.27).
-				WithPaperHeight(11.69).
-				WithLandscape(false).
-				WithMarginTop(1).
-				WithMarginRight(0.3).
-				WithMarginBottom(1.3).
-				WithMarginLeft(0.3).
-				WithPrintBackground(true).
-				WithHeaderTemplate(`<span></span>`).
-				WithFooterTemplate(`<h4 id="footer-template" style="font-size:10px !important; width: 100%; margin-left:30px; margin-right:30px; display: flex; justify-content: space-between;"><span style="background-color: #000000; color: #FFC000">TLP:AMBER</span><span></span><span>Page <span class='pageNumber'></span> of <span class='totalPages'></span></span></h4>`).
-				Do(ctx)
-			if err != nil {
-				return
-			}
-
-			pdfBuf = bytes.NewBuffer(buf)
-			return
-		}),
-	); err != nil {
-		return
+	pdf, err := p.browser.render(ctx, htmlBuf.String(), page.PrintToPDF().
+		WithPreferCSSPageSize(false).
+		WithScale(0.9).
+		WithDisplayHeaderFooter(true).
+		WithPaperWidth(8.27).
+		WithPaperHeight(11.69).
+		WithLandscape(false).
+		WithMarginTop(1).
+		WithMarginRight(0.3).
+		WithMarginBottom(1.3).
+		WithMarginLeft(0.3).
+		WithPrintBackground(true).
+		WithHeaderTemplate(`<span></span>`).
+		WithFooterTemplate(`<h4 id="footer-template" style="font-size:10px !important; width: 100%; margin-left:30px; margin-right:30px; display: flex; justify-content: space-between;"><span style="background-color: #000000; color: #FFC000">TLP:AMBER</span><span></span><span>Page <span class='pageNumber'></span> of <span class='totalPages'></span></span></h4>`), maxReportPDF)
+	if err != nil {
+		return nil, err
 	}
-	return
+	return bytes.NewBuffer(pdf), nil
 }
 
 func getCompleteReason(mitigationReason datamodel.MalwareReason) (reason string) {

@@ -346,6 +346,7 @@ report:
   file: report.so
   config:
     template_path: ""                  # Path to custom HTML template (uses embedded default if empty)
+    chrome_path: ""                    # Absolute path of Chrome/Chromium (found in PATH if empty)
 ```
 
 **Prerequisites:**
@@ -353,6 +354,9 @@ report:
 ```bash
   sudo apt update && sudo apt install chromium
 ```
+
+- The browser is checked at every start and every configuration: it must pass the executable checks (absolute path, owned by root or the connector account, not writable by others) and render an empty page to a PDF within 30 s, otherwise the connector refuses to start (or keeps its previous configuration). The Chrome sandbox stays on, so a connector running as root is refused: run it under a dedicated service account.
+- The browser is restricted: JavaScript is off and every network or `file:` request of the page is refused. A custom template must embed its images and styles (`data:` URIs, inline `<style>`).
 
 **Key Features:**
 - PDF report generation

@@ -162,6 +162,10 @@ type Config struct {
 	// not block (it is called while the pipeline holds nothing, but a slow stat
 	// on a network file system would hold a worker). May be nil.
 	OnFileDone func(FileOutcome)
+	// PendingFiles tells how many files detected under the owner whose folder is
+	// dir have not finished processing; plugins read it through
+	// HCContext.PendingFiles. May be nil (the scan command): it is then 0.
+	PendingFiles func(dir string) int
 }
 
 type fileToAnalyze struct {

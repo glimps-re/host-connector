@@ -19,10 +19,17 @@ type MockHCContext struct {
 	OnFileScanned      plugins.OnFileScanned
 	OnReport           plugins.OnReport
 	GenerateReportFunc plugins.GenerateReport
-	ExtractFile        plugins.ExtractFile
-	ConsoleLogger      *slog.Logger
-	Logger             *slog.Logger
-	WorkDir            string
+	// NotifyErrorFunc and NotifyResolutionFunc receive the console events.
+	NotifyErrorFunc      func(ctx context.Context, key string, err error)
+	NotifyResolutionFunc func(ctx context.Context, key, message string)
+	// PendingFilesFunc answers PendingFiles; nil means 0.
+	PendingFilesFunc func(dir string) int
+	// NotifyReportWrittenFunc receives NotifyReportWritten.
+	NotifyReportWrittenFunc func(ctx context.Context, sessionID, path, sha256 string)
+	ExtractFile             plugins.ExtractFile
+	ConsoleLogger           *slog.Logger
+	Logger                  *slog.Logger
+	WorkDir                 string
 	// Executables and OutputDirs record the declarations; DeclareExecutableErr
 	// is returned by DeclareExecutable.
 	Executables          []string
@@ -67,8 +74,35 @@ func (m *MockHCContext) DeclareOutputDir(path string) error {
 	return nil
 }
 
-func (m *MockHCContext) NotifyError(context.Context, string, error)       {}
-func (m *MockHCContext) NotifyResolution(context.Context, string, string) {}
+// NotifyError calls NotifyErrorFunc when set.
+func (m *MockHCContext) NotifyError(ctx context.Context, key string, err error) {
+	if m.NotifyErrorFunc != nil {
+		m.NotifyErrorFunc(ctx, key, err)
+	}
+}
+
+// NotifyResolution calls NotifyResolutionFunc when set.
+func (m *MockHCContext) NotifyResolution(ctx context.Context, key, message string) {
+	if m.NotifyResolutionFunc != nil {
+		m.NotifyResolutionFunc(ctx, key, message)
+	}
+}
+
+// PendingFiles calls PendingFilesFunc, or returns 0.
+func (m *MockHCContext) PendingFiles(dir string) int {
+	if m.PendingFilesFunc != nil {
+		return m.PendingFilesFunc(dir)
+	}
+	return 0
+}
+
+// NotifyReportWritten calls NotifyReportWrittenFunc when set.
+func (m *MockHCContext) NotifyReportWritten(ctx context.Context, sessionID, path, sha256 string) {
+	if m.NotifyReportWrittenFunc != nil {
+		m.NotifyReportWrittenFunc(ctx, sessionID, path, sha256)
+	}
+}
+
 func (m *MockHCContext) SetTrackingOwners(root string, depth int) error {
 	m.OwnerRoot, m.OwnerDepth = root, depth
 	return m.OwnersErr

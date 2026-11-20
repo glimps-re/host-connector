@@ -384,6 +384,19 @@ func (t *fileTable) Owners() int {
 	return len(t.owners)
 }
 
+// Pending returns how many files of the owner are waiting for their stability
+// delay, waiting for a worker or being processed. Files waiting for a retry or
+// final are not counted.
+func (t *fileTable) Pending(owner string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	o := t.owners[owner]
+	if o == nil {
+		return 0
+	}
+	return o.waiting.n + o.submitted
+}
+
 // Get returns a copy of the state of path.
 func (t *fileTable) Get(path string) (trackedFile, bool) {
 	t.mu.Lock()

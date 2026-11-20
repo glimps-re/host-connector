@@ -370,6 +370,11 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 		if m := monitorLink.Load(); m != nil {
 			m.FileDone(o)
 		}
+	}, func(dir string) int {
+		if m := monitorLink.Load(); m != nil {
+			return m.PendingFiles(dir)
+		}
+		return 0
 	})
 	if err != nil {
 		return err
@@ -464,7 +469,7 @@ func (h *Handler) reconfigureQuarantine(ctx context.Context, conf *config.Config
 	return h.setupQuarantiner(ctx, conf)
 }
 
-func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.WriteCloser, onFileDone func(scanner.FileOutcome)) (*scanner.Connector, error) {
+func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.WriteCloser, onFileDone func(scanner.FileOutcome), pending func(dir string) int) (*scanner.Connector, error) {
 	customAction := make([]scanner.Action, 0)
 	if conf.Gui {
 		customAction = append(customAction, new(GuiHandleResult))
@@ -485,6 +490,7 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		WorkDir:             conf.WorkDir,
 		Roots:               conf.Paths,
 		OnFileDone:          onFileDone,
+		PendingFiles:        pending,
 		Actions: scanner.Actions{
 			Log:        conf.Actions.Log,
 			Quarantine: conf.Actions.Quarantine,

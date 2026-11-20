@@ -54,7 +54,7 @@ func TestSession_archiveAbandonedBecauseTheExtractorIsDownDoesNotKeepTheSessionO
 
 	plugin := &SessionPlugin{}
 	hcc := mock.NewMockHCContext()
-	plugin.config = Config{RootFolder: root, Depth: 2, Delay: 50 * time.Millisecond}
+	plugin.config = Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 2, Delay: 50 * time.Millisecond}
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = hcc
 	plugin.stop = make(chan struct{})
@@ -120,13 +120,11 @@ func TestSession_archiveAbandonedBecauseTheExtractorIsDownDoesNotKeepTheSessionO
 	if session == nil {
 		t.Fatal("the plugin never saw the archive start")
 	}
-	for name, entry := range session.TrackedFiles {
-		if !entry.Completed {
-			t.Errorf("%s is still in progress for the session: it would stay open until shutdown", name)
-		}
+	for name := range session.InFlight {
+		t.Errorf("%s is still in progress for the session: it would stay open until shutdown", name)
 	}
 	time.Sleep(2 * plugin.config.Delay)
-	if !session.isReadyForClosure(plugin.config.Delay) {
+	if !plugin.readyForClosure(session) {
 		t.Error("the session must be ready to close after its delay")
 	}
 }

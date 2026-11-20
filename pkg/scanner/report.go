@@ -1,9 +1,7 @@
 package scanner
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"iter"
@@ -35,34 +33,5 @@ func defaultGenerateReport(ctx context.Context, _ datamodel.ScanContext, reports
 }
 
 func writeJSONReports(ctx context.Context, w io.Writer, reports iter.Seq2[datamodel.Report, error]) error {
-	out := bufio.NewWriter(w)
-	if _, err := out.WriteString("["); err != nil {
-		return err
-	}
-	first := true
-	for report, err := range reports {
-		if err != nil {
-			return err
-		}
-		if err = ctx.Err(); err != nil {
-			return err
-		}
-		if !first {
-			if _, err = out.WriteString(","); err != nil {
-				return err
-			}
-		}
-		first = false
-		encoded, err := json.Marshal(report)
-		if err != nil {
-			return err
-		}
-		if _, err = out.Write(encoded); err != nil {
-			return err
-		}
-	}
-	if _, err := out.WriteString("]\n"); err != nil {
-		return err
-	}
-	return out.Flush()
+	return datamodel.WriteReportsJSON(ctx, w, reports)
 }

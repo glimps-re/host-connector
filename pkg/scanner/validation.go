@@ -113,6 +113,14 @@ func (c *Connector) NotifyError(ctx context.Context, key string, err error) {
 	}
 }
 
+// NotifyReportWritten sends a console message with the name and the SHA256 of a
+// session report that was written, so that it can be authenticated from the
+// console rather than from the folder users can write to.
+func (c *Connector) NotifyReportWritten(_ context.Context, sessionID, path, sha256 string) {
+	logger.Info("session report written", slog.String("session_id", sessionID), slog.String("path", path), slog.String("sha256", sha256))
+	ConsoleLogger.Info(fmt.Sprintf("session report written: session %s, file %s, sha256 %s", sessionID, path, sha256))
+}
+
 // NotifyResolution clears the error event raised under key. The keys of the
 // core are refused.
 func (c *Connector) NotifyResolution(ctx context.Context, key string, message string) {

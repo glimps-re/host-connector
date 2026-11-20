@@ -18,7 +18,7 @@ func TestSessionPlugin_reportsAreWrittenUnderTheReservedPrefix(t *testing.T) {
 	exports := []string{t.TempDir(), t.TempDir()}
 	hcc := mock.NewMockHCContext()
 	plugin := &SessionPlugin{}
-	if err := plugin.Init(&Config{RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour, Exports: exports}, hcc); err != nil {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour, Exports: exports}, hcc); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -27,8 +27,8 @@ func TestSessionPlugin_reportsAreWrittenUnderTheReservedPrefix(t *testing.T) {
 		}
 	})
 	start := time.Unix(1_700_000_000, 0)
-	session := &Session{ID: "team/sub", StartTime: start, Paths: []string{filepath.Join(exports[0], "team"), filepath.Join(exports[1], "team")}}
-	plugin.generateSessionReport(t.Context(), session)
+	session := &Session{ID: "team/sub", StartTime: start, CompletedReports: []datamodel.Report{{Filename: "a"}}, Paths: []string{filepath.Join(exports[0], "team"), filepath.Join(exports[1], "team")}}
+	_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 
 	for _, dir := range session.Paths {
 		entries, err := os.ReadDir(dir)

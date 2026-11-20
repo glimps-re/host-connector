@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
@@ -14,7 +15,7 @@ func TestSessionPlugin_Validate(t *testing.T) {
 		hcc.WorkDir = filepath.Join(base, "gmhost-validate-abc")
 		var p SessionPlugin
 		reports := filepath.Join(t.TempDir(), "reports")
-		if err := p.Validate(&Config{RootFolder: t.TempDir(), Exports: []string{reports}}, hcc); err != nil {
+		if err := p.Validate(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Exports: []string{reports}}, hcc); err != nil {
 			t.Fatalf("Validate() error = %v", err)
 		}
 		if len(hcc.OutputDirs) != 1 || hcc.OutputDirs[0] != reports {
@@ -28,7 +29,7 @@ func TestSessionPlugin_Validate(t *testing.T) {
 		hcc := mock.NewMockHCContext()
 		hcc.WorkDir = filepath.Join(base, "gmhost-validate-abc")
 		var p SessionPlugin
-		if err := p.Validate(&Config{RootFolder: base}, hcc); err == nil {
+		if err := p.Validate(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: base}, hcc); err == nil {
 			t.Error("Validate() error = nil, want a refusal")
 		}
 	})
@@ -49,7 +50,7 @@ func TestSessionPlugin_CloseTwice(t *testing.T) {
 	}
 	hcc := mock.NewMockHCContext()
 	hcc.WorkDir = filepath.Join(t.TempDir(), "gmhost-x")
-	if err := p.Init(&Config{Depth: 1, RootFolder: t.TempDir(), Delay: 1}, hcc); err != nil {
+	if err := p.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, Depth: 1, RootFolder: t.TempDir(), Delay: 1}, hcc); err != nil {
 		t.Fatalf("Init() error = %v", err)
 	}
 	for range 2 {

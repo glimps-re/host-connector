@@ -155,6 +155,14 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 	}, nil
 }
 
+// PendingFiles returns how many files detected under the owner whose folder is
+// dir have not finished processing (see fileTable.Pending). dir is the name of
+// the owner as declared: it is 0 for any other folder, a parent, a sub-folder or
+// a file of the owner.
+func (m *Monitor) PendingFiles(dir string) int {
+	return m.table.Pending(filepath.Clean(dir))
+}
+
 func statFor(followSymlinks bool) func(string) (fs.FileInfo, error) {
 	if followSymlinks {
 		return os.Stat

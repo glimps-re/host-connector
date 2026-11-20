@@ -30,3 +30,13 @@ func (c *Connector) TrackingOwners() []OwnerRule {
 	defer c.pluginsMu.Unlock()
 	return slices.Clone(c.owners)
 }
+
+// PendingFiles returns how many files the monitoring has detected under the
+// owner whose folder is dir and has not finished processing. It is 0 when
+// nothing is monitored.
+func (c *Connector) PendingFiles(dir string) int {
+	if c.config.PendingFiles == nil {
+		return 0
+	}
+	return c.config.PendingFiles(dir)
+}

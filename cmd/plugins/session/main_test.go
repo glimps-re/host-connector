@@ -28,12 +28,14 @@ func TestSessionPlugin_Init(t *testing.T) {
 		{
 			name: "init config",
 			config: &Config{
+				ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 				Depth:      2,
 				Delay:      time.Second,
 				RootFolder: "/tmp",
 			},
 			wantErr: false,
 			wantConfig: Config{
+				ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 				Depth:      2,
 				Delay:      time.Second,
 				RootFolder: "/tmp",
@@ -105,6 +107,7 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 
 	plugin := &SessionPlugin{
 		config: Config{
+			ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 			Delay:      100 * time.Millisecond,
@@ -136,24 +139,18 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 	// Test adding file to session
 	session.addFile(filePath, "sha256hash")
 
-	if len(session.TrackedFiles) != 1 {
-		t.Errorf("PendingFiles length = %v, want 1", len(session.TrackedFiles))
+	if len(session.InFlight) != 1 {
+		t.Errorf("InFlight length = %v, want 1", len(session.InFlight))
 	}
-
-	fileEntry, exists := session.TrackedFiles[filePath]
-	if !exists {
-		t.Error("File should exist in PendingFiles")
-	}
-
-	if fileEntry.SHA256 != "sha256hash" {
-		t.Errorf("File SHA256 = %v, want sha256hash", fileEntry.SHA256)
+	if _, exists := session.InFlight[filePath]; !exists {
+		t.Error("File should exist in InFlight")
 	}
 
 	// Test marking file completed
 	session.markFileCompleted(filePath)
 
-	if !fileEntry.Completed {
-		t.Error("File should be marked as completed")
+	if len(session.InFlight) != 0 {
+		t.Error("A completed file must leave InFlight")
 	}
 
 	// Test adding report
@@ -170,7 +167,7 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 
 	// Test session ready for closure
 	time.Sleep(150 * time.Millisecond) // Wait longer than delay
-	if !session.isReadyForClosure(plugin.config.Delay) {
+	if !plugin.readyForClosure(session) {
 		t.Error("Session should be ready for closure")
 	}
 }
@@ -185,6 +182,7 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 
 	plugin := &SessionPlugin{
 		config: Config{
+			ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -224,7 +222,7 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 					if session.ID != tt.expectedSessID {
 						t.Errorf("want session ID %s, got %s", tt.expectedSessID, session.ID)
 					}
-					if _, exists := session.TrackedFiles[tt.filePath]; !exists {
+					if _, exists := session.InFlight[tt.filePath]; !exists {
 						t.Error("File should be added to session")
 					}
 				}
@@ -243,6 +241,7 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 
 	plugin := &SessionPlugin{
 		config: Config{
+			ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -265,13 +264,7 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 		return
 	}
 
-	fileEntry := session.TrackedFiles[filePath]
-	if fileEntry == nil {
-		t.Fatal("File entry should exist")
-		return
-	}
-
-	if !fileEntry.Completed {
+	if _, inFlight := session.InFlight[filePath]; inFlight {
 		t.Error("File should be marked as completed")
 	}
 }
@@ -286,6 +279,7 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 
 	plugin := &SessionPlugin{
 		config: Config{
+			ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -335,6 +329,7 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 
 	// Override config for testing
 	config := Config{
+		ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 		RootFolder: tmpDir,
 		Depth:      2,
 		Delay:      50 * time.Millisecond,
@@ -380,8 +375,8 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 		return
 	}
 
-	if len(session.TrackedFiles) != 2 {
-		t.Errorf("Should have 2 pending files, got %d", len(session.TrackedFiles))
+	if len(session.InFlight) != 2 {
+		t.Errorf("Should have 2 pending files, got %d", len(session.InFlight))
 	}
 
 	// 2. Complete scanning
@@ -409,15 +404,13 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	// 4. Wait for session to be ready for closure
 	time.Sleep(100 * time.Millisecond)
 
-	if !session.isReadyForClosure(plugin.config.Delay) {
+	if !plugin.readyForClosure(session) {
 		t.Error("Session should be ready for closure")
 	}
 
 	// Verify all files are completed
-	for _, fileEntry := range session.TrackedFiles {
-		if !fileEntry.Completed {
-			t.Error("All files should be completed")
-		}
+	if len(session.InFlight) != 0 {
+		t.Error("All files should be completed")
 	}
 }
 
@@ -442,6 +435,7 @@ func TestSessionPlugin_CloseAllSessions(t *testing.T) {
 
 	plugin := &SessionPlugin{}
 	config := &Config{
+		ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 		RootFolder: tmpDir,
 		Depth:      1,
 		Delay:      1 * time.Hour, // Long delay so sessions are NOT ready for normal closure
@@ -516,6 +510,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok insufficient depth",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      4,
 					Delay:      time.Second,
@@ -529,6 +524,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok different root",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/other_folder/",
 					Depth:      2,
 					Delay:      time.Second,
@@ -542,6 +538,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok different root 2",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      2,
 					Delay:      time.Second,
@@ -555,6 +552,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok create",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,
@@ -569,6 +567,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok no session",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,
@@ -582,6 +581,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok present session",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,

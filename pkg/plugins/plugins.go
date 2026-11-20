@@ -98,6 +98,20 @@ type HCContext interface {
 	// or is contained in an already declared root.
 	SetTrackingOwners(root string, depth int) error
 
+	// PendingFiles returns how many files the monitoring has detected under
+	// the owner whose folder is dir and has not finished processing: waiting
+	// for their stability delay, waiting for a worker, or being processed.
+	// Files waiting for a retry are not counted. dir is the folder of an owner
+	// as declared with SetTrackingOwners: root followed by depth directories.
+	// It returns 0 when dir is not the folder of a known owner (a parent, a
+	// sub-folder or a file of an owner is not) or when nothing is monitored. It
+	// is safe for concurrent use and must not be called during Init.
+	PendingFiles(dir string) int
+
+	// NotifyReportWritten tells the connector manager that a session report
+	// was written, so that operators can authenticate it by name and digest.
+	NotifyReportWritten(ctx context.Context, sessionID, path, sha256 string)
+
 	// The Register* methods are only valid during Init.
 	RegisterOnStartScanFile(f OnStartScanFile)
 	// RegisterOnScanFile callbacks run in plugin file order. filename is the

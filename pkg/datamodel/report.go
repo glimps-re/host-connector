@@ -2,6 +2,7 @@ package datamodel
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"iter"
@@ -122,4 +123,41 @@ func ReportsSeq(reports []Report) iter.Seq2[Report, error] {
 			}
 		}
 	}
+}
+
+// WriteReportsJSON writes the reports as a JSON array, one at a time as the
+// sequence yields them: nothing is kept once written. A failing sequence or a
+// cancelled context ends it with that error, and the output must then be
+// discarded.
+func WriteReportsJSON(ctx context.Context, w io.Writer, reports iter.Seq2[Report, error]) error {
+	out := bufio.NewWriter(w)
+	if _, err := out.WriteString("["); err != nil {
+		return err
+	}
+	first := true
+	for report, err := range reports {
+		if err != nil {
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if !first {
+			if _, err = out.WriteString(","); err != nil {
+				return err
+			}
+		}
+		first = false
+		encoded, err := json.Marshal(report)
+		if err != nil {
+			return err
+		}
+		if _, err = out.Write(encoded); err != nil {
+			return err
+		}
+	}
+	if _, err := out.WriteString("]\n"); err != nil {
+		return err
+	}
+	return out.Flush()
 }

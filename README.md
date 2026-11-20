@@ -324,6 +324,9 @@ session:
     delay: 30s                        # Delay before closing inactive sessions
     root_folder: /tmp/samples/        # Base path for session ID calculation (required)
     exports: []                       # Base directories for session reports (e.g., ["/var/reports"])
+    report_timeout: 2m                # Time given to each attempt to write the report of a session
+    report_retries: 3                 # Failed attempts retried before the JSON fallback
+    inflight_timeout: 24h             # Longest a session is held open by files that do not end or wait
 ```
 
 **Session ID Examples** (with `depth: 2` and `root_folder: /tmp/samples/`):
@@ -332,8 +335,10 @@ session:
 
 **Key Features:**
 - Thread-safe file tracking
-- Automatic session closure with configurable delay
-- Consolidated report generation
+- Automatic session closure with configurable delay: a session stays open while one of its files is being processed, and while files detected under its folder still wait (for their stability delay, for a worker): a long analysis of another user's file no longer cuts a session in two. A waiting file does not count as activity: a session that has been idle for `inflight_timeout` is closed whatever waits, with a warning, and the files still waiting open a new session. A file whose processing failed appears once, with its error, in the report of its session, and its retries neither keep the session open nor open another one; a report that comes after its session was closed opens a new one, which writes a complementary report
+- Consolidated report generation, never lost: each attempt is bounded by `report_timeout`, a failed attempt is retried at the next check (`report_retries` times), then a JSON report is written instead (console error `session-report-fallback` until a normal report succeeds). At most 64 sessions are kept waiting for their report after an attempt: past that, the oldest get their JSON report at once, with the console error `session-report-backlog`. A report that cannot be written at all (JSON included) is lost loudly: an Error log and the console error `session-report-lost` name the session, and it is not tried again. A report is written to each export on its own: one that fails is said with its own error and only the missing exports are retried. At stop, the attempts of the monitor are cut and every open session gets its report: the generators get the stop deadline less a reserve (half of what is left, at most 10 s) in which the JSON fallbacks are written, and when the deadline has expired already the fallbacks get one second in all (the shutdown guard kills the process right after). A summary is logged. The name of a report is cut, with a short hash of the session, when the folder name is long, so that the report keeps a valid file name. In this version the reports of a session are kept in memory until it closes
+- A report is written atomically and never replaces a file: it goes to a temporary file (`.gmhost-tmp-*`, mode `0644`: a report is meant to be read by others) in the export folder, is synced, then takes its final name `report-session-<id>-<start>.<ext>` only if that name is free. An existing file of that name is never opened, truncated or removed, whatever fails; if the name is taken anyway (nobody else can create it) it is an anomaly, logged and raised in the console, and the report is written under a conflict name. After each report a console message gives its path and SHA256, so it can be authenticated from the console and not from the folder
+- The session reads `HCContext.PendingFiles(dir)` (new): plugins can ask the core how many files detected under the owner whose folder is `dir` (root followed by depth directories, as declared with `SetTrackingOwners`) have not finished processing; any other folder gives 0. `report_timeout`, `inflight_timeout` must be positive and `report_retries` not negative, otherwise the configuration is refused; a Warn is logged when `inflight_timeout` is shorter than `delay`, which disarms the waiting files
 
 #### Report Plugin
 

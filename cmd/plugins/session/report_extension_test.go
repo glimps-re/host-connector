@@ -23,7 +23,7 @@ func sessionWithGenerator(t *testing.T, gen plugins.GenerateReport) (*SessionPlu
 	hcc := mock.NewMockHCContext()
 	hcc.GenerateReportFunc = gen
 	plugin := &SessionPlugin{}
-	plugin.config = Config{RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour}
+	plugin.config = Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour}
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = hcc
 	plugin.stop = make(chan struct{})
@@ -62,7 +62,7 @@ func TestSession_theReportFileHasTheExtensionOfTheGenerator(t *testing.T) {
 				}
 				return plugins.GeneratedReport{Content: &closeRecorder{Reader: strings.NewReader("content"), closed: &closed}, Extension: ext}, nil
 			})
-			plugin.generateSessionReport(t.Context(), session)
+			_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 			names := entriesOf(t, dir)
 			if len(names) != 1 || !strings.HasPrefix(names[0], datamodel.SessionReportPrefix) || !strings.HasSuffix(names[0], ext) {
 				t.Errorf("files = %v, want one %s<session>-<start>%s", names, datamodel.SessionReportPrefix, ext)
@@ -91,7 +91,7 @@ func TestSession_aGeneratorCannotChooseWhereTheReportGoes(t *testing.T) {
 			plugin, session, dir := sessionWithGenerator(t, func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 				return plugins.GeneratedReport{Content: io.NopCloser(strings.NewReader("content")), Extension: ext}, nil
 			})
-			plugin.generateSessionReport(t.Context(), session)
+			_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 			if names := entriesOf(t, dir); len(names) != 0 {
 				t.Errorf("files = %v, want none for the extension %q", names, ext)
 			}
@@ -119,7 +119,7 @@ func TestSession_aFailingGeneratorLeavesNoPartialReport(t *testing.T) {
 	plugin, session, dir := sessionWithGenerator(t, func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 		return plugins.GeneratedReport{Content: io.NopCloser(&failingReader{data: "[{\"filename\":\"a\"}", err: boom}), Extension: ".json"}, nil
 	})
-	plugin.generateSessionReport(t.Context(), session)
+	_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 	if names := entriesOf(t, dir); len(names) != 0 {
 		t.Errorf("files = %v, want none: a half report must not pass for a report", names)
 	}
@@ -129,7 +129,7 @@ func TestSession_aGeneratorErrorWritesNothing(t *testing.T) {
 	plugin, session, dir := sessionWithGenerator(t, func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 		return plugins.GeneratedReport{}, errors.New("no generator")
 	})
-	plugin.generateSessionReport(t.Context(), session)
+	_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 	if names := entriesOf(t, dir); len(names) != 0 {
 		t.Errorf("files = %v, want none", names)
 	}
@@ -142,7 +142,7 @@ func TestSession_aFailingCloseLeavesNoReport(t *testing.T) {
 	t.Cleanup(func() { closeReportFile = prev })
 	closeReportFile = func(f *os.File) error { return errors.Join(f.Close(), errors.New("disk full at close")) }
 	plugin, _, dir := sessionWithGenerator(t, nil)
-	if err := plugin.saveReport(strings.NewReader("content"), filepath.Join(dir, "r.json")); err == nil {
+	if res := plugin.saveReport(writeString("content"), filepath.Join(dir, "r.json")); len(res) != 1 || res[0].err == nil {
 		t.Fatal("saveReport() must report the failed close")
 	}
 	if names := entriesOf(t, dir); len(names) != 0 {
@@ -157,7 +157,7 @@ func TestSession_savingWithoutAnyFileIsAnError(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := plugin.saveReport(strings.NewReader("content"), filepath.Join(blocker, "sub", "r.json")); err == nil {
+	if res := plugin.saveReport(writeString("content"), filepath.Join(blocker, "sub", "r.json")); len(res) != 1 || res[0].err == nil {
 		t.Error("saveReport() with no file created must be an error, not a success")
 	}
 }
@@ -168,8 +168,15 @@ func TestSession_aGeneratorWithoutContentIsTolerated(t *testing.T) {
 	plugin, session, dir := sessionWithGenerator(t, func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 		return plugins.GeneratedReport{Extension: ".json"}, nil
 	})
-	plugin.generateSessionReport(t.Context(), session)
+	_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 	if names := entriesOf(t, dir); len(names) != 0 {
 		t.Errorf("files = %v, want none", names)
+	}
+}
+
+func writeString(s string) func(io.Writer) error {
+	return func(w io.Writer) error {
+		_, err := io.WriteString(w, s)
+		return err
 	}
 }

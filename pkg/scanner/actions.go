@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk/events"
@@ -33,10 +35,17 @@ type Actions struct {
 // for test purposes
 var (
 	now      = time.Now
-	rename   = quarantine.MoveFile
+	moveFile = quarantine.MoveFileResolvingConflicts
 	mkdirAll = os.MkdirAll
-	create   = os.Create
+	create   = createExclusive
+	lstat    = os.Lstat
 )
+
+// maxMoveConflicts is how many conflict names are tried after the plain one.
+const maxMoveConflicts = 5
+
+// errPermanentAction marks an action failure that retrying cannot fix.
+var errPermanentAction = errors.New("permanent action failure")
 
 type Action interface {
 	Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) error
@@ -160,13 +169,64 @@ func NewMultiAction(actions ...Action) *MultiAction {
 	return &MultiAction{Actions: actions}
 }
 
-func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+// Handle runs the actions in order. An action that fails does not stop the
+// ones that follow, so that the mitigation already done is still reported to
+// the console, except the ones that destroy the file (a failed quarantine must
+// not be followed by the removal of the file). All the errors are returned.
+func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) error {
+	var errs []error
 	for _, h := range a.Actions {
-		if err = h.Handle(ctx, path, result, report); err != nil {
-			return
+		if len(errs) > 0 {
+			if d, ok := h.(interface{ SkipAfterError() bool }); ok && d.SkipAfterError() {
+				continue
+			}
+		}
+		if err := h.Handle(ctx, path, result, report); err != nil {
+			errs = append(errs, err)
 		}
 	}
+	a.notifyMitigation(ctx, path, result, report)
+	if len(errs) == 0 {
+		return nil
+	}
+	return joinedErrors(errs)
+}
 
+// joinedErrors is what MultiAction returns when several actions failed.
+type joinedErrors []error
+
+func (j joinedErrors) Error() string {
+	msgs := make([]string, len(j))
+	for i, e := range j {
+		msgs[i] = e.Error()
+	}
+	return strings.Join(msgs, "; ")
+}
+
+func (j joinedErrors) Unwrap() []error { return j }
+
+// IsPermanentAction reports whether retrying the actions cannot help. When
+// several actions failed it is true only if EVERY failure is permanent: a
+// transient failure (a quarantine that could not be written) must keep the
+// file eligible for a retry even though another action failed for good (a
+// move onto a taken name).
+func IsPermanentAction(err error) bool {
+	if err == nil {
+		return false
+	}
+	var joined joinedErrors
+	if errors.As(err, &joined) {
+		for _, e := range joined {
+			if !IsPermanentAction(e) {
+				return false
+			}
+		}
+		return len(joined) > 0
+	}
+	return errors.Is(err, errPermanentAction)
+}
+
+func (a *MultiAction) notifyMitigation(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) {
 	if report.Action == "" {
 		return
 	}
@@ -198,10 +258,13 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 	}); e != nil {
 		logger.Warn("could not push quarantine event to console", slog.String("error", e.Error()))
 	}
-	return
 }
 
 type RemoveFileAction struct{}
+
+// SkipAfterError keeps MultiAction from removing a file when an earlier action
+// failed: a failed quarantine must not end with the loss of the file.
+func (a *RemoveFileAction) SkipAfterError() bool { return true }
 
 func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
 	defer func() {
@@ -212,16 +275,17 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datam
 	if !result.Malware {
 		return
 	}
-	// We don't want to overwrite mitigation action
-	if report.Action != datamodel.Quarantined {
-		report.Action = datamodel.Removed
-		report.MitigationID = result.SHA256
-	}
 	err = os.Remove(path)
 	if err != nil {
 		return
 	}
 	report.Deleted = true
+	// Only a removal that happened is announced; a quarantine already done
+	// keeps its own action.
+	if report.Action != datamodel.Quarantined {
+		report.Action = datamodel.Removed
+		report.MitigationID = result.SHA256
+	}
 	return
 }
 
@@ -347,35 +411,36 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 	}
 
 	relPath, relErr := filepath.Rel(a.Src, path)
-	if relErr != nil || strings.HasPrefix(relPath, "..") {
-		err = errors.New("file not in source directory")
+	if relErr != nil || relPath == ".." || strings.HasPrefix(relPath, ".."+string(filepath.Separator)) {
+		err = fmt.Errorf("%w: file not in source directory", errPermanentAction)
+		return
+	}
+	if first, _, _ := strings.Cut(relPath, string(filepath.Separator)); strings.EqualFold(first, quarantine.StagingDir) {
+		err = fmt.Errorf("%w: %s is the transit directory of the destination", errPermanentAction, quarantine.StagingDir)
+		return
+	}
+	if hasReservedName(filepath.Base(path)) {
+		const msg = "file name reserved for session reports"
+		logger.Warn("file will not be moved to destination, "+msg, slog.String("file", path))
+		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination: %s", path, msg))
+		report.Error = msg
+		if result.Malware {
+			// The detection must reach the other actions and the console: the
+			// file simply stays where it is.
+			return
+		}
+		err = fmt.Errorf("%w: %s", errPermanentAction, msg)
 		return
 	}
 
 	dest := filepath.Join(a.Dest, relPath)
-	err = mkdirAll(filepath.Dir(dest), 0o755)
-	if err != nil {
+	if err = mkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		err = classifyDestinationError(err)
 		return
 	}
 
 	if result.Malware {
-		now := time.Now().Format("020106_1504")
-		f, createErr := create(dest + fmt.Sprintf("-lockreport%s.json", now))
-		if createErr != nil {
-			err = createErr
-			return
-		}
-		defer func() {
-			if e := f.Close(); e != nil {
-				logger.Error("MoveAction cannot close file", slog.String(logErrorKey, e.Error()))
-			}
-		}()
-		w := json.NewEncoder(f)
-		w.SetIndent("", "  ")
-		if err = w.Encode(report); err != nil {
-			return
-		}
-		return
+		return writeLockReport(dest, report)
 	}
 
 	if result.AnalysisError != "" {
@@ -384,12 +449,83 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 		return
 	}
 
-	// move safe file
-	err = rename(path, dest)
+	target, err := a.moveWithoutReplace(path, dest)
 	if err != nil {
 		return
 	}
-	report.MovedTo = dest
-	ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, dest))
+	report.MovedTo = target
+	if target != dest {
+		report.MoveConflictOf = relPath
+		msg := fmt.Sprintf("%s already existed at the destination (the first file may have been partial): moved to %s", relPath, target)
+		logger.Warn(msg, slog.String("file", path))
+		ConsoleLogger.Warn(msg)
+	}
+	ConsoleLogger.Debug(fmt.Sprintf("file %s moved from %s to %s", report.Filename, path, target))
 	return
+}
+
+// moveWithoutReplace moves path to dest, or when dest exists to a conflict name
+// next to it: a file already in the destination is never overwritten.
+func (a *MoveAction) moveWithoutReplace(path, dest string) (target string, err error) {
+	if fi, statErr := lstat(dest); statErr == nil && fi.IsDir() {
+		return "", fmt.Errorf("%w: %s is a directory", errPermanentAction, dest)
+	}
+	target, err = moveFile(path, dest, filepath.Join(a.Dest, quarantine.StagingDir), now, maxMoveConflicts)
+	switch {
+	case err == nil:
+		return target, nil
+	case errors.Is(err, quarantine.ErrDestinationExists):
+		return "", fmt.Errorf("%w: %d names taken for %s", errPermanentAction, maxMoveConflicts+1, dest)
+	default:
+		return "", classifyDestinationError(err)
+	}
+}
+
+// writeLockReport writes the detection report next to where the file would
+// have been moved, never over an existing file.
+func writeLockReport(dest string, report *datamodel.Report) (err error) {
+	stamp := now().Format("020106_1504")
+	first := quarantine.FitName(filepath.Dir(dest)+string(filepath.Separator), filepath.Base(dest), "-lockreport"+stamp+".json")
+	name := first
+	var f *os.File
+	for attempt := 0; ; attempt++ {
+		f, err = create(name)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return classifyDestinationError(err)
+		}
+		if attempt >= maxMoveConflicts {
+			return fmt.Errorf("%w: %d names taken for %s", errPermanentAction, maxMoveConflicts+1, name)
+		}
+		name = quarantine.ConflictName(first, now(), attempt)
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			logger.Error("MoveAction cannot close file", slog.String(logErrorKey, e.Error()))
+		}
+	}()
+	w := json.NewEncoder(f)
+	w.SetIndent("", "  ")
+	return w.Encode(report)
+}
+
+// hasReservedName reports whether name starts with the session report prefix,
+// in any letter case: a reader cannot tell Report-Session-x.pdf from it.
+func hasReservedName(name string) bool {
+	return len(name) >= len(datamodel.SessionReportPrefix) && strings.EqualFold(name[:len(datamodel.SessionReportPrefix)], datamodel.SessionReportPrefix)
+}
+
+// classifyDestinationError marks the destination errors no retry can fix.
+func classifyDestinationError(err error) error {
+	if errors.Is(err, syscall.ENAMETOOLONG) || errors.Is(err, syscall.ENOTDIR) || errors.Is(err, syscall.EISDIR) || errors.Is(err, syscall.EXDEV) || errors.Is(err, quarantine.ErrStagingUnsafe) {
+		return fmt.Errorf("%w: %w", errPermanentAction, err)
+	}
+	return err
+}
+
+// createExclusive creates name and fails when it exists.
+func createExclusive(name string) (*os.File, error) {
+	return os.OpenFile(filepath.Clean(name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 }

@@ -27,6 +27,8 @@ type Report struct {
 	GMalwareURL             string            `json:"gmalware-url,omitempty"`
 	HasBeenRestored         bool              `json:"has-been-restored,omitempty"`
 	MovedTo                 string            `json:"moved-to,omitempty"`
+	MoveConflictOf          string            `json:"move-conflict-of,omitempty"`
+	Error                   string            `json:"error,omitempty"`
 	Malwares                []string          `json:"malwares,omitempty"`
 	FileSize                int64             `json:"size,omitempty"`
 	FileType                string            `json:"type,omitempty"`
@@ -38,6 +40,11 @@ type Report struct {
 	MaliciousExtractedFiles []ExtractedFile   `json:"malicious-extracted-files,omitempty"`
 	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
 }
+
+// SessionReportPrefix starts the base name of every session report. A
+// deposited file using it (in any letter case) is never moved to the
+// destination: it could pass for a report.
+const SessionReportPrefix = "report-session-"
 
 type Action string
 

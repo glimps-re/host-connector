@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/quarantine/mock"
 	"github.com/google/go-cmp/cmp"
 )
@@ -504,15 +505,15 @@ func TestMoveAction_Handle(t *testing.T) {
 					logger.Error("TestMoveAction cannot remove tmp report", "error", err)
 				}
 			}()
-			origRename := rename
-			rename = func(oldpath, newpath string) error {
+			origRename := moveFile
+			moveFile = func(oldpath, newpath, _ string, _ func() time.Time, _ int) (string, error) {
 				if oldpath != tt.samplePath {
-					return fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
+					return "", fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
 				}
 				if newpath != tt.wantedReport.MovedTo {
-					return fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MovedTo)
+					return "", fmt.Errorf("invalid newpath: %s != %s", newpath, tt.wantedReport.MovedTo)
 				}
-				return nil
+				return newpath, nil
 			}
 			mkdirAll = func(path string, perm os.FileMode) error {
 				return nil
@@ -521,9 +522,9 @@ func TestMoveAction_Handle(t *testing.T) {
 				return tempReport, nil
 			}
 			defer func() {
-				rename = origRename
+				moveFile = origRename
 				mkdirAll = os.MkdirAll
-				create = os.Create
+				create = createExclusive
 			}()
 			dst := "/path/to/move"
 			src := "/mnt/../media/test"
@@ -610,8 +611,10 @@ func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
 		return os.CreateTemp(t.TempDir(), "report*")
 	}
 	renamed := false
-	rename = func(string, string) error { renamed = true; return nil }
-	t.Cleanup(func() { mkdirAll, create, rename = os.MkdirAll, os.Create, os.Rename })
+	moveFile = func(string, string, string, func() time.Time, int) (string, error) { renamed = true; return "", nil }
+	t.Cleanup(func() {
+		mkdirAll, create, moveFile = os.MkdirAll, createExclusive, quarantine.MoveFileResolvingConflicts
+	})
 
 	a, err := NewMoveAction("/dest", "/src")
 	if err != nil {

@@ -643,7 +643,7 @@ func copyAndDelete(src, dst string) (err error) {
 		}
 	}()
 
-	dstFile, err := os.OpenFile(filepath.Clean(dst), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	dstFile, err := os.OpenFile(filepath.Clean(dst), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return
 	}
@@ -662,7 +662,8 @@ func copyAndDelete(src, dst string) (err error) {
 	if _, err = io.Copy(dstFile, srcFile); err != nil {
 		return
 	}
-	if err = os.Chmod(dst, srcInfo.Mode()); err != nil {
+	// Permission bits only: setuid and setgid must not follow the copy.
+	if err = os.Chmod(dst, srcInfo.Mode()&0o777); err != nil {
 		return
 	}
 	success = true

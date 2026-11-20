@@ -445,7 +445,7 @@ func displayable(r rune) rune {
 }
 
 // threatNames is what a row shows of the threats of a file: the first
-// maxThreatNames, as cellText, then "… (+N)" for the others. A depositor can
+// maxThreatNames, as cellText, then "… (+N autres)" for the others. A depositor can
 // attach many names to a file; they weigh on the rendering as rows do.
 func threatNames(names []string) []string {
 	shown := make([]string, 0, min(len(names), maxThreatNames+1))
@@ -453,7 +453,7 @@ func threatNames(names []string) []string {
 		shown = append(shown, cellText(name))
 	}
 	if len(names) > maxThreatNames {
-		shown = append(shown, fmt.Sprintf("… (+%d)", len(names)-maxThreatNames))
+		shown = append(shown, fmt.Sprintf("… (+%d autres)", len(names)-maxThreatNames))
 	}
 	return shown
 }

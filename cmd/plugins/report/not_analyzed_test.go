@@ -513,8 +513,8 @@ func TestThreatNames(t *testing.T) {
 	}{
 		{"none", nil, []string{}},
 		{"at the bound", names(maxThreatNames), names(maxThreatNames)},
-		{"one over", names(maxThreatNames + 1), append(names(maxThreatNames), "… (+1)")},
-		{"many", names(64), append(names(maxThreatNames), fmt.Sprintf("… (+%d)", 64-maxThreatNames))},
+		{"one over", names(maxThreatNames + 1), append(names(maxThreatNames), "… (+1 autres)")},
+		{"many", names(64), append(names(maxThreatNames), fmt.Sprintf("… (+%d autres)", 64-maxThreatNames))},
 		{"long names are cut", []string{strings.Repeat("W", 1024)}, []string{cellText(strings.Repeat("W", 1024))}},
 	}
 	for _, tt := range tests {
@@ -588,12 +588,23 @@ func checkStrings(t *testing.T, v reflect.Value, path string) {
 }
 
 func TestReportData_everyTextOfADepositorIsCut(t *testing.T) {
+	longThreats := func() []string {
+		names := make([]string, 64)
+		for i := range names {
+			names[i] = fmt.Sprintf("%02d", i) + strings.Repeat("W", datamodel.MaxListedNameLen)
+		}
+		return names
+	}
+	var nested datamodel.ExtractedFile
+	fillStrings(reflect.ValueOf(&nested).Elem())
+	nested.Malicious, nested.ExtractedFiles, nested.Malwares = true, nil, longThreats()
 	var member datamodel.ExtractedFile
 	fillStrings(reflect.ValueOf(&member).Elem())
-	member.Malicious, member.ExtractedFiles = true, nil
+	member.Malicious, member.ExtractedFiles, member.Malwares = true, []datamodel.ExtractedFile{nested}, longThreats()
 	report := datamodel.Report{Malicious: true, NotAnalyzedExtractedCount: 1}
 	fillStrings(reflect.ValueOf(&report).Elem())
 	report.Malicious = true
+	report.Malwares = longThreats()
 	report.NotAnalyzedReason = datamodel.NotAnalyzedTooBig
 	report.MaliciousExtractedFiles = []datamodel.ExtractedFile{member}
 	report.ErrorExtractedFiles = map[string]string{strings.Repeat("W", 1024): strings.Repeat("W", 1024)}
@@ -606,4 +617,31 @@ func TestReportData_everyTextOfADepositorIsCut(t *testing.T) {
 		t.Fatalf("a section is empty: %+v", d)
 	}
 	checkStrings(t, reflect.ValueOf(d), "ReportData")
+	var rows [][]string
+	for _, f := range d.MitigatedFiles {
+		rows = append(rows, f.Malwares)
+	}
+	var walk func(files []ExtractedFileData)
+	walk = func(files []ExtractedFileData) {
+		for _, f := range files {
+			rows = append(rows, f.Malwares)
+			walk(f.ExtractedFiles)
+		}
+	}
+	for _, a := range d.MitigatedArchives {
+		walk(a.ExtractedFiles)
+	}
+	if len(rows) < 3 {
+		t.Fatalf("%d rows with threats, want a blocked file, a member and a nested member", len(rows))
+	}
+	for _, names := range rows {
+		if len(names) != maxThreatNames+1 {
+			t.Errorf("a row shows %d threat entries, want %d (the names and the count of the others)", len(names), maxThreatNames+1)
+		}
+		for _, name := range names {
+			if len(name) > maxCellBytes {
+				t.Errorf("a threat name of %d bytes is shown whole", len(name))
+			}
+		}
+	}
 }

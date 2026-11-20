@@ -159,11 +159,18 @@ func Test_zipLocker_RoundTrip(t *testing.T) {
 		t.Errorf("UnlockFile() Size = %d, want %d", locked.Size, len(content))
 	}
 
-	// Wrong password must be rejected before returning any content, via
-	// the zipcrypto sentinel propagated unwrapped.
+	// A wrong password is always rejected, and never yields the content. The
+	// check byte catches it 255 times out of 256 (ErrWrongPassword); the other
+	// time the CRC and size check does (ErrChecksum): which one depends on the
+	// random header of the container, so both are accepted.
 	wrongLocker := zipLocker{Password: "not-the-password"}
-	if _, err := wrongLocker.UnlockFile(bytes.NewReader(data), int64(len(data)), io.Discard); !errors.Is(err, zipcrypto.ErrWrongPassword) {
-		t.Errorf("UnlockFile() with wrong password error = %v, want zipcrypto.ErrWrongPassword", err)
+	var wrongOut bytes.Buffer
+	_, err = wrongLocker.UnlockFile(bytes.NewReader(data), int64(len(data)), &wrongOut)
+	if !errors.Is(err, zipcrypto.ErrWrongPassword) && !errors.Is(err, zipcrypto.ErrChecksum) {
+		t.Errorf("UnlockFile() with wrong password error = %v, want ErrWrongPassword or ErrChecksum", err)
+	}
+	if wrongOut.String() == content {
+		t.Error("UnlockFile() with a wrong password recovered the real content")
 	}
 	// GetHeader never needs the password: the index is cleartext.
 	if _, err := wrongLocker.GetHeader(bytes.NewReader(data), int64(len(data))); err != nil {

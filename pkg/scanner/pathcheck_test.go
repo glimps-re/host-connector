@@ -58,10 +58,10 @@ func newPathCheckFixture(t *testing.T, follow bool) (c *Connector, in, file stri
 	var mu sync.Mutex
 	paths := []string{}
 	handled = &paths
-	c.action = &MockAction{HandleMock: func(_ context.Context, p string, _ datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, p Source, _ datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
-		paths = append(paths, p)
+		paths = append(paths, p.Path)
 		return nil
 	}}
 	return
@@ -127,7 +127,7 @@ func TestProcessFile_parentSwappedBeforeQueueIsDropped(t *testing.T) {
 func TestHandleRestoredFile_refusesPathThroughLink(t *testing.T) {
 	c, in, file, handled := newPathCheckFixture(t, false)
 	swapDirForLink(t, filepath.Join(in, "alice"), t.TempDir())
-	if err := c.handleRestoredFile(file, "sha", 10, FileIdentity{}, nil); !errors.Is(err, pathutil.ErrSymlinkInPath) {
+	if err := c.handleRestoredFile(file, "sha", 10, FileIdentity{}, nil, nil); !errors.Is(err, pathutil.ErrSymlinkInPath) {
 		t.Errorf("handleRestoredFile() error = %v, want pathutil.ErrSymlinkInPath", err)
 	}
 	if len(*handled) != 0 {

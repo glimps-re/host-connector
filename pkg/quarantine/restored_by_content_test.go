@@ -33,11 +33,11 @@ func TestIsRestored_aRestoredContentIsSafeEverywhere(t *testing.T) {
 			sha := sha256Hex([]byte(content))
 			a := depositSample(t, t.TempDir(), "a.bin", content)
 			b := depositSample(t, t.TempDir(), "b.bin", content)
-			_, idA, err := q.Quarantine(t.Context(), a, sha, []string{"m"})
+			_, idA, err := quarantinePath(t.Context(), t, q, a, sha, []string{"m"})
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, idB, err := q.Quarantine(t.Context(), b, sha, []string{"m"})
+			_, idB, err := quarantinePath(t.Context(), t, q, b, sha, []string{"m"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestQuarantine_anAlreadyRestoredEntryIsRefusedWithoutWritingAnything(t *tes
 	content := "content restored once"
 	sha := sha256Hex([]byte(content))
 	src := depositSample(t, t.TempDir(), "sample.bin", content)
-	_, id, err := q.Quarantine(t.Context(), src, sha, []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, src, sha, []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestQuarantine_anAlreadyRestoredEntryIsRefusedWithoutWritingAnything(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err = q.Quarantine(t.Context(), src, sha, []string{"m"})
+	_, _, err = quarantinePath(t.Context(), t, q, src, sha, []string{"m"})
 	if !errors.Is(err, ErrRestored) {
 		t.Fatalf("Quarantine() error = %v, want ErrRestored", err)
 	}
@@ -266,7 +266,7 @@ func TestQuarantine_aRegistryErrorWritesNothing(t *testing.T) {
 				content = ""
 			}
 			src := depositSample(t, t.TempDir(), "f.bin", content)
-			if _, _, err := q.Quarantine(t.Context(), src, sha256Hex([]byte(content)), []string{"m"}); !errors.Is(err, boom) {
+			if _, _, err := quarantinePath(t.Context(), t, q, src, sha256Hex([]byte(content)), []string{"m"}); !errors.Is(err, boom) {
 				t.Errorf("Quarantine() error = %v, want the registry error", err)
 			}
 			if entries, e := os.ReadDir(dir); e != nil || len(entries) != 0 {
@@ -283,7 +283,7 @@ func TestQuarantine_aContentRestoredElsewhereIsRefused(t *testing.T) {
 	content := "content restored from another place"
 	sha := sha256Hex([]byte(content))
 	first := depositSample(t, t.TempDir(), "a.bin", content)
-	_, id, err := q.Quarantine(t.Context(), first, sha, []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, first, sha, []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestQuarantine_aContentRestoredElsewhereIsRefused(t *testing.T) {
 		t.Fatal(err)
 	}
 	other := depositSample(t, t.TempDir(), "b.bin", content)
-	if _, _, err = q.Quarantine(t.Context(), other, sha, []string{"m"}); !errors.Is(err, ErrRestored) {
+	if _, _, err = quarantinePath(t.Context(), t, q, other, sha, []string{"m"}); !errors.Is(err, ErrRestored) {
 		t.Fatalf("Quarantine() error = %v, want ErrRestored", err)
 	}
 	if matches, e := filepath.Glob(filepath.Join(dir, "*.lock")); e != nil || len(matches) != 0 {
@@ -311,7 +311,7 @@ func TestQuarantine_concurrentWithRestoreOfTheSameEntry(t *testing.T) {
 		content := "content raced"
 		sha := sha256Hex([]byte(content))
 		src := depositSample(t, t.TempDir(), "f.bin", content)
-		_, id, err := q.Quarantine(t.Context(), src, sha, []string{"m"})
+		_, id, err := quarantinePath(t.Context(), t, q, src, sha, []string{"m"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -319,7 +319,7 @@ func TestQuarantine_concurrentWithRestoreOfTheSameEntry(t *testing.T) {
 		var restoreErr error
 		wg.Go(func() { restoreErr = q.Restore(t.Context(), id) })
 		wg.Go(func() {
-			if _, _, e := q.Quarantine(t.Context(), src, sha, []string{"m"}); e != nil && !errors.Is(e, ErrRestored) && !errors.Is(e, os.ErrNotExist) {
+			if _, _, e := quarantinePath(t.Context(), t, q, src, sha, []string{"m"}); e != nil && !errors.Is(e, ErrRestored) && !errors.Is(e, os.ErrNotExist) {
 				t.Errorf("Quarantine() error = %v", e)
 			}
 		})
@@ -346,7 +346,7 @@ func TestQuarantine_waitsForARestorationInProgress(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		if _, _, err := q.Quarantine(t.Context(), src, sha, []string{"m"}); err != nil {
+		if _, _, err := quarantinePath(t.Context(), t, q, src, sha, []string{"m"}); err != nil {
 			t.Errorf("Quarantine() error = %v", err)
 		}
 	}()
@@ -373,11 +373,11 @@ func TestQuarantine_anEmptyFileRestoredAtThisLocationIsRefusedOthersAreNot(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := q.Quarantine(t.Context(), restored, emptySHA256, []string{"m"}); !errors.Is(err, ErrRestored) {
+	if _, _, err := quarantinePath(t.Context(), t, q, restored, emptySHA256, []string{"m"}); !errors.Is(err, ErrRestored) {
 		t.Errorf("Quarantine(restored empty file) error = %v, want ErrRestored", err)
 	}
 	other := depositSample(t, t.TempDir(), "other-empty.txt", "")
-	if _, _, err := q.Quarantine(t.Context(), other, emptySHA256, []string{"m"}); err != nil {
+	if _, _, err := quarantinePath(t.Context(), t, q, other, emptySHA256, []string{"m"}); err != nil {
 		t.Errorf("Quarantine(another empty file) error = %v, want it quarantined", err)
 	}
 }

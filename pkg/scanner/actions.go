@@ -35,7 +35,7 @@ type Actions struct {
 // for test purposes
 var (
 	now      = time.Now
-	moveFile = quarantine.MoveFileResolvingConflicts
+	moveFile = quarantine.MoveResolvingConflicts
 	mkdirAll = os.MkdirAll
 	create   = createExclusive
 	lstat    = os.Lstat
@@ -47,13 +47,18 @@ const maxMoveConflicts = 5
 // errPermanentAction marks an action failure that retrying cannot fix.
 var errPermanentAction = errors.New("permanent action failure")
 
+// Action handles the result of the analysis of one file. src is the verified
+// file the action applies to: an action that reads or deletes it does so through
+// src.Open and src.Remove, never by its path; one that only names it uses
+// src.Path.
 type Action interface {
-	Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) error
+	Handle(ctx context.Context, src Source, result datamodel.Result, analysisReport *datamodel.Report) error
 }
 
 type ReportAction struct{}
 
-func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+func (a *ReportAction) Handle(ctx context.Context, src Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+	path := src.Path
 	analysisReport.Filename = path
 	analysisReport.Malicious = result.Malware
 	analysisReport.SHA256 = result.SHA256
@@ -123,7 +128,8 @@ type LogAction struct {
 	logger *slog.Logger
 }
 
-func (a *LogAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+func (a *LogAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	path := src.Path
 	if !result.Malware {
 		a.logger.Debug("info scanned", slog.String("file", path), slog.String("sha256", result.SHA256), slog.Bool("malware", false))
 		return
@@ -174,7 +180,7 @@ func NewMultiAction(actions ...Action) *MultiAction {
 // ones that follow, so that the mitigation already done is still reported to
 // the console, except the ones that destroy the file (a failed quarantine must
 // not be followed by the removal of the file). All the errors are returned.
-func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) error {
+func (a *MultiAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) error {
 	var errs []error
 	for _, h := range a.Actions {
 		if len(errs) > 0 {
@@ -185,11 +191,11 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 				continue
 			}
 		}
-		if err := h.Handle(ctx, path, result, report); err != nil {
+		if err := h.Handle(ctx, src, result, report); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	a.notifyMitigation(ctx, path, result, report)
+	a.notifyMitigation(ctx, src.Path, result, report)
 	if len(errs) == 0 {
 		return nil
 	}
@@ -285,7 +291,7 @@ func (a *MoveAction) SkipAfterRestored() bool { return true }
 // failed: a failed quarantine must not end with the loss of the file.
 func (a *RemoveFileAction) SkipAfterError() bool { return true }
 
-func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+func (a *RemoveFileAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("remove action: %w", err)
@@ -294,9 +300,12 @@ func (a *RemoveFileAction) Handle(ctx context.Context, path string, result datam
 	if !result.Malware {
 		return
 	}
-	err = os.Remove(path)
+	err = src.Remove()
 	if err != nil {
-		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS) {
+		if errors.Is(err, errSourceLink) && report.Error == "" {
+			report.Error = "malware behind a symbolic link: the link and its target are left in place"
+		}
+		if quarantine.IsRemovalRefused(err) {
 			err = fmt.Errorf("%w: %w", errPermanentAction, err)
 		}
 		return
@@ -319,7 +328,8 @@ func NewQuarantineAction(quarantiner quarantine.Quarantiner) *QuarantineAction {
 	return &QuarantineAction{quarantiner: quarantiner}
 }
 
-func (a *QuarantineAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+func (a *QuarantineAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	path := src.Path
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("quarantine action: %w", err)
@@ -332,7 +342,17 @@ func (a *QuarantineAction) Handle(ctx context.Context, path string, result datam
 	if !result.Malware {
 		return
 	}
-	quarantineLocation, quarantineID, err := a.quarantiner.Quarantine(ctx, path, report.SHA256, result.Malwares)
+	// What is quarantined is checked against the hash the pipeline computed, not
+	// the one of the result, which a plugin can replace.
+	if err = src.actionable(); err != nil && !errors.Is(err, errSourceLink) {
+		return
+	}
+	in, release, err := src.Open()
+	if err != nil {
+		return
+	}
+	defer release()
+	quarantineLocation, quarantineID, err := a.quarantiner.Quarantine(ctx, path, in, src.SHA256, result.Malwares)
 	if err != nil {
 		return
 	}
@@ -348,7 +368,8 @@ type PrintAction struct {
 	mu      sync.Mutex // protects Out from concurrent writes by worker goroutines
 }
 
-func (a *PrintAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	path := src.Path
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("print action: %w", err)
@@ -411,7 +432,8 @@ func NewMoveAction(dest string, src string) (a *MoveAction, err error) {
 	return
 }
 
-func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
+func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	path := src.Path
 	defer func() {
 		if err != nil {
 			err = fmt.Errorf("move action: %w", err)
@@ -455,6 +477,17 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 		return
 	}
 
+	// A source the pipeline did not verify, or reached through a link, is refused
+	// before anything is created at the destination; the identity is checked
+	// again right before the move.
+	if !result.Malware && result.AnalysisError == "" {
+		if err = src.actionable(); err != nil {
+			if errors.Is(err, errSourceLink) {
+				report.Error = "the file is a symbolic link: it was analyzed but is not moved"
+			}
+			return
+		}
+	}
 	dest := filepath.Join(a.Dest, relPath)
 	if err = mkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		err = classifyDestinationError(err)
@@ -471,7 +504,13 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 		return
 	}
 
-	target, err := a.moveWithoutReplace(path, dest)
+	// Fails early, before the destination is touched; on Linux the move itself
+	// publishes the verified descriptor, elsewhere it goes by name and the window
+	// left is the documented one.
+	if err = src.ready(); err != nil {
+		return
+	}
+	target, err := a.moveWithoutReplace(src, dest)
 	if err != nil {
 		return
 	}
@@ -488,11 +527,11 @@ func (a *MoveAction) Handle(ctx context.Context, path string, result datamodel.R
 
 // moveWithoutReplace moves path to dest, or when dest exists to a conflict name
 // next to it: a file already in the destination is never overwritten.
-func (a *MoveAction) moveWithoutReplace(path, dest string) (target string, err error) {
+func (a *MoveAction) moveWithoutReplace(src Source, dest string) (target string, err error) {
 	if fi, statErr := lstat(dest); statErr == nil && fi.IsDir() {
 		return "", fmt.Errorf("%w: %s is a directory", errPermanentAction, dest)
 	}
-	target, err = moveFile(path, dest, filepath.Join(a.Dest, quarantine.StagingDir), now, maxMoveConflicts)
+	target, err = moveFile(src.moveSource(), dest, filepath.Join(a.Dest, quarantine.StagingDir), now, maxMoveConflicts)
 	switch {
 	case err == nil:
 		return target, nil

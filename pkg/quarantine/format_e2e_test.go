@@ -54,7 +54,7 @@ func TestQuarantineRestore_WrittenFormat(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			q, dir := newE2EHandler(t, tt.format)
 			src := writeSample(t, tt.file, tt.content)
-			location, id, err := q.Quarantine(t.Context(), src, sha256Hex(tt.content), []string{"m"})
+			location, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(tt.content), []string{"m"})
 			if err != nil {
 				t.Fatalf("Quarantine() error = %v", err)
 			}
@@ -102,7 +102,7 @@ func TestQuarantineRestore_WrittenFormat(t *testing.T) {
 func TestReconfigure_FormatChangeKeepsOldLocksRestorable(t *testing.T) {
 	q, dir := newE2EHandler(t, FormatTar)
 	oldSrc := writeSample(t, "old.bin", []byte("old tar content"))
-	_, oldID, err := q.Quarantine(t.Context(), oldSrc, sha256Hex([]byte("old tar content")), []string{"m"})
+	_, oldID, err := quarantinePath(t.Context(), t, q, oldSrc, sha256Hex([]byte("old tar content")), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestReconfigure_FormatChangeKeepsOldLocksRestorable(t *testing.T) {
 		t.Fatalf("Reconfigure() error = %v", err)
 	}
 	newSrc := writeSample(t, "new.bin", []byte("new zip content"))
-	newLoc, newID, err := q.Quarantine(t.Context(), newSrc, sha256Hex([]byte("new zip content")), []string{"m"})
+	newLoc, newID, err := quarantinePath(t.Context(), t, q, newSrc, sha256Hex([]byte("new zip content")), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +137,7 @@ func TestReconfigure_UnknownFormatKeepsState(t *testing.T) {
 		t.Fatal("Reconfigure() error = nil, want ErrUnknownFormat")
 	}
 	src := writeSample(t, "s.bin", []byte("still tar"))
-	loc, _, err := q.Quarantine(t.Context(), src, sha256Hex([]byte("still tar")), nil)
+	loc, _, err := quarantinePath(t.Context(), t, q, src, sha256Hex([]byte("still tar")), nil)
 	if err != nil {
 		t.Fatalf("Quarantine() after refused Reconfigure error = %v", err)
 	}
@@ -182,7 +182,7 @@ func TestQuarantine_wrongSHA256Refused(t *testing.T) {
 			q, dir := newE2EHandler(t, format)
 			src := writeSample(t, "s.bin", []byte("actual content"))
 			wrong := sha256Hex([]byte("another content"))
-			_, id, err := q.Quarantine(t.Context(), src, wrong, []string{"m"})
+			_, id, err := quarantinePath(t.Context(), t, q, src, wrong, []string{"m"})
 			if !errors.Is(err, ErrQuarantineSHA256Mismatch) {
 				t.Fatalf("Quarantine() error = %v, want ErrQuarantineSHA256Mismatch", err)
 			}

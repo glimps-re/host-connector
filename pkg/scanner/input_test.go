@@ -293,13 +293,32 @@ func TestStart_refusesWithoutUsableDescriptorLinks(t *testing.T) {
 	}
 }
 
-func TestPipeline_descriptorsAreClosedBeforeTheAction(t *testing.T) {
+// The verified descriptor stays open during the actions where they use it
+// (Linux), and is closed before them elsewhere (Windows cannot move an open
+// file). Either way none is left once the file is done, the descriptors handed
+// out by Source.Open included.
+func TestPipeline_descriptorLifetimeAroundTheAction(t *testing.T) {
 	noOpenInputs(t)
+	t.Cleanup(func() {
+		if n := openSourceFiles.Load(); n != 0 {
+			t.Errorf("%d descriptors handed out by Source.Open were not released", n)
+		}
+	})
 	c, _, file, _ := newPathCheckFixture(t, false)
 	var openAtAction atomic.Int64
 	openAtAction.Store(-1)
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+	var sawHandle atomic.Bool
+	c.action = &MockAction{HandleMock: func(_ context.Context, src Source, _ datamodel.Result, _ *datamodel.Report) error {
 		openAtAction.Store(openInputs.Load())
+		sawHandle.Store(src.handle != nil && src.Root != "")
+		f, release, err := src.Open()
+		if err != nil {
+			return err
+		}
+		defer release()
+		if _, err := io.ReadAll(f); err != nil {
+			return err
+		}
 		return nil
 	}}
 	if err := c.Start(); err != nil {
@@ -309,8 +328,15 @@ func TestPipeline_descriptorsAreClosedBeforeTheAction(t *testing.T) {
 		t.Fatal(err)
 	}
 	c.Close(t.Context())
-	if got := openAtAction.Load(); got != 0 {
-		t.Errorf("%d descriptors open when the action ran, want 0 (Windows cannot move an open file)", got)
+	want := int64(0)
+	if holdsHandle {
+		want = 1
+	}
+	if got := openAtAction.Load(); got != want {
+		t.Errorf("%d descriptors open when the action ran, want %d", got, want)
+	}
+	if sawHandle.Load() != holdsHandle {
+		t.Errorf("the source had a handle and a root = %t, want %t", sawHandle.Load(), holdsHandle)
 	}
 }
 
@@ -354,13 +380,13 @@ func TestHandleRestoredFile_changedFileIsNotActedUpon(t *testing.T) {
 	c, _, file, handled := newPathCheckFixture(t, false)
 	stale := idOf(t, file)
 	stale.Size++
-	if err := c.handleRestoredFile(file, "sha", 12, stale, nil); !errors.Is(err, errFileReplaced) {
+	if err := c.handleRestoredFile(file, "sha", 12, stale, nil, nil); !errors.Is(err, errFileReplaced) {
 		t.Errorf("handleRestoredFile() error = %v, want errFileReplaced", err)
 	}
 	if len(*handled) != 0 {
 		t.Errorf("an action ran on %v", *handled)
 	}
-	if err := c.handleRestoredFile(file, "sha", 12, idOf(t, file), nil); err != nil || len(*handled) != 1 {
+	if err := c.handleRestoredFile(file, "sha", 12, idOf(t, file), nil, nil); err != nil || len(*handled) != 1 {
 		t.Errorf("handleRestoredFile() = %v, handled %v; want the action on an unchanged file", err, *handled)
 	}
 }
@@ -369,7 +395,7 @@ func TestFinishArchiveAnalysis_changedArchiveIsNotActedUpon(t *testing.T) {
 	var actionCalled bool
 	var scanned datamodel.Result
 	c := &Connector{
-		action: &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+		action: &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 			actionCalled = true
 			return nil
 		}},

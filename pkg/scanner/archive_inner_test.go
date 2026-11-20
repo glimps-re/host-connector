@@ -192,7 +192,7 @@ func TestFinishArchiveAnalysis_memberErrorBlocksAction(t *testing.T) {
 	var actionCalled bool
 	var scanned datamodel.Result
 	c := &Connector{
-		action: &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+		action: &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 			actionCalled = true
 			return nil
 		}},
@@ -231,7 +231,7 @@ func TestFinishArchiveAnalysis_changedArchiveNotifiesObserversWithError(t *testi
 	var actionCalled bool
 	var scanned datamodel.Result
 	c := &Connector{
-		action: &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+		action: &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 			actionCalled = true
 			return nil
 		}},
@@ -272,7 +272,7 @@ func TestRecursiveExtract_lostMemberKeepsArchiveInError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
 		handled = append(handled, r)
@@ -348,7 +348,7 @@ func TestRecursiveExtract_subArchiveWithoutTempDirKeepsArchiveInError(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		handled = append(handled, r)
 		return nil
 	}}
@@ -408,7 +408,7 @@ func runArchiveWithMembers(t *testing.T, register func(c *Connector)) []datamode
 	}
 	var mu sync.Mutex
 	var handled []datamodel.Result
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
 		handled = append(handled, r)
@@ -482,7 +482,7 @@ func TestRecursiveExtract_emptyMemberIsStillIgnored(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		handled = append(handled, r)
 		return nil
 	}}
@@ -506,7 +506,7 @@ func TestRecursiveExtract_emptyMemberIsStillIgnored(t *testing.T) {
 func TestFinishArchiveAnalysis_subArchiveErrorReachesTopLevelArchive(t *testing.T) {
 	var handled []datamodel.Result
 	c := &Connector{
-		action: &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+		action: &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 			handled = append(handled, r)
 			return nil
 		}},
@@ -597,7 +597,7 @@ func TestRecursiveExtract_lastMemberLostWhileOthersAreInFlight(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
 		handled = append(handled, r)
@@ -688,7 +688,7 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+			c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }}
 			t.Cleanup(func() { c.Close(t.Context()) })
 			submitter := archiveCleanSubmitter()
 			var submitted atomic.Int32
@@ -779,7 +779,7 @@ func TestRecursiveExtract_unavailableExtractorIsNotAnArchiveVerdict(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }}
 	submitter := archiveCleanSubmitter()
 	var submitted atomic.Int32
 	submitter.WaitForFileMock = func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
@@ -859,7 +859,7 @@ func TestRecursiveExtract_alertIsResolvedWhenTheExtractorRunsAgainWhateverTheArc
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }}
 	c.submitter = archiveCleanSubmitter()
 	t.Cleanup(func() { c.Close(t.Context()) })
 	run := func() {
@@ -935,7 +935,7 @@ func TestRecursiveExtract_unavailableExtractorOnANestedArchiveLeavesTheTopArchiv
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 		handled.Add(1)
 		return nil
 	}}
@@ -995,7 +995,7 @@ func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 		handled.Add(1)
 		return nil
 	}}
@@ -1047,7 +1047,7 @@ func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testi
 
 func TestAnalyzeArchiveFile_nestedArchiveIsPresentedByItsLogicalPath(t *testing.T) {
 	c := &Connector{
-		action:          &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }},
+		action:          &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }},
 		archiveStatus:   newArchiveStatusHandler(),
 		ongoingAnalysis: sync.Map{},
 	}
@@ -1111,7 +1111,7 @@ func TestRecursiveExtract_budgetShrinksFromOneLevelToTheNext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }}
 	c.submitter = archiveCleanSubmitter()
 	if err := c.Start(); err != nil {
 		t.Fatal(err)

@@ -42,7 +42,7 @@ func TestRestore_SparseFileOver5GiB(t *testing.T) {
 			if err := in.Close(); err != nil {
 				t.Fatal(err)
 			}
-			_, id, err := q.Quarantine(t.Context(), src, hex.EncodeToString(h.Sum(nil)), []string{"m"})
+			_, id, err := quarantinePath(t.Context(), t, q, src, hex.EncodeToString(h.Sum(nil)), []string{"m"})
 			if err != nil {
 				t.Fatalf("Quarantine() error = %v", err)
 			}

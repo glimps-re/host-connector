@@ -59,7 +59,7 @@ func TestT11_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *testing.
 		}},
 		{name: "submission failure", submitter: func(**swapFixture) *gdetectMock.MockGDetectSubmitter { return failing() }, wantErrors: true},
 		{name: "action failure", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) }, setup: func(_ *testing.T, f *swapFixture) {
-			f.c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+			f.c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 				return errors.New("move failed")
 			}}
 		}},

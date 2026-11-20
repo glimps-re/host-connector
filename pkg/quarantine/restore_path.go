@@ -6,14 +6,21 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/glimps-re/host-connector/internal/pathutil"
+	"github.com/glimps-re/host-connector/internal/safepath"
 )
+
+// restoreDirMode is the mode of the folders a restoration creates.
+const restoreDirMode os.FileMode = 0o750
 
 // beforeRestoreMkdir runs between the symbolic link check of the destination
 // directory and its creation; tests use it to swap a parent for a link.
 var beforeRestoreMkdir = func() {}
+
+// beforeOpenOutside runs between the check of a destination outside the
+// watched paths and its opening; tests use it to swap a folder for a link.
+var beforeOpenOutside = func() {}
 
 // trustedLink decides which links may appear on a destination outside the
 // monitored paths; tests replace it.
@@ -50,117 +57,48 @@ func openRestoreDir(watched []string, restoreDir string) (dir *os.Root, closeAll
 	if root == "" {
 		return openOutsideWatched(restoreDir)
 	}
-	if err = checkRestoreTree(pathutil.CheckExistingNoSymlink(root, restoreDir)); err != nil {
-		return
-	}
-	watchedRootDir, err := os.OpenRoot(root)
-	if err != nil {
-		return
-	}
-	closeRoot := func() { closeQuietly(watchedRootDir, "watched path") }
 	rel, err := filepath.Rel(root, restoreDir)
 	if err != nil {
-		closeRoot()
-		return
-	}
-	beforeRestoreMkdir()
-	if err = createLevels(watchedRootDir, rel); err != nil {
-		closeRoot()
-		return
-	}
-	if err = checkRestoreTree(pathutil.CheckNoSymlink(root, restoreDir)); err != nil {
-		closeRoot()
-		return
-	}
-	pre, err := watchedRootDir.Lstat(rel)
-	if err != nil {
-		closeRoot()
-		return
-	}
-	dir, err = watchedRootDir.OpenRoot(rel)
-	if err != nil {
-		closeRoot()
-		return
-	}
-	closeAll = func() {
-		closeQuietly(dir, "destination directory")
-		closeRoot()
-	}
-	if err = sameDirectory(pre, dir); err != nil {
-		closeAll()
 		return nil, nil, err
 	}
-	return
+	beforeRestoreMkdir()
+	if dir, err = safepath.OpenDir(root, rel, true, restoreDirMode); err != nil {
+		return nil, nil, restoreOpenError(err)
+	}
+	return dir, func() { closeQuietly(dir, "destination directory") }, nil
 }
 
-// createLevels creates the missing directories of rel under root one level at a
-// time, refusing a link or a file at any level: os.Root.MkdirAll would follow a
-// relative link that stays inside the root.
-func createLevels(root *os.Root, rel string) error {
-	if rel == "." {
-		return nil
+// restoreOpenError makes a refusal to follow a link, or a folder that is not a
+// plain directory, the error of an unsafe destination.
+func restoreOpenError(err error) error {
+	if errors.Is(err, safepath.ErrSymlink) || errors.Is(err, safepath.ErrBadPath) || errors.Is(err, safepath.ErrNotDir) {
+		return fmt.Errorf("%w: %w", ErrRestoreDestinationUnsafe, err)
 	}
-	cum := ""
-	for part := range strings.SplitSeq(rel, string(filepath.Separator)) {
-		cum = filepath.Join(cum, part)
-		fi, err := root.Lstat(cum)
-		switch {
-		case err == nil:
-			if pathutil.IsLinkLike(fi.Mode()) || !fi.IsDir() {
-				return fmt.Errorf("%w: %q is not a plain directory", ErrRestoreDestinationUnsafe, cum)
-			}
-		case errors.Is(err, os.ErrNotExist):
-			if err = root.Mkdir(cum, 0o750); err != nil {
-				return fmt.Errorf("%w: %w", ErrRestoreDestinationUnsafe, err)
-			}
-		default:
-			return err
-		}
-	}
-	return nil
+	return err
 }
 
 func openOutsideWatched(restoreDir string) (dir *os.Root, closeAll func(), err error) {
 	logger.Warn("restore destination is outside the watched paths: its whole path is checked, nothing is created", slog.String("dir", restoreDir))
-	if err = pathutil.CheckTrustedPath(restoreDir, trustedLink); err != nil {
+	// The path is resolved once, by the walk that validates it (the trusted
+	// system links are followed there), and that very path is opened without
+	// following any link: a component turned into a link afterwards is refused.
+	resolved, err := pathutil.ResolveTrustedPath(restoreDir, trustedLink)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			err = fmt.Errorf("destination directory does not exist and is outside the watched paths, it is not created: %w", err)
 		}
 		return nil, nil, fmt.Errorf("%w: %w", ErrRestoreDestinationUnsafe, err)
 	}
-	pre, err := os.Stat(restoreDir)
+	fsRoot := filepath.VolumeName(resolved) + string(filepath.Separator)
+	rel, err := filepath.Rel(fsRoot, resolved)
 	if err != nil {
-		return
-	}
-	dir, err = os.OpenRoot(restoreDir)
-	if err != nil {
-		return
-	}
-	if err = sameDirectory(pre, dir); err != nil {
-		closeQuietly(dir, "destination directory")
 		return nil, nil, err
 	}
+	beforeOpenOutside()
+	if dir, err = safepath.OpenDir(fsRoot, rel, false, restoreDirMode); err != nil {
+		return nil, nil, restoreOpenError(err)
+	}
 	return dir, func() { closeQuietly(dir, "destination directory") }, nil
-}
-
-func checkRestoreTree(err error) error {
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrRestoreDestinationUnsafe, err)
-	}
-	return nil
-}
-
-// sameDirectory refuses a destination that is not the directory seen before it
-// was opened.
-func sameDirectory(pre os.FileInfo, opened *os.Root) error {
-	info, err := opened.Lstat(".")
-	if err != nil {
-		return err
-	}
-	if !os.SameFile(pre, info) {
-		return ErrRestoreDestinationUnsafe
-	}
-	return nil
 }
 
 func closeQuietly(r *os.Root, what string) {

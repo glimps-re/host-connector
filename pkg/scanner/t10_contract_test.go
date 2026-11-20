@@ -92,7 +92,7 @@ func newSwapFixture(t *testing.T, submitter *gdetectMock.MockGDetectSubmitter) *
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.acted = append(f.acted, r)
@@ -464,10 +464,10 @@ func TestT10_aDirectoryLinkIsNeverWalkedEvenWithFollowSymlinks(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var handled []string
-	c.action = &MockAction{HandleMock: func(_ context.Context, p string, _ datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, p Source, _ datamodel.Result, _ *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
-		handled = append(handled, filepath.Base(p))
+		handled = append(handled, filepath.Base(p.Path))
 		return nil
 	}}
 	if err = c.Start(); err != nil {

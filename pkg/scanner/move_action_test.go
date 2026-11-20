@@ -56,7 +56,7 @@ func (f moveFixture) deposit(t *testing.T, rel, content string) string {
 func (f moveFixture) move(t *testing.T, path string, malware bool) (datamodel.Report, error) {
 	t.Helper()
 	var report datamodel.Report
-	err := f.action.Handle(t.Context(), path, datamodel.Result{Malware: malware}, &report)
+	err := f.action.Handle(t.Context(), testSource(t, path), datamodel.Result{Malware: malware}, &report)
 	return report, err
 }
 
@@ -123,7 +123,7 @@ func TestMoveAction_conflictsExhausted(t *testing.T) {
 	p := f.deposit(t, "a.txt", "content")
 	prev := moveFile
 	attempts := 0
-	moveFile = func(string, string, string, func() time.Time, int) (string, error) {
+	moveFile = func(quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
 		attempts++
 		return "", quarantine.ErrDestinationExists
 	}
@@ -351,13 +351,13 @@ func recordMitigations(t *testing.T) *mitigationRecorder {
 
 type failingAction struct{ err error }
 
-func (f failingAction) Handle(context.Context, string, datamodel.Result, *datamodel.Report) error {
+func (f failingAction) Handle(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 	return f.err
 }
 
 func quarantineSucceeds() *QuarantineAction {
 	return NewQuarantineAction(&quarantinemock.QuarantineMock{
-		QuarantineMock: func(_ context.Context, _, _ string, _ []string) (string, string, error) {
+		QuarantineMock: func(_ context.Context, _ string, _ *os.File, _ string, _ []string) (string, string, error) {
 			return "/q/x.lock", "id-1", nil
 		},
 	})
@@ -370,7 +370,7 @@ func TestMultiAction_mitigationIsReportedWhateverTheMoveDoes(t *testing.T) {
 		p := f.deposit(t, "u/report-session-x.pdf", "malware")
 		multi := NewMultiAction(&ReportAction{}, quarantineSucceeds(), f.action)
 		var report datamodel.Report
-		err := multi.Handle(t.Context(), p, datamodel.Result{Malware: true, SHA256: "sha"}, &report)
+		err := multi.Handle(t.Context(), testSource(t, p), datamodel.Result{Malware: true, SHA256: "sha"}, &report)
 		if err != nil {
 			t.Fatalf("Handle() error = %v", err)
 		}
@@ -383,7 +383,12 @@ func TestMultiAction_mitigationIsReportedWhateverTheMoveDoes(t *testing.T) {
 		boom := fmt.Errorf("%w: disk full", errPermanentAction)
 		multi := NewMultiAction(&ReportAction{}, quarantineSucceeds(), failingAction{err: boom})
 		var report datamodel.Report
-		err := multi.Handle(t.Context(), "/in/f.bin", datamodel.Result{Malware: true, SHA256: "sha"}, &report)
+		// A real file: the quarantine reads it through the source.
+		deposit := filepath.Join(t.TempDir(), "f.bin")
+		if err := os.WriteFile(deposit, []byte("malware"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		err := multi.Handle(t.Context(), testSource(t, deposit), datamodel.Result{Malware: true, SHA256: "sha"}, &report)
 		if !errors.Is(err, errPermanentAction) {
 			t.Fatalf("error = %v, want errPermanentAction through the join", err)
 		}
@@ -395,7 +400,7 @@ func TestMultiAction_mitigationIsReportedWhateverTheMoveDoes(t *testing.T) {
 		recordMitigations(t)
 		ran := false
 		multi := NewMultiAction(failingAction{err: errors.New("first")}, actionFunc(func() { ran = true }))
-		if err := multi.Handle(t.Context(), "/in/f", datamodel.Result{}, &datamodel.Report{}); err == nil {
+		if err := multi.Handle(t.Context(), testSource(t, "/in/f"), datamodel.Result{}, &datamodel.Report{}); err == nil {
 			t.Fatal("the error must be returned")
 		}
 		if !ran {
@@ -407,12 +412,12 @@ func TestMultiAction_mitigationIsReportedWhateverTheMoveDoes(t *testing.T) {
 		f := newMoveFixture(t)
 		p := f.deposit(t, "mal.bin", "malware")
 		failing := NewQuarantineAction(&quarantinemock.QuarantineMock{
-			QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+			QuarantineMock: func(context.Context, string, *os.File, string, []string) (string, string, error) {
 				return "", "", errors.New("quarantine full")
 			},
 		})
 		multi := NewMultiAction(&ReportAction{}, failing, &RemoveFileAction{})
-		if err := multi.Handle(t.Context(), p, datamodel.Result{Malware: true, SHA256: "sha"}, &datamodel.Report{}); err == nil {
+		if err := multi.Handle(t.Context(), testSource(t, p), datamodel.Result{Malware: true, SHA256: "sha"}, &datamodel.Report{}); err == nil {
 			t.Fatal("the quarantine error must be returned")
 		}
 		if read(t, p) != "malware" {
@@ -426,7 +431,7 @@ func TestMultiAction_mitigationIsReportedWhateverTheMoveDoes(t *testing.T) {
 
 type actionFunc func()
 
-func (f actionFunc) Handle(context.Context, string, datamodel.Result, *datamodel.Report) error {
+func (f actionFunc) Handle(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 	f()
 	return nil
 }
@@ -444,7 +449,7 @@ func TestRemoveFileAction_announcesOnlyARemovalThatHappened(t *testing.T) {
 		}
 		multi := NewMultiAction(&ReportAction{}, &RemoveFileAction{})
 		var report datamodel.Report
-		err := multi.Handle(t.Context(), stuck, datamodel.Result{Malware: true, SHA256: "sha"}, &report)
+		err := multi.Handle(t.Context(), testSource(t, stuck), datamodel.Result{Malware: true, SHA256: "sha"}, &report)
 		if err == nil {
 			t.Fatal("a failed removal must return its error")
 		}
@@ -463,7 +468,7 @@ func TestRemoveFileAction_announcesOnlyARemovalThatHappened(t *testing.T) {
 		}
 		var report datamodel.Report
 		multi := NewMultiAction(&ReportAction{}, &RemoveFileAction{})
-		if err := multi.Handle(t.Context(), p, datamodel.Result{Malware: true, SHA256: "sha"}, &report); err != nil {
+		if err := multi.Handle(t.Context(), testSource(t, p), datamodel.Result{Malware: true, SHA256: "sha"}, &report); err != nil {
 			t.Fatal(err)
 		}
 		if report.Action != datamodel.Removed || !report.Deleted || len(rec.seen) != 1 {
@@ -477,7 +482,7 @@ func TestRemoveFileAction_announcesOnlyARemovalThatHappened(t *testing.T) {
 			t.Fatal(err)
 		}
 		report := datamodel.Report{Action: datamodel.Quarantined}
-		if err := (&RemoveFileAction{}).Handle(t.Context(), p, datamodel.Result{Malware: true, SHA256: "sha"}, &report); err != nil {
+		if err := (&RemoveFileAction{}).Handle(t.Context(), testSource(t, p), datamodel.Result{Malware: true, SHA256: "sha"}, &report); err != nil {
 			t.Fatal(err)
 		}
 		if report.Action != datamodel.Quarantined {
@@ -515,7 +520,7 @@ func TestMultiAction_returnsAllTheFailures(t *testing.T) {
 	recordMitigations(t)
 	first, second := errors.New("first"), fmt.Errorf("%w: second", errPermanentAction)
 	multi := NewMultiAction(failingAction{err: first}, failingAction{err: second})
-	err := multi.Handle(t.Context(), "/in/f", datamodel.Result{}, &datamodel.Report{})
+	err := multi.Handle(t.Context(), testSource(t, "/in/f"), datamodel.Result{}, &datamodel.Report{})
 	if !errors.Is(err, first) || !errors.Is(err, errPermanentAction) {
 		t.Fatalf("error = %v, want both failures reachable", err)
 	}

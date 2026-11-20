@@ -35,7 +35,7 @@ func TestIntegration_MixedFormatDirectory(t *testing.T) {
 	if err := os.WriteFile(tarSamplePath, []byte("tar sample content"), 0o600); err != nil {
 		t.Fatalf("write tar sample: %s", err)
 	}
-	_, tarID, err := q.Quarantine(ctx, tarSamplePath, sha256Hex([]byte("tar sample content")), []string{"trojan.tar"})
+	_, tarID, err := quarantinePath(ctx, t, q, tarSamplePath, sha256Hex([]byte("tar sample content")), []string{"trojan.tar"})
 	if err != nil {
 		t.Fatalf("Quarantine() error = %s", err)
 	}

@@ -59,6 +59,20 @@ var linkMu sync.RWMutex
 // stagingPurged remembers the transit directories already purged.
 var stagingPurged sync.Map
 
+// IsRemovalRefused reports whether err is the refusal of the file system or of
+// its permissions (EACCES, EPERM, EROFS): a lasting one, retrying cannot help.
+func IsRemovalRefused(err error) bool {
+	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS)
+}
+
+// MarkRemovalRefused wraps a refusal of a removal in ErrSourceNotRemovable.
+func MarkRemovalRefused(err error) error {
+	if IsRemovalRefused(err) {
+		return fmt.Errorf("%w: %w", ErrSourceNotRemovable, err)
+	}
+	return err
+}
+
 // MoveFileNoReplace moves src to dst and never overwrites dst. stagingDir must
 // be on the same file system as dst: it receives the copy when src and dst are
 // on different file systems. It returns ErrDestinationExists when dst exists.
@@ -184,14 +198,13 @@ func removeSource(src, dst string, linked bool) error {
 	if linked {
 		dstInfo, err := os.Lstat(dst)
 		if err != nil || !os.SameFile(srcInfo, dstInfo) {
-			return fmt.Errorf("%w: %s is no longer the file that was moved, it is kept", ErrSourceChanged, src)
+			// The name now holds another file than the one that was linked: the
+			// destination is not what was verified either, it is taken back.
+			return rollback(dst, fmt.Errorf("%w: %s is no longer the file that was moved", ErrSourceChanged, src))
 		}
 	}
 	if err := os.Remove(src); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		if errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.EROFS) {
-			err = fmt.Errorf("%w: %w", ErrSourceNotRemovable, err)
-		}
-		return rollback(dst, fmt.Errorf("could not remove %s after moving it: %w", src, err))
+		return rollback(dst, fmt.Errorf("could not remove %s after moving it: %w", src, MarkRemovalRefused(err)))
 	}
 	return nil
 }
@@ -220,9 +233,6 @@ func rollback(dst string, cause error) error {
 // the transit directory, and returns its path with the source info taken from
 // that descriptor. The copy is verified: size, and a source unchanged since.
 func stageCopy(src, stagingDir string) (staged string, srcInfo fs.FileInfo, err error) {
-	if err = prepareStaging(stagingDir); err != nil {
-		return "", nil, err
-	}
 	in, err := os.Open(filepath.Clean(src))
 	if err != nil {
 		return "", nil, err
@@ -232,12 +242,21 @@ func stageCopy(src, stagingDir string) (staged string, srcInfo fs.FileInfo, err 
 			logger.Error("move cannot close the source file", slog.String("file", src), slog.String("error", e.Error()))
 		}
 	}()
+	return stageFrom(in, src, stagingDir, func(before fs.FileInfo) error { return checkUnchanged(in, before, src) })
+}
+
+// stageFrom copies in into a new file of the transit directory. verify is
+// called once the copy is made, with the file as it was when it began.
+func stageFrom(in *os.File, label, stagingDir string, verify func(before fs.FileInfo) error) (staged string, srcInfo fs.FileInfo, err error) {
+	if err = prepareStaging(stagingDir); err != nil {
+		return "", nil, err
+	}
 	srcInfo, err = in.Stat()
 	if err != nil {
 		return "", nil, err
 	}
 	if !srcInfo.Mode().IsRegular() {
-		return "", nil, fmt.Errorf("%s is not a regular file", src)
+		return "", nil, fmt.Errorf("%s is not a regular file", label)
 	}
 	staged, out, err := createStaged(stagingDir)
 	if err != nil {
@@ -256,7 +275,7 @@ func stageCopy(src, stagingDir string) (staged string, srcInfo fs.FileInfo, err 
 		err = fmt.Errorf("%w: copied %d bytes of %d", ErrSourceChanged, n, srcInfo.Size())
 	}
 	if err == nil {
-		err = checkUnchanged(in, srcInfo, src)
+		err = verify(srcInfo)
 	}
 	if err == nil {
 		// Permission bits only, on the descriptor: setuid and setgid must not

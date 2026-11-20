@@ -148,7 +148,7 @@ func TestApply_step4FailureRollsBackQuarantineCompletely(t *testing.T) {
 		t.Fatal(err)
 	}
 	sum := sha256.Sum256(content)
-	_, id, err := h.Quarantiner.Quarantine(t.Context(), sample, hex.EncodeToString(sum[:]), []string{"m"})
+	_, id, err := quarantineSample(t, h.Quarantiner, sample, hex.EncodeToString(sum[:]))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,4 +233,19 @@ func TestApply_incompleteQuarantineRollbackStopsEverything(t *testing.T) {
 	if len(events) != 1 || !strings.Contains(events[0].msg, "STOPPED") || strings.Contains(events[0].msg, "stays in service") {
 		t.Errorf("events = %v", events)
 	}
+}
+
+// quarantineSample quarantines the file at path, opened like the scanner does.
+func quarantineSample(t *testing.T, q quarantine.Quarantiner, path, sha256 string) (string, string, error) {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			t.Error(e)
+		}
+	}()
+	return q.Quarantine(t.Context(), path, f, sha256, []string{"m"})
 }

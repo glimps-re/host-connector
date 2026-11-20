@@ -43,7 +43,7 @@ func quarantineSample(t *testing.T, q *QuarantineHandler, name string) (src, id 
 	if err := os.WriteFile(src, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 	if err != nil {
 		t.Fatalf("Quarantine(%s) error = %v", name, err)
 	}
@@ -284,7 +284,7 @@ func TestReconfigure_concurrentWithQuarantineAndRestore(t *testing.T) {
 					failures.Add(1)
 					return
 				}
-				_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+				_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 				if err != nil {
 					failures.Add(1)
 					t.Errorf("Quarantine() error = %v", err)

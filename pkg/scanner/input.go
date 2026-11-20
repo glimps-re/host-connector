@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
+
+	"github.com/glimps-re/host-connector/internal/safepath"
 )
 
 // errNotRegular is returned for a deposited path that is not a regular file
@@ -33,9 +36,18 @@ var openInputs atomic.Int64
 // connector reads is the file whose identity was verified, whatever happens to
 // its name meanwhile. Close is idempotent.
 type inputFD struct {
-	f    *os.File
-	once sync.Once
-	err  error
+	f *os.File
+	// sf is the file opened below its root without following any link, of which
+	// f is the descriptor: the one handle the pipeline and the actions share.
+	sf *safepath.File
+	// root is the monitored root the file was opened below.
+	root string
+	// viaLink is set when the file was reached through a symbolic link, which
+	// the configuration told to follow: no handle then, and the actions that
+	// remove or move it refuse.
+	viaLink bool
+	once    sync.Once
+	err     error
 }
 
 func newInputFD(f *os.File) *inputFD {
@@ -43,16 +55,74 @@ func newInputFD(f *os.File) *inputFD {
 	return &inputFD{f: f}
 }
 
-// Close releases the descriptor; only the first call has an effect.
+// Close releases the descriptor (and the handle of its folder); only the first
+// call has an effect.
 func (i *inputFD) Close() error {
 	if i == nil {
 		return nil
 	}
 	i.once.Do(func() {
 		openInputs.Add(-1)
+		if i.sf != nil {
+			i.err = i.sf.Close()
+			return
+		}
 		i.err = i.f.Close()
 	})
 	return i.err
+}
+
+// openInput opens the deposited file at location, once: below its monitored
+// root, without following any link and without ever blocking on it. With
+// follow_symlinks a path that crosses a link is opened as the operator asked,
+// and the descriptor then carries that fact (viaLink).
+func (c *Connector) openInput(location string) (*inputFD, error) {
+	abs, err := filepath.Abs(location)
+	if err != nil {
+		return nil, err
+	}
+	root := c.rootFor(abs)
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return nil, err
+	}
+	if rel == "." {
+		// The scan was started on the file itself: its folder is the root.
+		root, rel = filepath.Dir(abs), filepath.Base(abs)
+	}
+	sf, err := safepath.Open(root, rel)
+	switch {
+	case err == nil:
+		openInputs.Add(1)
+		return &inputFD{f: sf.OS(), sf: sf, root: root}, nil
+	case c.config.FollowSymlinks && errors.Is(err, safepath.ErrSymlink):
+		f, openErr := openRegular(location, true)
+		if openErr != nil {
+			return nil, openErr
+		}
+		in := newInputFD(f)
+		in.root, in.viaLink = root, true
+		return in, nil
+	case errors.Is(err, safepath.ErrNotRegular):
+		return nil, fmt.Errorf("%w: %s", errNotRegular, location)
+	}
+	return nil, err
+}
+
+// source is the Source of the file this descriptor holds, for the actions. The
+// handle is given where the pipeline keeps it open during the actions.
+func (i *inputFD) source(path string, id FileIdentity, sha256 string) Source {
+	if i == nil {
+		return Source{Path: path, Identity: id, SHA256: sha256}
+	}
+	src := Source{Path: path, Root: i.root, Identity: id, SHA256: sha256, viaLink: i.viaLink}
+	if holdsHandle {
+		src.handle = i.sf
+		if i.viaLink {
+			src.fd = i.f
+		}
+	}
+	return src
 }
 
 // reader reads the first size bytes of the file from its start, independently

@@ -546,7 +546,7 @@ func (c *Connector) submit(ctx context.Context, input string, want FileIdentity,
 	}
 }
 
-func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity, run *ongoing) (err error) {
+func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity, run *ongoing, in *inputFD) (err error) {
 	res := datamodel.Result{
 		Filename: filepath.Base(location),
 		Location: location,
@@ -570,7 +570,7 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	report := &datamodel.Report{}
 	actionCtx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(size))
 	defer cancel()
-	if err = c.action.Handle(actionCtx, location, res, report); err != nil {
+	if err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report); err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
 		return
 	}
@@ -713,13 +713,13 @@ func (c *Connector) prepareFile(location string, want FileIdentity, run *ongoing
 	// One descriptor for the identity, the hash and everything read later:
 	// what is read is what was observed, whatever happens to the name meanwhile.
 	// It never blocks on a FIFO put there after the stability check.
-	f, err := openRegular(location, c.config.FollowSymlinks)
+	in, err := c.openInput(location)
 	if err != nil {
 		inputLogger.Error("could not open file, stop processing", slog.String("error", err.Error()))
 		skip = true
 		return
 	}
-	in := newInputFD(f)
+	f := in.f
 	defer func() {
 		if skip {
 			closeInput(in)
@@ -759,11 +759,14 @@ func (c *Connector) prepareFile(location string, want FileIdentity, run *ongoing
 	if restored {
 		inputLogger.Debug("consider file as safe, skip it", slog.String(logReasonKey, "restored"))
 		skip = true
-		// The content was read for the last time: the descriptor is checked,
-		// then closed, before the action.
+		// The content was read for the last time: the descriptor is checked. It
+		// stays open during the action where the actions use it; elsewhere it is
+		// closed first (a file that is open cannot be moved or deleted).
 		if err = c.verifyContent(location, in, info.Size(), fileSHA256, identity); err == nil {
-			closeInput(in)
-			err = c.handleRestoredFile(location, fileSHA256, info.Size(), identity, run)
+			if !holdsHandle {
+				closeInput(in)
+			}
+			err = c.handleRestoredFile(location, fileSHA256, info.Size(), identity, run, in)
 			c.concludeOutcome(location, run, resultView{}, err)
 		}
 		if err != nil {
@@ -848,7 +851,9 @@ func (c *Connector) releaseInput(location string, run *ongoing) {
 // closed. It returns an error when the file must not be acted upon. A file
 // without descriptor (tests) is hashed by path.
 func (c *Connector) finishReading(input fileToAnalyze) error {
-	defer c.releaseInput(input.location, input.run)
+	if !holdsHandle {
+		defer c.releaseInput(input.location, input.run)
+	}
 	return c.verifyContent(input.location, input.input, input.size, input.sha256, input.identity)
 }
 
@@ -961,7 +966,7 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	report := &datamodel.Report{}
 	actionCtx, actionCancel := context.WithTimeout(context.Background(), actionTimeoutForSize(input.size))
 	defer actionCancel()
-	actionErr := c.action.Handle(actionCtx, input.location, result, report)
+	actionErr := c.action.Handle(actionCtx, input.input.source(input.location, input.identity, input.sha256), result, report)
 	if actionErr != nil {
 		inputLogger.Error("could not handle file action", slog.String(logErrorKey, actionErr.Error()))
 		ConsoleLogger.Error(fmt.Sprintf("could not handle file action for %s: %s", input.location, actionErr.Error()))
@@ -1139,6 +1144,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	eStatus := archiveStatus{
 		archiveLocation: archive.location,
 		identity:        archive.identity,
+		sha256:          archive.sha256,
 		input:           archive.input,
 		run:             archive.run,
 		result: datamodel.Result{
@@ -1525,7 +1531,9 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 			status.result.Error = fmt.Errorf("%w: %w", errInnerTransient, memberCause(verifyErr))
 			runAction = false
 		}
-		c.releaseInput(status.archiveLocation, status.run)
+		if !holdsHandle {
+			c.releaseInput(status.archiveLocation, status.run)
+		}
 	}
 
 	// A sub-archive is not a file of its own for the plugins: only the
@@ -1551,7 +1559,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 		report := &datamodel.Report{}
 		ctx, cancel := context.WithTimeout(context.Background(), actionTimeoutForSize(status.result.FileSize))
 		defer cancel()
-		err = c.action.Handle(ctx, status.archiveLocation, status.result, report)
+		err = c.action.Handle(ctx, status.input.source(status.archiveLocation, status.identity, status.sha256), status.result, report)
 		if err != nil {
 			c.noteOwnTrace(status.archiveLocation, status.run, status.identity)
 		}

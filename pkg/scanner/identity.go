@@ -60,3 +60,10 @@ func IsLinkToFolder(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
 }
+
+// sameFileContent reports whether b is the same file with the same content as a:
+// device, inode, size and modification time. The change time is left out: a
+// hard link made by the connector itself changes it.
+func (a FileIdentity) sameFileContent(b FileIdentity) bool {
+	return a.Dev == b.Dev && a.Ino == b.Ino && a.Size == b.Size && a.ModTime.Equal(b.ModTime)
+}

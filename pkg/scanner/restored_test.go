@@ -21,14 +21,14 @@ import (
 
 func TestReportAction_aRestoredFileIsMarkedInTheReport(t *testing.T) {
 	report := &datamodel.Report{}
-	if err := (&ReportAction{}).Handle(t.Context(), "/in/f.bin", datamodel.Result{SHA256: "sha", Restored: true}, report); err != nil {
+	if err := (&ReportAction{}).Handle(t.Context(), Source{Path: "/in/f.bin"}, datamodel.Result{SHA256: "sha", Restored: true}, report); err != nil {
 		t.Fatal(err)
 	}
 	if !report.HasBeenRestored {
 		t.Error("the report of a restored file must say so")
 	}
 	other := &datamodel.Report{}
-	if err := (&ReportAction{}).Handle(t.Context(), "/in/f.bin", datamodel.Result{SHA256: "sha"}, other); err != nil || other.HasBeenRestored {
+	if err := (&ReportAction{}).Handle(t.Context(), Source{Path: "/in/f.bin"}, datamodel.Result{SHA256: "sha"}, other); err != nil || other.HasBeenRestored {
 		t.Errorf("HasBeenRestored = %t (%v) for a file that was not restored", other.HasBeenRestored, err)
 	}
 }
@@ -38,11 +38,15 @@ func TestReportAction_aRestoredFileIsMarkedInTheReport(t *testing.T) {
 // file is recognized as restored.
 func TestQuarantineAction_aRestoredContentIsARetryNotADefinitiveFailure(t *testing.T) {
 	a := NewQuarantineAction(&quarantineMock.QuarantineMock{
-		QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+		QuarantineMock: func(context.Context, string, *os.File, string, []string) (string, string, error) {
 			return "", "", quarantine.ErrRestored
 		},
 	})
-	err := a.Handle(t.Context(), "/in/f.bin", datamodel.Result{Malware: true}, &datamodel.Report{SHA256: "sha"})
+	path := filepath.Join(t.TempDir(), "f.bin")
+	if err := os.WriteFile(path, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := a.Handle(t.Context(), testSource(t, path), datamodel.Result{Malware: true}, &datamodel.Report{SHA256: "sha"})
 	if !errors.Is(err, quarantine.ErrRestored) || IsPermanentAction(err) {
 		t.Errorf("Handle() error = %v, want ErrRestored, not a definitive failure", err)
 	}
@@ -62,7 +66,7 @@ func TestPipeline_contentRestoredBetweenTheCheckAndTheActionIsHandledAsRestoredA
 	var quarantined atomic.Int32
 	quarantiner := &quarantineMock.QuarantineMock{
 		IsRestoredMock: func(context.Context, string, string) (bool, error) { return restored.Load(), nil },
-		QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+		QuarantineMock: func(context.Context, string, *os.File, string, []string) (string, string, error) {
 			quarantined.Add(1)
 			return "", "", quarantine.ErrRestored
 		},
@@ -123,14 +127,14 @@ func TestMultiAction_noDeletionAfterAQuarantineRefusedBecauseTheContentWasRestor
 	}
 	m := &MultiAction{Actions: []Action{
 		NewQuarantineAction(&quarantineMock.QuarantineMock{
-			QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+			QuarantineMock: func(context.Context, string, *os.File, string, []string) (string, string, error) {
 				return "", "", quarantine.ErrRestored
 			},
 		}),
 		&RemoveFileAction{},
 	}}
 	report := &datamodel.Report{SHA256: "sha"}
-	err := m.Handle(t.Context(), path, datamodel.Result{Malware: true, Malwares: []string{"m"}}, report)
+	err := m.Handle(t.Context(), testSource(t, path), datamodel.Result{Malware: true, Malwares: []string{"m"}}, report)
 	if !errors.Is(err, quarantine.ErrRestored) {
 		t.Errorf("Handle() error = %v, want ErrRestored", err)
 	}
@@ -176,11 +180,11 @@ func TestHandleRestoredFile_aPluginResultKeepsTheRestoredMark(t *testing.T) {
 		return &datamodel.Result{Filename: r.Filename, Location: r.Location, SHA256: r.SHA256, Score: -500}
 	})
 	var got datamodel.Result
-	c.action = &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, _ *datamodel.Report) error {
+	c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 		got = r
 		return nil
 	}}
-	if err := c.handleRestoredFile(file, shaOf("some content"), 12, idOf(t, file), nil); err != nil {
+	if err := c.handleRestoredFile(file, shaOf("some content"), 12, idOf(t, file), nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !got.Restored {
@@ -201,7 +205,7 @@ func TestPipeline_aQuarantineRefusedAsRestoredWritesNoReportAndMovesNothing(t *t
 	var restored atomic.Bool
 	quarantiner := &quarantineMock.QuarantineMock{
 		IsRestoredMock: func(context.Context, string, string) (bool, error) { return restored.Load(), nil },
-		QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+		QuarantineMock: func(context.Context, string, *os.File, string, []string) (string, string, error) {
 			return "", "", quarantine.ErrRestored
 		},
 	}

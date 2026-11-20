@@ -34,7 +34,7 @@ func TestRestore_wrongPasswordAfterReconfigure(t *testing.T) {
 			if err := os.WriteFile(src, content, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+			_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 			if err != nil {
 				t.Fatalf("Quarantine() error = %v", err)
 			}
@@ -76,7 +76,7 @@ func TestRestore_registryHashMismatch(t *testing.T) {
 	if err := os.WriteFile(src, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestQuarantine_fileSizeChangedDuringRead(t *testing.T) {
 			if err := os.WriteFile(src, []byte("0123456789"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, id, err := q.Quarantine(t.Context(), src, "sha", []string{"m"})
+			_, id, err := quarantinePath(t.Context(), t, q, src, "sha", []string{"m"})
 			if !errors.Is(err, ErrFileChanged) {
 				t.Fatalf("Quarantine() error = %v, want ErrFileChanged", err)
 			}
@@ -193,7 +193,7 @@ func TestRestore_nonUTF8Path(t *testing.T) {
 			if err := os.WriteFile(src, content, 0o600); err != nil {
 				t.Skipf("file system refuses non UTF-8 names: %v", err)
 			}
-			_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+			_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 			if err != nil {
 				t.Fatalf("Quarantine() error = %v", err)
 			}
@@ -218,7 +218,7 @@ func TestRestore_cancelledContext(t *testing.T) {
 	if err := os.WriteFile(src, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), src, sha256Hex(content), []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, src, sha256Hex(content), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestQuarantine_contentChangedAtSameSize(t *testing.T) {
 				t.Fatal(err)
 			}
 			analysedSHA := sha256Hex([]byte("aaaa"))
-			_, _, err := q.Quarantine(t.Context(), src, analysedSHA, []string{"m"})
+			_, _, err := quarantinePath(t.Context(), t, q, src, analysedSHA, []string{"m"})
 			if !errors.Is(err, ErrQuarantineSHA256Mismatch) {
 				t.Fatalf("Quarantine() error = %v, want ErrQuarantineSHA256Mismatch", err)
 			}

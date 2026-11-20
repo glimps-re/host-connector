@@ -32,7 +32,7 @@ func TestT14a_aRestoredContentDepositedElsewhereIsNotQuarantinedAgain(t *testing
 	if err = os.WriteFile(first, []byte(originalContent), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), first, shaOf(originalContent), []string{"m"})
+	_, id, err := quarantinePathForTest(t, q, first, shaOf(originalContent))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestT14a_aRestoredContentDepositedElsewhereIsNotQuarantinedAgain(t *testing
 	var results []datamodel.Result
 	var reports []datamodel.Report
 	f.c.quarantiner = q
-	f.c.action = NewMultiAction(&ReportAction{}, NewQuarantineAction(q), &MockAction{HandleMock: func(_ context.Context, _ string, r datamodel.Result, rep *datamodel.Report) error {
+	f.c.action = NewMultiAction(&ReportAction{}, NewQuarantineAction(q), &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, rep *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
 		results = append(results, r)
@@ -88,4 +88,18 @@ func TestT14a_aRestoredContentDepositedElsewhereIsNotQuarantinedAgain(t *testing
 			t.Errorf("the report does not say the content was restored: %+v", rep)
 		}
 	}
+}
+
+func quarantinePathForTest(t *testing.T, q quarantine.Quarantiner, path, sha string) (location, id string, err error) {
+	t.Helper()
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		return "", "", err
+	}
+	defer func() {
+		if e := f.Close(); e != nil {
+			t.Error(e)
+		}
+	}()
+	return q.Quarantine(t.Context(), path, f, sha, []string{"m"})
 }

@@ -386,15 +386,18 @@ func TestRemoveSource(t *testing.T) {
 			t.Error("destination rolled back for nothing")
 		}
 	})
-	t.Run("a source that is no longer the linked file is kept", func(t *testing.T) {
+	t.Run("a source that is no longer the linked file is kept and the destination taken back", func(t *testing.T) {
 		src, dst, _ := newMoveDirs(t)
 		writeFile(t, src, "replaced by someone", 0o640)
 		writeFile(t, dst, "moved", 0o640)
 		if err := removeSource(src, dst, true); !errors.Is(err, ErrSourceChanged) {
 			t.Errorf("error = %v, want ErrSourceChanged", err)
 		}
-		if readFile(t, src) != "replaced by someone" || readFile(t, dst) != "moved" {
-			t.Error("a file was removed")
+		if readFile(t, src) != "replaced by someone" {
+			t.Error("the file that replaced the source was removed")
+		}
+		if _, err := os.Stat(dst); !errors.Is(err, fs.ErrNotExist) {
+			t.Errorf("the destination is kept (%v): it is not what was verified", err)
 		}
 	})
 	t.Run("a linked source is removed", func(t *testing.T) {

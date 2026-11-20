@@ -40,7 +40,7 @@ func (f *fakeQuarantiner) Reconfigure(_ context.Context, c quarantine.Config) er
 	return nil
 }
 
-func (*fakeQuarantiner) Quarantine(context.Context, string, string, []string) (string, string, error) {
+func (*fakeQuarantiner) Quarantine(context.Context, string, *os.File, string, []string) (string, string, error) {
 	return "", "", errors.New("not used")
 }
 func (*fakeQuarantiner) Restore(context.Context, string) error { return errors.New("not used") }

@@ -47,6 +47,7 @@ type archiveStatus struct {
 	// the last member in flight is done.
 	abandoned       bool
 	archiveLocation string
+	sha256          string       // hash computed by the pipeline, never replaced by a plugin
 	identity        FileIdentity // of the top-level archive, checked before its action
 	input           *inputFD     // descriptor of the top-level archive, closed before its action
 	run             *ongoing     // the run of the top-level file it belongs to

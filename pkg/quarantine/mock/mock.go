@@ -3,12 +3,13 @@ package mock
 import (
 	"context"
 	"iter"
+	"os"
 
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
 type QuarantineMock struct {
-	QuarantineMock           func(ctx context.Context, file string, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
+	QuarantineMock           func(ctx context.Context, file string, in *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
 	RestoreMock              func(ctx context.Context, entryID string) (err error)
 	ReconfigureMock          func(ctx context.Context, newConfig quarantine.Config) (err error)
 	IsRestoredMock           func(ctx context.Context, location string, sha256 string) (restored bool, err error)
@@ -16,9 +17,9 @@ type QuarantineMock struct {
 	CloseMock                func() (err error)
 }
 
-func (q *QuarantineMock) Quarantine(ctx context.Context, file string, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
+func (q *QuarantineMock) Quarantine(ctx context.Context, file string, in *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
 	if q.QuarantineMock != nil {
-		return q.QuarantineMock(ctx, file, fileSHA256, malwares)
+		return q.QuarantineMock(ctx, file, in, fileSHA256, malwares)
 	}
 	panic("QuarantineMock not implemented in current test")
 }

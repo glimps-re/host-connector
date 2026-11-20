@@ -430,10 +430,15 @@ func TestNewConnector(t *testing.T) {
 				}
 				c.Close(t.Context())
 
-				// The symlink should be followed and scanned, and the symlink itself should be deleted
-				cacheID := quarantine.ComputeCacheID(symlinkPath, badFileSHA256)
-				assertFileDeleted(t, buff, symlinkPath, cacheID)
-				// Target file should still exist
+				// The link is followed and the content scanned (and quarantined, read
+				// through the descriptor), but a link is never deleted nor moved: what
+				// would go is the link, not the malware. The link and its target stay.
+				if !strings.Contains(buff.String(), "flagged: true") {
+					t.Errorf("output %q does not report the malware behind the link", buff.String())
+				}
+				if _, err := os.Lstat(symlinkPath); err != nil {
+					t.Errorf("the link must stay, got %v", err)
+				}
 				if _, err := os.Stat(targetFile); err != nil {
 					t.Errorf("target file should still exist but got error: %v", err)
 				}
@@ -820,7 +825,7 @@ func TestNewConnector(t *testing.T) {
 				},
 			})
 			quarantiner := quarantinemock.QuarantineMock{
-				QuarantineMock: func(ctx context.Context, file, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
+				QuarantineMock: func(ctx context.Context, file string, _ *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
 					if tt.fields.errQuarantine {
 						err = errors.New("error quarantine")
 						return
@@ -1852,9 +1857,9 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			var actionCalled bool
 			var actionPath string
 			action := &MockAction{
-				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+				HandleMock: func(ctx context.Context, path Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
 					actionCalled = true
-					actionPath = path
+					actionPath = path.Path
 					if tt.fields.actionError {
 						err = actionErr
 						return
@@ -2048,7 +2053,7 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var actionCalled bool
 			action := &MockAction{
-				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+				HandleMock: func(ctx context.Context, path Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
 					actionCalled = true
 					return
 				},

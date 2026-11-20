@@ -43,7 +43,7 @@ func newRestoreFixture(t *testing.T, watchIn bool) (q *QuarantineHandler, quaran
 	if err = os.WriteFile(samplePath, content, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err = q.Quarantine(t.Context(), samplePath, sha256Hex(content), []string{"m"})
+	_, id, err = quarantinePath(t.Context(), t, q, samplePath, sha256Hex(content), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -334,7 +334,7 @@ func TestRestore_linkAboveTheWatchedRootIsAccepted(t *testing.T) {
 	if err = os.WriteFile(sample, []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), sample, sha256Hex([]byte("content")), []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, sample, sha256Hex([]byte("content")), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,7 +380,7 @@ func TestRestore_nestedRootsUseTheOutermost(t *testing.T) {
 	if err = os.WriteFile(sample, []byte("content"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, id, err := q.Quarantine(t.Context(), sample, sha256Hex([]byte("content")), []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, sample, sha256Hex([]byte("content")), []string{"m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,4 +398,32 @@ func TestRestore_nestedRootsUseTheOutermost(t *testing.T) {
 	if got := watchedRoot(conf.WatchedPaths, sample); got != in {
 		t.Errorf("watchedRoot() = %q, want the outermost root %q", got, in)
 	}
+}
+
+func TestRestore_outsideWatchedFolderSwappedForALinkAfterTheCheckIsRefused(t *testing.T) {
+	q, quarantineDir, in, sample, id := newRestoreFixture(t, false)
+	// The destination is outside the watched paths: its whole path is checked,
+	// then opened from the root of the file system without following any link.
+	// The last folder is swapped for a link between the two.
+	dest := filepath.Join(in, "alice", "sub")
+	outside := t.TempDir()
+	prev := beforeOpenOutside
+	t.Cleanup(func() { beforeOpenOutside = prev })
+	beforeOpenOutside = func() {
+		if err := os.Rename(dest, dest+".moved"); err != nil {
+			t.Error(err)
+			return
+		}
+		if err := os.Symlink(outside, dest); err != nil {
+			t.Error(err)
+		}
+	}
+	if err := q.Restore(t.Context(), id); !errors.Is(err, ErrRestoreDestinationUnsafe) {
+		t.Fatalf("Restore() error = %v, want ErrRestoreDestinationUnsafe", err)
+	}
+	assertNothingWritten(t, outside)
+	if _, err := os.Stat(filepath.Join(dest+".moved", filepath.Base(sample))); err == nil {
+		t.Error("the file was restored although the destination had been swapped")
+	}
+	assertLockKept(t, quarantineDir, id)
 }

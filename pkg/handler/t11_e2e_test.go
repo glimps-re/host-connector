@@ -91,7 +91,7 @@ func newE2E(t *testing.T, period time.Duration, extractor plugins.ExtractFile) *
 		RecursiveExtractMaxFiles: 100,
 		RecursiveExtractMaxSize:  1 << 20,
 		MaxFileSize:              1 << 20,
-		CustomActions:            []scanner.Action{&scanner.MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}},
+		CustomActions:            []scanner.Action{&scanner.MockAction{HandleMock: func(context.Context, scanner.Source, datamodel.Result, *datamodel.Report) error { return nil }}},
 		OnFileDone: func(o scanner.FileOutcome) {
 			if e.mon != nil {
 				e.mon.FileDone(o)

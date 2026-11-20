@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -57,7 +58,7 @@ func TestReportAction_Handle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			a := &ReportAction{}
-			if err := a.Handle(t.Context(), tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(t.Context(), testSource(t, tt.args.path), tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("ReportAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -225,7 +226,7 @@ func TestLogAction_Handle(t *testing.T) {
 					},
 				})),
 			}
-			if err := a.Handle(t.Context(), tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(t.Context(), testSource(t, tt.args.path), tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("LogAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -290,7 +291,7 @@ func TestRemoveFileAction_Handle(t *testing.T) {
 				}()
 				tt.args.path = f.Name()
 			}
-			if err := a.Handle(t.Context(), tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(t.Context(), testSource(t, tt.args.path), tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("RemoveFileAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 			}
 
@@ -437,7 +438,7 @@ func TestPrintAction_Handle(t *testing.T) {
 				Verbose: tt.fields.Verbose,
 				Out:     &out,
 			}
-			if err := a.Handle(t.Context(), tt.args.path, tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
+			if err := a.Handle(t.Context(), testSource(t, tt.args.path), tt.args.result, tt.args.report); (err != nil) != tt.wantErr {
 				t.Errorf("InformAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -451,6 +452,17 @@ func TestPrintAction_Handle(t *testing.T) {
 }
 
 func TestMoveAction_Handle(t *testing.T) {
+	verifiedFile := filepath.Join(t.TempDir(), "verified")
+	if err := os.WriteFile(verifiedFile, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	verifiedInfo, err := os.Lstat(verifiedFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	origLstat := lstat
+	lstat = func(string) (os.FileInfo, error) { return verifiedInfo, nil }
+	t.Cleanup(func() { lstat = origLstat })
 	tests := []struct {
 		name         string
 		samplePath   string
@@ -506,8 +518,8 @@ func TestMoveAction_Handle(t *testing.T) {
 				}
 			}()
 			origRename := moveFile
-			moveFile = func(oldpath, newpath, _ string, _ func() time.Time, _ int) (string, error) {
-				if oldpath != tt.samplePath {
+			moveFile = func(oldsrc quarantine.MoveSource, newpath, _ string, _ func() time.Time, _ int) (string, error) {
+				if oldpath := oldsrc.Path; oldpath != tt.samplePath {
 					return "", fmt.Errorf("invalid oldpath: %s != %s", oldpath, tt.samplePath)
 				}
 				if newpath != tt.wantedReport.MovedTo {
@@ -540,7 +552,7 @@ func TestMoveAction_Handle(t *testing.T) {
 				return
 			}
 			report := datamodel.Report{}
-			if err := a.Handle(t.Context(), tt.samplePath, datamodel.Result{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
+			if err := a.Handle(t.Context(), Source{Path: tt.samplePath, Identity: IdentityOf(verifiedInfo), SHA256: "sha256"}, datamodel.Result{Malware: tt.isMalware}, &report); (err != nil) != tt.wantErr {
 				t.Errorf("MoveAction.Handle() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
@@ -578,7 +590,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			quarantiner := mock.QuarantineMock{
-				QuarantineMock: func(ctx context.Context, file, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
+				QuarantineMock: func(ctx context.Context, file string, _ *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
 					if !tt.malware {
 						t.Fatal("unexpected Quarantine() call")
 					}
@@ -589,7 +601,7 @@ func TestQuarantineAction_Handle(t *testing.T) {
 				},
 			}
 			a := NewQuarantineAction(&quarantiner)
-			gotErr := a.Handle(t.Context(), tt.path, datamodel.Result{Malware: tt.malware}, &datamodel.Report{})
+			gotErr := a.Handle(t.Context(), testSource(t, tt.path), datamodel.Result{Malware: tt.malware}, &datamodel.Report{})
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("Handle() failed: %v", gotErr)
@@ -611,9 +623,12 @@ func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
 		return os.CreateTemp(t.TempDir(), "report*")
 	}
 	renamed := false
-	moveFile = func(string, string, string, func() time.Time, int) (string, error) { renamed = true; return "", nil }
+	moveFile = func(quarantine.MoveSource, string, string, func() time.Time, int) (string, error) {
+		renamed = true
+		return "", nil
+	}
 	t.Cleanup(func() {
-		mkdirAll, create, moveFile = os.MkdirAll, createExclusive, quarantine.MoveFileResolvingConflicts
+		mkdirAll, create, moveFile = os.MkdirAll, createExclusive, quarantine.MoveResolvingConflicts
 	})
 
 	a, err := NewMoveAction("/dest", "/src")
@@ -631,7 +646,7 @@ func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			created, renamed = nil, false
-			if err := a.Handle(t.Context(), "/src/dir/f.bin", tt.result, &datamodel.Report{}); err != nil {
+			if err := a.Handle(t.Context(), testSource(t, "/src/dir/f.bin"), tt.result, &datamodel.Report{}); err != nil {
 				t.Fatalf("Handle() error = %v", err)
 			}
 			if len(created) != tt.wantReports {

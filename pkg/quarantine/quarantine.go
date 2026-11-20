@@ -23,7 +23,11 @@ import (
 )
 
 type Quarantiner interface {
-	Quarantine(ctx context.Context, file string, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
+	// Quarantine stores the content read from in. file is the original
+	// location, recorded in the registry and in the container; it is never
+	// opened. in is positioned at its start, stays owned by the caller and is
+	// not closed. The source file is not deleted.
+	Quarantine(ctx context.Context, file string, in *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
 	Restore(ctx context.Context, entryID string) (err error)
 	Reconfigure(ctx context.Context, newConfig Config) (err error)
 	// IsRestored reports whether this content was restored from quarantine. The
@@ -176,7 +180,7 @@ func (cr *ctxReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA256 string, malwares []string) (location string, id string, err error) {
+func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fIn *os.File, fileSHA256 string, malwares []string) (location string, id string, err error) {
 	entry := Entry{
 		ID:              ComputeCacheID(file, fileSHA256),
 		SHA256:          fileSHA256,
@@ -199,15 +203,6 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA
 	} else if restored {
 		return "", "", ErrRestored
 	}
-	fIn, err := os.Open(filepath.Clean(file))
-	if err != nil {
-		return
-	}
-	defer func() {
-		if e := fIn.Close(); e != nil {
-			logger.Warn("could not close input quarantined file", slog.String("file", file), slog.String("error", e.Error()))
-		}
-	}()
 	// Stat the open descriptor: the size recorded in the container must be the
 	// one of the bytes read, not of a path that may be swapped meanwhile.
 	stat, err := fIn.Stat()

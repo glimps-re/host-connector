@@ -92,7 +92,7 @@ func TestOnFileDone_exactlyOnceWithTheRightVerdict(t *testing.T) {
 		{
 			name: "permanent action failure is final",
 			setup: func(t *testing.T, c *Connector, _ string) {
-				c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+				c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 					return errPermanentAction
 				}}
 			},
@@ -102,7 +102,7 @@ func TestOnFileDone_exactlyOnceWithTheRightVerdict(t *testing.T) {
 		{
 			name: "other action failure is retried",
 			setup: func(t *testing.T, c *Connector, _ string) {
-				c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+				c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 					return errors.New("transient")
 				}}
 			},
@@ -112,7 +112,7 @@ func TestOnFileDone_exactlyOnceWithTheRightVerdict(t *testing.T) {
 		{
 			name: "slow storage is a resource failure",
 			setup: func(t *testing.T, c *Connector, _ string) {
-				c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+				c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 					return context.DeadlineExceeded
 				}}
 			},
@@ -122,7 +122,7 @@ func TestOnFileDone_exactlyOnceWithTheRightVerdict(t *testing.T) {
 		{
 			name: "full disk is a resource failure",
 			setup: func(t *testing.T, c *Connector, _ string) {
-				c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+				c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 					return &os.PathError{Op: "write", Path: "x", Err: syscall.ENOSPC}
 				}}
 			},
@@ -482,7 +482,7 @@ func TestOutcome_identityReportsOurOwnTraceButNotAnotherWrite(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			noOpenInputs(t)
 			c, _, file, _ := newPathCheckFixture(t, false)
-			c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+			c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 				tt.touch(t, file)
 				return errors.New("transient failure at the deletion")
 			}}

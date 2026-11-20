@@ -129,12 +129,19 @@ func IsLinkLike(mode fs.FileMode) bool { return isLinkLike(mode) }
 // MaxLinks bounds the links CheckTrustedPath follows in one path.
 const MaxLinks = 8
 
-// CheckTrustedPath walks path from the filesystem root, component by
+// CheckTrustedPath is ResolveTrustedPath for callers that only need the verdict.
+func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) error {
+	_, err := ResolveTrustedPath(path, trusted)
+	return err
+}
+
+// ResolveTrustedPath walks path from the filesystem root, component by
 // component, for a destination outside any monitored path. A link is followed
 // only when trusted(link, parentDir) allows it; the walk goes on through its
 // target and any further link, at most MaxLinks of them. A missing component
-// is an error: nothing is created there.
-func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) error {
+// is an error: nothing is created there. It returns the path it validated,
+// without any link: the one to open, so that the path is resolved once.
+func ResolveTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) (string, error) {
 	path = filepath.Clean(path)
 	vol := filepath.VolumeName(path)
 	top := vol + string(filepath.Separator)
@@ -154,7 +161,7 @@ func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) 
 		next := filepath.Join(cur, comp)
 		fi, err := os.Lstat(next)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !isLinkLike(fi.Mode()) {
 			cur = next
@@ -162,18 +169,18 @@ func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) 
 		}
 		links++
 		if fi.Mode()&os.ModeSymlink == 0 || links > MaxLinks {
-			return fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
+			return "", fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
 		}
 		parent, err := os.Lstat(cur)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !trusted(fi, parent) {
-			return fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
+			return "", fmt.Errorf("%w: %q", ErrSymlinkInPath, next)
 		}
 		target, err := os.Readlink(next)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if filepath.IsAbs(target) {
 			tvol := filepath.VolumeName(target)
@@ -182,7 +189,7 @@ func CheckTrustedPath(path string, trusted func(link, parent fs.FileInfo) bool) 
 		}
 		remaining = append(splitPath(target), remaining...)
 	}
-	return nil
+	return cur, nil
 }
 
 func splitPath(p string) []string {

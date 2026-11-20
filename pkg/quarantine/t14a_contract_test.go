@@ -15,7 +15,7 @@ func restoreContent(t *testing.T, q *QuarantineHandler, name, content string) (p
 	t.Helper()
 	path = depositSample(t, t.TempDir(), name, content)
 	sha = sha256Hex([]byte(content))
-	_, id, err := q.Quarantine(t.Context(), path, sha, []string{"m"})
+	_, id, err := quarantinePath(t.Context(), t, q, path, sha, []string{"m"})
 	if err != nil {
 		t.Fatalf("Quarantine() error = %v", err)
 	}
@@ -96,7 +96,7 @@ func TestT14a_aClosedRegistryIsAnErrorNeverASafeAnswer(t *testing.T) {
 	if got {
 		t.Error("IsRestored() on a closed registry answered true: the answer must be \"no\" or an error")
 	}
-	if _, _, qerr := q.Quarantine(t.Context(), depositSample(t, t.TempDir(), "z.bin", "z"), sha256Hex([]byte("z")), nil); qerr == nil {
+	if _, _, qerr := quarantinePath(t.Context(), t, q, depositSample(t, t.TempDir(), "z.bin", "z"), sha256Hex([]byte("z")), nil); qerr == nil {
 		t.Error("Quarantine() on a closed registry: error = nil")
 	}
 }

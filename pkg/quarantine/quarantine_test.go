@@ -319,7 +319,7 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 			tt.args.fileSHA256 = sha256Hex([]byte(tt.fields.fileContent))
 
 			// Execute
-			gotLocation, gotID, err := q.Quarantine(ctx, testFilePath, tt.args.fileSHA256, tt.args.malwares)
+			gotLocation, gotID, err := quarantinePath(ctx, t, q, testFilePath, tt.args.fileSHA256, tt.args.malwares)
 
 			// Check error
 			if tt.wantErr != nil {
@@ -772,7 +772,7 @@ func TestQuarantineHandler_Restore_SymlinkedDestinationDir(t *testing.T) {
 		t.Fatalf("failed to create sample file: %v", err)
 	}
 
-	_, id, err := q.Quarantine(ctx, samplePath, sha256Hex([]byte("malicious content")), []string{"test"})
+	_, id, err := quarantinePath(ctx, t, q, samplePath, sha256Hex([]byte("malicious content")), []string{"test"})
 	if err != nil {
 		t.Fatalf("Quarantine() error = %v", err)
 	}

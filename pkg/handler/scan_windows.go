@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/gonutz/wui/v2"
 )
 
@@ -91,6 +92,6 @@ var HandleResultCB = func(path string, result datamodel.Result, report *datamode
 	return nil
 }
 
-func (a *GuiHandleResult) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
-	return HandleResultCB(path, result, report)
+func (a *GuiHandleResult) Handle(ctx context.Context, src scanner.Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	return HandleResultCB(src.Path, result, report)
 }

@@ -4,13 +4,14 @@ package scanner
 
 import (
 	"os"
-	"strconv"
+
+	"github.com/glimps-re/host-connector/internal/safepath"
 )
 
 // descriptorPathOS returns the path /proc/<pid>/fd/<N> that reads the file held
 // by f, and whether it can be used: it must resolve to the very same file.
 func descriptorPathOS(f *os.File) (string, bool) {
-	link := "/proc/" + strconv.Itoa(os.Getpid()) + "/fd/" + strconv.FormatUint(uint64(f.Fd()), 10)
+	link := safepath.FDPath(f, os.Getpid())
 	want, err := f.Stat()
 	if err != nil {
 		return "", false

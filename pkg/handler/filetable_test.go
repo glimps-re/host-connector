@@ -949,3 +949,26 @@ func BenchmarkPurgeBatch(b *testing.B) {
 		b.Fatalf("tracked = %d, want %d: the protected entries must stay", tab.Len(), purgeBatch)
 	}
 }
+
+func TestFileTable_beginRescanKeepsTheLeftoverOfAnUnfinishedRescan(t *testing.T) {
+	now := time.Unix(1000, 0)
+	tab := newTestTable(1<<20, 25)
+	seen, left := tp("u", 1), tp("u", 2)
+	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
+	tab.Track(left, fileStamp{}, now, now.Add(time.Hour))
+	tab.BeginRescan()
+	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
+	// The rescan stops before EndRescan: "left" was never visited and must
+	// still be accounted for by the next one.
+	tab.BeginRescan()
+	checkConsistency(t, tab)
+	tab.Track(seen, fileStamp{}, now, now.Add(time.Hour))
+	tab.EndRescan(nil, false)
+	if _, ok := tab.Get(left); ok {
+		t.Error("an entry not seen by two rescans must be purged")
+	}
+	if _, ok := tab.Get(seen); !ok {
+		t.Error("an entry seen by the last rescan must be kept")
+	}
+	checkConsistency(t, tab)
+}

@@ -27,9 +27,13 @@ extract:
     default_passwords:
       - infected
 
-    # Custom path to 7-Zip binary (optional)
-    # If not specified, the plugin will auto-detect system 7-Zip or use the embedded binary
-    # seven_zip_path: /usr/bin/7z
+    # Absolute path of a 7-Zip binary (optional)
+    # If not specified, the embedded 7-Zip is deployed in the private work directory
+    # (a 7zzs found in PATH is never used). A configured binary must be owned by root
+    # or the connector account and not writable by others. Either way it is run at
+    # startup on a reference archive: a missing, unsafe or unsupported 7-Zip
+    # (the analysis relies on the output of 7-Zip 25.01) refuses the start.
+    # seven_zip_path: /opt/7zip/7zzs
 
 # FileType Filter Plugin - MIME type-based file filtering
 # Filters files based on their detected MIME types using libmagic

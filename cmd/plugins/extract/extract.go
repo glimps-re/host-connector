@@ -74,9 +74,17 @@ type extractResult struct {
 	extractedFiles []ExtractedFile
 	symlinkFiles   []string
 	passwordUsed   string
-	skipped        skipList
-	anomalies      []string
-	logger         *slog.Logger
+	// listed is the number of files in the listing.
+	listed     int
+	listedSize int64
+	// tail is set when 7z reported data after the end of the archive.
+	tail bool
+	// produced and announced are the files found on disk and the files the
+	// listing announced; set once the extraction has run.
+	produced, announced int
+	skipped             skipList
+	anomalies           []string
+	logger              *slog.Logger
 }
 
 type ExtractedFile struct {
@@ -89,56 +97,7 @@ type ExtractedFile struct {
 type sevenZipExtract struct {
 	config       extractorConfig
 	sevenZipPath string
-	tmpSevenZip  bool
 	logger       *slog.Logger
-}
-
-func newSevenZipExtract(config extractorConfig, sevenZipPath string, logger *slog.Logger) (sze *sevenZipExtract, err error) {
-	sze = &sevenZipExtract{
-		config:       config,
-		sevenZipPath: sevenZipPath,
-		logger:       logger,
-	}
-
-	if sevenZipPath == "" {
-		if err = sze.resolve7zzs(); err != nil {
-			err = fmt.Errorf("resolving 7zzs binary: %w", err)
-			return
-		}
-	}
-	return
-}
-
-// resolve7zzs locates 7zzs in PATH or deploys the embedded binary.
-func (sze *sevenZipExtract) resolve7zzs() (err error) {
-	fname, err := exec.LookPath("7zzs")
-	if err == nil {
-		sze.sevenZipPath, err = filepath.Abs(fname)
-		return
-	}
-
-	f, err := os.CreateTemp(os.TempDir(), "7zzs")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if e := f.Close(); e != nil {
-			sze.logger.Error("could not close created 7zzs temp file", slog.String("file", f.Name()), slog.String("error", e.Error()))
-		}
-	}()
-
-	_, err = f.Write(SevenZip)
-	if err != nil {
-		return
-	}
-
-	err = f.Chmod(0o755)
-	if err != nil {
-		return
-	}
-	sze.sevenZipPath = f.Name()
-	sze.tmpSevenZip = true
-	return
 }
 
 // effectiveLimits is the strictest of the plugin's own keys and the limits the
@@ -201,6 +160,9 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	baseAnomalies := slices.Clone(sink.anomalies)
 	extraction.anomalies = slices.Clone(baseAnomalies)
 	extraction.skipped = sink.table.skipped
+	extraction.listed = sink.table.files
+	extraction.listedSize = sink.table.totalSize
+	extraction.tail = sink.tail
 	t := &sink.table
 
 	// zip bomb detection (only count files that would pass MaxFileSize filter)
@@ -252,7 +214,9 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 
 	// Counted, not matched by name: a name 7z sanitizes can hide behind a
 	// genuine file of the sanitized name.
-	if expected := t.selectedCount - removed; produced != expected {
+	expected := t.selectedCount - removed
+	extraction.produced, extraction.announced = produced, expected
+	if produced != expected {
 		sze.logger.Error("extraction does not match the listing",
 			slog.Int("expected", expected), slog.Int("produced", produced), slog.String("archive", sanitizeOutput(archivePath)))
 		extraction.anomalies = noteAnomaly(extraction.anomalies, fmt.Sprintf("extracted %d files, the listing announced %d", produced, expected))
@@ -350,15 +314,13 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 	}
 	runCtx, runCancel := context.WithTimeout(ctx, szRunTimeout)
 	defer runCancel()
-	cmd := exec.CommandContext(runCtx, sze.sevenZipPath, append([]string{passwordArg}, args...)...) //nolint:gosec // G204: binary path checked by DeclareExecutable at Init; arguments passed as argv, never through a shell
 	stderr := &cappedBuffer{limit: maxSevenZipStderr, cancel: runCancel}
-	cmd.Stderr = stderr
-	cmd.WaitDelay = time.Second
-	stdout, err := cmd.StdoutPipe()
+	cmd, stdout, err := startRetryingBusy(runCtx, sze.sevenZipPath, append([]string{passwordArg}, args...), stderr)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %w", plugins.ErrExtractorUnavailable, err)
-	}
-	if err = cmd.Start(); err != nil {
+		// A cancelled or expired context says nothing about the extractor.
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return nil, err
+		}
 		// An argument list too long is the archive's fault, not the extractor's.
 		if errors.Is(err, syscall.E2BIG) {
 			return nil, fmt.Errorf("7z cannot be given this many member names: %w", err)
@@ -371,22 +333,24 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 		consume = discard
 	}
 	consumeErr := consume(limited)
-	if consumeErr == nil && limited.N <= 0 {
-		consumeErr = errSevenZipOutputTooLarge
-	}
 	if consumeErr != nil {
 		runCancel()
 	}
-	if _, copyErr := io.Copy(io.Discard, stdout); copyErr != nil {
+	// What the consumer did not read is drained, still under the cap.
+	if _, copyErr := io.Copy(io.Discard, limited); copyErr != nil {
 		sze.logger.Debug("draining 7z output", slog.String("error", copyErr.Error()))
+	}
+	if consumeErr == nil && limited.N <= 0 {
+		consumeErr = errSevenZipOutputTooLarge
+		runCancel()
 	}
 	cmdErr := cmd.Wait()
 
 	switch {
-	case consumeErr != nil:
-		return nil, consumeErr
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		return nil, errSevenZipTimeout
+	case consumeErr != nil:
+		return nil, consumeErr
 	case stderr.exceeded:
 		return nil, fmt.Errorf("%w: %s", errSevenZipOutputTooLarge, sanitizeOutput(stderr.buf.String()))
 	}
@@ -545,4 +509,40 @@ func (ec *extractResult) update(filePath string, archivePath string) (err error)
 		return
 	}
 	return
+}
+
+// startCmd starts a command; a variable so tests can inject start failures.
+var startCmd = func(cmd *exec.Cmd) error { return cmd.Start() }
+
+const (
+	busyAttempts = 10
+	busyPause    = 50 * time.Millisecond
+)
+
+// startRetryingBusy starts 7z. A binary written a moment ago can be reported
+// busy (ETXTBSY) while another goroutine's fork still holds the descriptor that
+// wrote it: a short retry, with a new command each time, gets past it. The
+// pause stops with ctx and there is none after the last attempt.
+func startRetryingBusy(ctx context.Context, path string, args []string, stderr io.Writer) (cmd *exec.Cmd, stdout io.ReadCloser, err error) {
+	for attempt := range busyAttempts {
+		cmd = exec.CommandContext(ctx, path, args...) //nolint:gosec // G204: binary path checked by DeclareExecutable at Init; arguments passed as argv, never through a shell
+		cmd.Stderr = stderr
+		cmd.WaitDelay = time.Second
+		confineProcess(cmd)
+		if stdout, err = cmd.StdoutPipe(); err != nil {
+			return nil, nil, err
+		}
+		if err = startCmd(cmd); !errors.Is(err, syscall.ETXTBSY) {
+			return cmd, stdout, err
+		}
+		if attempt == busyAttempts-1 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return cmd, stdout, ctx.Err()
+		case <-time.After(busyPause):
+		}
+	}
+	return cmd, stdout, err
 }

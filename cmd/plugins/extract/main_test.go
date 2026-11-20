@@ -1,8 +1,6 @@
 package main
 
 import (
-	"log/slog"
-	"os"
 	"testing"
 
 	"github.com/alecthomas/units"
@@ -36,7 +34,7 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SevenZipExtractPlugin{}
-			mockContext := mock.NewMockHCContext()
+			mockContext := newMockContext(t)
 
 			err := plugin.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
@@ -58,7 +56,7 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 
 func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := mock.NewMockHCContext()
+	mockContext := newMockContext(t)
 
 	config := plugin.GetDefaultConfig()
 
@@ -72,44 +70,6 @@ func TestSevenZipExtractPlugin_Close(t *testing.T) {
 	err = plugin.Close(t.Context())
 	if err != nil {
 		t.Errorf("SevenZipExtractPlugin.Close() error = %v, want nil", err)
-	}
-}
-
-func TestSevenZipExtractPlugin_resolve7zzs(t *testing.T) {
-	tests := []struct {
-		name    string
-		wantErr bool
-	}{
-		{
-			name:    "get 7zzs binary",
-			wantErr: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			testLogger := slog.New(slog.DiscardHandler)
-			sze, err := newSevenZipExtract(extractorConfig{}, "", testLogger)
-			if (err != nil) != tt.wantErr {
-				t.Errorf("newSevenZipExtract() error = %v, wantErr %v", err, tt.wantErr)
-				return
-			}
-
-			if !tt.wantErr {
-				if sze.sevenZipPath == "" {
-					t.Error("newSevenZipExtract() should resolve a valid path")
-				}
-
-				info, statErr := os.Stat(sze.sevenZipPath)
-				if os.IsNotExist(statErr) {
-					t.Errorf("newSevenZipExtract() resolved non-existent path: %s", sze.sevenZipPath)
-				}
-
-				if info != nil && info.Mode()&0o111 == 0 {
-					t.Error("7zzs binary should be executable")
-				}
-			}
-		})
 	}
 }
 
@@ -135,7 +95,7 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SevenZipExtractPlugin{}
-			mockContext := mock.NewMockHCContext()
+			mockContext := newMockContext(t)
 
 			// Initialize plugin
 			err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
@@ -177,7 +137,7 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 
 func TestSevenZipExtractPlugin_Integration(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := mock.NewMockHCContext()
+	mockContext := newMockContext(t)
 
 	// Test initialization
 	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
@@ -208,7 +168,7 @@ func TestSevenZipExtractPlugin_Interface(t *testing.T) {
 
 func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	plugin := &SevenZipExtractPlugin{}
-	mockContext := mock.NewMockHCContext()
+	mockContext := newMockContext(t)
 
 	// Initialize with empty config path to test defaults
 	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
@@ -240,4 +200,21 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	if len(plugin.sze.config.DefaultPasswords) != 1 || plugin.sze.config.DefaultPasswords[0] != "infected" {
 		t.Errorf("Default passwords = %v, want [\"infected\"]", plugin.sze.config.DefaultPasswords)
 	}
+}
+
+// newMockContext is a mock whose work directory is a private folder.
+func newMockContext(t *testing.T) *mock.MockHCContext {
+	t.Helper()
+	hcc := mock.NewMockHCContext()
+	hcc.WorkDir = t.TempDir()
+	return hcc
+}
+
+// stubProve replaces the test of the binary for the tests that use a binary
+// that is not a real 7-Zip.
+func stubProve(t *testing.T) {
+	t.Helper()
+	prev := proveBinary
+	t.Cleanup(func() { proveBinary = prev })
+	proveBinary = func(*sevenZipExtract, string) error { return nil }
 }

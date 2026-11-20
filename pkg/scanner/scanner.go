@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/alecthomas/units"
@@ -161,6 +162,8 @@ type Connector struct {
 	quarantiner quarantine.Quarantiner
 
 	closeOnce sync.Once
+	// extractorDown is set while the console error of an unavailable extractor is raised.
+	extractorDown atomic.Bool
 
 	stopIncoming chan struct{} // closed first in Close() to reject new inputChan sends
 	stopWorker   chan struct{}
@@ -695,6 +698,43 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	c.finishAnalysis(input.location)
 }
 
+// extractorEvent is the console event raised while the extractor cannot run.
+const extractorEvent events.ErrorEventType = "host-extractor-unavailable"
+
+// eventTimeout bounds a call to the connector manager made on the way of an
+// extraction.
+const eventTimeout = 10 * time.Second
+
+// extractorUnavailable raises the console error (once until it is resolved).
+// The flag is put back when the manager could not be told, so that the next
+// failure tries again.
+func (c *Connector) extractorUnavailable(cause error) {
+	if !c.extractorDown.CompareAndSwap(false, true) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), eventTimeout)
+	defer cancel()
+	if e := EventHandler.NotifyError(ctx, extractorEvent, fmt.Errorf("archives cannot be extracted, the extractor is unavailable: %w", cause)); e != nil {
+		c.extractorDown.Store(false)
+		logger.Warn("could not push console error", slog.String("error", e.Error()))
+	}
+}
+
+// extractorAvailable resolves the console error once an extraction showed that
+// the extractor runs, whatever it concluded about the archive. The flag is put
+// back when the manager could not be told, so that the next success tries again.
+func (c *Connector) extractorAvailable() {
+	if !c.extractorDown.CompareAndSwap(true, false) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), eventTimeout)
+	defer cancel()
+	if e := EventHandler.NotifyResolution(ctx, "the extractor works again", extractorEvent); e != nil {
+		c.extractorDown.Store(true)
+		logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
+	}
+}
+
 // extractionAnomaly turns an extract-error entry reported by the extractor
 // (an anomaly of the archive: data after its end, a mismatch between what was
 // listed and what was extracted) into an error.
@@ -770,6 +810,16 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	if extractErr == nil {
 		extractErr = extractionAnomaly(extraction)
 	}
+	if errors.Is(extractErr, plugins.ErrExtractorUnavailable) {
+		// Says nothing about the archive: it is neither submitted nor in
+		// definitive error, and the operator is told.
+		archiveLogger.Error("the extractor is unavailable", slog.String("error", extractErr.Error()))
+		c.extractorUnavailable(extractErr)
+		err = fmt.Errorf("extractor-unavailable: %w", extractErr)
+		return
+	}
+	// 7z ran, whatever it concluded: an alert about the extractor is over.
+	c.extractorAvailable()
 	if extractErr != nil && !errors.Is(extractErr, plugins.ErrUnsupportedFormat) && !errors.Is(extractErr, plugins.ErrEncrypted) {
 		// A recognized archive that could not be extracted is an error, never
 		// a plain file: submitting it as is would let its content through.
@@ -854,7 +904,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 
 	depth += 1
 	// Note: files should be directly streamed to channel and not accumulated in memory
-	for _, fileLocation := range extractedFiles {
+	for i, fileLocation := range extractedFiles {
 		fileLogger := archiveLogger.With(slog.Int("depth", depth), slog.String("subfile", fileLocation))
 
 		var fileSHA256 string
@@ -904,6 +954,14 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
+			if errors.Is(err, plugins.ErrExtractorUnavailable) {
+				// Not a verdict on this archive: the top archive is left in place
+				// without a final result, like on shutdown, instead of ending in
+				// definitive error for a passing failure of the extractor.
+				fileLogger.Error("recursive extraction abandoned, the extractor is unavailable", slog.String(logErrorKey, err.Error()))
+				c.abandonArchive(archiveID, len(extractedFiles)-i, archiveLogger)
+				return
+			}
 			if errors.Is(err, context.Canceled) {
 				// Shutdown requested. No cleanup needed here:
 				// - Temp folder: keep it, files may have been sent to workers
@@ -927,6 +985,18 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		}
 	}
 	return
+}
+
+// abandonArchive gives up an archive whose extraction was cut short: it gets no
+// result, and its folder goes as soon as the members already sent are done.
+func (c *Connector) abandonArchive(archiveID string, unsent int, archiveLogger *slog.Logger) {
+	folder, removeNow, ok := c.archiveStatus.abandon(archiveID, unsent)
+	if !ok || !removeNow {
+		return
+	}
+	if err := os.RemoveAll(folder); err != nil {
+		archiveLogger.Error("could not remove temp folder", slog.String("folder", folder), slog.String(logErrorKey, err.Error()))
+	}
 }
 
 // memberCause strips the location of the temporary file from an I/O error: the
@@ -1119,6 +1189,15 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	defer func() {
 		c.finishAnalysis(status.archiveLocation)
 	}()
+
+	if status.abandoned {
+		// Its extraction was cut short: no result, no action, only the cleanup.
+		if removeErr := os.RemoveAll(status.tmpFolder); removeErr != nil {
+			archiveLogger.Error("could not remove temp folder", slog.String("folder", status.tmpFolder), slog.String(logErrorKey, removeErr.Error()))
+		}
+		c.archiveStatus.deleteStatus(archiveID)
+		return
+	}
 
 	isSubArchive := status.parentArchive.statusID != ""
 

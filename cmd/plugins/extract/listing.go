@@ -55,7 +55,9 @@ type listSink struct {
 	// Per table: the last table of the listing wins.
 	table tableState
 
-	tables    int
+	tables int
+	// tail is set when 7z reports data after the end of the archive.
+	tail      bool
 	anomalies []string
 	complete  bool
 	summary   int
@@ -209,6 +211,7 @@ func (s *listSink) noteMeta(line string) {
 	switch {
 	case strings.HasPrefix(line, szTailSizePrefix):
 		if v := strings.TrimSpace(strings.TrimPrefix(line, szTailSizePrefix)); v != "0" {
+			s.tail = true
 			s.anomalies = noteAnomaly(s.anomalies, "data after the end of the archive ("+v+" bytes)")
 		}
 	case strings.HasPrefix(line, szWarningsPrefix), strings.HasPrefix(line, szWarningsCount):

@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -28,6 +27,7 @@ const (
 // SevenZipExtractPlugin provides archive extraction via 7-Zip.
 type SevenZipExtractPlugin struct {
 	sze           *sevenZipExtract
+	bin           *binary
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
 }
@@ -65,17 +65,35 @@ func (p *SevenZipExtractPlugin) GetDefaultConfig() (config any) {
 }
 
 // Validate checks the configuration like Init does, without any effect: the
-// sizes are parsed and a configured 7-Zip binary is checked and declared.
+// sizes are parsed, and the 7-Zip binary is deployed or checked, declared and
+// run in the scratch directory of the validation, which leaves the running
+// plugin and its binary alone.
 func (p *SevenZipExtractPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		return errors.New("error bad config passed")
 	}
-	_, _, err := parseSizes(config)
+	maxFileSize, maxTotalExtractedSize, err := parseSizes(config)
 	if err != nil {
 		return err
 	}
-	return declareBinary(config, vc)
+	bin, err := prepareBinary(config.SevenZipPath, vc, extractorConfigOf(config, maxFileSize, maxTotalExtractedSize), vc.GetLogger())
+	if err != nil {
+		return err
+	}
+	if rmErr := bin.remove(); rmErr != nil {
+		vc.GetLogger().Warn("cannot remove the 7-Zip deployed to validate", slog.String("error", rmErr.Error()))
+	}
+	return nil
+}
+
+func extractorConfigOf(config *Config, maxFileSize, maxTotalExtractedSize int64) extractorConfig {
+	return extractorConfig{
+		MaxFileSize:           maxFileSize,
+		MaxExtractedFiles:     config.MaxExtractedFiles,
+		MaxTotalExtractedSize: maxTotalExtractedSize,
+		DefaultPasswords:      config.DefaultPasswords,
+	}
 }
 
 func parseSizes(config *Config) (maxFileSize, maxTotalExtractedSize int64, err error) {
@@ -86,18 +104,6 @@ func parseSizes(config *Config) (maxFileSize, maxTotalExtractedSize int64, err e
 		return 0, 0, fmt.Errorf("could not parse max_total_extracted_size: %w", err)
 	}
 	return maxFileSize, maxTotalExtractedSize, nil
-}
-
-// declareBinary declares the configured 7-Zip binary to the core, which checks
-// it before anything runs it.
-func declareBinary(config *Config, vc plugins.ValidationContext) error {
-	if config.SevenZipPath == "" {
-		return nil
-	}
-	if err := vc.DeclareExecutable(config.SevenZipPath); err != nil {
-		return fmt.Errorf("seven_zip_path: %w", err)
-	}
-	return nil
 }
 
 // Init sets up the extraction engine and registers callbacks.
@@ -114,19 +120,18 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 	if err != nil {
 		return
 	}
-	if err = declareBinary(config, hcc); err != nil {
-		return
-	}
-
-	p.sze, err = newSevenZipExtract(extractorConfig{
-		MaxFileSize:           maxFileSize,
-		MaxExtractedFiles:     config.MaxExtractedFiles,
-		MaxTotalExtractedSize: maxTotalExtractedSize,
-		DefaultPasswords:      config.DefaultPasswords,
-	}, config.SevenZipPath, p.logger)
+	econf := extractorConfigOf(config, maxFileSize, maxTotalExtractedSize)
+	bin, err := prepareBinary(config.SevenZipPath, hcc, econf, p.logger)
 	if err != nil {
-		return
+		return err
 	}
+	if p.bin != nil {
+		if rmErr := p.bin.remove(); rmErr != nil {
+			p.logger.Warn("cannot remove the 7-Zip of a previous Init", slog.String("error", rmErr.Error()))
+		}
+	}
+	p.sze = &sevenZipExtract{config: econf, sevenZipPath: bin.path, logger: p.logger}
+	p.bin = bin
 
 	hcc.SetExtractFile(p.ExtractFile)
 	p.logger.Info("plugin initialized",
@@ -177,16 +182,13 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	return extraction, nil
 }
 
-// Close removes temporary 7-Zip binary if one was deployed.
-func (p *SevenZipExtractPlugin) Close(_ context.Context) (err error) {
-	if p.sze == nil || !p.sze.tmpSevenZip {
-		return
+// Close removes the 7-Zip binary deployed by Init, if any; calling it again
+// has no effect.
+func (p *SevenZipExtractPlugin) Close(_ context.Context) error {
+	if p.bin == nil {
+		return nil
 	}
-	p.sze.tmpSevenZip = false
-	if err = os.Remove(p.sze.sevenZipPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return
-	}
-	return nil
+	return p.bin.remove()
 }
 
 func main() {}

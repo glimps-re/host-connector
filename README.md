@@ -225,11 +225,13 @@ extract:
     default_passwords:                # Passwords for encrypted archives
       - infected
       - password
-    seven_zip_path: ""                # Custom 7-Zip binary path (auto-detect if empty)
+    seven_zip_path: ""                # Absolute path of a 7-Zip binary (the embedded one, deployed in the work directory, if empty)
 ```
 
+**When upgrading:** check `seven_zip_path`. A `7zzs` found in `PATH` is no longer used, and a 7-Zip older than 25.01 is refused at start.
+
 **Key Features:**
-- Uses embedded 7-Zip binary for automatic deployment
+- Uses the embedded 7-Zip binary, deployed in the private work directory (a `7zzs` found in `PATH` is never used); the binary is checked and run on a reference archive at every start and configuration, and the connector refuses to start if it is missing, unsafe, cannot run (for example `work_dir` on a `noexec` file system) or is not a supported version
 - Prevents extraction bombs through size and count limits (centralized in host connector config)
 - Handles symlinks securely
 - Supports password-protected archives

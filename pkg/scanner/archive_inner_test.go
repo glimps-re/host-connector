@@ -14,9 +14,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
 
+	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -753,5 +755,290 @@ func TestDefaultExtractor_onlyAnUnknownTypeIsAPlainFile(t *testing.T) {
 	cut = filepath.Join(dir, cut)
 	if _, err := ExtractFile(cut, t.TempDir(), plugins.ExtractLimits{}); err == nil || errors.Is(err, plugins.ErrUnsupportedFormat) {
 		t.Errorf("ExtractFile(truncated zip) error = %v, want an extraction error that is not ErrUnsupportedFormat", err)
+	}
+}
+
+func TestRecursiveExtract_unavailableExtractorIsNotAnArchiveVerdict(t *testing.T) {
+	rec := &recordingEventHandler{}
+	prevEvents, prevExtract := EventHandler, ExtractFile
+	EventHandler = rec
+	t.Cleanup(func() { EventHandler, ExtractFile = prevEvents, prevExtract })
+	unavailable := true
+	ExtractFile = func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+		if unavailable {
+			return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
+		}
+		p := filepath.Join(outputDir, "a.txt")
+		if err := os.WriteFile(p, []byte("a"), 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		return plugins.Extraction{Size: 1, Files: []string{p}}, nil
+	}
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	submitter := archiveCleanSubmitter()
+	var submitted atomic.Int32
+	submitter.WaitForFileMock = func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
+		submitted.Add(1)
+		return gdetect.Result{}, nil
+	}
+	c.submitter = submitter
+	t.Cleanup(func() { c.Close(t.Context()) })
+
+	run := func() error {
+		location, sha := createArchive(t, []string{"content"})
+		info, err := os.Stat(location)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var size int64
+		var files int
+		return c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger)
+	}
+	for range 3 {
+		err := run()
+		if err == nil || !errors.Is(err, plugins.ErrExtractorUnavailable) || strings.Contains(err.Error(), "extract-error") {
+			t.Fatalf("recursiveExtract() error = %v, want an extractor-unavailable error that is not an extract-error", err)
+		}
+	}
+	if submitted.Load() != 0 {
+		t.Error("an archive that could not be extracted must not be submitted")
+	}
+	if rec.errors != 1 || rec.resolutions != 0 {
+		t.Errorf("events: %d errors, %d resolutions, want one error raised once", rec.errors, rec.resolutions)
+	}
+	unavailable = false
+	if err := run(); err != nil {
+		t.Fatalf("recursiveExtract() once the extractor works error = %v", err)
+	}
+	if rec.resolutions != 1 {
+		t.Errorf("resolutions = %d, want the error resolved at the first extraction that worked", rec.resolutions)
+	}
+}
+
+// failingEventHandler fails its first failures calls, then records.
+type failingEventHandler struct {
+	events.NoopEventHandler
+	failErrors, failResolutions int
+	errors, resolutions         int
+}
+
+func (f *failingEventHandler) NotifyError(context.Context, events.ErrorEventType, error) error {
+	f.errors++
+	if f.failErrors > 0 {
+		f.failErrors--
+		return errors.New("manager unreachable")
+	}
+	return nil
+}
+
+func (f *failingEventHandler) NotifyResolution(context.Context, string, ...events.ErrorEventType) error {
+	f.resolutions++
+	if f.failResolutions > 0 {
+		f.failResolutions--
+		return errors.New("manager unreachable")
+	}
+	return nil
+}
+
+func TestRecursiveExtract_alertIsResolvedWhenTheExtractorRunsAgainWhateverTheArchive(t *testing.T) {
+	rec := &recordingEventHandler{}
+	prevEvents, prevExtract := EventHandler, ExtractFile
+	EventHandler = rec
+	t.Cleanup(func() { EventHandler, ExtractFile = prevEvents, prevExtract })
+	outcome := fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
+	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		return plugins.Extraction{}, outcome
+	}
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	c.submitter = archiveCleanSubmitter()
+	t.Cleanup(func() { c.Close(t.Context()) })
+	run := func() {
+		location, sha := createArchive(t, []string{"content"})
+		info, err := os.Stat(location)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var size int64
+		var files int
+		_ = c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger)
+	}
+	run()
+	outcome = fmt.Errorf("x: %w", plugins.ErrUnsupportedFormat)
+	run()
+	if rec.errors != 1 || rec.resolutions != 1 {
+		t.Errorf("events: %d errors, %d resolutions, want the alert resolved by a file that is not an archive", rec.errors, rec.resolutions)
+	}
+}
+
+func TestExtractorAlert_isRetriedWhenTheManagerCannotBeReached(t *testing.T) {
+	fh := &failingEventHandler{failErrors: 1, failResolutions: 1}
+	prev := EventHandler
+	EventHandler = fh
+	t.Cleanup(func() { EventHandler = prev })
+	c := &Connector{}
+	c.extractorUnavailable(plugins.ErrExtractorUnavailable)
+	c.extractorUnavailable(plugins.ErrExtractorUnavailable)
+	if fh.errors != 2 {
+		t.Errorf("error notifications = %d, want a second attempt after the failed one", fh.errors)
+	}
+	c.extractorAvailable()
+	c.extractorAvailable()
+	if fh.resolutions != 2 {
+		t.Errorf("resolution notifications = %d, want a second attempt after the failed one", fh.resolutions)
+	}
+	c.extractorAvailable()
+	if fh.resolutions != 2 {
+		t.Errorf("a resolved alert must not be resolved again (%d)", fh.resolutions)
+	}
+}
+
+func TestRecursiveExtract_unavailableExtractorOnANestedArchiveLeavesTheTopArchiveUnfinished(t *testing.T) {
+	prevExtract := ExtractFile
+	t.Cleanup(func() { ExtractFile = prevExtract })
+	inner, _ := createArchive(t, []string{"inner content"})
+	innerBytes, err := os.ReadFile(filepath.Clean(inner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ExtractFile = func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+		calls++
+		if calls > 1 {
+			return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
+		}
+		root, err := os.OpenRoot(outputDir)
+		if err != nil {
+			return plugins.Extraction{}, err
+		}
+		defer func() {
+			if e := root.Close(); e != nil {
+				t.Error(e)
+			}
+		}()
+		if err := root.WriteFile("inner.zip", innerBytes, 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		return plugins.Extraction{Size: uint64(len(innerBytes)), Files: []string{filepath.Join(outputDir, "inner.zip")}}, nil
+	}
+	var handled atomic.Int32
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+		handled.Add(1)
+		return nil
+	}}
+	c.submitter = archiveCleanSubmitter()
+	t.Cleanup(func() { c.Close(t.Context()) })
+
+	location, sha := createArchive(t, []string{"outer"})
+	info, err := os.Stat(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int64
+	var files int
+	err = c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger)
+	if !errors.Is(err, plugins.ErrExtractorUnavailable) {
+		t.Fatalf("recursiveExtract() error = %v, want ErrExtractorUnavailable to reach the caller", err)
+	}
+	if handled.Load() != 0 {
+		t.Error("the top archive must not get a definitive result for a passing failure of the extractor")
+	}
+}
+
+func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testing.T) {
+	prevExtract := ExtractFile
+	t.Cleanup(func() { ExtractFile = prevExtract })
+	inner, _ := createArchive(t, []string{"inner content"})
+	innerBytes, err := os.ReadFile(filepath.Clean(inner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	ExtractFile = func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+		calls++
+		if calls > 1 {
+			return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
+		}
+		root, err := os.OpenRoot(outputDir)
+		if err != nil {
+			return plugins.Extraction{}, err
+		}
+		defer func() {
+			if e := root.Close(); e != nil {
+				t.Error(e)
+			}
+		}()
+		// A plain member goes to the workers first, the sub-archive fails after.
+		if err := root.WriteFile("a-plain.txt", []byte("plain member"), 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		if err := root.WriteFile("b-inner.zip", innerBytes, 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		return plugins.Extraction{Size: 12, Files: []string{filepath.Join(outputDir, "a-plain.txt"), filepath.Join(outputDir, "b-inner.zip")}}, nil
+	}
+	var handled atomic.Int32
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error {
+		handled.Add(1)
+		return nil
+	}}
+	c.submitter = archiveCleanSubmitter()
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close(t.Context()) })
+
+	location, sha := createArchive(t, []string{"outer"})
+	info, err := os.Stat(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int64
+	var files int
+	err = c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger)
+	if !errors.Is(err, plugins.ErrExtractorUnavailable) {
+		t.Fatalf("recursiveExtract() error = %v, want ErrExtractorUnavailable", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		entries, _ := os.ReadDir(c.work.extractDir())
+		c.archiveStatus.RLock()
+		pending := len(c.archiveStatus.statusByID)
+		c.archiveStatus.RUnlock()
+		if len(entries) == 0 && pending == 0 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	entries, err := os.ReadDir(c.work.extractDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.archiveStatus.RLock()
+	pending := len(c.archiveStatus.statusByID)
+	c.archiveStatus.RUnlock()
+	if len(entries) != 0 || pending != 0 {
+		t.Errorf("%d folders and %d archive statuses left after an abandoned archive, want none", len(entries), pending)
+	}
+	if handled.Load() != 0 {
+		t.Error("an abandoned archive must get no action")
+	}
+	if _, err := os.Stat(location); err != nil {
+		t.Errorf("the top archive must stay in place: %v", err)
 	}
 }

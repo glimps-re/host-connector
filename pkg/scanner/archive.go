@@ -38,10 +38,14 @@ type innerErrors struct {
 }
 
 type archiveStatus struct {
-	inner           innerErrors
-	started         bool
-	finished        bool
-	finishClaimed   bool
+	inner         innerErrors
+	started       bool
+	finished      bool
+	finishClaimed bool
+	// abandoned archives get no result: the extraction of a sub-archive failed for
+	// a reason that says nothing about the archive. Their folder is removed when
+	// the last member in flight is done.
+	abandoned       bool
 	archiveLocation string
 	result          datamodel.Result
 	analyzed        int
@@ -132,6 +136,27 @@ func (a *archiveStatusHandler) addInnerError(id string, filename string, err err
 	finished = status.finished
 	a.statusByID[id] = status
 	return
+}
+
+// abandon marks the archive as abandoned. unsent is the number of its members
+// that will never be sent. When no member is in flight any more, the status is
+// deleted and removeNow is true: the caller removes the folder; otherwise the
+// last member to come back finishes the archive, which then only cleans up.
+func (a *archiveStatusHandler) abandon(id string, unsent int) (tmpFolder string, removeNow, ok bool) {
+	a.Lock()
+	defer a.Unlock()
+	status, ok := a.statusByID[id]
+	if !ok || status.finishClaimed {
+		return "", false, false
+	}
+	status.abandoned = true
+	status.total -= unsent
+	if status.total <= status.analyzed {
+		delete(a.statusByID, id)
+		return status.tmpFolder, true, true
+	}
+	a.statusByID[id] = status
+	return status.tmpFolder, false, true
 }
 
 func (a *archiveStatusHandler) deleteStatus(id string) {

@@ -165,6 +165,9 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 		wantNbFileAnalyzed  int
 		wantMitigatedFiles  []FileReportData
 		wantSkippedFiles    []SkippedFileData
+		wantErrorFiles      []ErrorFileData
+		wantTotalErrors     int
+		wantTotalMalware    int
 	}{
 		{
 			name: "ok clean and malware files",
@@ -258,6 +261,49 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 				{Name: "link", Size: "0 B", Reason: "Lien symbolique"},
 			},
 		},
+		{
+			name: "ok top-level error in ErrorFiles",
+			reports: []datamodel.Report{
+				{
+					Filename: "failed.exe",
+					SHA256:   "abc123",
+					Error:    "analysis failed (test)",
+				},
+			},
+			wantNbFileSubmitted: 1,
+			wantNbFileAnalyzed:  0,
+			wantErrorFiles: []ErrorFileData{
+				{Name: "failed.exe", Error: "analysis failed (test)"},
+			},
+			wantTotalErrors: 1,
+		},
+		{
+			name: "ok only detected malware counted in TotalMalware",
+			reports: []datamodel.Report{
+				{
+					Filename:       "malware_file.exe",
+					SHA256:         "abc123",
+					AnalyzedVolume: 10,
+					Malicious:      true,
+					Malwares:       []string{"Trojan.Win32.Test"},
+					MalwareReason:  datamodel.MalwareDetected,
+				},
+				{
+					Filename:      "forbidden.exe",
+					SHA256:        "def456",
+					Malicious:     true,
+					Malwares:      []string{"forbidden_file_path"},
+					MalwareReason: datamodel.FilteredFilePath,
+				},
+			},
+			wantNbFileSubmitted: 2,
+			wantNbFileAnalyzed:  1,
+			wantMitigatedFiles: []FileReportData{
+				{Name: "malware_file.exe", SHA256: "abc123", Malwares: []string{"Trojan.Win32.Test"}},
+				{Name: "forbidden.exe", SHA256: "def456", Malwares: []string{"forbidden_file_path"}},
+			},
+			wantTotalMalware: 1,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,6 +354,18 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 
 			if diff := cmp.Diff(reportData.SkippedFiles, tt.wantSkippedFiles); diff != "" {
 				t.Errorf("ReportPlugin.scanResToReportData() SkippedFiles mismatch (-got +want):\n%s", diff)
+			}
+
+			if diff := cmp.Diff(reportData.ErrorFiles, tt.wantErrorFiles); diff != "" {
+				t.Errorf("ReportPlugin.scanResToReportData() ErrorFiles mismatch (-got +want):\n%s", diff)
+			}
+
+			if reportData.TotalErrors != tt.wantTotalErrors {
+				t.Errorf("ReportPlugin.scanResToReportData() TotalErrors = %v, want %v", reportData.TotalErrors, tt.wantTotalErrors)
+			}
+
+			if reportData.TotalMalware != tt.wantTotalMalware {
+				t.Errorf("ReportPlugin.scanResToReportData() TotalMalware = %v, want %v", reportData.TotalMalware, tt.wantTotalMalware)
 			}
 		})
 	}

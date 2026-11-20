@@ -487,6 +487,30 @@ func Test_mergeResult(t *testing.T) {
 			},
 		},
 		{
+			name: "ok ErrorSubfiles merge with analysis error only",
+			args: args{
+				baseResult: datamodel.Result{
+					SHA256:   "base-sha256",
+					Location: "/archive.zip",
+				},
+				resultToMerge: datamodel.Result{
+					AnalysisError: "analysis failed (test)",
+					MalwareReason: datamodel.AnalysisError,
+				},
+				filename: "failed.exe",
+			},
+			wantResult: datamodel.Result{
+				SHA256:             "base-sha256",
+				Location:           "/archive.zip",
+				MalwareReason:      datamodel.AnalysisError,
+				TotalExtractedFile: 1,
+				MaliciousSubfiles:  map[string]datamodel.Result{},
+				ErrorSubfiles: map[string]string{
+					"failed.exe": "analysis failed (test)",
+				},
+			},
+		},
+		{
 			name: "ok filtered inner file goes to SkippedSubfiles",
 			args: args{
 				baseResult: datamodel.Result{

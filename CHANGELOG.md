@@ -5,6 +5,9 @@
 ### Fixed
 
 - report: files not sent to analysis (filtered by path or type, empty, symbolic link, too big, restored from quarantine, extraction limit reached) are now listed in a "Fichiers non analysés" section, and are no longer counted as analyzed
+- report: errors on top-level files are now listed in "Fichiers en erreur" and counted
+- report: analysis errors of files inside archives are now counted as errors
+- report: only files detected as malicious are counted as malware (files blocked by path are no longer), shown on their own "Fichiers malveillants" line
 
 ## [v1.5.6]
 

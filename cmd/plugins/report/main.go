@@ -238,11 +238,18 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 			})
 			reportData.TotalErrors++
 		}
+		if report.Error != "" {
+			reportData.ErrorFiles = append(reportData.ErrorFiles, ErrorFileData{
+				Name:  report.Filename,
+				Error: report.Error,
+			})
+			reportData.TotalErrors++
+		}
 		if !report.Malicious {
 			continue
 		}
 		reportData.TotalMitigated++
-		if len(report.Malwares) > 0 {
+		if report.MalwareReason == datamodel.MalwareDetected {
 			reportData.TotalMalware++
 		}
 		if len(report.MaliciousExtractedFiles) == 0 {
@@ -392,7 +399,7 @@ func getSkipReason(skipReason datamodel.SkipReason) (reason string) {
 	case datamodel.SkipTooBig:
 		reason = "Taille du fichier trop importante"
 	case datamodel.SkipRestored:
-		reason = "Fichier restauré depuis la quarantaine"
+		reason = "Fichier restauré depuis la quarantaine" //nolint: misspell //report is in french
 	}
 	return
 }

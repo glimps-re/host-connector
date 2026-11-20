@@ -60,6 +60,7 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel
 	analysisReport.ErrorExtractedFiles = result.ErrorSubfiles
 	analysisReport.SkipReason = result.SkipReason
 	analysisReport.SkippedExtractedFiles = collectSkippedFiles(result.SkippedSubfiles)
+	analysisReport.Error = resultError(result)
 	return
 }
 
@@ -70,7 +71,7 @@ func resultError(result datamodel.Result) string {
 	case result.Error != nil:
 		return result.Error.Error()
 	default:
-		return ""
+		return result.AnalysisError
 	}
 }
 

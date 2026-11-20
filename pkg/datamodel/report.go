@@ -39,6 +39,7 @@ type Report struct {
 	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
 	SkipReason              SkipReason        `json:"skip-reason,omitempty"`
 	SkippedExtractedFiles   []ExtractedFile   `json:"skipped-extracted-files,omitempty"`
+	Error                   string            `json:"error,omitempty"`
 }
 
 type Action string

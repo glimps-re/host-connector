@@ -67,6 +67,7 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel
 	analysisReport.GMalwareURL = result.GMalwareURL
 	analysisReport.MaliciousExtractedFiles = collectExtractedFiles(result.MaliciousSubfiles)
 	analysisReport.ErrorExtractedFiles = result.ErrorSubfiles
+	analysisReport.HasBeenRestored = result.Restored
 	return
 }
 

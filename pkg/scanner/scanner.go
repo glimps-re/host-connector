@@ -557,6 +557,8 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	if newres := c.fileScanned(location, run, sha256, res); newres != nil {
 		res = *newres
 	}
+	// A plugin may return another result: the file was restored all the same.
+	res.Restored = true
 	if pathErr := c.checkPath(location); pathErr != nil {
 		refusePath(location, pathErr)
 		c.setFinal(location, run)
@@ -747,7 +749,7 @@ func (c *Connector) prepareFile(location string, want FileIdentity, run *ongoing
 	if c.quarantiner != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
 		defer cancel()
-		restored, err = c.quarantiner.IsRestored(ctx, fileSHA256)
+		restored, err = c.quarantiner.IsRestored(ctx, location, fileSHA256)
 		if err != nil {
 			inputLogger.Error("could not check file restored status", slog.String(logErrorKey, err.Error()))
 			skip = true

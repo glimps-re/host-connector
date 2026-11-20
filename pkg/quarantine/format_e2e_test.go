@@ -189,7 +189,7 @@ func TestQuarantine_wrongSHA256Refused(t *testing.T) {
 			if entries, err := filepath.Glob(filepath.Join(dir, "*.lock")); err != nil || len(entries) != 0 {
 				t.Errorf("no .lock must be kept, got %v (err %v)", entries, err)
 			}
-			if got, err := q.IsRestored(t.Context(), wrong); err != nil || got {
+			if got, err := q.IsRestored(t.Context(), src, wrong); err != nil || got {
 				t.Errorf("IsRestored() = %t (err %v) for a refused quarantine %q", got, err, id)
 			}
 			if _, err := os.Stat(src); err != nil {

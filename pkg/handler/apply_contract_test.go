@@ -44,7 +44,7 @@ func (*fakeQuarantiner) Quarantine(context.Context, string, string, []string) (s
 	return "", "", errors.New("not used")
 }
 func (*fakeQuarantiner) Restore(context.Context, string) error { return errors.New("not used") }
-func (*fakeQuarantiner) IsRestored(context.Context, string) (bool, error) {
+func (*fakeQuarantiner) IsRestored(context.Context, string, string) (bool, error) {
 	return false, nil
 }
 

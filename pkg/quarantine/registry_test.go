@@ -40,15 +40,6 @@ func TestRegistry(t *testing.T) {
 					t.Errorf("registry.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
-				entrySha, err := registry.GetBySHA256(t.Context(), entry1.SHA256)
-				if err != nil {
-					t.Errorf("registry.Get(entry1.ID) error = %v", err)
-					return
-				}
-				if entry1.InitialLocation != entrySha.InitialLocation {
-					t.Errorf("registry.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entrySha)
-					return
-				}
 
 				entry2.InitialLocation = "/tmp/def"
 				err = registry.Set(t.Context(), entry2)
@@ -108,15 +99,6 @@ func TestRegistry(t *testing.T) {
 					t.Errorf("registry.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entry2)
 					return
 				}
-				entrySha, err := registry.GetBySHA256(t.Context(), entry1.SHA256)
-				if err != nil {
-					t.Errorf("registry.Get(entry1.ID) error = %v", err)
-					return
-				}
-				if entry1.InitialLocation != entrySha.InitialLocation {
-					t.Errorf("registry.Get(entry1.ID) != entry1, want = %v, got = %v", entry1, entrySha)
-					return
-				}
 
 				err = registry.Close()
 				if err != nil {
@@ -153,10 +135,6 @@ func TestRegistry(t *testing.T) {
 					return
 				}
 				_, err = registry.Get(t.Context(), "test")
-				if !errors.Is(err, errEntryNotFound) {
-					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, errEntryNotFound)
-				}
-				_, err = registry.GetBySHA256(t.Context(), "test")
 				if !errors.Is(err, errEntryNotFound) {
 					t.Errorf("registry.Get(unknown) error = %v, want = %v", err, errEntryNotFound)
 				}
@@ -231,7 +209,7 @@ func TestRegistry(t *testing.T) {
 				}
 				worker := func(i int) {
 					defer wg.Done()
-					_, err := registry.GetBySHA256(t.Context(), "test")
+					_, err := registry.Get(t.Context(), "test")
 					if !errors.Is(err, errEntryNotFound) {
 						t.Errorf("[%d]registry.Get(unknown) error = %v, want = %v", i, err, errEntryNotFound)
 					}

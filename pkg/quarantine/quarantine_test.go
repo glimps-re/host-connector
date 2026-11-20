@@ -50,7 +50,7 @@ type registryMock struct {
 	CloneMock       func(ctx context.Context, newLocation string, mergeExisting bool) (quarantineRegistry, error)
 	DiscardMock     func() error
 	CloseMock       func() error
-	GetBySHA256Mock func(ctx context.Context, id string) (*Entry, error)
+	HasRestoredMock func(ctx context.Context, sha256 string) (bool, error)
 }
 
 func (m *registryMock) GetLocation() (location string) {
@@ -74,11 +74,11 @@ func (m *registryMock) Get(ctx context.Context, id string) (*Entry, error) {
 	panic("Get not implemented")
 }
 
-func (m *registryMock) GetBySHA256(ctx context.Context, id string) (*Entry, error) {
-	if m.GetBySHA256Mock != nil {
-		return m.GetBySHA256Mock(ctx, id)
+func (m *registryMock) HasRestored(ctx context.Context, sha256 string) (bool, error) {
+	if m.HasRestoredMock != nil {
+		return m.HasRestoredMock(ctx, sha256)
 	}
-	panic("GetBySha256 not implemented")
+	panic("HasRestored not implemented")
 }
 
 func (m *registryMock) Clone(ctx context.Context, newLocation string, _ bool) (quarantineRegistry, error) {
@@ -303,7 +303,9 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 				},
 			}
 			registry := &registryMock{
-				SetMock: tt.fields.registrySet,
+				SetMock:         tt.fields.registrySet,
+				HasRestoredMock: func(context.Context, string) (bool, error) { return false, nil },
+				GetMock:         func(context.Context, string) (*Entry, error) { return nil, errEntryNotFound },
 			}
 
 			// Create handler
@@ -886,121 +888,87 @@ func TestQuarantineHandler_Restore_ConcurrentSameID(t *testing.T) {
 }
 
 func TestQuarantineHandler_IsRestored(t *testing.T) {
-	type fields struct {
-		registryGetBySHA256 func(ctx context.Context, sha256 string) (*Entry, error)
-	}
-	type args struct {
-		sha256 string
-	}
+	notFound := func(context.Context, string) (*Entry, error) { return nil, errEntryNotFound }
 	tests := []struct {
 		name         string
-		fields       fields
-		args         args
+		location     string
+		sha256       string
+		hasRestored  func(ctx context.Context, sha256 string) (bool, error)
+		get          func(ctx context.Context, id string) (*Entry, error)
 		wantRestored bool
-		wantErr      error
+		wantErr      string
 	}{
 		{
-			name: "file is restored",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return &Entry{
-						ID:                 "entry-1",
-						SHA256:             sha256,
-						InitialLocation:    "/path/to/file.txt",
-						QuarantineLocation: "",
-						RestoredAt:         now(),
-					}, nil
-				},
-			},
-			args: args{
-				sha256: "abc123",
+			name:   "content restored somewhere",
+			sha256: sha256Hex([]byte("abc")), location: "/in/a.txt",
+			hasRestored:  func(context.Context, string) (bool, error) { return true, nil },
+			wantRestored: true,
+		},
+		{
+			name:   "content never restored",
+			sha256: sha256Hex([]byte("def")), location: "/in/a.txt",
+			hasRestored: func(context.Context, string) (bool, error) { return false, nil },
+		},
+		{
+			name:   "registry error",
+			sha256: sha256Hex([]byte("err")), location: "/in/a.txt",
+			hasRestored: func(context.Context, string) (bool, error) { return false, errors.New("database error") },
+			wantErr:     "database error",
+		},
+		{
+			name:   "empty content restored at this location",
+			sha256: emptySHA256, location: "/in/empty.txt",
+			get: func(_ context.Context, id string) (*Entry, error) {
+				if id != ComputeCacheID("/in/empty.txt", emptySHA256) {
+					return nil, errEntryNotFound
+				}
+				return &Entry{ID: id, SHA256: emptySHA256, RestoredAt: now()}, nil
 			},
 			wantRestored: true,
-			wantErr:      nil,
 		},
 		{
-			name: "file is not restored (RestoredAt is zero)",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return &Entry{
-						ID:                 "entry-2",
-						SHA256:             sha256,
-						InitialLocation:    "/path/to/file.txt",
-						QuarantineLocation: "/quarantine/entry-2.lock",
-						RestoredAt:         time.Time{},
-					}, nil
-				},
-			},
-			args: args{
-				sha256: "def456",
-			},
-			wantRestored: false,
-			wantErr:      nil,
-		},
-		{
-			name: "entry not found",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
+			name:   "empty content restored elsewhere does not count",
+			sha256: emptySHA256, location: "/in/other-empty.txt",
+			get: func(_ context.Context, id string) (*Entry, error) {
+				if id != ComputeCacheID("/in/empty.txt", emptySHA256) {
 					return nil, errEntryNotFound
-				},
+				}
+				return &Entry{ID: id, SHA256: emptySHA256, RestoredAt: now()}, nil
 			},
-			args: args{
-				sha256: "notfound",
-			},
-			wantRestored: false,
-			wantErr:      nil,
 		},
 		{
-			name: "error when registry GetBySHA256 fails",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return nil, errors.New("database error")
-				},
+			name:   "empty content quarantined but not restored",
+			sha256: emptySHA256, location: "/in/empty.txt",
+			get: func(_ context.Context, id string) (*Entry, error) {
+				return &Entry{ID: id, SHA256: emptySHA256}, nil
 			},
-			args: args{
-				sha256: "error123",
-			},
-			wantRestored: false,
-			wantErr:      errors.New("database error"),
+		},
+		{
+			name:   "empty content, registry error",
+			sha256: emptySHA256, location: "/in/empty.txt",
+			get:     func(context.Context, string) (*Entry, error) { return nil, errors.New("database error") },
+			wantErr: "database error",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-
-			// Create mocks
-			registry := &registryMock{
-				GetBySHA256Mock: tt.fields.registryGetBySHA256,
+			registry := &registryMock{HasRestoredMock: tt.hasRestored, GetMock: tt.get}
+			if tt.get == nil {
+				registry.GetMock = notFound
 			}
-
-			// Create handler
-			q := &QuarantineHandler{
-				registry: registry,
-			}
-
-			// Execute
-			gotRestored, err := q.IsRestored(ctx, tt.args.sha256)
-
-			// Check error
-			if tt.wantErr != nil {
-				if err == nil {
-					t.Errorf("IsRestored() error = nil, wantErr %v", tt.wantErr)
-					return
-				}
-				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
-					t.Errorf("IsRestored() error = %v, wantErr %v", err, tt.wantErr)
+			q := &QuarantineHandler{registry: registry}
+			got, err := q.IsRestored(t.Context(), tt.location, tt.sha256)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Errorf("IsRestored() error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
-
 			if err != nil {
-				t.Errorf("IsRestored() unexpected error = %v", err)
-				return
+				t.Fatalf("IsRestored() unexpected error = %v", err)
 			}
-
-			// Check restored status
-			if diff := cmp.Diff(gotRestored, tt.wantRestored); diff != "" {
-				t.Errorf("IsRestored() restored diff(-got+want)=%s", diff)
+			if got != tt.wantRestored {
+				t.Errorf("IsRestored() = %t, want %t", got, tt.wantRestored)
 			}
 		})
 	}

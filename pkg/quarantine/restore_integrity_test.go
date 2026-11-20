@@ -254,7 +254,7 @@ func TestQuarantine_contentChangedAtSameSize(t *testing.T) {
 			if matches, e := filepath.Glob(filepath.Join(dir, "*.lock")); e != nil || len(matches) != 0 {
 				t.Errorf("no .lock must be kept, got %v (err %v)", matches, e)
 			}
-			if _, e := q.registry.GetBySHA256(t.Context(), analysedSHA); !errors.Is(e, errEntryNotFound) {
+			if _, e := q.registry.Get(t.Context(), ComputeCacheID(src, analysedSHA)); !errors.Is(e, errEntryNotFound) {
 				t.Errorf("registry must have no entry (error = %v)", e)
 			}
 		})

@@ -829,7 +829,7 @@ func TestNewConnector(t *testing.T) {
 					quarantineLocation = filepath.Join(t.TempDir(), entryID+".lock")
 					return
 				},
-				IsRestoredMock: func(ctx context.Context, sha256 string) (restored bool, err error) {
+				IsRestoredMock: func(ctx context.Context, location string, sha256 string) (restored bool, err error) {
 					if resp, ok := tt.fields.isRestoredResps[sha256]; ok {
 						restored = resp.restored
 						err = resp.err

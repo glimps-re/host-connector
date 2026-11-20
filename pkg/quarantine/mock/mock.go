@@ -11,7 +11,7 @@ type QuarantineMock struct {
 	QuarantineMock           func(ctx context.Context, file string, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
 	RestoreMock              func(ctx context.Context, entryID string) (err error)
 	ReconfigureMock          func(ctx context.Context, newConfig quarantine.Config) (err error)
-	IsRestoredMock           func(ctx context.Context, sha256 string) (restored bool, err error)
+	IsRestoredMock           func(ctx context.Context, location string, sha256 string) (restored bool, err error)
 	ListQuarantinedFilesMock func(ctx context.Context) iter.Seq2[*quarantine.QuarantinedFile, error]
 	CloseMock                func() (err error)
 }
@@ -37,9 +37,9 @@ func (q *QuarantineMock) Reconfigure(ctx context.Context, config quarantine.Conf
 	panic("ReconfigureMock not implemented in current test")
 }
 
-func (q *QuarantineMock) IsRestored(ctx context.Context, sha256 string) (restored bool, err error) {
+func (q *QuarantineMock) IsRestored(ctx context.Context, location string, sha256 string) (restored bool, err error) {
 	if q.IsRestoredMock != nil {
-		return q.IsRestoredMock(ctx, sha256)
+		return q.IsRestoredMock(ctx, location, sha256)
 	}
 	panic("IsRestoredMock not implemented in current test")
 }

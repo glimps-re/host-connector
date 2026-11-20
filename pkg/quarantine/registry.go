@@ -32,6 +32,9 @@ type Entry struct {
 	RestoredAt         time.Time `field:"restored_at"`
 }
 
+// Restored reports whether the entry was restored.
+func (e *Entry) Restored() bool { return e.RestoredAt.UnixMilli() > 0 }
+
 type quarantineRegistry interface {
 	GetLocation() (location string)
 
@@ -40,7 +43,8 @@ type quarantineRegistry interface {
 
 	// Get fetch an entry
 	Get(ctx context.Context, id string) (entry *Entry, err error)
-	GetBySHA256(ctx context.Context, sha256 string) (entry *Entry, err error)
+	// HasRestored reports whether any entry with this content was restored.
+	HasRestored(ctx context.Context, sha256 string) (restored bool, err error)
 
 	// Clone returns a new registry at newLocation (in memory when empty) holding
 	// a copy of every entry. The receiver is left untouched, so a caller can
@@ -104,6 +108,8 @@ const createTable = `CREATE TABLE IF NOT EXISTS entries (
 	location TEXT,
 	restored_at int);`
 
+const createIndex = `CREATE INDEX IF NOT EXISTS idx_entries_sha256 ON entries(sha256);`
+
 func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry, err error) {
 	finalLocation := "file::memory:"
 	createdFile := false
@@ -134,6 +140,17 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 	result, err := db.ExecContext(ctx, createTable)
 	if err != nil {
 		err = fmt.Errorf("failed to create quarantine db: %w", err)
+		if e := db.Close(); e != nil {
+			logger.Error("cannot close quarantine db", slog.String("error", e.Error()))
+		}
+		removeCreated(location, createdFile)
+		return
+	}
+
+	// Content lookups (IsRestored) must not scan the table: the index is created
+	// at every opening, which also migrates a registry made before it existed.
+	if _, err = db.ExecContext(ctx, createIndex); err != nil {
+		err = fmt.Errorf("failed to index quarantine db: %w", err)
 		if e := db.Close(); e != nil {
 			logger.Error("cannot close quarantine db", slog.String("error", e.Error()))
 		}
@@ -246,29 +263,10 @@ func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err 
 	return
 }
 
-func (c *sqliteRegistry) GetBySHA256(ctx context.Context, sha256 string) (entry *Entry, err error) {
+func (c *sqliteRegistry) HasRestored(ctx context.Context, sha256 string) (restored bool, err error) {
 	c.RLock()
 	defer c.RUnlock()
-	entry = &Entry{}
-	var createdAt, updatedAt, restoredAt int64
-	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where sha256 = ?", sha256).Scan(
-		&entry.ID,
-		&entry.SHA256,
-		&createdAt,
-		&updatedAt,
-		&entry.QuarantineLocation,
-		&entry.InitialLocation,
-		&restoredAt,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, errEntryNotFound
-		}
-		return
-	}
-	entry.CreatedAt = time.UnixMilli(createdAt)
-	entry.UpdatedAt = time.UnixMilli(updatedAt)
-	entry.RestoredAt = time.UnixMilli(restoredAt)
+	err = c.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM entries WHERE sha256 = ? AND restored_at > 0)", sha256).Scan(&restored)
 	return
 }
 

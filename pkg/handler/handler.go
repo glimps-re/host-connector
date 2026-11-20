@@ -206,7 +206,19 @@ func (h *Handler) activate(ctx context.Context) (err error) {
 	return
 }
 
+// Stop is the order of the console: the files being processed get ctx to
+// finish, the plugins are closed with a context that stays alive.
 func (h *Handler) Stop(ctx context.Context) (err error) {
+	_, err = h.Shutdown(ctx, context.WithoutCancel(ctx))
+	return err
+}
+
+// Shutdown stops the connector: files accepted may finish until drain ends,
+// then the plugins are closed and the work directory removed within closing.
+// See scanner.Connector.Shutdown. It waits for the lock of the handler without
+// a bound: a stop or a configuration already in progress delays it, and only the
+// guard of the process (cmd/cli) bounds the whole.
+func (h *Handler) Shutdown(drain, closing context.Context) (summary scanner.ShutdownSummary, err error) {
 	logger := logger.With(slog.String("phase", "stopping"))
 
 	logger.Debug("received Stop action from connector-manager")
@@ -227,7 +239,7 @@ func (h *Handler) Stop(ctx context.Context) (err error) {
 	h.stopped = true
 	h.needSetup = true
 	logger.Info("stopping, waiting for ongoing analyses to complete, this may take a while ...") // info level because stop is an important phase and not frequent
-	h.closeRunning(ctx)
+	summary = h.shutdownRunning(drain, closing)
 	if h.Quarantiner != nil {
 		err = h.Quarantiner.Close()
 		if err != nil {

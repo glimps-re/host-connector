@@ -23,6 +23,11 @@ type SevenZipExtractPlugin struct {
 	bin           *binary
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
+
+	// baseCtx is the parent of every extraction: Interrupt and Close cancel it,
+	// which kills the 7-Zip running, with its process group.
+	baseCtx    context.Context
+	cancelBase context.CancelFunc
 }
 
 // Config defines the extraction behavior. The extraction limits are the global
@@ -34,8 +39,9 @@ type Config struct {
 }
 
 var (
-	_ plugins.Plugin    = &SevenZipExtractPlugin{}
-	_ plugins.Validator = &SevenZipExtractPlugin{}
+	_ plugins.Plugin      = &SevenZipExtractPlugin{}
+	_ plugins.Validator   = &SevenZipExtractPlugin{}
+	_ plugins.Interrupter = &SevenZipExtractPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin SevenZipExtractPlugin
@@ -92,6 +98,10 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 	}
 	p.sze = &sevenZipExtract{config: econf, sevenZipPath: bin.path, logger: p.logger}
 	p.bin = bin
+	if p.cancelBase != nil {
+		p.cancelBase()
+	}
+	p.baseCtx, p.cancelBase = context.WithCancel(context.Background())
 
 	hcc.SetExtractFile(p.ExtractFile)
 	p.logger.Info("plugin initialized",
@@ -110,7 +120,11 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, limits plugins.ExtractLimits) (extraction plugins.Extraction, err error) {
 	p.consoleLogger.Debug(fmt.Sprintf("start extraction of %s with 7z", archiveLocation))
 
-	ctx, cancel := context.WithTimeout(context.Background(), szExtractTimeout)
+	parent := p.baseCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, szExtractTimeout)
 	defer cancel()
 	result, err := p.sze.extract(ctx, archiveLocation, outputDir, nil, limits)
 	if err != nil {
@@ -139,9 +153,18 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	return extraction, nil
 }
 
-// Close removes the 7-Zip binary deployed by Init, if any; calling it again
-// has no effect.
+// Interrupt kills the 7-Zip commands running: their extractions return an error
+// at once. It makes the plugin unable to extract until its next Init.
+func (p *SevenZipExtractPlugin) Interrupt() {
+	if p.cancelBase != nil {
+		p.cancelBase()
+	}
+}
+
+// Close interrupts the extractions running and removes the 7-Zip binary
+// deployed by Init, if any; calling it again has no effect.
 func (p *SevenZipExtractPlugin) Close(_ context.Context) error {
+	p.Interrupt()
 	if p.bin == nil {
 		return nil
 	}

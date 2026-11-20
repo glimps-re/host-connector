@@ -293,6 +293,11 @@ func (h *Handler) failSetup(ctx context.Context, err error) {
 // a closing Connector, then the Connector, then the report destination, which
 // ongoing analyses write to until Connector.Close returns.
 func (h *Handler) closeRunning(ctx context.Context) {
+	h.shutdownRunning(ctx, context.WithoutCancel(ctx))
+}
+
+// shutdownRunning is closeRunning with the two bounds of Connector.Shutdown.
+func (h *Handler) shutdownRunning(drain, closing context.Context) (summary scanner.ShutdownSummary) {
 	if h.monitor != nil {
 		if e := h.monitor.Close(); e != nil {
 			logger.Error("could not close monitor", slog.String("error", e.Error()))
@@ -300,7 +305,7 @@ func (h *Handler) closeRunning(ctx context.Context) {
 		h.monitor = nil
 	}
 	if h.Conn != nil {
-		h.Conn.Close(ctx)
+		summary = h.Conn.Shutdown(drain, closing)
 		h.Conn = nil
 	}
 	if h.informDest != nil {
@@ -309,6 +314,7 @@ func (h *Handler) closeRunning(ctx context.Context) {
 		}
 		h.informDest = nil
 	}
+	return summary
 }
 
 // install runs the applying steps. 2: stop what runs, rebuild the Connector,

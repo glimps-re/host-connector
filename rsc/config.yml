@@ -26,3 +26,8 @@ quarantine:
   password: infected
 # plugins_config: /etc/gmhost/plugins.yml
 # debug: false
+
+# Time allowed to stop on SIGTERM or SIGINT (default 8s, at least 2s). Keep it under the
+# delay of the orchestrator (`docker stop -t`, systemd `TimeoutStopSec`). Local to this
+# machine: the console does not manage it.
+# shutdown_timeout: 8s

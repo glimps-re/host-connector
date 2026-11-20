@@ -581,6 +581,10 @@ func (sze *sevenZipExtract) run(ctx context.Context, spec runSpec) (symLinkFiles
 		}
 	}
 	switch {
+	case ctx.Err() != nil && !errors.Is(runCtx.Err(), context.DeadlineExceeded):
+		// Interrupted: whatever 7z said before it was killed, the extraction is
+		// not complete.
+		return nil, ctx.Err()
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		return nil, errSevenZipTimeout
 	case consumeErr != nil:

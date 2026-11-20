@@ -19,7 +19,8 @@ import (
 )
 
 var hostConfig = &config.Config{
-	Config: config.DefaultConfigPath,
+	Config:          config.DefaultConfigPath,
+	ShutdownTimeout: sdk.Duration(config.DefaultShutdownTimeout),
 	HostConfig: sdk.HostConfig{
 		CommonConnectorConfig: sdk.CommonConnectorConfig{
 			GMalwareTimeout: config.DefaultTimeout,
@@ -66,6 +67,7 @@ func initRoot(rootCmd *cobra.Command) {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.PersistentFlags().StringVar(&hostConfig.Config, "config", config.DefaultConfigPath, "config file")
+	rootCmd.PersistentFlags().Var(&hostConfig.ShutdownTimeout, "shutdown-timeout", "Time allowed to stop on SIGTERM or SIGINT (at least 2s): keep it under the delay of the orchestrator")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.GMalwareAPIToken, "gmalware-token", os.Getenv("GMALWARE_TOKEN"), "GLIMPS Malware Detect token")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.GMalwareAPIURL, "gmalware-url", os.Getenv("GMALWARE_URL"), "GLIMPS Malware Detect url (E.g https://gmalware.ggp.glimps.re)")
 	rootCmd.PersistentFlags().BoolVar(&hostConfig.GMalwareSyndetect, "gmalware-syndetect", hostConfig.GMalwareSyndetect, "Use syndetect API to analyze files")
@@ -102,8 +104,9 @@ func initRoot(rootCmd *cobra.Command) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "GMHost",
-	Short: "GLIMPS Malware Host connector is a tool to scan files with GLIMPS Malware Detect",
+	Use:               "GMHost",
+	PersistentPreRunE: resolveShutdownTimes,
+	Short:             "GLIMPS Malware Host connector is a tool to scan files with GLIMPS Malware Detect",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		err = yaml.NewEncoder(os.Stdout).Encode(hostConfig)
 		if err != nil {

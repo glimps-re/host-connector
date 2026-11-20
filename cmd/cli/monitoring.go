@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -24,14 +22,7 @@ var monitoringCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("could not start host connector, err: %w", err)
 		}
-		defer func() {
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer stopCancel()
-			if e := hostHandler.Stop(stopCtx); e != nil {
-				logger.Error("error stopping connector", slog.String("error", e.Error()))
-			}
-			hostHandler.Close()
-		}()
+		defer runStop(cmd.Context(), stopHandler)
 		<-cmd.Context().Done()
 		return
 	},

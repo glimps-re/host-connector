@@ -253,6 +253,12 @@ type Connector struct {
 	// extractorDown is set while the console error of an unavailable extractor is raised.
 	extractorDown atomic.Bool
 
+	// workCtx is the parent of the contexts of analyses, actions and checks of
+	// the files being processed: Shutdown cancels it when the drain ends. The
+	// contexts of console events stay independent of it.
+	workCtx    context.Context
+	cancelWork context.CancelFunc
+
 	stopIncoming chan struct{} // closed first in Close() to reject new inputChan sends
 	stopWorker   chan struct{}
 	stopOnce     sync.Once
@@ -345,7 +351,10 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		return nil, err
 	}
 
+	workCtx, cancelWork := context.WithCancel(context.Background())
 	return &Connector{
+		workCtx:        workCtx,
+		cancelWork:     cancelWork,
 		work:           work,
 		submitter:      submitter,
 		quarantiner:    quarantiner,
@@ -591,7 +600,7 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 		return idErr
 	}
 	report := &datamodel.Report{}
-	actionCtx, cancel := context.WithTimeout(context.Background(), c.actionTimeout(size))
+	actionCtx, cancel := context.WithTimeout(c.workContext(), c.actionTimeout(size))
 	defer cancel()
 	if err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report); err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
@@ -658,14 +667,8 @@ func (c *Connector) dispatchWorker() {
 		select {
 		case <-c.stopWorker:
 			// must call finishAnalysis for any item in channel before exiting, to ensure scansWg is properly decremented
-			for {
-				select {
-				case sub := <-c.dispatchChan:
-					c.finishRun(sub.location, sub.run)
-				default:
-					return
-				}
-			}
+			c.drainQueues()
+			return
 		case sub := <-c.dispatchChan:
 			c.dispatchFile(sub)
 		}
@@ -678,14 +681,8 @@ func (c *Connector) extractWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
-			for {
-				select {
-				case archive := <-c.extractChan:
-					c.finishRun(archive.location, archive.run)
-				default:
-					return
-				}
-			}
+			c.drainQueues()
+			return
 		case archive := <-c.extractChan:
 			archiveLogger := logger.With(slog.String("file", archive.location))
 			if err := c.tryExtract(archive); err != nil {
@@ -703,18 +700,8 @@ func (c *Connector) analysisWorker() {
 	for {
 		select {
 		case <-c.stopWorker:
-			for {
-				select {
-				case input := <-c.analysisChan:
-					if input.archiveID != "" {
-						c.finishRun(input.archiveTopLocation, input.run)
-						continue
-					}
-					c.finishRun(input.location, input.run)
-				default:
-					return
-				}
-			}
+			c.drainQueues()
+			return
 		case input := <-c.analysisChan:
 			c.processFile(input)
 		}
@@ -770,7 +757,7 @@ func (c *Connector) prepareFile(location string, want FileIdentity, run *ongoing
 
 	var restored bool
 	if c.quarantiner != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), restoredCheckTimeout)
+		ctx, cancel := context.WithTimeout(c.workContext(), restoredCheckTimeout)
 		defer cancel()
 		restored, err = c.quarantiner.IsRestored(ctx, location, fileSHA256)
 		if err != nil {
@@ -987,7 +974,7 @@ func (c *Connector) processFile(input fileToAnalyze) {
 		return
 	}
 	report := &datamodel.Report{}
-	actionCtx, actionCancel := context.WithTimeout(context.Background(), c.actionTimeout(input.size))
+	actionCtx, actionCancel := context.WithTimeout(c.workContext(), c.actionTimeout(input.size))
 	defer actionCancel()
 	actionErr := c.action.Handle(actionCtx, input.input.source(input.location, input.identity, input.sha256), result, report)
 	if actionErr != nil {
@@ -1580,7 +1567,7 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 
 	if runAction {
 		report := &datamodel.Report{}
-		ctx, cancel := context.WithTimeout(context.Background(), c.actionTimeout(status.result.FileSize))
+		ctx, cancel := context.WithTimeout(c.workContext(), c.actionTimeout(status.result.FileSize))
 		defer cancel()
 		err = c.action.Handle(ctx, status.input.source(status.archiveLocation, status.identity, status.sha256), status.result, report)
 		if err != nil {
@@ -1619,7 +1606,7 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 		fileLogger.Debug("file handled", slog.Any("result", result))
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), c.analysisTimeout())
+	ctx, cancel := context.WithTimeout(c.workContext(), c.analysisTimeout())
 	defer cancel()
 
 	opts := c.config.WaitOpts
@@ -1774,45 +1761,217 @@ func (c *Connector) addReport(report *datamodel.Report) {
 	c.onReport(report)
 }
 
-// Close stops Connector instance:
-//  1. stop accepting new files
-//  2. wait for already accepted files to finish
-//  3. stop all workers
+func (c *Connector) workContext() context.Context {
+	if c.workCtx == nil {
+		return context.Background()
+	}
+	return c.workCtx
+}
+
+// ShutdownSummary is what a stop did.
+type ShutdownSummary struct {
+	// Abandoned is the number of files whose processing was cut when the drain
+	// ended; they stay where they are.
+	Abandoned int
+	// StillRunning is the number of files not finished when closing ended.
+	StillRunning int
+	// PluginErrors is the number of plugins whose Close failed.
+	PluginErrors int
+	// WorkDirRemoved tells whether the work directory was removed.
+	WorkDirRemoved bool
+}
+
+// Close is Shutdown with no bound on the closing phase.
 func (c *Connector) Close(ctx context.Context) {
+	c.Shutdown(ctx, context.Background())
+}
+
+// Shutdown stops the connector. No new file is accepted. Accepted files may
+// finish until drain ends; then running analyses, extractions and actions are
+// cancelled and their files are left in place. closing bounds what follows: the
+// plugins are closed, the work directory is removed. Plugins always get
+// closing, never drain. Only the first call stops the connector; the others
+// return an empty summary.
+func (c *Connector) Shutdown(drain, closing context.Context) (summary ShutdownSummary) {
 	c.closeOnce.Do(func() {
-		logger := logger.With(slog.String("operation", "Connector.Close()"))
-		// Phase 1: stop accepting new files from ScanFile callers.
+		logger := logger.With(slog.String("operation", "Connector.Shutdown()"))
 		logger.Debug("closing scanner")
 		close(c.stopIncoming)
 
-		closeWorkers := func() { c.stopOnce.Do(func() { close(c.stopWorker) }) }
-
-		// Phase 2: wait for all accepted files to be fully processed
-		// (including extraction and analysis of extracted files).
-		// If Close's ctx is cancelled, force-stop workers so channel sends
-		// unblock via the <-c.stopWorker select case and call finishAnalysis.
-		stop := context.AfterFunc(ctx, closeWorkers)
-		logger.Debug("waiting for scans to complete")
-		c.scansWg.Wait()
-		stop()
-
-		// Phase 3: pipeline drained, stop all worker pools.
-		logger.Debug("stopping all workers")
-		closeWorkers()
-		c.dispatchWg.Wait()
-		c.extractWg.Wait()
-		c.analysisWg.Wait()
-
-		for _, plugin := range c.loadedPlugins {
-			if closeErr := plugin.Close(ctx); closeErr != nil {
-				logger.Error("failed to close plugin", slog.String(logErrorKey, closeErr.Error()))
+		if !waitDone(drain, c.scansWg.Wait) {
+			summary.Abandoned = c.countOngoing()
+			logger.Warn("drain ended, cutting the files still being processed", slog.Int("files", summary.Abandoned))
+			c.cancelWorkContext()
+			c.stopWorkers()
+			c.interruptPlugins()
+			c.waitForWorkers(closing)
+			if !waitDone(closing, c.scansWg.Wait) {
+				summary.StillRunning = c.countOngoing()
+				logger.Error("files still being processed when closing ended", slog.Int("files", summary.StillRunning))
 			}
 		}
 
-		if closeErr := c.work.close(); closeErr != nil {
+		c.waitForWorkers(closing)
+		summary.PluginErrors = closePlugins(closing, c.loadedPlugins)
+
+		closeErr := c.work.close()
+		if closeErr != nil {
 			logger.Error("failed to remove work directory", slog.String(logErrorKey, closeErr.Error()))
 		}
+		// A connector without a work directory removed nothing.
+		summary.WorkDirRemoved = closeErr == nil && c.work != nil
+		c.cancelWorkContext()
 	})
+	return summary
+}
+
+// waitForWorkers stops the workers, waits for them until ctx ends, and ends the
+// runs of the files left in the queues.
+func (c *Connector) waitForWorkers(ctx context.Context) {
+	c.stopWorkers()
+	if !waitDone(ctx, c.waitWorkers) {
+		logger.Error("workers still running when closing ended")
+	}
+	c.drainQueues()
+}
+
+func (c *Connector) waitWorkers() {
+	c.dispatchWg.Wait()
+	c.extractWg.Wait()
+	c.analysisWg.Wait()
+}
+
+// drainQueues ends the runs of the files left in the queues once the workers
+// are gone. A worker that is stopping and the stage before it can both be ready
+// to go on: a file may be queued behind the last worker, and would hold the
+// stop for good.
+func (c *Connector) drainQueues() {
+	for {
+		select {
+		case sub := <-c.dispatchChan:
+			c.finishRun(sub.location, sub.run)
+		case archive := <-c.extractChan:
+			c.finishRun(archive.location, archive.run)
+		case input := <-c.analysisChan:
+			if input.archiveID != "" {
+				c.finishRun(input.archiveTopLocation, input.run)
+				continue
+			}
+			c.finishRun(input.location, input.run)
+		default:
+			return
+		}
+	}
+}
+
+func (c *Connector) stopWorkers() {
+	c.stopOnce.Do(func() { close(c.stopWorker) })
+}
+
+func (c *Connector) cancelWorkContext() {
+	if c.cancelWork != nil {
+		c.cancelWork()
+	}
+}
+
+// interruptPlugins asks the plugins that run work no context can cancel to cut
+// it, once.
+func (c *Connector) interruptPlugins() {
+	for _, plugin := range c.loadedPlugins {
+		if i, ok := plugin.(plugins.Interrupter); ok {
+			i.Interrupt()
+		}
+	}
+}
+
+func (c *Connector) countOngoing() (n int) {
+	c.ongoingAnalysis.Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+var errPluginCloseTimeout = errors.New("plugin Close did not return before the end of the closing time")
+
+// pluginCloseGrace is how long, in all, the plugins still closing are waited
+// for once the closing time is over: it stays under the grace of the process
+// guard, so that what a plugin was finishing (a JSON fallback of a session
+// report) is not killed with the process.
+const pluginCloseGrace = 900 * time.Millisecond
+
+// closePlugins closes the plugins concurrently, all under ctx, and returns how
+// many failed. Once ctx has ended the plugins still closing share one grace;
+// those that are not done by then are given up on: a plugin that ignores its
+// context must not hold up the stop.
+func closePlugins(ctx context.Context, all []plugins.Plugin) (failed int) {
+	type outcome struct {
+		name string
+		err  error
+	}
+	results := make(chan outcome, len(all))
+	for _, plugin := range all {
+		go func() { results <- outcome{fmt.Sprintf("%T", plugin), plugin.Close(ctx)} }()
+	}
+	record := func(o outcome) {
+		if o.err != nil {
+			failed++
+			logger.Error("failed to close plugin", slog.String("plugin", o.name), slog.String(logErrorKey, o.err.Error()))
+		}
+	}
+	pending := len(all)
+	ended := ctx.Done()
+	var graceOver <-chan time.Time
+	for pending > 0 {
+		select {
+		case o := <-results:
+			pending--
+			record(o)
+		case <-ended:
+			ended = nil
+			timer := time.NewTimer(pluginCloseGrace)
+			defer timer.Stop()
+			graceOver = timer.C
+		case <-graceOver:
+			// What answered meanwhile is not a timeout.
+			for {
+				select {
+				case o := <-results:
+					pending--
+					record(o)
+					continue
+				default:
+				}
+				break
+			}
+			for ; pending > 0; pending-- {
+				failed++
+				logger.Error("failed to close plugin", slog.String(logErrorKey, errPluginCloseTimeout.Error()))
+			}
+		}
+	}
+	return failed
+}
+
+// waitDone runs wait and tells whether it returned before ctx ended.
+func waitDone(ctx context.Context, wait func()) bool {
+	done := make(chan struct{})
+	go func() {
+		wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-ctx.Done():
+		// Both may be ready: what finished is not a timeout.
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	}
 }
 
 func (c *Connector) GetLogger() *slog.Logger {

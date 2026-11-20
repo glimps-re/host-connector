@@ -29,11 +29,11 @@ var scanCmd = &cobra.Command{
 		for _, arg := range args {
 			if err = hostHandler.Conn.ScanFile(cmd.Context(), arg); err != nil {
 				logger.Error("error during scan", slog.String("file", arg), slog.String("error", err.Error()))
-				hostHandler.Conn.Close(cmd.Context())
+				runStop(cmd.Context(), stopScan)
 				return
 			}
 		}
-		hostHandler.Conn.Close(cmd.Context())
+		runStop(cmd.Context(), stopScan)
 		handler.HandleScanFinished()
 		if hostConfig.Gui {
 			<-done.Done()

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -32,10 +33,15 @@ func main_() (err error) {
 	rootCmd.AddCommand(quarantineCmd)
 	rootCmd.AddCommand(monitoringCmd)
 	rootCmd.AddCommand(agentCmd)
-	err = rootCmd.Execute()
+	ctx, cancel := signalContext()
+	defer cancel()
+	err = rootCmd.ExecuteContext(ctx)
 	if err != nil {
 		fmt.Println(err)
 		return err
+	}
+	if overran.Load() {
+		return errors.New("the stop did not finish within shutdown_timeout")
 	}
 	return
 }

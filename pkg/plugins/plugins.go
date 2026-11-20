@@ -79,12 +79,21 @@ var (
 // Close has no effect when called a second time, or on a plugin whose Init was
 // never called or failed. An Init that fails leaves nothing behind: no
 // goroutine, file or process.
+//
+// At stop the connector calls the Close of all its plugins concurrently, under
+// one context whose deadline ends the closing time: a plugin must not rely on
+// the order of the Close calls, nor on another plugin still being open.
 type Plugin interface {
 	// GetDefaultConfig MUST be used to get a default config, where we can unmarshall read yaml config, and pass it to Init
 	GetDefaultConfig() (config any)
 	Init(config any, hcc HCContext) error
 	Close(ctx context.Context) error
 }
+
+// Interrupter is implemented by plugins that run work the connector cannot
+// cancel through a context. Interrupt makes the running calls return promptly
+// with an error. It is called at most once per stop, before Close.
+type Interrupter interface{ Interrupt() }
 
 type HCContext interface {
 	ValidationContext

@@ -8,6 +8,7 @@
 
 ### Added
 
+- stop on a signal: `SIGTERM` and `SIGINT` stop the connector like the order of the console (`agent`, `monitoring` and `scan`; before, the process died on `SIGTERM` without closing anything, leaving its work directory, an extraction in progress, and the reports of the open sessions). New local key `shutdown_timeout` (flag `--shutdown-timeout`, default `8s`, at least `2s`): files being processed finish within it minus a reserve, are then cut and left in place, the sessions write their report, the plugins close (the `extract` plugin kills its 7-Zip) and the work directory is removed; a second signal stops at once; a summary is logged; exit code `1` if the delay was exceeded. `Connector.Shutdown(drain, closing)`, `Handler.Shutdown` and `plugins.Interrupter` are new. Fix: after a stop whose wait was cut, the plugins used to be closed with an expired context and could no longer write their reports; they now always get a live one
 - quarantine: `quarantine.format: zip` writes password-protected ZIP files (ZipCrypto) openable with common archive tools; `tar` stays the default and both formats are always restorable. With `zip`, the quarantine password must be considered public (warning at each configuration)
 - monitoring: `monitoring.disable_fs_watcher` (flag `--disable-fs-watcher`) stops all filesystem watches, files are found by the pre-scan and the periodic rescan only; it requires `monitoring.period` (configuration refused otherwise). Settable from the console
 

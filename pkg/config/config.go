@@ -26,4 +26,8 @@ type Config struct {
 	Config         string                           `yaml:"config" desc:"path to configuration file"`
 	Console        sdk.ConnectorManagerClientConfig `mapstructure:"console" desc:"connector manager configuration"`
 	Gui            bool
+	// ShutdownTimeout bounds a stop on a signal. It belongs to the deployment
+	// (the delay of the orchestrator), not to the console: it is not part of
+	// the configuration the console manages.
+	ShutdownTimeout sdk.Duration `mapstructure:"shutdown_timeout" yaml:"shutdown_timeout" desc:"time allowed to stop on a signal (default 8s, at least 2s): keep it under the delay of the orchestrator"`
 }

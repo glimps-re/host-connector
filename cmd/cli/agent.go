@@ -48,14 +48,7 @@ var agentCmd = &cobra.Command{
 				logger.Error("error starting host connector, wait for a reconfigure from connector manager...", slog.String("error", err.Error()))
 			}
 		}
-		defer func() {
-			stopCtx, stopCancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-			defer stopCancel()
-			if e := hostHandler.Stop(stopCtx); e != nil {
-				logger.Error("error stopping connector", slog.String("error", e.Error()))
-			}
-			hostHandler.Close()
-		}()
+		defer runStop(cmd.Context(), stopHandler)
 		go console.Start(cmd.Context(), hostHandler)
 		<-cmd.Context().Done()
 		return

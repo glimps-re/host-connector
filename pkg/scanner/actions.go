@@ -255,6 +255,10 @@ func (a *MultiAction) notifyMitigation(ctx context.Context, path string, result 
 		result.Malwares = make([]string, 0)
 	}
 
+	// The console is told of what was done even when the work was cut just after:
+	// the context of the work is not the one of the event.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), eventTimeout)
+	defer cancel()
 	if e := EventHandler.NotifyFileMitigation(ctx, getMitigationAction(report.Action), report.MitigationID, getMitigationReason(report.MalwareReason), events.FileInfos{
 		CommonDetails: events.CommonDetails{
 			Malwares:           result.Malwares,

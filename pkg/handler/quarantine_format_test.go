@@ -38,6 +38,9 @@ func TestHandler_setupQuarantiner_zipWarnsPasswordPublic(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("setupQuarantiner() error = %v, wantErr %t", err, tt.wantErr)
 			}
+			if err == nil {
+				h.commit(t.Context(), conf)
+			}
 			if h.Quarantiner != nil {
 				t.Cleanup(func() {
 					if e := h.Quarantiner.Close(); e != nil {
@@ -69,6 +72,7 @@ func TestHandler_setupQuarantiner_warnsOnEveryApplication(t *testing.T) {
 		if err := h.setupQuarantiner(t.Context(), conf); err != nil {
 			t.Fatalf("setupQuarantiner() error = %v", err)
 		}
+		h.commit(t.Context(), conf)
 	}
 	t.Cleanup(func() {
 		if err := h.Quarantiner.Close(); err != nil {
@@ -84,6 +88,7 @@ func TestHandler_setupQuarantiner_warnsOnEveryApplication(t *testing.T) {
 	if err := h.setupQuarantiner(t.Context(), conf); err != nil {
 		t.Fatalf("setupQuarantiner(tar) error = %v", err)
 	}
+	h.commit(t.Context(), conf)
 	if strings.Contains(logs.String(), "must be considered public") {
 		t.Error("no warning expected after switching back to tar")
 	}

@@ -65,13 +65,14 @@ func TestHandler_ConfigureRefusalNotifiesAndKeepsState(t *testing.T) {
 
 	oldConf := &config.Config{}
 	oldConf.Debug = true
-	h := &Handler{conf: oldConf, needSetup: true}
+	h := &Handler{conf: oldConf, needSetup: true, configured: true}
+	t.Cleanup(h.stopRejectReminder)
 	err := h.Configure(t.Context(), json.RawMessage(`{"move":{"mode":"copy"}}`))
 	if !errors.Is(err, config.ErrNotImplemented) {
 		t.Fatalf("Configure() error = %v, want ErrNotImplemented", err)
 	}
-	if len(rec.types) != 1 || rec.types[0] != HostConfigError {
-		t.Errorf("NotifyError calls = %v, want exactly one %q", rec.types, HostConfigError)
+	if len(rec.types) != 1 || rec.types[0] != HostConfigRejected {
+		t.Errorf("NotifyError calls = %v, want exactly one %q", rec.types, HostConfigRejected)
 	}
 	if h.conf != oldConf {
 		t.Error("h.conf changed after a refused Configure")

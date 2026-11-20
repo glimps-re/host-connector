@@ -51,6 +51,7 @@ var agentCmd = &cobra.Command{
 			if e := hostHandler.Stop(stopCtx); e != nil {
 				logger.Error("error stopping connector", slog.String("error", e.Error()))
 			}
+			hostHandler.Close()
 		}()
 		go console.Start(cmd.Context(), hostHandler)
 		<-cmd.Context().Done()

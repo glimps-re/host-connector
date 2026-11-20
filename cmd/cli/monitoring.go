@@ -30,6 +30,7 @@ var monitoringCmd = &cobra.Command{
 			if e := hostHandler.Stop(stopCtx); e != nil {
 				logger.Error("error stopping connector", slog.String("error", e.Error()))
 			}
+			hostHandler.Close()
 		}()
 		<-cmd.Context().Done()
 		return

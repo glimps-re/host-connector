@@ -8,16 +8,12 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sync"
-	"time"
 
-	"github.com/alecthomas/units"
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/config"
-	"github.com/glimps-re/host-connector/pkg/datamodel"
 	quarantine "github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
@@ -44,7 +40,15 @@ type Handler struct {
 	stopped     bool
 	wantStopped bool
 	needSetup   bool
-	conf        *config.Config
+	// configured is true once a configuration has been applied: from then on a
+	// refused one leaves the running configuration in place.
+	configured bool
+	conf       *config.Config
+	qConf      quarantine.Config
+
+	remindMu     sync.Mutex
+	remindStop   chan struct{}
+	lastRejected string
 }
 
 const (
@@ -78,68 +82,25 @@ func NewHandler(ctx context.Context, config *config.Config, consoleClient *sdk.C
 	return
 }
 
-func (h *Handler) setup(ctx context.Context, conf *config.Config) (err error) {
-	if err = errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
-		err = fmt.Errorf("invalid configuration: %w", err)
-		if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
-			logger.Warn("could not push console error", slog.String("error", e.Error()))
-		}
-		return
-	}
-	err = h.setupGMalwareClient(ctx, conf)
-	if err != nil {
-		err = fmt.Errorf("setup gmalware client error: %w", err)
-		if e := eventHandler.NotifyError(ctx, events.GMalwareConfigError, err); e != nil {
-			logger.Warn("could not push console error", slog.String("error", e.Error()))
-		}
-		return
-	}
-	err = h.setupHostConnector(ctx, conf)
-	if err != nil {
-		err = fmt.Errorf("setup host connector error: %w", err)
-		if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
-			logger.Warn("could not push console error", slog.String("error", e.Error()))
-		}
-		return
-	}
-	if e := eventHandler.NotifyResolution(ctx, "config setup succeeded", HostConfigError, events.GMalwareConfigError); e != nil {
-		logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
-	}
-	h.needSetup = false
-	return
+func (h *Handler) setup(ctx context.Context, conf *config.Config) error {
+	h.conf = conf
+	return h.apply(ctx, conf, false)
 }
 
 func (h *Handler) setupGMalwareClient(ctx context.Context, conf *config.Config) (err error) {
-	// The default idle pool keeps only 2 connections per host, which fits occasional requests but not a worker pool.
-	// Sizing the idle pool to the worker count lets connections be reused across requests instead of paying a TCP+TLS handshake on nearly every one.
-	nbAnalysisWorkers := conf.Workers
-	if nbAnalysisWorkers < 1 {
-		nbAnalysisWorkers = config.DefaultWorkers
-	}
-	detectConfig := gdetect.ClientConfig{
-		Endpoint:            conf.GMalwareAPIURL,
-		ExpertURL:           conf.GMalwareExpertURL,
-		Token:               conf.GMalwareAPIToken,
-		Insecure:            conf.GMalwareNoCertCheck,
-		Syndetect:           conf.GMalwareSyndetect,
-		MaxIdleConnsPerHost: nbAnalysisWorkers,
-	}
-
+	detectConfig := gmalwareClientConfig(conf)
 	if h.submitter == nil {
 		client, err := gdetect.NewClientFromConfig(detectConfig)
 		if err != nil {
-			err = fmt.Errorf("init glimps malware client error: %w", err)
-			return err
+			return fmt.Errorf("init glimps malware client error: %w", err)
 		}
 		h.submitter = client
-	} else {
-		err = h.submitter.Reconfigure(ctx, detectConfig)
-		if err != nil {
-			err = fmt.Errorf("reconfigure gdetect client error: %w", err)
-			return
-		}
+		return nil
 	}
-	return
+	if err = h.submitter.Reconfigure(ctx, detectConfig); err != nil {
+		return fmt.Errorf("reconfigure gdetect client error: %w", err)
+	}
+	return nil
 }
 
 func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (err error) {
@@ -149,17 +110,12 @@ func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (
 				return
 			}
 			h.Quarantiner = nil
+			h.qConf = quarantine.Config{}
 		}
 		return
 	}
 
-	qConfig := quarantine.Config{
-		Location:         config.Quarantine.Location,
-		RegistryLocation: config.Quarantine.Registry,
-		LockPassword:     config.Quarantine.Password,
-		Format:           quarantine.Format(config.Quarantine.Format),
-		WatchedPaths:     config.Paths,
-	}
+	qConfig := quarantineConfig(config)
 	if h.Quarantiner != nil {
 		if err = h.Quarantiner.Reconfigure(ctx, qConfig); err != nil {
 			return
@@ -171,9 +127,7 @@ func (h *Handler) setupQuarantiner(ctx context.Context, config *config.Config) (
 		}
 		h.Quarantiner = quarantiner
 	}
-	if qConfig.Format == quarantine.FormatZip {
-		warnZipPasswordPublic()
-	}
+	h.qConf = qConfig
 	return
 }
 
@@ -183,188 +137,6 @@ func warnZipPasswordPublic() {
 	const msg = "with the zip quarantine format, the quarantine password must be considered public: do not reuse it elsewhere, existing tar quarantine files of this directory are no longer confidential either"
 	logger.Warn(msg)
 	consoleLogger.Warn(msg)
-}
-
-func (h *Handler) setupHostConnector(ctx context.Context, config *config.Config) (err error) {
-	if config.Debug {
-		scanner.LogLevel.Set(slog.LevelDebug)
-		datamodel.LogLevel.Set(slog.LevelDebug)
-		LogLevel.Set(slog.LevelDebug)
-		logger.Debug("log level set to debug")
-	} else {
-		scanner.LogLevel.Set(slog.LevelInfo)
-		datamodel.LogLevel.Set(slog.LevelInfo)
-		LogLevel.Set(slog.LevelInfo)
-		logger.Info("log level set to info")
-	}
-
-	err = h.setupQuarantiner(ctx, config)
-	if err != nil {
-		err = fmt.Errorf("error init quarantine: %w", err)
-		return
-	}
-
-	customAction := make([]scanner.Action, 0)
-	if config.Gui {
-		customAction = append(customAction, new(GuiHandleResult))
-	}
-
-	maxFileSize, err := units.ParseStrictBytes(config.MaxFileSize)
-	if err != nil {
-		err = fmt.Errorf("could not parse max-file-size: %w", err)
-		return
-	}
-
-	var extractMinSize int64
-	if config.ExtractMinSize != "" {
-		extractMinSize, err = units.ParseStrictBytes(config.ExtractMinSize)
-		if err != nil {
-			err = fmt.Errorf("could not parse extract-min-size: %w", err)
-			return
-		}
-	}
-
-	var recursiveExtractMaxSize int64
-	if config.RecursiveExtractMaxSize != "" {
-		recursiveExtractMaxSize, err = units.ParseStrictBytes(config.RecursiveExtractMaxSize)
-		if err != nil {
-			err = fmt.Errorf("could not parse recursive-extract-max-size: %w", err)
-			return
-		}
-	}
-
-	if err = checkWorkDir(config); err != nil {
-		return
-	}
-	warnFollowSymlinks(config)
-
-	switch {
-	case maxFileSize > maxFileSizeDetect && !config.GMalwareSyndetect:
-		logger.Warn("max file size can't exceed 100MiB, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = maxFileSizeDetect
-	case maxFileSize > maxFileSizeSynDetect:
-		logger.Warn("max file size can't exceed 2GiB, set the value to 2GiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = maxFileSizeSynDetect
-	case maxFileSize <= 0:
-		logger.Warn("max file size must be greater than 0, set the value to 100MiB", slog.String("max-file-size", config.MaxFileSize))
-		maxFileSize = maxFileSizeDetect
-	}
-
-	var informDest io.WriteCloser = os.Stdout
-	var reportFile io.WriteCloser
-	if config.Print.Location != "" {
-		dir := filepath.Dir(config.Print.Location)
-		if err = os.MkdirAll(dir, 0o700); err != nil {
-			err = fmt.Errorf("could not create report directory %q: %w", dir, err)
-			return
-		}
-		reportFile, err = os.OpenFile(config.Print.Location, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0o600)
-		if err != nil {
-			err = fmt.Errorf("could not open report location, error: %w", err)
-			return
-		}
-		informDest = reportFile
-	}
-
-	// h.monitor must be closed BEFORE h.Conn, otherwise h.monitor keeps sending
-	// files to a closing Conn, which rejects them with an error (=> files not scanned).
-	if h.monitor != nil {
-		if e := h.monitor.Close(); e != nil {
-			logger.Error("could not close monitor for reconfiguring", slog.String("error", e.Error()))
-		}
-		h.monitor = nil
-	}
-	if h.Conn != nil {
-		h.Conn.Close(ctx)
-	}
-	// previous inform destination must be closed AFTER h.Conn, ongoing analyses report to it until Close returns
-	if h.informDest != nil {
-		if e := h.informDest.Close(); e != nil {
-			logger.Warn("could not close previous inform destination", slog.String("error", e.Error()))
-		}
-	}
-	h.informDest = reportFile
-
-	h.Conn, err = scanner.NewConnector(scanner.Config{
-		QuarantineFolder:    config.Quarantine.Location,
-		MaxFileSize:         maxFileSize,
-		ExtractMinThreshold: extractMinSize,
-		Workers:             config.Workers,
-		ExtractWorkers:      config.ExtractWorkers,
-		Password:            config.Quarantine.Password,
-		Timeout:             config.GMalwareTimeout,
-		FollowSymlinks:      config.FollowSymlinks,
-		WorkDir:             config.WorkDir,
-		Roots:               config.Paths,
-		Actions: scanner.Actions{
-			Log:        config.Actions.Log,
-			Quarantine: config.Actions.Quarantine,
-			Inform:     config.Actions.Print,
-			Verbose:    config.Print.Verbose,
-			Move:       config.Actions.Move,
-			Deleted:    config.Actions.Delete || config.Actions.Quarantine,
-			InformDest: informDest,
-		},
-		WaitOpts: gdetect.WaitForOptions{
-			SubmitOptions: gdetect.SubmitOptions{
-				Tags:        append(config.GMalwareUserTags, "GMHost"),
-				BypassCache: config.GMalwareBypassCache,
-			},
-			Timeout:  time.Duration(config.GMalwareTimeout),
-			PullTime: time.Millisecond * 500,
-		},
-		CustomActions:            customAction,
-		Extract:                  config.Extract,
-		RecursiveExtractMaxDepth: config.RecursiveExtractMaxDepth,
-		RecursiveExtractMaxSize:  recursiveExtractMaxSize,
-		RecursiveExtractMaxFiles: config.RecursiveExtractMaxFiles,
-		MoveTo:                   config.Move.Destination,
-		MoveFrom:                 config.Move.Source,
-	}, h.Quarantiner, h.submitter)
-	if err != nil {
-		return
-	}
-
-	if config.PluginsConfig != "" {
-		configFile, openErr := os.Open(filepath.Clean(config.PluginsConfig))
-		if openErr != nil {
-			err = fmt.Errorf("could not open plugins config file %q: %w", config.PluginsConfig, openErr)
-			return
-		}
-		defer func() {
-			if e := configFile.Close(); e != nil {
-				logger.Warn("error closing plugin config file", slog.String("file", config.PluginsConfig), slog.String("error", e.Error()))
-			}
-		}()
-
-		pluginsConfig, decodeErr := decodePluginsConfig(configFile)
-		if decodeErr != nil {
-			return fmt.Errorf("could not decode plugins config file, error: %w", decodeErr)
-		}
-		err = h.Conn.LoadPlugins(pluginsConfig)
-		if err != nil {
-			return fmt.Errorf("could not load plugins, error: %w", err)
-		}
-	}
-
-	mon, monErr := NewMonitor(
-		h.OnNewFile(ctx),
-		Config{
-			DisableWatcher: config.Monitoring.DisableFSWatcher,
-			FollowSymlinks: config.FollowSymlinks,
-			Skip:           h.Conn.IsInternalPath,
-			PreScan:        config.Monitoring.PreScan,
-			Period:         config.Monitoring.Period,
-			ModDelay:       config.Monitoring.ModificationDelay,
-		},
-	)
-	if monErr != nil {
-		err = fmt.Errorf("could not init monitoring: %w", monErr)
-		return
-	}
-	h.monitor = mon
-	h.conf = config
-	return
 }
 
 func (h *Handler) OnNewFile(ctx context.Context) OnNewFileFunc {
@@ -392,45 +164,41 @@ func (h *Handler) startLocked(ctx context.Context, phase string) (err error) {
 	logger := logger.With(slog.String("phase", phase))
 
 	h.wantStopped = false
-	if h.needSetup {
+	if !h.stopped {
+		return nil
+	}
+	if h.needSetup || h.Conn == nil || h.monitor == nil {
 		logger.Info("setting up connector configuration ...") // info level because start is an important phase and not frequent
-		err = h.setup(ctx, h.conf)
-		if err != nil {
+		if err = h.apply(ctx, h.conf, true); err != nil {
 			return
 		}
 		logger.Info("connector configuration completed successfully")
-	}
-
-	logger.Info("starting workers ...")
-	err = h.Conn.Start() //nolint:contextcheck // no ctx to pass, workers are launched goroutine
-	if err != nil {
-		err = fmt.Errorf("could not start host connector workers, error: %w", err)
-		if e := eventHandler.NotifyError(ctx, HostStartError, err); e != nil {
-			logger.Warn("could not push console error", slog.String("error", e.Error()))
-		}
+	} else if err = h.activate(ctx); err != nil {
 		return
 	}
-	logger.Info("workers started")
-	h.monitor.Start()
-	logger.Info("setting up directory monitoring, this may take a while for large directories ...", slog.Int("paths", len(h.conf.Paths)))
-	for _, path := range h.conf.Paths {
-		if err = h.monitor.Add(path); err != nil {
-			err = fmt.Errorf("error adding path %s to monitoring: %w", path, err)
-			if e := eventHandler.NotifyError(ctx, HostConfigError, err); e != nil {
-				logger.Warn("could not push console error", slog.String("error", e.Error()))
-			}
-			if e := h.monitor.Close(); e != nil {
-				logger.Error("could not close monitor", slog.String("error", e.Error()))
-			}
-			h.Conn.Close(ctx)
-			return
-		}
-	}
-	h.stopped = false
 	if e := eventHandler.NotifyResolution(ctx, "host connector started successfully", HostConfigError, HostStartError, events.GMalwareConfigError); e != nil {
 		logger.Error("could not push console error", slog.String("error", e.Error()))
 	}
 	logger.Info("monitoring successfully completed. phase successful")
+	return
+}
+
+// activate starts a connector that is built but not running.
+func (h *Handler) activate(ctx context.Context) (err error) {
+	if err = addWatches(h.monitor, h.conf.Paths); err != nil {
+		h.failSetup(ctx, err)
+		return
+	}
+	if err = startConnector(h.Conn); err != nil {
+		err = fmt.Errorf("could not start host connector workers, error: %w", err)
+		if e := eventHandler.NotifyError(ctx, HostStartError, err); e != nil {
+			logger.Warn("could not push console error", slog.String("error", e.Error()))
+		}
+		h.failSetup(ctx, err)
+		return
+	}
+	h.monitor.Start()
+	h.stopped = false
 	return
 }
 
@@ -449,38 +217,20 @@ func (h *Handler) Stop(ctx context.Context) (err error) {
 	defer h.mu.Unlock()
 
 	h.wantStopped = true
-	if h.stopped {
+	if h.stopped && h.Quarantiner == nil {
 		return
 	}
 	h.stopped = true
 	h.needSetup = true
-	if h.monitor != nil {
-		logger.Info("stopping monitoring ...") // info level because stop is an important phase and not frequent
-		err = h.monitor.Close()
-		if err != nil {
-			return
-		}
-		h.monitor = nil
-		logger.Info("monitoring successfully stopped")
-	}
-	if h.Conn != nil {
-		logger.Info("waiting for ongoing analyses to complete, this may take a while ...")
-		h.Conn.Close(ctx)
-		h.Conn = nil
-		logger.Info("ongoing analyses completed")
-	}
+	logger.Info("stopping, waiting for ongoing analyses to complete, this may take a while ...") // info level because stop is an important phase and not frequent
+	h.closeRunning(ctx)
 	if h.Quarantiner != nil {
 		err = h.Quarantiner.Close()
 		if err != nil {
 			return
 		}
 		h.Quarantiner = nil
-	}
-	if h.informDest != nil {
-		if e := h.informDest.Close(); e != nil {
-			logger.Warn("could not close inform destination", slog.String("error", e.Error()))
-		}
-		h.informDest = nil
+		h.qConf = quarantine.Config{}
 	}
 	logger.Info("connector stopped")
 	return
@@ -495,26 +245,21 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 		}
 		logger.Debug("Configure action completed")
 	}()
-	conf := new(config.Config)
-	err = json.Unmarshal(rawConfig, conf)
-	if err != nil {
-		return
-	}
-
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	err = h.setup(ctx, conf)
-	if err != nil {
+	conf := new(config.Config)
+	if err = json.Unmarshal(rawConfig, conf); err != nil {
+		h.notifyRejected(ctx, fmt.Errorf("undecodable configuration: %w", err), h.consequence())
+		return
+	}
+
+	if err = h.apply(ctx, conf, !h.wantStopped); err != nil {
 		err = fmt.Errorf("failed to setup host connector: %w", err)
 		return
 	}
-	if !h.wantStopped {
-		err = h.startLocked(ctx, "reconfiguring")
-		if err != nil {
-			return
-		}
-	}
+	h.resolveRejected(ctx)
+	h.reportUnknownKeys(ctx, unknownKeys(rawConfig))
 	return
 }
 
@@ -527,11 +272,14 @@ func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionCont
 		}
 		logger.Debug("Restore action completed")
 	}()
-	if h.Quarantiner == nil {
+	h.mu.RLock()
+	quarantiner := h.Quarantiner
+	h.mu.RUnlock()
+	if quarantiner == nil {
 		err = errors.New("quarantine is disabled, cannot restore files")
 		return
 	}
-	err = h.Quarantiner.Restore(ctx, restoreInfo.ID)
+	err = quarantiner.Restore(ctx, restoreInfo.ID)
 	if err != nil {
 		return
 	}
@@ -547,3 +295,6 @@ func (h *Handler) Status() (status sdk.ConnectorStatus) {
 	}
 	return sdk.Started
 }
+
+// Close ends what outlives Stop: the reminder of a rejected configuration.
+func (h *Handler) Close() { h.stopRejectReminder() }

@@ -548,6 +548,8 @@ debug: false
 
 Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `unanalyzable_policy.*`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
 
+A configuration is validated before it is applied. When the console sends one that cannot be applied, the connector keeps the previous configuration, keeps processing files, and raises the console error `host-config-rejected`; the error stays until a `Configure` succeeds, and a reminder is logged every hour. After a restart the connector receives the rejected configuration again and does not start: fix it in the console. Keys unknown to this version of the connector (the console is newer) are applied without effect and listed in the console error `host-config-unknown-keys`: update the connector for them to apply.
+
 #### Global Settings
 
 - **`workers`**: Number of concurrent workers for file analysis (default: 4, affects CPU usage)

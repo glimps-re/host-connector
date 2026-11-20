@@ -128,6 +128,14 @@ func (m *Monitor) Start() {
 		m.scanFiles()
 	})
 	m.started.Store(true)
+	if m.preScan {
+		m.paths.Range(func(key, _ any) bool {
+			if root, ok := key.(string); ok {
+				m.preScanPath(root)
+			}
+			return true
+		})
+	}
 }
 
 func (m *Monitor) periodicalScan() {
@@ -376,13 +384,17 @@ func (m *Monitor) Add(path string) error {
 		return fmt.Errorf("error watching %s: %w", path, err)
 	}
 	m.paths.Store(path, struct{}{})
-	if m.preScan {
-		m.wg.Go(func() {
-			err := m.cb(path)
-			if err != nil {
-				logger.Error("could not scan file", slog.String("path", path), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
-			}
-		})
+	if m.preScan && m.started.Load() {
+		m.preScanPath(path)
 	}
 	return nil
+}
+
+// preScanPath hands root to the callback in the background.
+func (m *Monitor) preScanPath(root string) {
+	m.wg.Go(func() {
+		if err := m.cb(root); err != nil {
+			logger.Error("could not scan file", slog.String("path", root), slog.String("err", err.Error()), slog.String(datamodel.LogSourceKey, "monitor"))
+		}
+	})
 }

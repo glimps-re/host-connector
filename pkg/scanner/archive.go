@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"path/filepath"
 	"slices"
 	"sync"
 
@@ -137,6 +138,21 @@ func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, re
 	return
 }
 
+func (a *archiveStatusHandler) addSkippedSubfile(id string, filename string, result datamodel.Result) {
+	a.Lock()
+	defer a.Unlock()
+	status, ok := a.statusByID[id]
+	if !ok {
+		return
+	}
+	if status.result.SkippedSubfiles == nil {
+		status.result.SkippedSubfiles = make(map[string]datamodel.Result)
+	}
+	status.result.SkippedSubfiles[filename] = result
+	status.result.FilteredVolume += result.FileSize
+	a.statusByID[id] = status
+}
+
 // setArchiveResult sets the archive result and marks the archive as finished.
 // Any previously merged inner file results are discarded.
 func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Result) (ok bool) {
@@ -172,11 +188,24 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		resultToMerge.Location = baseResult.Location // We put archive location as location (cause extracted file won't be accessible after analysis)
 		result.MaliciousSubfiles[filename] = resultToMerge
 	}
-	if resultToMerge.Error != nil {
+	if errMsg := resultError(resultToMerge); errMsg != "" {
 		if result.ErrorSubfiles == nil {
 			result.ErrorSubfiles = make(map[string]string)
 		}
-		result.ErrorSubfiles[filename] = resultToMerge.Error.Error()
+		result.ErrorSubfiles[filename] = errMsg
+	}
+	if resultToMerge.SkipReason != "" {
+		if result.SkippedSubfiles == nil {
+			result.SkippedSubfiles = make(map[string]datamodel.Result)
+		}
+		result.SkippedSubfiles[filename] = resultToMerge
+	} else {
+		for name, skipped := range resultToMerge.SkippedSubfiles {
+			if result.SkippedSubfiles == nil {
+				result.SkippedSubfiles = make(map[string]datamodel.Result)
+			}
+			result.SkippedSubfiles[filepath.Join(filename, name)] = skipped
+		}
 	}
 	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
 	result.FilteredVolume += resultToMerge.FilteredVolume

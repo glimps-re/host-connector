@@ -379,11 +379,12 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 				sha256:   "def456",
 			},
 			want: &datamodel.Result{
-				Filename: "app.log",
-				Location: logFile,
-				Malware:  false,
-				SHA256:   "def456",
-				Score:    -500,
+				Filename:   "app.log",
+				Location:   logFile,
+				Malware:    false,
+				SHA256:     "def456",
+				Score:      -500,
+				SkipReason: datamodel.SkipFilteredFilePath,
 			},
 		},
 		{

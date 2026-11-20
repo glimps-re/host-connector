@@ -875,11 +875,13 @@ func TestConnector_analyzeFile(t *testing.T) {
 				},
 			},
 			wantResult: datamodel.Result{
-				Filename: "large.txt",
-				Location: "/path/large.txt",
-				SHA256:   "def456",
-				FileSize: 200,
-				Error:    errFileTooBig,
+				Filename:       "large.txt",
+				Location:       "/path/large.txt",
+				SHA256:         "def456",
+				FileSize:       200,
+				FilteredVolume: 200,
+				Error:          errFileTooBig,
+				SkipReason:     datamodel.SkipTooBig,
 			},
 		},
 		{

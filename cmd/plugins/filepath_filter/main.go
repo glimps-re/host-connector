@@ -134,6 +134,7 @@ func (fp *FilePathFilterPlugin) OnScanFile(fileName string, location string, sha
 				Score:          -500,
 				FilteredVolume: fileInfo.Size(),
 				FileSize:       fileInfo.Size(),
+				SkipReason:     datamodel.SkipFilteredFilePath,
 			}
 			return
 		}

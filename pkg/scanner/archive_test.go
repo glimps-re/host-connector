@@ -2,10 +2,12 @@ package scanner
 
 import (
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func Test_archiveStatusHandler_addInnerFileResult(t *testing.T) {
@@ -484,12 +486,94 @@ func Test_mergeResult(t *testing.T) {
 				},
 			},
 		},
+		{
+			name: "ok filtered inner file goes to SkippedSubfiles",
+			args: args{
+				baseResult: datamodel.Result{
+					SHA256:   "base-sha256",
+					Location: "/archive.zip",
+				},
+				resultToMerge: datamodel.Result{
+					FileSize:   10,
+					SkipReason: datamodel.SkipFilteredFilePath,
+				},
+				filename: "filtered.txt",
+			},
+			wantResult: datamodel.Result{
+				SHA256:             "base-sha256",
+				Location:           "/archive.zip",
+				TotalExtractedFile: 1,
+				MaliciousSubfiles:  map[string]datamodel.Result{},
+				SkippedSubfiles: map[string]datamodel.Result{
+					"filtered.txt": {
+						FileSize:   10,
+						SkipReason: datamodel.SkipFilteredFilePath,
+					},
+				},
+			},
+		},
+		{
+			name: "ok too big inner file only in SkippedSubfiles",
+			args: args{
+				baseResult: datamodel.Result{
+					SHA256:   "base-sha256",
+					Location: "/archive.zip",
+				},
+				resultToMerge: datamodel.Result{
+					FileSize:       500,
+					FilteredVolume: 500,
+					Error:          errFileTooBig,
+					SkipReason:     datamodel.SkipTooBig,
+				},
+				filename: "big.bin",
+			},
+			wantResult: datamodel.Result{
+				SHA256:             "base-sha256",
+				Location:           "/archive.zip",
+				FilteredVolume:     500,
+				TotalExtractedFile: 1,
+				MaliciousSubfiles:  map[string]datamodel.Result{},
+				SkippedSubfiles: map[string]datamodel.Result{
+					"big.bin": {
+						FileSize:       500,
+						FilteredVolume: 500,
+						Error:          errFileTooBig,
+						SkipReason:     datamodel.SkipTooBig,
+					},
+				},
+			},
+		},
+		{
+			name: "ok sub-archive SkippedSubfiles merged with joined path",
+			args: args{
+				baseResult: datamodel.Result{
+					SHA256:   "base-sha256",
+					Location: "/archive.zip",
+				},
+				resultToMerge: datamodel.Result{
+					TotalExtractedFile: 1,
+					SkippedSubfiles: map[string]datamodel.Result{
+						"inner.txt": {SkipReason: datamodel.SkipEmptyFile},
+					},
+				},
+				filename: "sub.zip",
+			},
+			wantResult: datamodel.Result{
+				SHA256:             "base-sha256",
+				Location:           "/archive.zip",
+				TotalExtractedFile: 2,
+				MaliciousSubfiles:  map[string]datamodel.Result{},
+				SkippedSubfiles: map[string]datamodel.Result{
+					filepath.Join("sub.zip", "inner.txt"): {SkipReason: datamodel.SkipEmptyFile},
+				},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			gotResult := mergeResult(tt.args.baseResult, tt.args.resultToMerge, tt.args.filename)
 
-			if diff := cmp.Diff(gotResult, tt.wantResult); diff != "" {
+			if diff := cmp.Diff(gotResult, tt.wantResult, cmpopts.EquateErrors()); diff != "" {
 				t.Errorf("mergeResult() mismatch (-got +want):\n%s", diff)
 			}
 		})

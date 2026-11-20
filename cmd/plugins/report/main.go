@@ -154,6 +154,14 @@ type ErrorFileData struct {
 	Error string
 }
 
+// SkippedFileData contains information for files not sent to the scanner.
+type SkippedFileData struct {
+	Name   string
+	SHA256 string
+	Size   string
+	Reason string
+}
+
 // ReportData contains complete scan report data for template rendering.
 type ReportData struct {
 	ScanID            string
@@ -168,6 +176,7 @@ type ReportData struct {
 	MitigatedFiles    []FileReportData
 	MitigatedArchives []ArchiveReportData
 	ErrorFiles        []ErrorFileData
+	SkippedFiles      []SkippedFileData
 	ScanStartTime     string
 	Duration          string
 }
@@ -199,7 +208,26 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 	var totalSizeFile int64 = 0
 	var totalSizeFiltered int64 = 0
 	for _, report := range reports {
-		reportData.NbFileAnalyzed++
+		if report.SkipReason != "" {
+			reportData.SkippedFiles = append(reportData.SkippedFiles, SkippedFileData{
+				Name:   report.Filename,
+				SHA256: report.SHA256,
+				Size:   humanize.Bytes(toUint(report.FileSize)),
+				Reason: getSkipReason(report.SkipReason),
+			})
+		} else {
+			for _, f := range report.SkippedExtractedFiles {
+				reportData.SkippedFiles = append(reportData.SkippedFiles, SkippedFileData{
+					Name:   report.Filename + " > " + f.FileName,
+					SHA256: f.SHA256,
+					Size:   humanize.Bytes(toUint(f.Size)),
+					Reason: getSkipReason(f.SkipReason),
+				})
+			}
+		}
+		if report.AnalyzedVolume > 0 {
+			reportData.NbFileAnalyzed++
+		}
 		totalSizeAnalyzed += report.AnalyzedVolume
 		totalSizeFiltered += report.FilteredVolume
 		totalSizeFile += report.FileSize
@@ -345,6 +373,26 @@ func getCompleteReason(mitigationReason datamodel.MalwareReason) (reason string)
 		reason = "Fichier malveillant"
 	case datamodel.TooBig:
 		reason = "Taille du fichier trop importante"
+	}
+	return
+}
+
+func getSkipReason(skipReason datamodel.SkipReason) (reason string) {
+	switch skipReason {
+	case datamodel.SkipFilteredFilePath:
+		reason = "Fichier filtré par chemin"
+	case datamodel.SkipFilteredFileType:
+		reason = "Fichier filtré par type"
+	case datamodel.SkipEmptyFile:
+		reason = "Fichier vide"
+	case datamodel.SkipSymbolicLink:
+		reason = "Lien symbolique"
+	case datamodel.SkipExtractionLimit:
+		reason = "Limite d'extraction atteinte"
+	case datamodel.SkipTooBig:
+		reason = "Taille du fichier trop importante"
+	case datamodel.SkipRestored:
+		reason = "Fichier restauré depuis la quarantaine"
 	}
 	return
 }

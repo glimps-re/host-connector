@@ -37,6 +37,8 @@ type Report struct {
 	TotalExtractedFile      int               `json:"total-extracted-file,omitempty"`
 	MaliciousExtractedFiles []ExtractedFile   `json:"malicious-extracted-files,omitempty"`
 	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
+	SkipReason              SkipReason        `json:"skip-reason,omitempty"`
+	SkippedExtractedFiles   []ExtractedFile   `json:"skipped-extracted-files,omitempty"`
 }
 
 type Action string
@@ -56,6 +58,7 @@ type ExtractedFile struct {
 	MalwareReason  MalwareReason   `json:"malware-reason,omitempty"`
 	GMalwareURL    string          `json:"gmalware-url,omitempty"`
 	ExtractedFiles []ExtractedFile `json:"extracted-files,omitempty"`
+	SkipReason     SkipReason      `json:"skip-reason,omitempty"`
 }
 
 type ReportsWriter struct {

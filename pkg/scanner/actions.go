@@ -58,6 +58,31 @@ func (a *ReportAction) Handle(ctx context.Context, path string, result datamodel
 	analysisReport.GMalwareURL = result.GMalwareURL
 	analysisReport.MaliciousExtractedFiles = collectExtractedFiles(result.MaliciousSubfiles)
 	analysisReport.ErrorExtractedFiles = result.ErrorSubfiles
+	analysisReport.SkipReason = result.SkipReason
+	analysisReport.SkippedExtractedFiles = collectSkippedFiles(result.SkippedSubfiles)
+	return
+}
+
+func resultError(result datamodel.Result) string {
+	switch {
+	case result.SkipReason != "":
+		return ""
+	case result.Error != nil:
+		return result.Error.Error()
+	default:
+		return ""
+	}
+}
+
+func collectSkippedFiles(subfiles map[string]datamodel.Result) (skippedFiles []datamodel.ExtractedFile) {
+	for filename, subfile := range subfiles {
+		skippedFiles = append(skippedFiles, datamodel.ExtractedFile{
+			FileName:   filename,
+			SHA256:     subfile.SHA256,
+			Size:       subfile.FileSize,
+			SkipReason: subfile.SkipReason,
+		})
+	}
 	return
 }
 

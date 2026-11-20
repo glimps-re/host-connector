@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/alecthomas/units"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
@@ -108,7 +110,7 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 }
 
 // ExtractFile extracts archive contents to outputDir with security limits.
-func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
+func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, skipped []datamodel.ExtractedFile, err error) {
 	p.consoleLogger.Debug(fmt.Sprintf("start extraction of %s with 7z", archiveLocation))
 
 	result, err := p.sze.extract(archiveLocation, outputDir, []string{}, []string{})
@@ -121,6 +123,22 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (
 		if ep.Size > 0 {
 			size += uint64(ep.Size)
 		}
+	}
+	for _, f := range result.ignoredFiles {
+		skipped = append(skipped, datamodel.ExtractedFile{
+			FileName:   f.Name,
+			Size:       int64(f.Size),
+			SkipReason: datamodel.SkipExtractionLimit,
+		})
+	}
+	for _, f := range result.symlinkFiles {
+		if rel, relErr := filepath.Rel(outputDir, f); relErr == nil && !strings.HasPrefix(rel, "..") {
+			f = rel
+		}
+		skipped = append(skipped, datamodel.ExtractedFile{
+			FileName:   f,
+			SkipReason: datamodel.SkipSymbolicLink,
+		})
 	}
 	return
 }

@@ -19,7 +19,21 @@ type Result struct {
 	AnalysisError      string            `json:"analysis-error"`
 	GMalwareURL        string            `json:"glimps-malware-url"`
 	Restored           bool              `json:"restored,omitempty"`
+	SkipReason         SkipReason        `json:"skip-reason,omitempty"`
+	SkippedSubfiles    map[string]Result `json:"skipped-subfiles,omitempty"`
 }
+
+type SkipReason string
+
+const (
+	SkipFilteredFilePath SkipReason = "filtered-filepath"
+	SkipFilteredFileType SkipReason = "filtered-filetype"
+	SkipEmptyFile        SkipReason = "empty-file"
+	SkipSymbolicLink     SkipReason = "symlink"
+	SkipExtractionLimit  SkipReason = "extraction-limit"
+	SkipTooBig           SkipReason = "too-big"
+	SkipRestored         SkipReason = "restored"
+)
 
 type MalwareReason string
 

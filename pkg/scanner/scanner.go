@@ -57,7 +57,10 @@ var (
 
 	errFileTooBig    = errors.New("file is too big to be analyzed")
 	errScannerClosed = errors.New("scanner instance is closing and is no longer accepting new files")
+	errEmptyFile     = errors.New("file is empty")
 )
+
+const emptyFileSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 // accepted MIME types for extraction.
 // (func to have a const map)
@@ -275,14 +278,15 @@ func (c *Connector) Start() (err error) {
 }
 
 // ExtractFile can be used to override xtract.ExtractFile method
-var ExtractFile = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
+var ExtractFile = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, skipped []datamodel.ExtractedFile, err error) {
 	xFile := &xtractr.XFile{
 		FilePath:  archiveLocation,
 		OutputDir: outputDir,
 		FileMode:  0o600,
 		DirMode:   0o700,
 	}
-	return xtractr.ExtractFile(xFile)
+	size, files, volumes, err = xtractr.ExtractFile(xFile)
+	return
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
@@ -306,6 +310,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 	if linfo.Mode()&os.ModeSymlink != 0 {
 		if !c.config.FollowSymlinks {
 			inputLogger.Debug("skip file", slog.String(logReasonKey, "symbolic link"))
+			c.addReport(&datamodel.Report{Filename: input, SkipReason: datamodel.SkipSymbolicLink})
 			return
 		}
 	}
@@ -322,6 +327,7 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 
 	if info.Size() == 0 {
 		inputLogger.Warn("skip file", slog.String(logReasonKey, "size 0"))
+		c.addReport(&datamodel.Report{Filename: input, SHA256: emptyFileSHA256, SkipReason: datamodel.SkipEmptyFile})
 		return
 	}
 
@@ -350,11 +356,13 @@ func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
 
 func (c *Connector) handleRestoredFile(location string, sha256 string, size int64) (err error) {
 	res := datamodel.Result{
-		Filename: filepath.Base(location),
-		Location: location,
-		SHA256:   sha256,
-		FileSize: size,
-		Restored: true,
+		Filename:       filepath.Base(location),
+		Location:       location,
+		SHA256:         sha256,
+		FileSize:       size,
+		FilteredVolume: size,
+		Restored:       true,
+		SkipReason:     datamodel.SkipRestored,
 	}
 	if newres := c.onFileScanned(location, sha256, res); newres != nil {
 		res = *newres
@@ -377,7 +385,7 @@ func (c *Connector) checkExtractedFile(location string) (fileSHA256 string, file
 	}
 	fileSize = info.Size()
 	if info.Size() <= 0 {
-		err = errors.New("file is empty")
+		err = errEmptyFile
 		return
 	}
 	fileSHA256, err = getFileSHA256(location)
@@ -671,7 +679,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	}()
 
 	archiveLogger.Debug("attempting to extract file")
-	extractedSize, extractedFiles, _, extractErr := ExtractFile(archive.location, outputDir)
+	extractedSize, extractedFiles, _, skippedFiles, extractErr := ExtractFile(archive.location, outputDir)
 	if extractErr != nil {
 		archiveLogger.Debug("error extracting file", slog.String("error", extractErr.Error())) // debug level, because files reaching that point are not necessarily extractable, due to the authorization of type 'application/octet-stream'
 		file := archive
@@ -717,6 +725,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 
 	archiveID := c.archiveStatus.addStatus(eStatus)
 	needCleanUp = false
+	for _, f := range skippedFiles {
+		c.archiveStatus.addSkippedSubfile(archiveID, f.FileName, datamodel.Result{FileSize: f.Size, SkipReason: f.SkipReason})
+	}
 
 	if archive.archiveID == "" {
 		// Top-level archive: mark as started and call onStartScanFile/onScanFile immediately.
@@ -746,11 +757,18 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	for _, fileLocation := range extractedFiles {
 		fileLogger := archiveLogger.With(slog.Int("depth", depth), slog.String("subfile", fileLocation))
 
+		relPath, relErr := filepath.Rel(outputDir, fileLocation)
+		if relErr != nil {
+			relPath = fileLocation
+		}
 		var fileSHA256 string
 		var fileSize int64
 		fileSHA256, fileSize, err = c.checkExtractedFile(fileLocation)
 		if err != nil {
 			fileLogger.Warn("skipping file", slog.String(logReasonKey, err.Error()))
+			if errors.Is(err, errEmptyFile) {
+				c.archiveStatus.addSkippedSubfile(archiveID, relPath, datamodel.Result{SHA256: emptyFileSHA256, SkipReason: datamodel.SkipEmptyFile})
+			}
 			if removeErr := os.Remove(fileLocation); removeErr != nil {
 				fileLogger.Warn("could not remove file")
 			}
@@ -767,10 +785,6 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 				return
 			}
 			continue
-		}
-		relPath, relErr := filepath.Rel(outputDir, fileLocation)
-		if relErr != nil {
-			relPath = fileLocation
 		}
 		subFile := fileToAnalyze{
 			location:           fileLocation,
@@ -1054,11 +1068,13 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 
 	if input.size > c.config.MaxFileSize {
 		result = datamodel.Result{
-			Filename: input.filename,
-			Location: input.location,
-			SHA256:   input.sha256,
-			FileSize: input.size,
-			Error:    errFileTooBig,
+			Filename:       input.filename,
+			Location:       input.location,
+			SHA256:         input.sha256,
+			FileSize:       input.size,
+			FilteredVolume: input.size,
+			Error:          errFileTooBig,
+			SkipReason:     datamodel.SkipTooBig,
 		}
 		return
 	}

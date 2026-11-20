@@ -300,6 +300,35 @@
         </div>
     </section>
     {{ end }}
+
+    {{ if gt (len .SkippedFiles) 0 }}
+    <section id="skipped-files">
+        <h2>Fichiers non analysés</h2>
+        <p>Les fichiers suivants n'ont pas été envoyés aux moteurs d'analyse :</p>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>SHA-256</th>
+                        <th>Nom</th>
+                        <th>Taille</th>
+                        <th>Raison</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .SkippedFiles}}
+                    <tr>
+                        <td>{{ .SHA256 }}</td>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .Reason }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
 </body>
 
 </html>

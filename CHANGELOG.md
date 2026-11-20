@@ -1,5 +1,11 @@
 # Changelog
 
+## [v1.5.7]
+
+### Fixed
+
+- report: files not sent to analysis (filtered by path or type, empty, symbolic link, too big, restored from quarantine, extraction limit reached) are now listed in a "Fichiers non analysés" section, and are no longer counted as analyzed
+
 ## [v1.5.6]
 
 ### Fixed

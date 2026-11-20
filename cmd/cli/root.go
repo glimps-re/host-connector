@@ -15,7 +15,6 @@ import (
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,7 +42,13 @@ var hostConfig = &config.Config{
 	},
 }
 
+// errConfigFile is set when the configuration file exists but cannot be used:
+// every command that starts the connector refuses to run, instead of starting
+// with defaults nobody wrote.
+var errConfigFile error
+
 func initConfig() {
+	errConfigFile = nil
 	if hostConfig.Config == "" {
 		conf, err := config.GetConfigFile()
 		if err != nil {
@@ -51,14 +56,9 @@ func initConfig() {
 		}
 		hostConfig.Config = conf
 	}
-	viper.SetConfigFile(hostConfig.Config)
-	viper.SetConfigType("yaml")
-	if err := viper.ReadInConfig(); err != nil {
-		logger.Error("can't read config", slog.String("error", err.Error()))
-		return
-	}
-	if err := viper.Unmarshal(hostConfig, viper.DecodeHook(sdk.DurationMapstructureHook())); err != nil {
-		logger.Error("can't unmarshal config", slog.String("error", err.Error()))
+	if err := config.LoadFile(hostConfig.Config, hostConfig, rootCmd.PersistentFlags().Changed("config")); err != nil {
+		errConfigFile = err
+		logger.Error("invalid configuration file", slog.String("error", err.Error()))
 	}
 }
 
@@ -118,6 +118,9 @@ var rootCmd = &cobra.Command{
 }
 
 func initHandlerNoConsole(cmd *cobra.Command, _ []string) (err error) {
+	if errConfigFile != nil {
+		return errConfigFile
+	}
 	if hostConfig.Debug {
 		LogLevel.Set(slog.LevelDebug)
 		scanner.LogLevel.Set(slog.LevelDebug)
@@ -135,6 +138,9 @@ func initHandlerNoConsole(cmd *cobra.Command, _ []string) (err error) {
 }
 
 func initHandler(cmd *cobra.Command, _ []string, consoleClient *sdk.ConnectorManagerClient, unresolvedErrors map[events.ErrorEventType]string) (err error) {
+	if errConfigFile != nil {
+		return errConfigFile
+	}
 	if hostConfig.Debug {
 		LogLevel.Set(slog.LevelDebug)
 		scanner.LogLevel.Set(slog.LevelDebug)

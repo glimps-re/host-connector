@@ -15,6 +15,9 @@ var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Start monitoring location with GLIMPS Malware host under Connector manager control\n Global config will not be used.",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		if errConfigFile != nil {
+			return errConfigFile
+		}
 		logger.Debug("config", slog.Any("config", hostConfig))
 		console := sdk.NewConnectorManagerClient(context.Background(), hostConfig.Console)
 		managedConfig := &sdk.HostConfig{}

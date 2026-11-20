@@ -518,6 +518,8 @@ The default configuration file is located at:
 - **Linux**: `/etc/gmhost/config.yml` or `~/.config/gmhost/config.yml`
 - **Windows**: `%APPDATA%\gmhost\config.yml`
 
+The file is read strictly: invalid YAML, a mistyped value or a key the connector does not know (a typo such as `too_bg: pass`, or an option removed from an older version) makes the connector refuse to start, with an error naming the file and the key. Only an absent file is accepted, and the defaults and flags apply.
+
 ### Example Configuration
 
 ```yaml

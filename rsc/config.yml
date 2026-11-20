@@ -24,8 +24,5 @@ gmalware_no_cert_check: false
 quarantine:
   # location: "C:\\Program Files\\GMHost\\quarantine"
   password: infected
-cache:
-  # location: "C:\\Program Files\\GMHost\\cache.db"
-  scan_validity: 168h
 # plugins_config: /etc/gmhost/plugins.yml
 # debug: false

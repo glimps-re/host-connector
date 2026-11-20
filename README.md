@@ -213,15 +213,12 @@ A complete example configuration is available at `rsc/plugin_config.yml`. Below 
 
 Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.).
 
-Extraction size limits are configured in the plugin configuration file:
+Extraction size limits are the global ones (`max_file_size`, `recursive_extract_max_files`, `recursive_extract_max_size`); the former `max_file_size`, `max_extracted_files` and `max_total_extracted_size` keys of this plugin are removed and refused at start. The plugin configuration:
 
 ```yaml
 extract:
   file: extract.so
   config:
-    max_file_size: "500MB"            # Max size per extracted file (default: 500MB)
-    max_extracted_files: 1000         # Max number of files to extract (default: 1000)
-    max_total_extracted_size: "3GB"   # Max total size to extract from one archive (default: 3GB)
     default_passwords:                # Passwords for encrypted archives
       - infected
       - password
@@ -232,8 +229,9 @@ extract:
 
 **Key Features:**
 - Uses the embedded 7-Zip binary, deployed in the private work directory (a `7zzs` found in `PATH` is never used); the binary is checked and run on a reference archive at every start and configuration, and the connector refuses to start if it is missing, unsafe, cannot run (for example `work_dir` on a `noexec` file system) or is not a supported version
-- Prevents extraction bombs through size and count limits (centralized in host connector config)
+- Prevents extraction bombs through size and count limits (centralized in host connector config), applied to the bytes really written: the kernel limits each file (`RLIMIT_FSIZE`) and the output folder is measured every 250 ms while 7-Zip writes, so an archive that lies about its sizes (gzip, bzip2) is stopped during the write
 - Handles symlinks securely
+- Hard links: the size of each name counts in the budget, so an archive of many hard links to one big file can exceed the budget and end in `extract-error` (strict on purpose)
 - Supports password-protected archives
 
 **Important note:**

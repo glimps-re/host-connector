@@ -8,15 +8,18 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
@@ -55,10 +58,7 @@ const (
 )
 
 type extractorConfig struct {
-	MaxFileSize           int64
-	MaxExtractedFiles     int
-	MaxTotalExtractedSize int64
-	DefaultPasswords      []string
+	DefaultPasswords []string
 }
 
 type FileProperties struct {
@@ -74,6 +74,9 @@ type extractResult struct {
 	extractedFiles []ExtractedFile
 	symlinkFiles   []string
 	passwordUsed   string
+	// relaunches counts the runs of 7z started again after a member past the
+	// size limit, over the whole extraction.
+	relaunches int
 	// listed is the number of files in the listing.
 	listed     int
 	listedSize int64
@@ -82,9 +85,34 @@ type extractResult struct {
 	// produced and announced are the files found on disk and the files the
 	// listing announced; set once the extraction has run.
 	produced, announced int
-	skipped             skipList
-	anomalies           []string
-	logger              *slog.Logger
+	// dropped counts the selected members that were not extracted (too big once
+	// written, or abandoned after a breach): they are in skipped.
+	dropped   int
+	skipped   skipList
+	anomalies []string
+	logger    *slog.Logger
+}
+
+// drop reports a selected member that will not be extracted.
+func (ec *extractResult) drop(name string, size int64, reason datamodel.NotAnalyzedReason) {
+	ec.skipped.add(name, size, reason)
+	ec.dropped++
+}
+
+// skipState is what the listing decided about the members, kept to start again
+// after a wrong password.
+type skipState struct {
+	skipped skipList
+	dropped int
+}
+
+func (ec *extractResult) saveSkips() skipState {
+	return skipState{skipped: skipList{entries: slices.Clone(ec.skipped.entries), count: ec.skipped.count}, dropped: ec.dropped}
+}
+
+func (ec *extractResult) restoreSkips(s skipState) {
+	ec.skipped = skipList{entries: slices.Clone(s.skipped.entries), count: s.skipped.count}
+	ec.dropped = s.dropped
 }
 
 type ExtractedFile struct {
@@ -98,12 +126,6 @@ type sevenZipExtract struct {
 	config       extractorConfig
 	sevenZipPath string
 	logger       *slog.Logger
-}
-
-// effectiveLimits is the strictest of the plugin's own keys and the limits the
-// core passes.
-func (sze *sevenZipExtract) effectiveLimits(l plugins.ExtractLimits) (maxFileSize int64, maxFiles int, maxTotal int64) {
-	return min(sze.config.MaxFileSize, l.MaxFileSize), min(sze.config.MaxExtractedFiles, l.MaxFiles), min(sze.config.MaxTotalExtractedSize, l.MaxTotalSize)
 }
 
 func (sze *sevenZipExtract) passwordCandidates(passwords []string) []string {
@@ -151,7 +173,9 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, extractLocation string, passwords []string, limits plugins.ExtractLimits) (extraction extractResult, err error) {
 	// we do not extract the all archive at once for security reasons
 	// first list files then extract one by one
-	maxFileSize, maxFiles, maxTotal := sze.effectiveLimits(limits)
+	maxFileSize, maxFiles, maxTotal := limits.MaxFileSize, limits.MaxFiles, limits.MaxTotalSize
+	ctx, cancel := context.WithTimeout(ctx, archiveTimeout(archivePath, maxTotal))
+	defer cancel()
 	sink := newListSink(maxFileSize, maxFiles, maxTotal)
 	extraction.logger = sze.logger
 	if err = sze.list(ctx, archivePath, passwords, sink); err != nil {
@@ -181,7 +205,8 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	// Once the archive was listed, nothing it says afterwards makes it a plain
 	// file: "not an archive" is for the listing only.
 	var ignoredLinks []string
-	if err = sze.extractBatches(ctx, archivePath, extractLocation, passwords, filesToExtract, &extraction, &ignoredLinks, baseAnomalies); err != nil {
+	lim := limits
+	if err = sze.extractBatches(ctx, archivePath, extractLocation, passwords, filesToExtract, &extraction, &ignoredLinks, baseAnomalies, lim); err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
 			err = fmt.Errorf("7z failed to extract an archive it had listed: %s", sanitizeOutput(err.Error()))
 		}
@@ -190,6 +215,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 
 	removed := removeLinkPlaceholders(extractLocation, ignoredLinks, sze.logger)
 	produced := 0
+	var producedBytes int64
 	err = filepath.WalkDir(extractLocation, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			sze.logger.Error("error listing directory", slog.String("error", err.Error()), slog.String("path", path))
@@ -198,11 +224,27 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 		if d.IsDir() {
 			return nil
 		}
-		produced++
 		relPath, err := filepath.Rel(extractLocation, path)
 		if err != nil {
 			return err
 		}
+		// The bytes produced are measured whatever 7z said: its exit code and
+		// the sizes of the listing are not trusted.
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode().IsRegular() {
+			if info.Size() > maxFileSize {
+				if rmErr := removeInside(extractLocation, relPath); rmErr != nil {
+					return rmErr
+				}
+				extraction.drop(filepath.ToSlash(relPath), info.Size(), datamodel.NotAnalyzedTooBig)
+				return nil
+			}
+			producedBytes += info.Size()
+		}
+		produced++
 		if hasControl(relPath) {
 			extraction.anomalies = noteAnomaly(extraction.anomalies, "an extracted file name contains a control character")
 		}
@@ -214,7 +256,10 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 
 	// Counted, not matched by name: a name 7z sanitizes can hide behind a
 	// genuine file of the sanitized name.
-	expected := t.selectedCount - removed
+	if producedBytes > maxTotal {
+		extraction.anomalies = noteAnomaly(extraction.anomalies, "7z wrote more bytes than the extraction budget allows")
+	}
+	expected := t.selectedCount - removed - extraction.dropped
 	extraction.produced, extraction.announced = produced, expected
 	if produced != expected {
 		sze.logger.Error("extraction does not match the listing",
@@ -231,16 +276,28 @@ const (
 	maxArgBytesPerRun = 24 << 10
 )
 
+// Relaunches of 7z after a member found past the size limit: at most this many
+// for one batch of names, and this many for the whole extraction.
+const (
+	maxRelaunches      = 8
+	maxTotalRelaunches = 8
+)
+
 // extractBatches extracts the names in groups, trying each password in turn.
-func (sze *sevenZipExtract) extractBatches(ctx context.Context, archivePath, extractLocation string, passwords, names []string, extraction *extractResult, ignoredLinks *[]string, baseAnomalies []string) error {
-	commonArgs := []string{"-aou", "-o" + extractLocation, "-y", "-spd", "--", "x", archivePath}
+func (sze *sevenZipExtract) extractBatches(ctx context.Context, archivePath, extractLocation string, passwords, names []string, extraction *extractResult, ignoredLinks *[]string, baseAnomalies []string, lim plugins.ExtractLimits) error {
 	batches := batchNames(names, maxNamesPerRun, maxArgBytesPerRun)
+	baseSkips := extraction.saveSkips()
 	var err error
 PASSWORD_LOOP:
 	for _, pwd := range sze.passwordCandidates(passwords) {
+		aborted := false
 		for _, batch := range batches {
+			if aborted {
+				sze.abandon(extraction, batch, "7z was stopped before this member")
+				continue
+			}
 			var links []string
-			links, err = sze.runStream(ctx, pwd, slices.Concat(commonArgs, batch), nil, archivePath, extractLocation)
+			links, aborted, err = sze.runBatch(ctx, pwd, archivePath, extractLocation, batch, extraction, lim)
 			switch {
 			case err == nil:
 				extraction.passwordUsed = pwd
@@ -253,6 +310,9 @@ PASSWORD_LOOP:
 				}
 				*ignoredLinks = nil
 				extraction.symlinkFiles = nil
+				extraction.relaunches = 0
+				// What the listing decided (too-big, extract-limit) stays.
+				extraction.restoreSkips(baseSkips)
 				extraction.anomalies = slices.Clone(baseAnomalies)
 				continue PASSWORD_LOOP
 			case errors.Is(err, errSevenZipRecoverable):
@@ -266,6 +326,107 @@ PASSWORD_LOOP:
 		return nil
 	}
 	return err
+}
+
+// abandon reports members that will not be extracted because of an anomaly:
+// they are extract-error, never too-big, so no policy about big files can let
+// them through.
+func (sze *sevenZipExtract) abandon(extraction *extractResult, names []string, why string) {
+	extraction.anomalies = noteAnomaly(extraction.anomalies, why)
+	for _, n := range names {
+		extraction.drop(n, 0, datamodel.NotAnalyzedExtractError)
+	}
+}
+
+// fileLimitFor is the size the kernel lets one file grow to, plus one byte (a
+// file that reaches it is past the limit): the per-file limit, or what is left
+// of the budget when that is smaller, so that a single member cannot go past the
+// budget either. 0 means no limit could be computed. What a file that reaches
+// the limit means depends on the term that applied: the per-file limit (a
+// member too big, reported alone) or what was left of the budget (the archive
+// announced less than it wrote, an anomaly). On a tie the per-file limit wins.
+func fileLimitFor(maxFileSize, maxTotal, written int64) int64 {
+	left := max(maxTotal-written, 0)
+	limit := min(maxFileSize, left)
+	if limit == math.MaxInt64 {
+		return 0
+	}
+	return limit + 1
+}
+
+// runBatch extracts one batch of names with the output watched.
+//
+// 7z that stopped by itself with a member past the size limit (exit code 0):
+// the other members are complete, only the offender is removed and reported
+// too-big. 7z stopped by the guard or the kernel: files written by the run are
+// deleted and the batch is run again without the offender, at most maxRelaunches
+// times for the batch and maxTotalRelaunches for the extraction. A breach of the
+// budget, an output that cannot be measured, a member that cannot be identified
+// or the end of the relaunches abandon the rest of the batch as extract-error.
+// aborted tells that the remaining batches must be abandoned too.
+func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extractLocation string, batch []string, extraction *extractResult, lim plugins.ExtractLimits) (links []string, aborted bool, err error) {
+	remaining := batch
+	for relaunch := 0; ; relaunch++ {
+		before, snapErr := snapshot(extractLocation)
+		written, writtenErr := bytesWritten(extractLocation)
+		if readErr := errors.Join(snapErr, writtenErr); readErr != nil {
+			sze.logger.Warn("cannot read the output folder of 7z", slog.String("error", readErr.Error()))
+			sze.abandon(extraction, remaining, "the output folder of 7z could not be read")
+			return nil, true, nil
+		}
+		args := slices.Concat([]string{"-aou", "-o" + extractLocation, "-y", "-spd", "--", "x", archivePath}, remaining)
+		spec := runSpec{password: pwd, args: args, paths: []string{archivePath, extractLocation}, fileLimit: fileLimitFor(lim.MaxFileSize, lim.MaxTotalSize, written)}
+		if guardEnabled {
+			spec.guard = &guard{dir: extractLocation, maxFileSize: lim.MaxFileSize, maxTotal: lim.MaxTotalSize, maxFiles: lim.MaxFiles, logger: sze.logger}
+		}
+		links, err = sze.run(ctx, spec)
+		var hit *limitHit
+		if !errors.As(err, &hit) {
+			return links, false, err
+		}
+		switch {
+		case hit.broken:
+			sze.removeRun(extractLocation, before)
+			sze.abandon(extraction, remaining, "the output folder of 7z could not be measured")
+			return nil, true, nil
+		case hit.budget:
+			sze.removeRun(extractLocation, before)
+			sze.logger.Error("7z wrote more than the extraction budget allows")
+			sze.abandon(extraction, remaining, "7z wrote more than the sizes announced by the archive")
+			return nil, true, nil
+		case !slices.Contains(remaining, hit.offender):
+			sze.removeRun(extractLocation, before)
+			sze.abandon(extraction, remaining, "a file written past the size limit cannot be matched to a member")
+			return nil, true, nil
+		case hit.completed:
+			if rmErr := removeInside(extractLocation, hit.offender); rmErr != nil {
+				sze.logger.Warn("cannot remove a file past the size limit", slog.String("error", rmErr.Error()))
+				sze.abandon(extraction, remaining, "a file written past the size limit could not be removed")
+				return nil, true, nil
+			}
+			extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedTooBig)
+			return links, false, nil
+		}
+		sze.removeRun(extractLocation, before)
+		extraction.relaunches++
+		if relaunch >= maxRelaunches || extraction.relaunches > maxTotalRelaunches {
+			sze.abandon(extraction, remaining, "too many members written past the size limit")
+			return nil, true, nil
+		}
+		extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedTooBig)
+		remaining = slices.DeleteFunc(slices.Clone(remaining), func(n string) bool { return n == hit.offender })
+		if len(remaining) == 0 {
+			return nil, false, nil
+		}
+	}
+}
+
+// removeRun deletes what a run of 7z wrote; a failure is logged, the output
+// folder is removed with the rest of the extraction anyway.
+func (sze *sevenZipExtract) removeRun(dir string, before map[string]struct{}) {
+	if err := removeNewFiles(dir, before, sze.logger); err != nil {
+		sze.logger.Warn("cannot remove the files of a stopped run", slog.String("error", err.Error()))
+	}
 }
 
 // removeLinkPlaceholders deletes the empty files 7z leaves where it refused a
@@ -299,8 +460,57 @@ func removeLinkPlaceholders(extractLocation string, names []string, logger *slog
 	return removed
 }
 
+// The time one archive may take: a base plus the time to read the archive and
+// write the budget at a slow disk rate, never more than szRunTimeout. Variables
+// for tests.
+var (
+	baseArchiveTimeout          = 2 * time.Minute
+	archiveBytesPerSecond int64 = 5 << 20
+)
+
+// archiveTimeout is the time budget of the extraction of the archive at path.
+func archiveTimeout(path string, maxTotal int64) time.Duration {
+	size := int64(0)
+	if fi, err := os.Stat(path); err == nil {
+		size = fi.Size()
+	}
+	// Bounded before the addition: a limit near MaxInt64 must not overflow.
+	const bound = int64(1) << 50
+	seconds := min((min(size, bound)+min(max(maxTotal, 0), bound))/archiveBytesPerSecond, int64(szRunTimeout/time.Second))
+	return min(baseArchiveTimeout+time.Duration(seconds)*time.Second, szRunTimeout)
+}
+
+// removeInside deletes the file rel under dir, resolved inside dir only.
+func removeInside(dir, rel string) error {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := root.Close(); e != nil {
+			slog.Warn("cannot close the output folder", slog.String("error", e.Error()))
+		}
+	}()
+	return root.Remove(rel)
+}
+
 // errSevenZipTimeout is returned when 7z ran past the time allowed.
 var errSevenZipTimeout = errors.New("7z exceeded the time allowed")
+
+// runSpec describes one run of 7z.
+type runSpec struct {
+	password string
+	args     []string
+	// consume receives the standard output as a stream; nil: discarded.
+	consume func(io.Reader) error
+	// paths are what 7z may copy into its error output (the archive, the
+	// output folder).
+	paths []string
+	// guard, when set, watches the output folder and stops 7z past the limits.
+	guard *guard
+	// fileLimit, when positive, is the size the kernel lets a file grow to.
+	fileLimit int64
+}
 
 // runStream runs 7z with the given password. The standard output is handed
 // to consume as a stream (nil: discarded), never buffered; the standard error
@@ -308,14 +518,21 @@ var errSevenZipTimeout = errors.New("7z exceeded the time allowed")
 // ctx ends or when consume fails. paths are what 7z may copy into its error
 // output (the archive, the output folder).
 func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args []string, consume func(io.Reader) error, paths ...string) (symLinkFiles []string, err error) {
-	passwordArg := "-P" + password
-	if password == "" {
+	return sze.run(ctx, runSpec{password: password, args: args, consume: consume, paths: paths})
+}
+
+// run is runStream with the limits on what 7z writes: the kernel's limit on
+// each file, and the watch of the output folder. A run stopped by them returns
+// a *limitHit.
+func (sze *sevenZipExtract) run(ctx context.Context, spec runSpec) (symLinkFiles []string, err error) {
+	passwordArg := "-P" + spec.password
+	if spec.password == "" {
 		passwordArg = "-p-"
 	}
 	runCtx, runCancel := context.WithTimeout(ctx, szRunTimeout)
 	defer runCancel()
 	stderr := &cappedBuffer{limit: maxSevenZipStderr, cancel: runCancel}
-	cmd, stdout, err := startRetryingBusy(runCtx, sze.sevenZipPath, append([]string{passwordArg}, args...), stderr)
+	cmd, stdout, err := startRetryingBusy(runCtx, sze.sevenZipPath, append([]string{passwordArg}, spec.args...), stderr)
 	if err != nil {
 		// A cancelled or expired context says nothing about the extractor.
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -327,8 +544,17 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 		}
 		return nil, fmt.Errorf("%w: %w", plugins.ErrExtractorUnavailable, err)
 	}
+	if e := limitProcess(cmd.Process.Pid, spec.fileLimit); e != nil {
+		sze.logger.Warn("cannot limit what 7z writes, relying on the watch of the output folder", slog.String("error", e.Error()))
+	}
+	var watching sync.WaitGroup
+	watchCtx, stopWatch := context.WithCancel(runCtx)
+	if spec.guard != nil {
+		watching.Go(func() { spec.guard.watch(watchCtx, runCancel) })
+	}
 
 	limited := &io.LimitedReader{R: stdout, N: int64(maxSevenZipStdout) + 1}
+	consume := spec.consume
 	if consume == nil {
 		consume = discard
 	}
@@ -345,7 +571,15 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 		runCancel()
 	}
 	cmdErr := cmd.Wait()
+	stopWatch()
+	watching.Wait()
 
+	if spec.guard != nil {
+		if hit, killed := spec.guard.result(); hit != nil {
+			hit.completed = !killed && cmdErr == nil
+			return nil, hit
+		}
+	}
 	switch {
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
 		return nil, errSevenZipTimeout
@@ -354,7 +588,7 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 	case stderr.exceeded:
 		return nil, fmt.Errorf("%w: %s", errSevenZipOutputTooLarge, sanitizeOutput(stderr.buf.String()))
 	}
-	return handleSevenZipError(cmdErr, stderr.buf.String(), sze.logger, paths...)
+	return handleSevenZipError(cmdErr, stderr.buf.String(), sze.logger, spec.paths...)
 }
 
 func discard(r io.Reader) error {

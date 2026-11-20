@@ -250,7 +250,6 @@ func TestRealSevenZip_manyLongNamesAreBatched(t *testing.T) {
 	writeZip(t, path, "", members...)
 	limits := plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 1000, MaxTotalSize: 1 << 30}
 	plugin := realPlugin(t)
-	plugin.sze.config.MaxExtractedFiles = 1000
 	ex, err := plugin.ExtractFile(path, t.TempDir(), limits)
 	if err != nil || len(ex.Files) != 120 || ex.SkippedCount != 0 {
 		t.Errorf("Extraction = %d files, %d skipped, %v, want the 120 members", len(ex.Files), ex.SkippedCount, err)

@@ -19,7 +19,13 @@ var ErrInvalidConfig = errors.New("invalid plugin configuration")
 // the message explaining the replacement. It is consulted before the strict
 // decoding, so the operator reads the replacement rather than a generic
 // "unknown key".
-var removedConfigKeys = map[string]map[string]string{}
+var removedConfigKeys = map[string]map[string]string{
+	"extract": {
+		"max_file_size":            "the extraction limits are the global ones now: use max_file_size of the main configuration (per extracted file); remove the key, and adjust the global limit if the old value must be kept",
+		"max_extracted_files":      "the extraction limits are the global ones now: use recursive_extract_max_files of the main configuration (it counts all levels of one scan, not one archive); remove the key, and adjust the global limit if the old value must be kept",
+		"max_total_extracted_size": "the extraction limits are the global ones now: use recursive_extract_max_size of the main configuration (it counts all levels of one scan, not one archive); remove the key, and adjust the global limit if the old value must be kept",
+	},
+}
 
 // DecodeConfig decodes the raw configuration section of plugin pluginName
 // into dst (the value returned by Plugin.GetDefaultConfig). It first refuses

@@ -18,7 +18,7 @@ import (
 )
 
 func realConfig() *Config {
-	return &Config{MaxFileSize: "100MB", MaxTotalExtractedSize: "1GB", MaxExtractedFiles: 100, DefaultPasswords: []string{"infected"}}
+	return &Config{DefaultPasswords: []string{"infected"}}
 }
 
 func TestInit_deploysTheEmbeddedBinaryInThePrivateWorkDir(t *testing.T) {

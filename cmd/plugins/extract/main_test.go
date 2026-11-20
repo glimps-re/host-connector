@@ -3,7 +3,6 @@ package main
 import (
 	"testing"
 
-	"github.com/alecthomas/units"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
@@ -17,10 +16,7 @@ func TestSevenZipExtractPlugin_Init(t *testing.T) {
 		{
 			name: "ok",
 			config: &Config{
-				MaxFileSize:           defaultMaxSize,
-				MaxExtractedFiles:     defaultMaxFileExtracted,
-				MaxTotalExtractedSize: defaultMaxTotalExtractedSize,
-				DefaultPasswords:      []string{"infected"},
+				DefaultPasswords: []string{"infected"},
 			},
 			wantErr: false,
 		},
@@ -186,17 +182,6 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 		t.Error("Extraction engine should be initialized with default config")
 	}
 
-	// Verify default configuration values
-	expectedMaxSize, err := units.ParseStrictBytes(defaultMaxSize)
-	if err != nil {
-		t.Fatalf("Failed to parse defaultMaxSize: %v", err)
-	}
-	if plugin.sze.config.MaxFileSize != expectedMaxSize {
-		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, expectedMaxSize)
-	}
-	if plugin.sze.config.MaxExtractedFiles != defaultMaxFileExtracted {
-		t.Errorf("Default MaxExtractedFiles = %v, want %v", plugin.sze.config.MaxExtractedFiles, defaultMaxFileExtracted)
-	}
 	if len(plugin.sze.config.DefaultPasswords) != 1 || plugin.sze.config.DefaultPasswords[0] != "infected" {
 		t.Errorf("Default passwords = %v, want [\"infected\"]", plugin.sze.config.DefaultPasswords)
 	}

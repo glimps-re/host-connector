@@ -19,7 +19,7 @@ const (
 
 func TestSevenZipExtractPlugin_Validate(t *testing.T) {
 	good := func() *Config {
-		return &Config{MaxFileSize: "100MB", MaxTotalExtractedSize: "3GB", MaxExtractedFiles: 10}
+		return &Config{}
 	}
 	tests := []struct {
 		name         string
@@ -32,8 +32,6 @@ func TestSevenZipExtractPlugin_Validate(t *testing.T) {
 		{name: "valid, embedded binary", wantDeployed: true},
 		{name: "valid, configured binary", mutate: func(c *Config) { c.SevenZipPath = "/opt/7z/7zzs" }, wantDeclared: "/opt/7z/7zzs"},
 		{name: "unsafe configured binary", mutate: func(c *Config) { c.SevenZipPath = "/tmp/7zzs" }, declareErr: errors.New("unsafe executable"), wantErr: true, wantDeclared: "/tmp/7zzs"},
-		{name: "unparsable max_file_size", mutate: func(c *Config) { c.MaxFileSize = "many" }, wantErr: true},
-		{name: "unparsable max_total_extracted_size", mutate: func(c *Config) { c.MaxTotalExtractedSize = "many" }, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,7 +110,7 @@ func TestSevenZipExtractPlugin_unsafeBinaryIsNeverRun(t *testing.T) {
 		_, _, err := plugins.CheckExecutable(path)
 		return err
 	}
-	conf := &Config{MaxFileSize: "1MB", MaxTotalExtractedSize: "1MB", MaxExtractedFiles: 1, SevenZipPath: binary}
+	conf := &Config{SevenZipPath: binary}
 	var p SevenZipExtractPlugin
 	if err := p.Validate(conf, hcc); err == nil {
 		t.Error("Validate() accepted an executable writable by others")
@@ -144,7 +142,7 @@ func TestSevenZipExtractPlugin_linkedBinaryIsNeverRun(t *testing.T) {
 		_, _, err := plugins.CheckExecutable(path)
 		return err
 	}
-	conf := &Config{MaxFileSize: "1MB", MaxTotalExtractedSize: "1MB", MaxExtractedFiles: 1, SevenZipPath: link}
+	conf := &Config{SevenZipPath: link}
 	var p SevenZipExtractPlugin
 	if err := p.Validate(conf, hcc); err == nil {
 		t.Error("Validate() accepted a binary reached through a user-owned link")

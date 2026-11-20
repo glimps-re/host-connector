@@ -127,7 +127,7 @@ done`
 }
 
 func bigConfig(sze *sevenZipExtract) {
-	sze.config = extractorConfig{MaxFileSize: 1 << 20, MaxExtractedFiles: 100, MaxTotalExtractedSize: 1 << 30}
+	sze.config = extractorConfig{}
 }
 
 var openLimits = plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}

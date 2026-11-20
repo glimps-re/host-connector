@@ -210,7 +210,7 @@ func prove(sze *sevenZipExtract, workDir string) error {
 		return err
 	}
 	test := &sevenZipExtract{
-		config:       extractorConfig{MaxFileSize: 1 << 20, MaxExtractedFiles: 10, MaxTotalExtractedSize: 1 << 20},
+		config:       extractorConfig{},
 		sevenZipPath: sze.sevenZipPath,
 		// The reference archive is built to trip the checks of the analysis.
 		logger: slog.New(slog.DiscardHandler),

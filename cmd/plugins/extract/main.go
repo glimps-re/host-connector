@@ -13,15 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/alecthomas/units"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-)
-
-const (
-	defaultMaxSize               = "500MB"
-	defaultMaxFileExtracted      = 1000  // 1000 files extracted max
-	defaultMaxTotalExtractedSize = "3GB" // max total size of extracted elements
 )
 
 // SevenZipExtractPlugin provides archive extraction via 7-Zip.
@@ -32,13 +25,12 @@ type SevenZipExtractPlugin struct {
 	consoleLogger *slog.Logger
 }
 
-// Config defines extraction behavior and security limits.
+// Config defines the extraction behavior. The extraction limits are the global
+// ones (max_file_size, recursive_extract_max_files, recursive_extract_max_size):
+// the core passes them at each extraction.
 type Config struct {
-	MaxFileSize           string   `mapstructure:"max_file_size,omitempty"`            // Max size per extracted file (e.g., "100MB", "1GB")
-	MaxExtractedFiles     int      `mapstructure:"max_extracted_files,omitempty"`      // Max number of files to extract
-	MaxTotalExtractedSize string   `mapstructure:"max_total_extracted_size,omitempty"` // Max total size to extract from one archive (e.g., "500MB", "3GB"). Additional files are skipped if reached
-	DefaultPasswords      []string `mapstructure:"default_passwords,omitempty"`        // Default passwords for encrypted archives
-	SevenZipPath          string   `mapstructure:"seven_zip_path,omitempty"`
+	DefaultPasswords []string `mapstructure:"default_passwords,omitempty"` // Default passwords for encrypted archives
+	SevenZipPath     string   `mapstructure:"seven_zip_path,omitempty"`
 }
 
 var (
@@ -55,17 +47,12 @@ var (
 )
 
 func (p *SevenZipExtractPlugin) GetDefaultConfig() (config any) {
-	config = &Config{
-		MaxFileSize:           defaultMaxSize,
-		MaxExtractedFiles:     defaultMaxFileExtracted,
-		MaxTotalExtractedSize: defaultMaxTotalExtractedSize,
-		DefaultPasswords:      []string{"infected"},
-	}
+	config = &Config{DefaultPasswords: []string{"infected"}}
 	return
 }
 
 // Validate checks the configuration like Init does, without any effect: the
-// sizes are parsed, and the 7-Zip binary is deployed or checked, declared and
+// 7-Zip binary is deployed or checked, declared and
 // run in the scratch directory of the validation, which leaves the running
 // plugin and its binary alone.
 func (p *SevenZipExtractPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
@@ -73,11 +60,7 @@ func (p *SevenZipExtractPlugin) Validate(rawConfig any, vc plugins.ValidationCon
 	if !ok {
 		return errors.New("error bad config passed")
 	}
-	maxFileSize, maxTotalExtractedSize, err := parseSizes(config)
-	if err != nil {
-		return err
-	}
-	bin, err := prepareBinary(config.SevenZipPath, vc, extractorConfigOf(config, maxFileSize, maxTotalExtractedSize), vc.GetLogger())
+	bin, err := prepareBinary(config.SevenZipPath, vc, extractorConfig{DefaultPasswords: config.DefaultPasswords}, vc.GetLogger())
 	if err != nil {
 		return err
 	}
@@ -85,25 +68,6 @@ func (p *SevenZipExtractPlugin) Validate(rawConfig any, vc plugins.ValidationCon
 		vc.GetLogger().Warn("cannot remove the 7-Zip deployed to validate", slog.String("error", rmErr.Error()))
 	}
 	return nil
-}
-
-func extractorConfigOf(config *Config, maxFileSize, maxTotalExtractedSize int64) extractorConfig {
-	return extractorConfig{
-		MaxFileSize:           maxFileSize,
-		MaxExtractedFiles:     config.MaxExtractedFiles,
-		MaxTotalExtractedSize: maxTotalExtractedSize,
-		DefaultPasswords:      config.DefaultPasswords,
-	}
-}
-
-func parseSizes(config *Config) (maxFileSize, maxTotalExtractedSize int64, err error) {
-	if maxFileSize, err = units.ParseStrictBytes(config.MaxFileSize); err != nil {
-		return 0, 0, fmt.Errorf("could not parse max_file_size: %w", err)
-	}
-	if maxTotalExtractedSize, err = units.ParseStrictBytes(config.MaxTotalExtractedSize); err != nil {
-		return 0, 0, fmt.Errorf("could not parse max_total_extracted_size: %w", err)
-	}
-	return maxFileSize, maxTotalExtractedSize, nil
 }
 
 // Init sets up the extraction engine and registers callbacks.
@@ -116,11 +80,7 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 		return errors.New("error bad config passed")
 	}
 
-	maxFileSize, maxTotalExtractedSize, err := parseSizes(config)
-	if err != nil {
-		return
-	}
-	econf := extractorConfigOf(config, maxFileSize, maxTotalExtractedSize)
+	econf := extractorConfig{DefaultPasswords: config.DefaultPasswords}
 	bin, err := prepareBinary(config.SevenZipPath, hcc, econf, p.logger)
 	if err != nil {
 		return err
@@ -135,14 +95,11 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 
 	hcc.SetExtractFile(p.ExtractFile)
 	p.logger.Info("plugin initialized",
-		slog.String("max_file_size", config.MaxFileSize),
-		slog.Int("max_extracted_files", config.MaxExtractedFiles),
-		slog.String("max_total_extracted_size", config.MaxTotalExtractedSize),
 		slog.String("default_passwords", strings.Join(config.DefaultPasswords, ", ")),
 		slog.String("seven_zip_path", config.SevenZipPath),
 	)
-	p.consoleLogger.Info(fmt.Sprintf("extract plugin initialized, max_file_size: %s, max_extracted_elements: %d, max_total_extracted_size: %s, default_passwords: %s, seven_zip_path: %s",
-		config.MaxFileSize, config.MaxExtractedFiles, config.MaxTotalExtractedSize, strings.Join(config.DefaultPasswords, ", "), config.SevenZipPath,
+	p.consoleLogger.Info(fmt.Sprintf("extract plugin initialized, default_passwords: %s, seven_zip_path: %s",
+		strings.Join(config.DefaultPasswords, ", "), config.SevenZipPath,
 	))
 	return
 }

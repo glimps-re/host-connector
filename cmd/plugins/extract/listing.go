@@ -19,6 +19,9 @@ import (
 const (
 	// maxMemberNameLen is the longest member name accepted: no path is longer.
 	maxMemberNameLen = 4096
+	// maxMemberDepth is the number of path separators from which a member is an
+	// anomaly: nothing legitimate is nested that deep.
+	maxMemberDepth = 64
 
 	szTailSizePrefix  = "Tail Size ="
 	szWarningsPrefix  = "WARNINGS:"
@@ -84,10 +87,10 @@ type skipList struct {
 	count   int
 }
 
-func (s *skipList) add(name string, size int, reason datamodel.NotAnalyzedReason) {
+func (s *skipList) add(name string, size int64, reason datamodel.NotAnalyzedReason) {
 	s.count++
 	if len(s.entries) < datamodel.MaxListedSubfiles {
-		s.entries = append(s.entries, datamodel.NotAnalyzedFile{FileName: truncateName(name), Size: int64(max(size, 0)), Reason: reason})
+		s.entries = append(s.entries, datamodel.NotAnalyzedFile{FileName: truncateName(name), Size: max(size, 0), Reason: reason})
 	}
 }
 
@@ -239,7 +242,12 @@ func (s *listSink) addLine(line string) error {
 		return nil
 	}
 	t.files++
+	// A size the listing does not give (flux formats: gzip, bzip2) is unknown,
+	// never small: it weighs the largest a member may be.
 	size := int64(fp.Size)
+	if fp.Size < 0 {
+		size = s.maxFileSize
+	}
 	if size <= s.maxFileSize {
 		t.totalSize += max(size, 0)
 		t.totalCompressed += int64(max(fp.CompressedSize, 0))
@@ -248,15 +256,20 @@ func (s *listSink) addLine(line string) error {
 		s.anomalies = noteAnomaly(s.anomalies, fmt.Sprintf("a member name is longer than %d bytes", maxMemberNameLen))
 		return nil
 	}
+	if strings.Count(fp.Name, "/") >= maxMemberDepth {
+		// Not extracted: a path of that depth only serves to create folders.
+		s.anomalies = noteAnomaly(s.anomalies, fmt.Sprintf("a member path has %d folders or more", maxMemberDepth))
+		return nil
+	}
 	if hasControl(fp.Name) {
 		s.anomalies = noteAnomaly(s.anomalies, "a member name contains a control character")
 	}
 	switch {
 	case size > s.maxFileSize:
-		t.skipped.add(fp.Name, fp.Size, datamodel.NotAnalyzedTooBig)
+		t.skipped.add(fp.Name, int64(fp.Size), datamodel.NotAnalyzedTooBig)
 		t.skippedHashes = append(t.skippedHashes, maphash.String(s.seed, fp.Name))
 	case t.selectedCount >= s.maxFiles || t.selectedSize+max(size, 0) > s.maxTotal:
-		t.skipped.add(fp.Name, fp.Size, datamodel.NotAnalyzedExtractLimit)
+		t.skipped.add(fp.Name, int64(fp.Size), datamodel.NotAnalyzedExtractLimit)
 		t.skippedHashes = append(t.skippedHashes, maphash.String(s.seed, fp.Name))
 	default:
 		t.selectedSize += max(size, 0)

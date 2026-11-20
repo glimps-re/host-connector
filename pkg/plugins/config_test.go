@@ -16,8 +16,9 @@ type testPluginConfig struct {
 
 func setRemovedKeys(t *testing.T, removed map[string]map[string]string) {
 	t.Helper()
+	previous := removedConfigKeys
 	removedConfigKeys = removed
-	t.Cleanup(func() { removedConfigKeys = map[string]map[string]string{} })
+	t.Cleanup(func() { removedConfigKeys = previous })
 }
 
 func TestDecodeConfig(t *testing.T) {
@@ -88,5 +89,26 @@ func TestCheckRemovedKeys(t *testing.T) {
 	}
 	if err := checkRemovedKeys("other", map[string]any{"max_file_size": 1}); err != nil {
 		t.Errorf("checkRemovedKeys(other) = %v, want nil", err)
+	}
+}
+
+func TestDecodeConfig_removedExtractLimitKeysAreRefusedWithTheReplacement(t *testing.T) {
+	replacement := map[string]string{
+		"max_file_size":            "max_file_size",
+		"max_extracted_files":      "recursive_extract_max_files",
+		"max_total_extracted_size": "recursive_extract_max_size",
+	}
+	type extractConfig struct {
+		DefaultPasswords []string `mapstructure:"default_passwords"`
+	}
+	for key, want := range replacement {
+		var dst extractConfig
+		err := DecodeConfig("extract", map[string]any{key: "1", "default_passwords": []any{"infected"}}, &dst)
+		if !errors.Is(err, ErrInvalidConfig) || !strings.Contains(err.Error(), key) || !strings.Contains(err.Error(), want) {
+			t.Errorf("key %s: error = %v, want a refusal naming the key and %s", key, err, want)
+		}
+		if err != nil && strings.Contains(err.Error(), "unknown config key") {
+			t.Errorf("key %s: the explicit message was replaced by the generic one: %v", key, err)
+		}
 	}
 }

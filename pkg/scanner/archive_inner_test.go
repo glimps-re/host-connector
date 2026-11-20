@@ -1073,3 +1073,64 @@ func TestAnalyzeArchiveFile_nestedArchiveIsPresentedByItsLogicalPath(t *testing.
 		t.Errorf("plugin saw names %v and locations %v, want the logical path of b.zip and its real location", names, locations)
 	}
 }
+
+func TestRecursiveExtract_budgetShrinksFromOneLevelToTheNext(t *testing.T) {
+	prevExtract := ExtractFile
+	t.Cleanup(func() { ExtractFile = prevExtract })
+	inner, _ := createArchive(t, []string{"inner"})
+	innerBytes, err := os.ReadFile(filepath.Clean(inner))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen []plugins.ExtractLimits
+	ExtractFile = func(_, outputDir string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+		seen = append(seen, limits)
+		if len(seen) > 1 {
+			return plugins.Extraction{}, fmt.Errorf("%w", plugins.ErrUnsupportedFormat)
+		}
+		root, err := os.OpenRoot(outputDir)
+		if err != nil {
+			return plugins.Extraction{}, err
+		}
+		defer func() {
+			if e := root.Close(); e != nil {
+				t.Error(e)
+			}
+		}()
+		if err := root.WriteFile("a.txt", []byte("aaaa"), 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		if err := root.WriteFile("b-inner.zip", innerBytes, 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		return plugins.Extraction{Size: 100, Files: []string{filepath.Join(outputDir, "a.txt"), filepath.Join(outputDir, "b-inner.zip")}}, nil
+	}
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1, MaxFileSize: 1000, RecursiveExtractMaxFiles: 10, RecursiveExtractMaxSize: 5000}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+	c.submitter = archiveCleanSubmitter()
+	if err := c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close(t.Context()) })
+	location, sha := createArchive(t, []string{"outer"})
+	info, err := os.Stat(location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int64
+	var files int
+	if err := c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) < 2 {
+		t.Fatalf("ExtractFile called %d times, want the sub-archive extracted too", len(seen))
+	}
+	want0 := plugins.ExtractLimits{MaxFileSize: 1000, MaxFiles: 10, MaxTotalSize: 5000}
+	want1 := plugins.ExtractLimits{MaxFileSize: 1000, MaxFiles: 8, MaxTotalSize: 4900}
+	if seen[0] != want0 || seen[1] != want1 {
+		t.Errorf("limits = %+v then %+v, want %+v then %+v: the budget of the second level is what the first one left", seen[0], seen[1], want0, want1)
+	}
+}

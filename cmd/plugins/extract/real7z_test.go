@@ -121,3 +121,16 @@ func TestRealSevenZip_trailingBytesAreAnAnomaly(t *testing.T) {
 		t.Errorf("Files = %v, want the members still extracted", baseNames(ex.Files))
 	}
 }
+
+// realSevenZipForBench is the embedded 7-Zip copied where it can run.
+func realSevenZipForBench(b *testing.B) *sevenZipExtract {
+	b.Helper()
+	bin := filepath.Join(b.TempDir(), "7zzs")
+	if err := os.WriteFile(bin, SevenZip, 0o600); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.Chmod(bin, modeScript); err != nil {
+		b.Fatal(err)
+	}
+	return &sevenZipExtract{sevenZipPath: bin, logger: slog.New(slog.DiscardHandler)}
+}

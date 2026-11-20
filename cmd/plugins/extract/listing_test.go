@@ -90,7 +90,6 @@ func TestListSink_zipBombTotalsOnlyCountFilesUnderTheLimit(t *testing.T) {
 func TestExtract_zipBombIsRefused(t *testing.T) {
 	bomb := fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "....A", 4_000_000_000, 1000, "bomb.bin")
 	sze := scriptFor(t, listing(nil, bomb), "true", filepath.Join(t.TempDir(), "args"))
-	sze.config = extractorConfig{MaxFileSize: 1 << 40, MaxExtractedFiles: 10, MaxTotalExtractedSize: 1 << 40}
 	_, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 1 << 40, MaxFiles: 10, MaxTotalSize: 1 << 40})
 	if err == nil || !strings.Contains(err.Error(), "ZipBomb") {
 		t.Errorf("extract() error = %v, want the ZipBomb refusal", err)

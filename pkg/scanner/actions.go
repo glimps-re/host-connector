@@ -181,6 +181,9 @@ func (a *MultiAction) Handle(ctx context.Context, path string, result datamodel.
 			if d, ok := h.(interface{ SkipAfterError() bool }); ok && d.SkipAfterError() {
 				continue
 			}
+			if d, ok := h.(interface{ SkipAfterRestored() bool }); ok && d.SkipAfterRestored() && restoredRefusal(errs) {
+				continue
+			}
 		}
 		if err := h.Handle(ctx, path, result, report); err != nil {
 			errs = append(errs, err)
@@ -261,6 +264,22 @@ func (a *MultiAction) notifyMitigation(ctx context.Context, path string, result 
 }
 
 type RemoveFileAction struct{}
+
+// restoredRefusal reports whether an earlier action was refused because the
+// content was restored: the file is going to be handled as a restored one at the
+// next pass, nothing may be written or taken from it meanwhile.
+func restoredRefusal(errs []error) bool {
+	for _, err := range errs {
+		if errors.Is(err, quarantine.ErrRestored) {
+			return true
+		}
+	}
+	return false
+}
+
+// SkipAfterRestored keeps the move action from writing a detection report or
+// moving a file whose quarantine was refused because the content was restored.
+func (a *MoveAction) SkipAfterRestored() bool { return true }
 
 // SkipAfterError keeps MultiAction from removing a file when an earlier action
 // failed: a failed quarantine must not end with the loss of the file.

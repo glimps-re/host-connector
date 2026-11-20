@@ -2,7 +2,9 @@ package quarantine
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -181,7 +183,8 @@ func BenchmarkIsRestored(b *testing.B) {
 }
 
 func TestEmptySHA256IsTheHashOfTheEmptyContent(t *testing.T) {
-	if got := sha256Hex(nil); got != emptySHA256 {
+	sum := sha256.Sum256(nil)
+	if got := hex.EncodeToString(sum[:]); got != emptySHA256 {
 		t.Errorf("emptySHA256 = %s, want %s", emptySHA256, got)
 	}
 }

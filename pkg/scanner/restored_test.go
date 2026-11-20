@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -185,4 +186,76 @@ func TestHandleRestoredFile_aPluginResultKeepsTheRestoredMark(t *testing.T) {
 	if !got.Restored {
 		t.Errorf("result given to the actions = %+v, want Restored", got)
 	}
+}
+
+// With quarantine, deletion and move all active, a quarantine refused because the
+// content was restored leaves nothing in the destination on that pass: no
+// detection report next to a file that the next pass will deliver as restored.
+func TestPipeline_aQuarantineRefusedAsRestoredWritesNoReportAndMovesNothing(t *testing.T) {
+	noOpenInputs(t)
+	in, dest := t.TempDir(), t.TempDir()
+	file := filepath.Join(in, "f.bin")
+	if err := os.WriteFile(file, []byte("some content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var restored atomic.Bool
+	quarantiner := &quarantineMock.QuarantineMock{
+		IsRestoredMock: func(context.Context, string, string) (bool, error) { return restored.Load(), nil },
+		QuarantineMock: func(context.Context, string, string, []string) (string, string, error) {
+			return "", "", quarantine.ErrRestored
+		},
+	}
+	submitter := readerTrio(&gdetectMock.MockGDetectSubmitter{
+		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
+		WaitForReaderMock: func(_ context.Context, r io.Reader, _ gdetect.WaitForOptions) (gdetect.Result, error) {
+			restored.Store(true)
+			h := sha256.New()
+			_, err := io.Copy(h, r)
+			return gdetect.Result{SHA256: hex.EncodeToString(h.Sum(nil)), Malware: true, Malwares: []string{"m"}}, err
+		},
+	})
+	c, err := NewConnector(Config{
+		Roots: []string{in}, WorkDir: t.TempDir(), Workers: 1, MoveTo: dest, MoveFrom: in,
+		Actions: Actions{Quarantine: true, Deleted: true, Move: true},
+	}, quarantiner, submitter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &outcomes{}
+	c.config.OnFileDone = got.add
+	if err = c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.ScanFile(t.Context(), file); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the first pass to end", func() bool { return len(got.get()) == 1 })
+	if entries := filesUnder(t, dest); len(entries) != 0 {
+		t.Fatalf("after the refused pass the destination holds %v, want nothing", entries)
+	}
+	if _, err = os.Stat(file); err != nil {
+		t.Fatalf("the file must stay in place: %v", err)
+	}
+	if err = c.ScanFile(t.Context(), file); err != nil {
+		t.Fatal(err)
+	}
+	c.Close(t.Context())
+	entries := filesUnder(t, dest)
+	if len(entries) != 1 || filepath.Base(entries[0]) != "f.bin" {
+		t.Errorf("the destination holds %v, want only the restored file", entries)
+	}
+}
+
+func filesUnder(t *testing.T, dir string) []string {
+	t.Helper()
+	var out []string
+	if err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			out = append(out, p)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return out
 }

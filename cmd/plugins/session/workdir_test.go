@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -98,5 +99,37 @@ func TestSessionPlugin_InitWarnsWorkDirUnderRoot(t *testing.T) {
 		if !strings.Contains(buf.String(), "work directory") || !strings.Contains(buf.String(), `"level":"WARN"`) {
 			t.Errorf("%s = %q, want a Warn about the work directory under root_folder", name, buf.String())
 		}
+	}
+}
+
+func TestSessionPlugin_DeclaresTrackingOwnersWithAnAbsoluteRoot(t *testing.T) {
+	hcc := mock.NewMockHCContext()
+	plugin := &SessionPlugin{}
+	if err := plugin.Init(&Config{RootFolder: "relative/in", Depth: 2, Delay: time.Hour}, hcc); err != nil {
+		t.Fatalf("Init() error = %v: a relative root_folder must not stop the start", err)
+	}
+	t.Cleanup(func() {
+		if err := plugin.Close(t.Context()); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	abs, err := filepath.Abs("relative/in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hcc.OwnerRoot != abs || hcc.OwnerDepth != 2 {
+		t.Errorf("declared (%q, %d), want (%q, 2)", hcc.OwnerRoot, hcc.OwnerDepth, abs)
+	}
+	if plugin.config.RootFolder != abs {
+		t.Errorf("the plugin keeps root_folder %q, want the absolute %q for getSession", plugin.config.RootFolder, abs)
+	}
+}
+
+func TestSessionPlugin_InitFailsWhenTheDeclarationIsRefused(t *testing.T) {
+	hcc := mock.NewMockHCContext()
+	hcc.OwnersErr = errors.New("overlap")
+	plugin := &SessionPlugin{}
+	if err := plugin.Init(&Config{RootFolder: "/srv/in", Depth: 1, Delay: time.Hour}, hcc); err == nil || !strings.Contains(err.Error(), "overlap") {
+		t.Errorf("Init() error = %v, want the refusal", err)
 	}
 }

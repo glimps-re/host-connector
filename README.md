@@ -410,10 +410,13 @@ type HCContext interface {
     GetWorkDir() string
     DeclareExecutable(path string) error
     DeclareOutputDir(path string) error
+    SetTrackingOwners(root string, depth int) error
     NotifyError(ctx context.Context, key string, err error)
     NotifyResolution(ctx context.Context, key string, message string)
 }
 ```
+
+`SetTrackingOwners(root, depth)` lets a plugin that lays files out in sub-folders of `root` (such as `session`) tell the monitor that its owners are the folders `depth` levels below `root`, absolute path required; it is accepted during `Init` only, and a malformed declaration makes `Init` fail. Without any declaration, an owner is the first folder below the shortest monitored path.
 
 #### Callback Types
 
@@ -569,7 +572,7 @@ debug: false
 
 ### Configuration Options
 
-Some keys are declared by the configuration schema before this version supports them (`monitoring.max_tracked_memory`, `monitoring.max_tracked_dir_percent`, `move.mode`, `move.min_throughput`, `unanalyzable_policy.*`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
+Some keys are declared by the configuration schema before this version supports them (`move.mode`, `move.min_throughput`, `unanalyzable_policy.*`). Setting one of them to a non-default value makes the configuration refused, naming the key; remove the key.
 
 A configuration is validated before it is applied. When the console sends one that cannot be applied, the connector keeps the previous configuration, keeps processing files, and raises the console error `host-config-rejected`; the error stays until a `Configure` succeeds, and a reminder is logged every hour. After a restart the connector receives the rejected configuration again and does not start: fix it in the console. Keys unknown to this version of the connector (the console is newer) are applied without effect and listed in the console error `host-config-unknown-keys`: update the connector for them to apply.
 
@@ -599,6 +602,8 @@ Configure what happens when malware is detected:
 
 - **`prescan`**: Immediately scan all existing files in monitored paths when monitoring starts (default: false)
 - **`disable_fs_watcher`**: Do not watch filesystem events: files are found by the pre-scan and the periodic rescan only (default: false). Requires `period`. Meant for network filesystems (e.g. CephFS) where inotify watches are unavailable or too numerous; it also makes the start immediate. A configuration pushed by the console replaces the whole local configuration, so the key must be set there in agent mode
+- **`max_tracked_memory`**: Memory bound of the table of files the monitor tracks while they wait for their `modification_delay` (default: `256MiB`, counted in bytes: path lengths included). The table never exceeds it. Below the bound nobody is limited; when it is full, the owner that holds the most (files are grouped into owners: one per user folder, or per session folder at the `depth` of the `session` plugin) yields first, so a flood by one user does not starve the others. A refused or evicted file is not forgotten by the disk: with a periodic rescan it is found again at the next rescan; without one (`period: 0`) it is only found again when it is written to again, so set a `period` on a folder that can overflow. A warning names the owners concerned (at most 32, the others are counted), with a console event raised at the end of a rescan, or, without periodic rescan (`period: 0`), as soon as a file is refused or evicted and then at most once a minute; its resolution is raised after a minute without pressure, with the next file event. Minimum: `1MiB`
+- **`max_tracked_dir_percent`**: Share of the table, in percent (default: `25`), above which an owner is visited first when the table is full; it is not a ceiling
 - **`period`**: If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m', default: 0, disabled)
 - **`modification_delay`**: Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes, default: 30s)
 

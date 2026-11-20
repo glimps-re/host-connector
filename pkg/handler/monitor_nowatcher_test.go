@@ -4,15 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/host-connector/pkg/config"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 func TestNewMonitor_disabledWatcherNeedsPeriod(t *testing.T) {
@@ -213,5 +217,201 @@ func TestMonitor_disabledWatcherAddMissingPath(t *testing.T) {
 	}
 	if _, ok := m.paths.Load(missing); ok {
 		t.Error("missing path was registered")
+	}
+}
+
+func TestMonitor_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewMonitor(func(string) error { return nil }, Config{
+		DisableWatcher: true,
+		Period:         sdk.Duration(time.Hour),
+		ModDelay:       sdk.Duration(time.Hour),
+		Owners:         []scanner.OwnerRule{{Root: root, Depth: 2}},
+		Watched:        []string{root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	for _, p := range []string{"a/x/f.bin", "a/y/f.bin", "b/x/f.bin"} {
+		path := filepath.Join(root, p)
+		writeTestFile(t, path)
+		m.discover(path, true)
+	}
+	if got := m.table.Owners(); got != 3 {
+		t.Errorf("owners = %d, want 3 (depth 2 declared)", got)
+	}
+}
+
+func TestMonitor_eventOnlyModeReportsPressureOncePerMinute(t *testing.T) {
+	rec := recordEvents(t)
+	root := t.TempDir()
+	m, err := NewMonitor(func(string) error { return nil }, Config{
+		MaxTrackedBytes: 1200,
+		ModDelay:        sdk.Duration(time.Hour),
+		Watched:         []string{root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	flood := func(prefix string) {
+		for i := range 20 {
+			path := filepath.Join(root, "owner", fmt.Sprintf("%s%d.bin", prefix, i))
+			writeTestFile(t, path)
+			m.discover(path, true)
+		}
+	}
+	flood("a")
+	if got := len(rec.find("error", HostMonitorPressure)); got != 1 {
+		t.Fatalf("pressure events = %d, want 1", got)
+	}
+	flood("b")
+	if got := len(rec.find("error", HostMonitorPressure)); got != 1 {
+		t.Errorf("pressure events within a minute = %d, want 1", got)
+	}
+	m.repMu.Lock()
+	m.lastReport = time.Now().Add(-2 * minReportInterval)
+	m.repMu.Unlock()
+	flood("c")
+	if got := len(rec.find("error", HostMonitorPressure)); got != 2 {
+		t.Errorf("pressure events after a minute = %d, want 2", got)
+	}
+}
+
+func TestMonitor_eventOnlyModeReportsTheEndOfThePressure(t *testing.T) {
+	rec := recordEvents(t)
+	root := t.TempDir()
+	m, err := NewMonitor(func(string) error { return nil }, Config{
+		MaxTrackedBytes: 1200,
+		ModDelay:        sdk.Duration(time.Hour),
+		Watched:         []string{root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	for i := range 20 {
+		path := filepath.Join(root, "owner", fmt.Sprintf("f%d.bin", i))
+		writeTestFile(t, path)
+		m.discover(path, true)
+	}
+	if got := len(rec.find("error", HostMonitorPressure)); got != 1 {
+		t.Fatalf("pressure events = %d, want 1", got)
+	}
+	m.table.TakePressure()
+	now := time.Now()
+	m.reportPressureIfDue(now.Add(30 * time.Second))
+	if got := len(rec.find("resolution", HostMonitorPressure)); got != 0 {
+		t.Errorf("resolutions after 30s = %d, want 0", got)
+	}
+	m.reportPressureIfDue(now.Add(2 * minReportInterval))
+	if got := len(rec.find("resolution", HostMonitorPressure)); got != 1 {
+		t.Errorf("resolutions after 2 minutes without pressure = %d, want 1", got)
+	}
+	m.reportPressureIfDue(now.Add(4 * minReportInterval))
+	if got := len(rec.find("resolution", HostMonitorPressure)); got != 1 {
+		t.Errorf("resolutions = %d, want it raised once", got)
+	}
+}
+
+func TestNewMonitor_relativeWatchedPathsAreResolved(t *testing.T) {
+	t.Chdir(t.TempDir())
+	m, err := NewMonitor(func(string) error { return nil }, Config{DisableWatcher: true, Period: sdk.Duration(time.Hour), Watched: []string{"in"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	abs, err := filepath.Abs("in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.table.Track(filepath.Join(abs, "alice", "f.bin"), fileStamp{}, time.Now(), time.Now())
+	if _, ok := m.table.owners[filepath.Join(abs, "alice")]; !ok {
+		t.Errorf("owners = %v, want the folder of alice: the relative watched path must be resolved", m.table.owners)
+	}
+}
+
+type fakeInfo struct{}
+
+func (fakeInfo) Name() string       { return "f" }
+func (fakeInfo) Size() int64        { return 1 }
+func (fakeInfo) Mode() fs.FileMode  { return 0o600 }
+func (fakeInfo) ModTime() time.Time { return time.Unix(1000, 0) }
+func (fakeInfo) IsDir() bool        { return false }
+func (fakeInfo) Sys() any           { return nil }
+
+func TestMonitor_goroutinesDoNotGrowWithTheFiles(t *testing.T) {
+	root := t.TempDir()
+	m, err := NewMonitor(func(string) error { return nil }, Config{
+		DisableWatcher: true,
+		Period:         sdk.Duration(time.Hour),
+		ModDelay:       sdk.Duration(time.Hour),
+		Watched:        []string{root},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	m.stat = func(string) (fs.FileInfo, error) { return fakeInfo{}, nil }
+	m.Start()
+	time.Sleep(50 * time.Millisecond)
+	before := runtime.NumGoroutine()
+	for i := range 50_000 {
+		m.discover(filepath.Join(root, fmt.Sprintf("u%d", i%50), fmt.Sprintf("f%d", i)), true)
+	}
+	if after := runtime.NumGoroutine(); after > before+1 {
+		t.Errorf("goroutines went from %d to %d with 50 000 waiting files", before, after)
+	}
+	if m.table.Len() != 50_000 {
+		t.Errorf("tracked = %d, want 50000", m.table.Len())
+	}
+}
+
+func TestMonitor_relativeRootKeepsAUserAsOneOwner(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, p := range []string{"in/alice/a.txt", "in/alice/sub/b.txt", "in/bob/c.txt"} {
+		writeTestFile(t, p)
+	}
+	m, err := NewMonitor(func(string) error { return nil }, Config{
+		DisableWatcher: true,
+		Period:         sdk.Duration(time.Hour),
+		ModDelay:       sdk.Duration(time.Hour),
+		Watched:        []string{"in"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := m.Close(); e != nil {
+			t.Errorf("Close() error = %v", e)
+		}
+	})
+	if err = m.Add("in"); err != nil {
+		t.Fatal(err)
+	}
+	m.rescan()
+	if got := m.table.Owners(); got != 2 {
+		t.Errorf("owners = %d, want 2 (alice and bob): sub-folders must not become owners", got)
 	}
 }

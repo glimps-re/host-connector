@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,28 +29,19 @@ func TestMonitor_walkRootUnreadableDirIsPartial(t *testing.T) {
 		}
 	})
 	m := newTestMonitor(t, 0, func(string) error { return nil })
-	go func() {
-		for {
-			select {
-			case <-m.filesToScan:
-			case <-m.done:
-				return
-			}
-		}
-	}()
-	seen := map[string]struct{}{}
-	if !m.walkRoot(root, seen) {
-		t.Error("walkRoot() = false, want true (partial)")
+	unreadable, _ := m.walkRoot(root, maxUnreadableDirs)
+	if _, ok := m.table.Get(filepath.Join(root, "ok", "f.txt")); !ok {
+		t.Errorf("sibling file not tracked")
 	}
-	if _, ok := seen[filepath.Join(root, "ok", "f.txt")]; !ok {
-		t.Errorf("sibling file not seen: %v", seen)
+	if _, ok := m.table.Get(filepath.Join(locked, "hidden.txt")); ok {
+		t.Error("file of unreadable dir must not be tracked")
 	}
-	if _, ok := seen[filepath.Join(locked, "hidden.txt")]; ok {
-		t.Error("file of unreadable dir must not be seen")
+	if len(unreadable) != 1 || unreadable[0] != locked {
+		t.Errorf("unreadable = %v, want only %s: the folder, not the root", unreadable, locked)
 	}
 }
 
-func TestMonitor_periodicalScanPurgeSkippedOnPartialRoot(t *testing.T) {
+func TestMonitor_rescanPurgesTheGoneAndKeepsWhatAnUnreadableFolderHides(t *testing.T) {
 	complete := t.TempDir()
 	writeTestFile(t, filepath.Join(complete, "live.txt"))
 	missing := filepath.Join(t.TempDir(), "missing")
@@ -58,30 +50,26 @@ func TestMonitor_periodicalScanPurgeSkippedOnPartialRoot(t *testing.T) {
 	underMissing := filepath.Join(missing, "sub", "f.txt")
 	siblingPrefix := missing + "-other/f.txt"
 
-	m := newTestMonitor(t, 5*time.Millisecond, func(string) error { return nil })
-	m.states.Store(staleComplete, fileState{size: 1})
-	m.states.Store(underMissing, fileState{size: 1})
-	m.states.Store(siblingPrefix, fileState{size: 1})
+	m := newTestMonitor(t, 0, func(string) error { return nil })
+	now := time.Now()
+	for _, p := range []string{staleComplete, underMissing, siblingPrefix} {
+		m.table.Track(p, fileStamp{size: 1}, now, now.Add(time.Hour))
+	}
 	m.paths.Store(complete, struct{}{})
 	m.paths.Store(missing, struct{}{})
-	m.Start()
+	m.rescan()
 
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if _, ok := m.states.Load(staleComplete); !ok {
-			if _, ok := m.states.Load(siblingPrefix); ok {
-				t.Fatal("state outside any root must be purged")
-			}
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	if _, ok := m.table.Get(staleComplete); ok {
+		t.Error("a stale entry on a fully walked root must be purged")
 	}
-	if _, ok := m.states.Load(staleComplete); ok {
-		t.Fatal("stale state on a fully walked root must be purged")
+	if _, ok := m.table.Get(siblingPrefix); ok {
+		t.Error("an entry outside any root must be purged")
 	}
-	time.Sleep(50 * time.Millisecond)
-	if _, ok := m.states.Load(underMissing); !ok {
-		t.Error("state under a partially walked root must be kept")
+	if _, ok := m.table.Get(underMissing); !ok {
+		t.Error("an entry under a root that could not be walked must be kept")
+	}
+	if _, ok := m.table.Get(filepath.Join(complete, "live.txt")); !ok {
+		t.Error("the live file must be tracked")
 	}
 }
 
@@ -129,5 +117,33 @@ func TestMonitor_ignoresRestoreTemporaryFiles(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("callbacks = %v, want regular.bin and created.bin only", got)
+	}
+}
+
+func TestMonitor_walkRootCapsTheUnreadableList(t *testing.T) {
+	if os.Geteuid() == 0 || runtime.GOOS == "windows" {
+		t.Skip("permission denied cannot be triggered as root or on windows")
+	}
+	root := t.TempDir()
+	for i := range 10 {
+		dir := filepath.Join(root, fmt.Sprintf("locked%d", i))
+		writeTestFile(t, filepath.Join(dir, "hidden.txt"))
+		if err := os.Chmod(dir, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(dir, ownerRWX); err != nil {
+				t.Errorf("could not restore permissions: %v", err)
+			}
+		})
+	}
+	m := newTestMonitor(t, 0, func(string) error { return nil })
+	got, overflow := m.walkRoot(root, 3)
+	if len(got) != 3 || !overflow {
+		t.Errorf("walkRoot() = %d folders, overflow %v; want 3 and true", len(got), overflow)
+	}
+	got, overflow = m.walkRoot(root, 10)
+	if len(got) != 10 || overflow {
+		t.Errorf("walkRoot() = %d folders, overflow %v; want 10 and false", len(got), overflow)
 	}
 }

@@ -128,7 +128,16 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	}
 	workDir := hcc.GetWorkDir()
 
+	root, err := filepath.Abs(config.RootFolder)
+	if err != nil {
+		return fmt.Errorf("root_folder %q: %w", config.RootFolder, err)
+	}
+	if err = hcc.SetTrackingOwners(root, config.Depth); err != nil {
+		return fmt.Errorf("session plugin: %w", err)
+	}
+
 	p.config = *config
+	p.config.RootFolder = root
 	p.workDir = workDir
 	p.sessions = make(map[string]*Session)
 	p.hcc = hcc

@@ -222,3 +222,38 @@ func TestApplyCoverage_consoleErrorsNeverBreakTheFlow(t *testing.T) {
 }
 
 var _ io.WriteCloser = (*failingCloser)(nil)
+
+func TestApplyCoverage_maxTrackedMemory(t *testing.T) {
+	watched := t.TempDir()
+	tests := []struct {
+		value   string
+		want    int64
+		wantErr string
+	}{
+		{value: "", want: 0},
+		{value: "256MiB", want: 256 << 20},
+		{value: "1MiB", want: 1 << 20},
+		{value: "512KiB", wantErr: "below the minimum"},
+		{value: "0", wantErr: "below the minimum"},
+		{value: "lots", wantErr: "could not parse monitoring.max_tracked_memory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.value, func(t *testing.T) {
+			conf := validConf(t, watched)
+			conf.Monitoring.MaxTrackedMemory = tt.value
+			p, err := new(Handler).prepare(conf)
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+					t.Fatalf("prepare() error = %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if p.maxTracked != tt.want {
+				t.Errorf("maxTracked = %d, want %d", p.maxTracked, tt.want)
+			}
+		})
+	}
+}

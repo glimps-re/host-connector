@@ -14,10 +14,10 @@ import (
 
 func TestCheckImplemented_Multiple(t *testing.T) {
 	c := &Config{}
-	c.Monitoring.MaxTrackedMemory = "1MiB"
+	c.UnanalyzablePolicy.Encrypted = "pass"
 	c.Move.Mode = "copy"
 	err := CheckImplemented(c)
-	if err == nil || !strings.Contains(err.Error(), "monitoring.max_tracked_memory") || !strings.Contains(err.Error(), "move.mode") {
+	if err == nil || !strings.Contains(err.Error(), "unanalyzable_policy.encrypted") || !strings.Contains(err.Error(), "move.mode") {
 		t.Errorf("CheckImplemented() = %v, want both keys named", err)
 	}
 }

@@ -45,12 +45,16 @@ var rejectReminderEvery = time.Hour
 
 var errGMalwareConfig = errors.New("gmalware client configuration")
 
+// minTrackedMemory keeps the table able to hold more than a few files.
+const minTrackedMemory = 1 << 20
+
 // prepared holds what the validation step computed, so the apply steps do not
 // parse the configuration again.
 type prepared struct {
 	maxFileSize             int64
 	extractMinSize          int64
 	recursiveExtractMaxSize int64
+	maxTracked              int64
 	pluginsConfig           []scanner.PluginConfig
 }
 
@@ -71,6 +75,14 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 	if conf.RecursiveExtractMaxSize != "" {
 		if p.recursiveExtractMaxSize, err = units.ParseStrictBytes(conf.RecursiveExtractMaxSize); err != nil {
 			return nil, fmt.Errorf("could not parse recursive-extract-max-size: %w", err)
+		}
+	}
+	if conf.Monitoring.MaxTrackedMemory != "" {
+		if p.maxTracked, err = units.ParseStrictBytes(conf.Monitoring.MaxTrackedMemory); err != nil {
+			return nil, fmt.Errorf("could not parse monitoring.max_tracked_memory %q: %w", conf.Monitoring.MaxTrackedMemory, err)
+		}
+		if p.maxTracked < minTrackedMemory {
+			return nil, fmt.Errorf("monitoring.max_tracked_memory %q is below the minimum of 1MiB", conf.Monitoring.MaxTrackedMemory)
 		}
 	}
 	switch {
@@ -356,6 +368,12 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 		Period:         conf.Monitoring.Period,
 		ModDelay:       conf.Monitoring.ModificationDelay,
 		FollowSymlinks: conf.FollowSymlinks,
+
+		MaxTrackedBytes: p.maxTracked,
+		QuotaPercent:    conf.Monitoring.MaxTrackedDirPercent,
+		Owners:          conn.TrackingOwners(),
+		Watched:         conf.Paths,
+		Context:         ctx,
 	})
 	if err != nil {
 		mon = nil

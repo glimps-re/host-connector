@@ -29,6 +29,9 @@ type MockHCContext struct {
 	DeclareExecutableErr error
 	// DeclareExecutableFunc, when set, replaces the check of DeclareExecutable.
 	DeclareExecutableFunc func(path string) error
+	OwnerRoot             string
+	OwnerDepth            int
+	OwnersErr             error
 }
 
 func NewMockHCContext() *MockHCContext {
@@ -65,6 +68,11 @@ func (m *MockHCContext) DeclareOutputDir(path string) error {
 
 func (m *MockHCContext) NotifyError(context.Context, string, error)       {}
 func (m *MockHCContext) NotifyResolution(context.Context, string, string) {}
+func (m *MockHCContext) SetTrackingOwners(root string, depth int) error {
+	m.OwnerRoot, m.OwnerDepth = root, depth
+	return m.OwnersErr
+}
+
 func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 	if m.GenerateReportFunc != nil {
 		return m.GenerateReportFunc(ctx, reportContext, reports)

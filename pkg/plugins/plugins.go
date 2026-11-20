@@ -78,6 +78,13 @@ type HCContext interface {
 
 	SetExtractFile(f ExtractFile)
 
+	// SetTrackingOwners declares how files below root are grouped into owners
+	// for the fair sharing of the monitoring table: one owner per directory at
+	// the given depth below root. It must be called during Init. It fails if
+	// root is not an absolute path, if depth < 1, or if root equals, contains
+	// or is contained in an already declared root.
+	SetTrackingOwners(root string, depth int) error
+
 	// The Register* methods are only valid during Init.
 	RegisterOnStartScanFile(f OnStartScanFile)
 	// RegisterOnScanFile callbacks run in plugin file order. A result that is

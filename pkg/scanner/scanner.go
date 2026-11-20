@@ -174,6 +174,7 @@ type Connector struct {
 	scanRoots sync.Map
 	rootsOnce sync.Once
 	absRoots  []string // Config.Roots made absolute, computed once
+	owners    []OwnerRule
 
 	dispatchWg sync.WaitGroup
 	extractWg  sync.WaitGroup

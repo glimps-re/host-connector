@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strconv"
 )
 
 // ErrNotImplemented is returned, wrapped, when a configuration key is
@@ -21,8 +20,6 @@ type pendingKey struct {
 
 // Each task implementing a key removes its entry from this list.
 var pendingKeys = []pendingKey{
-	{"monitoring.max_tracked_memory", func(c *Config) string { return c.Monitoring.MaxTrackedMemory }, nil},
-	{"monitoring.max_tracked_dir_percent", func(c *Config) string { return strconv.Itoa(c.Monitoring.MaxTrackedDirPercent) }, []string{"0"}},
 	{"move.mode", func(c *Config) string { return c.Move.Mode }, []string{"rename"}},
 	{"move.min_throughput", func(c *Config) string { return c.Move.MinThroughput }, nil},
 	{"unanalyzable_policy.too_big", func(c *Config) string { return c.UnanalyzablePolicy.TooBig }, []string{"error"}},

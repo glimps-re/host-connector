@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,7 +170,7 @@ exit 0`)
 }
 
 func trapListing(normal int, traps ...string) string {
-	var lines []string
+	lines := make([]string, 0, normal+len(traps))
 	for i := range normal {
 		lines = append(lines, listingLine(fmt.Sprintf("file%03d.txt", i), 1))
 	}
@@ -445,9 +446,9 @@ func TestScan_memberPathNestedTooDeepIsAnAnomalyAndNotExtracted(t *testing.T) {
 }
 
 func TestRealSevenZip_zipWithDeepPathsCreatesNoFolders(t *testing.T) {
-	var members []zipMember
+	members := make([]zipMember, 0, 20)
 	for i := range 20 {
-		members = append(members, zipMember{name: strings.Repeat("d/", 600) + fmt.Sprint(i), data: "x"})
+		members = append(members, zipMember{name: strings.Repeat("d/", 600) + strconv.Itoa(i), data: "x"})
 	}
 	path := filepath.Join(t.TempDir(), "deep.zip")
 	writeZip(t, path, "", members...)
@@ -464,7 +465,7 @@ func TestRealSevenZip_zipWithDeepPathsCreatesNoFolders(t *testing.T) {
 func TestGuard_budgetCountsFolders(t *testing.T) {
 	dir := t.TempDir()
 	for i := range 50 {
-		if err := os.MkdirAll(filepath.Join(dir, fmt.Sprint(i), "x"), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(dir, strconv.Itoa(i), "x"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -541,11 +542,11 @@ func TestSkipList_keepsSizesBeyondTwoGiB(t *testing.T) {
 func BenchmarkGuardMeasure(b *testing.B) {
 	dir := b.TempDir()
 	for i := range 1000 {
-		sub := filepath.Join(dir, fmt.Sprint(i%20))
+		sub := filepath.Join(dir, strconv.Itoa(i%20))
 		if err := os.MkdirAll(sub, 0o700); err != nil {
 			b.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(sub, fmt.Sprint(i)), make([]byte, 1024), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(sub, strconv.Itoa(i)), make([]byte, 1024), 0o600); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -586,10 +587,7 @@ func BenchmarkExtract_bigMember(b *testing.B) {
 			guardEnabled = guarded
 			b.Cleanup(func() { guardEnabled = prev })
 			for b.Loop() {
-				out, err := os.MkdirTemp(b.TempDir(), "out-")
-				if err != nil {
-					b.Fatal(err)
-				}
+				out := b.TempDir()
 				ex, err := plugin.ExtractFile(path, out, limits)
 				if err != nil || len(ex.Files) != 1 {
 					b.Fatalf("ExtractFile() = %+v, %v", ex, err)

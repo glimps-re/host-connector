@@ -64,7 +64,7 @@ func TestMonitorT09_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 		m.table.Track(p, scanner.FileIdentity{Size: 1}, now, now.Add(time.Hour))
 	}
 	m.table.mu.Lock()
-	var owners []string
+	owners := make([]string, 0, len(m.table.owners))
 	for name := range m.table.owners {
 		owners = append(owners, name)
 	}
@@ -502,7 +502,7 @@ func TestMonitorT09_relativeWatchedPathKeepsUsersApart(t *testing.T) {
 	m.table.mu.Lock()
 	defer m.table.mu.Unlock()
 	if len(m.table.owners) != 2 {
-		var names []string
+		names := make([]string, 0, len(m.table.owners))
 		for n := range m.table.owners {
 			names = append(names, n)
 		}

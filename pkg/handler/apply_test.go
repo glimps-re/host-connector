@@ -5,10 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -608,7 +608,7 @@ func TestUnknownKeys_caseInsensitiveAndCapped(t *testing.T) {
 	}
 	doc := map[string]int{}
 	for i := range 1000 {
-		doc[strings.Repeat("k", 300)+fmt.Sprint(i)] = i
+		doc[strings.Repeat("k", 300)+strconv.Itoa(i)] = i
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {

@@ -75,7 +75,7 @@ func TestArchive_memberErrorMakesArchiveFail(t *testing.T) {
 				if !errors.Is(st.result.Error, tt.wantSentinel) {
 					t.Errorf("archive Error = %v, want %v", st.result.Error, tt.wantSentinel)
 				}
-				if tt.wantSentinel == errInnerPermanent && errors.Is(st.result.Error, errInnerTransient) {
+				if errors.Is(tt.wantSentinel, errInnerPermanent) && errors.Is(st.result.Error, errInnerTransient) {
 					t.Error("a permanent error must not look transient")
 				}
 				if !strings.Contains(st.result.Error.Error(), "dir/bad.bin") {
@@ -652,7 +652,7 @@ func TestMemberCause(t *testing.T) {
 		t.Errorf("memberCause() = %v, want the cause without the temporary path", got)
 	}
 	plain := errors.New("plain")
-	if memberCause(plain) != plain {
+	if !errors.Is(memberCause(plain), plain) {
 		t.Error("an error without path is kept as is")
 	}
 }

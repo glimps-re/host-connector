@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -326,7 +327,7 @@ func runPropertyRound(t *testing.T, rng *prng) {
 		switch op := rng.IntN(10); {
 		case op < 6:
 			owner := fmt.Sprintf("o%02d", rng.IntN(nOwners))
-			path := "/in/" + owner + "/" + strings.Repeat("x", 10+rng.IntN(300)) + fmt.Sprint(step)
+			path := "/in/" + owner + "/" + strings.Repeat("x", 10+rng.IntN(300)) + strconv.Itoa(step)
 			before := snapshot(tab)
 			var added int64
 			if tab.Track(path, scanner.FileIdentity{}, now, now.Add(time.Duration(rng.IntN(100))*time.Second)) {

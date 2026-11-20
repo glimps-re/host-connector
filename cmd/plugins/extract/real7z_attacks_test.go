@@ -242,7 +242,7 @@ func TestRealSevenZip_memberNameLongerThanAnyPathIsAnAnomaly(t *testing.T) {
 }
 
 func TestRealSevenZip_manyLongNamesAreBatched(t *testing.T) {
-	var members []zipMember
+	members := make([]zipMember, 0, 120)
 	for i := range 120 {
 		members = append(members, zipMember{name: strings.Repeat(strings.Repeat("d", 200)+"/", 14) + string(rune('a'+i%26)) + string(rune('a'+i/26)) + ".txt", data: "x"})
 	}

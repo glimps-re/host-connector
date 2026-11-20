@@ -171,11 +171,12 @@ func (o *ownerState) kind() kind {
 // ownerHeap keeps the largest owner on top: O(1) read, O(log P) update.
 type ownerHeap []*ownerState
 
-func (h ownerHeap) Len() int           { return len(h) }
-func (h ownerHeap) Less(i, j int) bool { return h[i].bytes > h[j].bytes }
-func (h ownerHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].heapIdx, h[j].heapIdx = i, j
+func (h *ownerHeap) Len() int           { return len(*h) }
+func (h *ownerHeap) Less(i, j int) bool { return (*h)[i].bytes > (*h)[j].bytes }
+func (h *ownerHeap) Swap(i, j int) {
+	s := *h
+	s[i], s[j] = s[j], s[i]
+	s[i].heapIdx, s[j].heapIdx = i, j
 }
 
 func (h *ownerHeap) Push(x any) {
@@ -197,11 +198,12 @@ func (h *ownerHeap) Pop() any {
 // deadlineHeap orders the waiting entries by deadline.
 type deadlineHeap []*trackedFile
 
-func (h deadlineHeap) Len() int           { return len(h) }
-func (h deadlineHeap) Less(i, j int) bool { return h[i].deadline.Before(h[j].deadline) }
-func (h deadlineHeap) Swap(i, j int) {
-	h[i], h[j] = h[j], h[i]
-	h[i].heapIdx, h[j].heapIdx = i, j
+func (h *deadlineHeap) Len() int           { return len(*h) }
+func (h *deadlineHeap) Less(i, j int) bool { return (*h)[i].deadline.Before((*h)[j].deadline) }
+func (h *deadlineHeap) Swap(i, j int) {
+	s := *h
+	s[i], s[j] = s[j], s[i]
+	s[i].heapIdx, s[j].heapIdx = i, j
 }
 
 func (h *deadlineHeap) Push(x any) {

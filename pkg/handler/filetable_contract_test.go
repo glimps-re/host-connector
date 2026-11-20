@@ -252,7 +252,8 @@ func TestFileTableContract_V4_doneEntriesOfAnOwnerWithWaitingWorkStay(t *testing
 
 func TestFileTableContract_fifthOwnerIsAdmittedAndTheLargestYields(t *testing.T) {
 	const delay = time.Hour
-	owners := []string{"o1", "o2", "o3", "o4"}
+	owners := make([]string, 0, 5)
+	owners = append(owners, "o1", "o2", "o3", "o4")
 	c := newCTTable(40, append(owners, "o5")...)
 	for _, o := range owners {
 		for n := range 10 {

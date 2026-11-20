@@ -329,7 +329,7 @@ func TestReconfigure_cancelledMidwayRollsBackUsingDetachedContext(t *testing.T) 
 	oldDir := filepath.Join(t.TempDir(), "old")
 	oldDB := filepath.Join(t.TempDir(), "old.db")
 	q := newReconfigureHandler(t, Config{Location: oldDir, RegistryLocation: oldDB, LockPassword: "p"})
-	var ids []string
+	ids := make([]string, 0, 3)
 	for _, n := range []string{"a", "b", "c"} {
 		_, id, _ := quarantineSample(t, q, n+".bin")
 		ids = append(ids, id)

@@ -55,7 +55,7 @@ func TestDecodePluginsConfig(t *testing.T) {
 
 func TestDecodePluginsConfig_stableOrder(t *testing.T) {
 	var sb strings.Builder
-	var want []string
+	want := make([]string, 0, 30)
 	for i := range 30 {
 		name := fmt.Sprintf("p%02d", (i*7)%30)
 		want = append(want, name)
@@ -66,7 +66,7 @@ func TestDecodePluginsConfig_stableOrder(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var names []string
+		names := make([]string, 0, len(got))
 		for _, pc := range got {
 			names = append(names, pc.Name)
 		}
@@ -113,7 +113,7 @@ func TestDecodePluginsConfig_shippedFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodePluginsConfig() error = %v", err)
 	}
-	var names []string
+	names := make([]string, 0, len(got))
 	for _, pc := range got {
 		names = append(names, pc.Name)
 	}

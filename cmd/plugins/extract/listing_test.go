@@ -225,7 +225,7 @@ func TestRemoveLinkPlaceholders_staysInsideTheOutputFolder(t *testing.T) {
 }
 
 func TestAnomalies_areDeduplicatedAndBounded(t *testing.T) {
-	var lines []string
+	lines := make([]string, 0, 5000)
 	for i := range 5000 {
 		lines = append(lines, listingLine(fmt.Sprintf("m%d\x01", i), 1))
 	}

@@ -537,7 +537,7 @@ func TestFileTable_aFileRewrittenDuringEveryAnalysisIsReopenedWithGrowingDelays(
 	const base = time.Minute
 	stamp := scanner.FileIdentity{Size: 1}
 	tab.Track(p, stamp, now, now)
-	var waits []time.Duration
+	waits := make([]time.Duration, 0, 20)
 	for i := range 20 {
 		tab.PopDue(now.Add(1000 * time.Hour))
 		next := scanner.FileIdentity{Size: int64(i) + 2}

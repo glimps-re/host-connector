@@ -55,7 +55,7 @@ func TestT27_removeRunLeavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	got := make([]string, 0, len(after))
 	for name := range after {
 		got = append(got, name)
 	}
@@ -99,7 +99,7 @@ func TestT27_skipVanished(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := skipVanished(tt.err); !errors.Is(got, tt.want) && got != tt.want {
+			if got := skipVanished(tt.err); !errors.Is(got, tt.want) {
 				t.Errorf("skipVanished(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})

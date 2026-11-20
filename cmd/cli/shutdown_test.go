@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"os"
-	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -17,6 +16,7 @@ import (
 )
 
 func TestSignalContext_theFirstSignalCancelsAndIsNamed(t *testing.T) {
+	isolateStop(t)
 	receivedSignal.Store("")
 	ctx, cancel := signalContext()
 	defer cancel()
@@ -34,6 +34,7 @@ func TestSignalContext_theFirstSignalCancelsAndIsNamed(t *testing.T) {
 }
 
 func TestShutdownContexts_boundsStartWhenTheParentEnds(t *testing.T) {
+	isolateStop(t)
 	parent, cancel := context.WithCancel(t.Context())
 	drain, closing, release := shutdownContexts(parent, 400*time.Millisecond, 100*time.Millisecond)
 	defer release()
@@ -56,37 +57,176 @@ func TestShutdownContexts_boundsStartWhenTheParentEnds(t *testing.T) {
 	}
 }
 
-// Past shutdown_timeout plus the grace, the process is ended with code 1; a stop
-// that finished disarms the guard.
-func TestShutdownContexts_theGuardEndsTheProcessOnlyIfTheStopHangs(t *testing.T) {
-	prevExit, prevGrace := exitProcess, exitGrace
-	t.Cleanup(func() { exitProcess, exitGrace = prevExit, prevGrace })
-	exitGrace = 50 * time.Millisecond
-	var code atomic.Int64
-	code.Store(-1)
-	exitProcess = func(c int) { code.Store(int64(c)) }
+// guardWait bounds how long a test waits for an event that must happen.
+const guardWait = 10 * time.Second
 
+// stopIsolation is what a test of the stop runs in: the exit of the process
+// is recorded, never done, and the clock of the guard can be taken over.
+type stopIsolation struct {
+	// exit receives the code of every exit asked for.
+	exit chan int
+}
+
+// isolateStop makes a test safe to call shutdownContexts or runStop: it saves
+// exitProcess, armGuard, exitGrace and signalAt, restores them when the test
+// ends, clears signalAt (an earlier test, or the signal of the process, must not
+// move the bounds of this one) and replaces exitProcess so that no test can reach
+// os.Exit.
+func isolateStop(t *testing.T) *stopIsolation {
+	t.Helper()
+	prevExit, prevArm, prevGrace := exitProcess, armGuard, exitGrace
+	prevSignal := signalAt.Load()
+	t.Cleanup(func() {
+		exitProcess, armGuard, exitGrace = prevExit, prevArm, prevGrace
+		signalAt.Store(prevSignal)
+	})
+	signalAt.Store(nil)
+	iso := &stopIsolation{exit: make(chan int, 8)}
+	exitProcess = func(c int) {
+		select {
+		case iso.exit <- c:
+		default:
+		}
+	}
+	return iso
+}
+
+// exited returns the code of an exit asked for, if there was one.
+func (iso *stopIsolation) exited() (int, bool) {
+	select {
+	case c := <-iso.exit:
+		return c, true
+	default:
+		return 0, false
+	}
+}
+
+// guardRun is a guard started with the clock taken over: what the guard would run
+// at its time, and the delay it was given.
+type guardRun struct {
+	fire  func()
+	delay time.Duration
+}
+
+// manualGuard takes over the clock of the guard: shutdownContexts then arms a
+// guard that only runs when the test says so. The timer it returns is a real one
+// that never fires in the test (shutdownContexts stores it and stops it).
+func (iso *stopIsolation) manualGuard(t *testing.T) chan guardRun {
+	t.Helper()
+	armed := make(chan guardRun, 1)
+	armGuard = func(d time.Duration, fire func()) *time.Timer {
+		armed <- guardRun{fire: fire, delay: d}
+		timer := time.NewTimer(time.Hour)
+		t.Cleanup(func() { timer.Stop() })
+		return timer
+	}
+	return armed
+}
+
+func waitGuard(t *testing.T, armed chan guardRun) guardRun {
+	t.Helper()
+	select {
+	case g := <-armed:
+		return g
+	case <-time.After(guardWait):
+		t.Fatal("the guard was not armed")
+		return guardRun{}
+	}
+}
+
+// The guard is armed for shutdown_timeout plus the grace, counted from the
+// signal when there is one, from the stop otherwise: a signal long past gives a
+// delay that is over already. The delay is compared with a window, since the
+// guard counts from the moment the stop starts, a few microseconds after the
+// test chose its times.
+func TestShutdownContexts_theGuardCountsFromTheSignal(t *testing.T) {
+	const grace = time.Second
+	tests := []struct {
+		name      string
+		signalAgo time.Duration
+		total     time.Duration
+	}{
+		{"from the stop itself", 0, 50 * time.Millisecond},
+		{"from a signal 30 s ago: 30 s are left", 30 * time.Second, time.Minute},
+		{"a signal long past: the guard is due at once", time.Hour, 50 * time.Millisecond},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			iso := isolateStop(t)
+			armed := iso.manualGuard(t)
+			exitGrace = grace
+			if tt.signalAgo > 0 {
+				at := time.Now().Add(-tt.signalAgo)
+				signalAt.Store(&at)
+			}
+			parent, cancel := context.WithCancel(t.Context())
+			_, _, release := shutdownContexts(parent, tt.total, tt.total/2)
+			defer release()
+			cancel()
+			g := waitGuard(t, armed)
+			low, high := tt.total+grace/2-tt.signalAgo, tt.total+grace-tt.signalAgo
+			if g.delay <= low || g.delay > high {
+				t.Errorf("the guard is armed for %v, want in (%v, %v]", g.delay, low, high)
+			}
+			if tt.signalAgo == time.Hour && g.delay > 0 {
+				t.Errorf("delay = %v, want a guard due at once", g.delay)
+			}
+		})
+	}
+}
+
+// A stop that hangs is ended with code 1 when the guard's time comes.
+func TestShutdownContexts_theGuardEndsTheProcessIfTheStopHangs(t *testing.T) {
+	iso := isolateStop(t)
+	armed := iso.manualGuard(t)
+	parent, cancel := context.WithCancel(t.Context())
+	_, _, release := shutdownContexts(parent, 50*time.Millisecond, 25*time.Millisecond)
+	defer release()
+	cancel()
+	g := waitGuard(t, armed)
+	g.fire()
+	if code, ok := iso.exited(); !ok || code != 1 {
+		t.Errorf("exit = %d (asked: %v), want code 1 once the stop hung", code, ok)
+	}
+}
+
+// A stop that finished disarms the guard: even if its time comes, it does not
+// end the process.
+func TestShutdownContexts_aFinishedStopDisarmsTheGuard(t *testing.T) {
+	iso := isolateStop(t)
+	armed := iso.manualGuard(t)
 	parent, cancel := context.WithCancel(t.Context())
 	_, _, release := shutdownContexts(parent, 50*time.Millisecond, 25*time.Millisecond)
 	cancel()
-	time.Sleep(400 * time.Millisecond)
-	if code.Load() != 1 {
-		t.Errorf("exit code = %d, want 1 once the stop hung", code.Load())
-	}
+	g := waitGuard(t, armed)
 	release()
+	g.fire()
+	if code, ok := iso.exited(); ok {
+		t.Errorf("exit = %d, want the guard disarmed by a finished stop", code)
+	}
+}
 
-	code.Store(-1)
-	parent2, cancel2 := context.WithCancel(t.Context())
-	_, _, release2 := shutdownContexts(parent2, 50*time.Millisecond, 25*time.Millisecond)
-	cancel2()
-	release2()
-	time.Sleep(400 * time.Millisecond)
-	if code.Load() != -1 {
-		t.Errorf("exit code = %d, want the guard disarmed by a finished stop", code.Load())
+// With the real clock: a stop that hangs ends the process, and the test waits for
+// that event instead of for a delay.
+func TestShutdownContexts_theGuardFiresWithTheRealClock(t *testing.T) {
+	iso := isolateStop(t)
+	exitGrace = 20 * time.Millisecond
+	parent, cancel := context.WithCancel(t.Context())
+	_, _, release := shutdownContexts(parent, 20*time.Millisecond, 10*time.Millisecond)
+	defer release()
+	cancel()
+	select {
+	case c := <-iso.exit:
+		if c != 1 {
+			t.Errorf("exit code = %d, want 1", c)
+		}
+	case <-time.After(guardWait):
+		t.Fatal("the guard never ended the process of a stop that hangs")
 	}
 }
 
 func TestRunStop_recordsAnOverrunAndTheSummary(t *testing.T) {
+	isolateStop(t)
 	prevTimes := stopTimes
 	t.Cleanup(func() { stopTimes = prevTimes })
 	stopTimes.total, stopTimes.drain = 10*time.Second, 5*time.Second
@@ -111,6 +251,7 @@ func TestRunStop_recordsAnOverrunAndTheSummary(t *testing.T) {
 // signal: the session plugin reserves part of what is left of it for its JSON
 // fallbacks.
 func TestShutdownContexts_theBoundsHaveADeadlineFromTheSignal(t *testing.T) {
+	isolateStop(t)
 	parent, cancel := context.WithCancel(t.Context())
 	drain, closing, release := shutdownContexts(parent, 8*time.Second, 4*time.Second)
 	defer release()
@@ -119,7 +260,6 @@ func TestShutdownContexts_theBoundsHaveADeadlineFromTheSignal(t *testing.T) {
 	}
 	at := time.Now().Add(-time.Second)
 	signalAt.Store(&at)
-	t.Cleanup(func() { signalAt.Store(nil) })
 	cancel()
 	waitUntil(t, func() bool { _, ok := closing.Deadline(); return ok })
 	d1, _ := drain.Deadline()
@@ -139,6 +279,7 @@ func TestShutdownContexts_theBoundsHaveADeadlineFromTheSignal(t *testing.T) {
 }
 
 func TestShutdownContexts_aStopThatStartsAtOnceHasItsDeadlinesAtOnce(t *testing.T) {
+	isolateStop(t)
 	parent, cancel := context.WithCancel(t.Context())
 	cancel()
 	_, closing, release := shutdownContexts(parent, 8*time.Second, 4*time.Second)

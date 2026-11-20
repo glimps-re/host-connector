@@ -24,6 +24,9 @@ var (
 	overran atomic.Bool
 	// exitProcess forces the end of the process; replaced in tests.
 	exitProcess = os.Exit
+	// armGuard starts the timer of the guard; replaced in tests, which run the
+	// guard by hand instead of waiting for a clock.
+	armGuard = time.AfterFunc
 	// signalAt is when the signal arrived: the bounds of the stop are counted
 	// from it.
 	signalAt atomic.Pointer[time.Time]
@@ -117,7 +120,7 @@ func (c *lateContext) release() {
 func shutdownContexts(parent context.Context, total, drainFor time.Duration) (drain, closing context.Context, release func()) {
 	d, c := newLateContext(), newLateContext()
 	var finished atomic.Bool
-	grace, exit := exitGrace, exitProcess
+	grace, exit, startTimer := exitGrace, exitProcess, armGuard
 	var guard atomic.Pointer[time.Timer]
 	var once sync.Once
 	arm := func() {
@@ -132,7 +135,7 @@ func shutdownContexts(parent context.Context, total, drainFor time.Duration) (dr
 			logger.Info("stop requested, closing", slog.String("signal", sig),
 				slog.Duration("drain", drainFor), slog.Duration("closing", total),
 				slog.String("note", "a second signal stops immediately"))
-			guard.Store(time.AfterFunc(time.Until(start.Add(total+grace)), func() {
+			guard.Store(startTimer(time.Until(start.Add(total+grace)), func() {
 				if finished.Load() {
 					return
 				}

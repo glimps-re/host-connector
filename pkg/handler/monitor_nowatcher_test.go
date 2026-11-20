@@ -153,7 +153,7 @@ func TestHandler_ConfigureFullConsoleDefaults(t *testing.T) {
 			if !ok {
 				t.Fatalf("quarantine section missing: %v", conf["quarantine"])
 			}
-			quarantine["location"] = t.TempDir()
+			quarantine["location"] = filepath.Join(t.TempDir(), "quarantine")
 			if tt.monitoring != nil {
 				monitoring, ok := conf["monitoring"].(map[string]any)
 				if !ok {

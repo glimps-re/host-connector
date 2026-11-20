@@ -47,7 +47,8 @@ type registryMock struct {
 	GetLocationMock func() (location string)
 	SetMock         func(ctx context.Context, entry *Entry) error
 	GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
-	MigrateMock     func(ctx context.Context, newLocation string) error
+	CloneMock       func(ctx context.Context, newLocation string, mergeExisting bool) (quarantineRegistry, error)
+	DiscardMock     func() error
 	CloseMock       func() error
 	GetBySHA256Mock func(ctx context.Context, id string) (*Entry, error)
 }
@@ -80,11 +81,18 @@ func (m *registryMock) GetBySHA256(ctx context.Context, id string) (*Entry, erro
 	panic("GetBySha256 not implemented")
 }
 
-func (m *registryMock) Migrate(ctx context.Context, newLocation string) error {
-	if m.MigrateMock != nil {
-		return m.MigrateMock(ctx, newLocation)
+func (m *registryMock) Clone(ctx context.Context, newLocation string, _ bool) (quarantineRegistry, error) {
+	if m.CloneMock != nil {
+		return m.CloneMock(ctx, newLocation, false)
 	}
-	panic("Migrate not implemented")
+	panic("Clone not implemented")
+}
+
+func (m *registryMock) Discard() error {
+	if m.DiscardMock != nil {
+		return m.DiscardMock()
+	}
+	panic("Discard not implemented")
 }
 
 func (m *registryMock) Close() error {
@@ -1345,11 +1353,9 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 					}
 					return nil
 				},
-				MigrateMock: func(ctx context.Context, newLocation string) error {
-					if tt.fields.registryMigrateErr {
-						return errors.New("error migrate registry")
-					}
-					return nil
+				GetLocationMock: func() string { return "file::memory:" },
+				CloneMock: func(ctx context.Context, newLocation string, _ bool) (quarantineRegistry, error) {
+					return nil, errors.New("error clone registry")
 				},
 			}
 
@@ -1371,6 +1377,9 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 			newConfig := Config{
 				Location: newLocation,
 			}
+			if tt.fields.registryMigrateErr {
+				newConfig.RegistryLocation = filepath.Join(t.TempDir(), "other.db")
+			}
 			err := q.Reconfigure(ctx, newConfig)
 
 			if tt.wantErr != (err != nil) {
@@ -1378,6 +1387,19 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 				return
 			}
 			if err != nil {
+				for _, name := range tt.fields.createLockFiles {
+					if _, statErr := os.Stat(filepath.Join(initialDir, name)); statErr != nil {
+						t.Errorf("%s must be back in the original location after a failed Reconfigure: %v", name, statErr)
+					}
+					if !tt.args.useSameLocation {
+						if _, statErr := os.Stat(filepath.Join(newLocation, name)); statErr == nil {
+							t.Errorf("%s must not stay in the new location after a failed Reconfigure", name)
+						}
+					}
+				}
+				if q.location != initialDir || q.locker != locker {
+					t.Error("a failed Reconfigure must leave the location and the locker (password) unchanged")
+				}
 				return
 			}
 			checkQuarantineLocation(t, q, newLocation, len(tt.fields.createLockFiles))

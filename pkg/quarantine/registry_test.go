@@ -3,6 +3,7 @@ package quarantine
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -248,106 +249,92 @@ func TestRegistry(t *testing.T) {
 	}
 }
 
-func TestMigrate(t *testing.T) {
-	tests := []struct {
-		name string
-		test func(t *testing.T)
-	}{
-		{
-			name: "migrate file to memory",
-			test: func(t *testing.T) {
-				tfile, err := os.CreateTemp(t.TempDir(), "test_db_*.db")
-				if err != nil {
-					t.Fatalf("CreateTemp error = %v", err)
-				}
-				if e := tfile.Close(); e != nil {
-					t.Fatalf("cannot close test file: %v", e)
-				}
+func TestClone(t *testing.T) {
+	entry := &Entry{ID: "abc123", SHA256: "sha256abc", InitialLocation: "/test/path", QuarantineLocation: "/q/abc123.lock"}
+	t.Run("file to memory keeps the original untouched", func(t *testing.T) {
+		original, err := newSQLiteRegistry(t.Context(), filepath.Join(t.TempDir(), "a.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = original.Close() })
+		if err = original.Set(t.Context(), entry); err != nil {
+			t.Fatal(err)
+		}
+		clone, err := original.Clone(t.Context(), "", false)
+		if err != nil {
+			t.Fatalf("Clone() error = %v", err)
+		}
+		t.Cleanup(func() { _ = clone.Discard() })
+		if clone.GetLocation() != "file::memory:" {
+			t.Errorf("clone location = %q, want in memory", clone.GetLocation())
+		}
+		got, err := clone.Get(t.Context(), "abc123")
+		if err != nil || got.InitialLocation != entry.InitialLocation || got.QuarantineLocation != entry.QuarantineLocation {
+			t.Errorf("clone entry = %+v (err %v), want %+v", got, err, entry)
+		}
+		changed := *got
+		changed.QuarantineLocation = "/elsewhere"
+		if err = clone.Set(t.Context(), &changed); err != nil {
+			t.Fatal(err)
+		}
+		orig, err := original.Get(t.Context(), "abc123")
+		if err != nil || orig.QuarantineLocation != entry.QuarantineLocation {
+			t.Errorf("original entry = %+v (err %v), a change in the clone must not reach it", orig, err)
+		}
+	})
+	t.Run("memory to file, discard removes the created file only", func(t *testing.T) {
+		original, err := newSQLiteRegistry(t.Context(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = original.Close() })
+		if err = original.Set(t.Context(), entry); err != nil {
+			t.Fatal(err)
+		}
+		dbPath := filepath.Join(t.TempDir(), "cloned.db")
+		clone, err := original.Clone(t.Context(), dbPath, false)
+		if err != nil {
+			t.Fatalf("Clone() error = %v", err)
+		}
+		if _, err = os.Stat(dbPath); err != nil {
+			t.Fatalf("the clone file must exist: %v", err)
+		}
+		if err = clone.Discard(); err != nil {
+			t.Fatalf("Discard() error = %v", err)
+		}
+		if _, err = os.Stat(dbPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("a discarded clone must remove its file (stat error = %v)", err)
+		}
 
-				registry, err := newSQLiteRegistry(t.Context(), tfile.Name())
-				if err != nil {
-					t.Fatalf("newSQLiteRegistry() error = %v", err)
-				}
-
-				entry := &Entry{
-					ID:              "abc123",
-					SHA256:          "sha256abc",
-					InitialLocation: "/test/path",
-				}
-				if err := registry.Set(t.Context(), entry); err != nil {
-					t.Fatalf("Set() error = %v", err)
-				}
-
-				// Migrate to in-memory (empty string)
-				if err := registry.Migrate(t.Context(), ""); err != nil {
-					t.Fatalf("Migrate() error = %v", err)
-				}
-
-				if registry.GetLocation() != "file::memory:" {
-					t.Errorf("expected in-memory location, got %q", registry.GetLocation())
-				}
-
-				got, err := registry.Get(t.Context(), "abc123")
-				if err != nil {
-					t.Fatalf("Get() after migrate error = %v", err)
-				}
-				if got.InitialLocation != entry.InitialLocation {
-					t.Errorf("entry mismatch after migrate: got %q, want %q", got.InitialLocation, entry.InitialLocation)
-				}
-			},
-		},
-		{
-			name: "migrate memory to file",
-			test: func(t *testing.T) {
-				registry, err := newSQLiteRegistry(t.Context(), "")
-				if err != nil {
-					t.Fatalf("newSQLiteRegistry() error = %v", err)
-				}
-
-				entry := &Entry{
-					ID:              "def456",
-					SHA256:          "sha256def",
-					InitialLocation: "/test/other",
-				}
-				if err := registry.Set(t.Context(), entry); err != nil {
-					t.Fatalf("Set() error = %v", err)
-				}
-
-				dbPath := t.TempDir() + "/migrated.db"
-				if err := registry.Migrate(t.Context(), dbPath); err != nil {
-					t.Fatalf("Migrate() error = %v", err)
-				}
-
-				if registry.GetLocation() != dbPath {
-					t.Errorf("expected location %q, got %q", dbPath, registry.GetLocation())
-				}
-
-				got, err := registry.Get(t.Context(), "def456")
-				if err != nil {
-					t.Fatalf("Get() after migrate error = %v", err)
-				}
-				if got.InitialLocation != entry.InitialLocation {
-					t.Errorf("entry mismatch after migrate: got %q, want %q", got.InitialLocation, entry.InitialLocation)
-				}
-			},
-		},
-		{
-			name: "migrate same location is noop",
-			test: func(t *testing.T) {
-				registry, err := newSQLiteRegistry(t.Context(), "")
-				if err != nil {
-					t.Fatalf("newSQLiteRegistry() error = %v", err)
-				}
-
-				if err := registry.Migrate(t.Context(), ""); err != nil {
-					t.Fatalf("Migrate() to same location should be noop, got error = %v", err)
-				}
-			},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, tt.test)
-	}
+		existing := filepath.Join(t.TempDir(), "existing.db")
+		pre, err := newSQLiteRegistry(t.Context(), existing)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = pre.Close(); err != nil {
+			t.Fatal(err)
+		}
+		clone, err = original.Clone(t.Context(), existing, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = clone.Discard(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = os.Stat(existing); err != nil {
+			t.Errorf("a pre-existing registry file must survive Discard: %v", err)
+		}
+	})
+	t.Run("relative location is refused", func(t *testing.T) {
+		original, err := newSQLiteRegistry(t.Context(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = original.Close() })
+		if _, err = original.Clone(t.Context(), "relative.db", false); err == nil {
+			t.Error("Clone() with a relative location must fail")
+		}
+	})
 }
 
 func TestComputeCacheID(t *testing.T) {
@@ -375,5 +362,56 @@ func TestComputeCacheID(t *testing.T) {
 				t.Errorf("ComputeCacheID() = %v, want %v", gotID, tt.wantID)
 			}
 		})
+	}
+}
+
+func TestClone_refusesANonEmptyRegistry(t *testing.T) {
+	original, err := newSQLiteRegistry(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Close() })
+	existing := filepath.Join(t.TempDir(), "existing.db")
+	pre, err := newSQLiteRegistry(t.Context(), existing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = pre.Set(t.Context(), &Entry{ID: "x", SHA256: "s", InitialLocation: "/a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = pre.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = original.Clone(t.Context(), existing, false); err == nil {
+		t.Fatal("Clone() into a registry that already holds entries: error = nil")
+	}
+	if _, err = os.Stat(existing); err != nil {
+		t.Errorf("the pre-existing registry must be left alone: %v", err)
+	}
+}
+
+func TestDiscard_removesSQLiteSideFiles(t *testing.T) {
+	original, err := newSQLiteRegistry(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = original.Close() })
+	path := filepath.Join(t.TempDir(), "clone.db")
+	clone, err := original.Clone(t.Context(), path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if err = os.WriteFile(path+suffix, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = clone.Discard(); err != nil {
+		t.Fatal(err)
+	}
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if _, err = os.Stat(path + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s must be removed (stat error = %v)", path+suffix, err)
+		}
 	}
 }

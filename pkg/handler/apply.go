@@ -89,6 +89,9 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 	if err = checkReportLocation(conf.Print.Location); err != nil {
 		return nil, err
 	}
+	if err = checkQuarantineLocation(conf); err != nil {
+		return nil, err
+	}
 	if _, err = gdetect.NewClientFromConfig(gmalwareClientConfig(conf)); err != nil {
 		return nil, fmt.Errorf("%w: %w", errGMalwareConfig, err)
 	}
@@ -134,6 +137,14 @@ func (h *Handler) apply(ctx context.Context, conf *config.Config, start bool) (e
 	if !h.configured || conf == h.conf {
 		h.conf = conf
 		h.failSetup(ctx, err)
+		return err
+	}
+
+	if errors.Is(err, quarantine.ErrRollbackIncomplete) {
+		// Some lock files or entries are in the wrong place: replaying the
+		// previous configuration on top would hide it.
+		h.failSetup(ctx, err)
+		h.notifyRejected(ctx, err, rejectedStopped)
 		return err
 	}
 

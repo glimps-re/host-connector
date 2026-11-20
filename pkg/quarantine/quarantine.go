@@ -69,6 +69,10 @@ type QuarantineHandler struct {
 	watched  []string
 
 	restoreLocks keyedMutex
+
+	// previousRegistry is the location of the registry replaced by the last
+	// Reconfigure: a rollback may reuse it, it is not an unrelated one.
+	previousRegistry string
 }
 
 func NewQuarantineHandler(ctx context.Context, conf Config) (quarantineHandler *QuarantineHandler, err error) {
@@ -76,13 +80,7 @@ func NewQuarantineHandler(ctx context.Context, conf Config) (quarantineHandler *
 		conf.Location = config.DefaultQuarantineLocation
 	}
 
-	_, err = os.Stat(conf.Location)
-	if errors.Is(err, os.ErrNotExist) {
-		if err = os.MkdirAll(conf.Location, 0o750); err != nil {
-			err = fmt.Errorf("failed to create quarantine location: %w", err)
-			return
-		}
-	} else if err != nil {
+	if _, err = ensureLocation(conf.Location); err != nil {
 		return
 	}
 
@@ -116,51 +114,6 @@ func newQuarantineLocker(password string, format Format) (fileLocker, error) {
 		write = &zipLocker{Password: password}
 	}
 	return newLockerRouter(write, &tarLocker{Password: password}, &zipLocker{Password: password}), nil
-}
-
-// Reconfigure applies newConfig under the write lock. The new locker is built
-// first, so an invalid format changes nothing. Past that point the steps are
-// not transactional: a failure while moving the quarantine files can leave the
-// registry migrated.
-func (q *QuarantineHandler) Reconfigure(ctx context.Context, newConfig Config) (err error) {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-
-	newLocker, err := newQuarantineLocker(newConfig.LockPassword, newConfig.Format)
-	if err != nil {
-		return err
-	}
-
-	if err = q.registry.Migrate(ctx, newConfig.RegistryLocation); err != nil {
-		return err
-	}
-
-	if newConfig.Location == "" {
-		newConfig.Location = config.DefaultQuarantineLocation
-	}
-
-	if newConfig.Location == q.location {
-		q.locker = newLocker
-		q.watched = slices.Clone(newConfig.WatchedPaths)
-		return
-	}
-
-	_, err = os.Stat(newConfig.Location)
-	switch {
-	case errors.Is(err, os.ErrNotExist):
-		if err = os.MkdirAll(newConfig.Location, 0o750); err != nil {
-			return
-		}
-	case err != nil:
-		return
-	}
-	if err = q.moveQuarantinedFiles(ctx, q.location, newConfig.Location); err != nil {
-		return
-	}
-	q.locker = newLocker
-	q.location = newConfig.Location
-	q.watched = slices.Clone(newConfig.WatchedPaths)
-	return
 }
 
 // ErrFileChanged is returned by Quarantine when the file size changed while it
@@ -210,10 +163,12 @@ func (cr *ctxReader) Read(p []byte) (n int, err error) {
 }
 
 func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA256 string, malwares []string) (location string, id string, err error) {
+	// Held for the whole operation: Reconfigure swaps the registry and moves the
+	// files under the write lock, and must not run in the middle of this.
 	q.mu.RLock()
+	defer q.mu.RUnlock()
 	locker := q.locker
 	quarantineDir := q.location
-	q.mu.RUnlock()
 
 	entry := Entry{
 		ID:              ComputeCacheID(file, fileSHA256),
@@ -285,6 +240,8 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fileSHA
 }
 
 func (q *QuarantineHandler) IsRestored(ctx context.Context, sha256 string) (restored bool, err error) {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 	entry, getEntryErr := q.registry.GetBySHA256(ctx, sha256)
 	switch {
 	case getEntryErr == nil:
@@ -439,11 +396,13 @@ func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) 
 	unlockID := q.restoreLocks.Lock(id)
 	defer unlockID()
 
+	// restoreLocks is taken before this lock, and Reconfigure never takes it:
+	// no deadlock.
 	q.mu.RLock()
+	defer q.mu.RUnlock()
 	locker := q.locker
 	location := q.location
 	watched := q.watched
-	q.mu.RUnlock()
 
 	lockPath := filepath.Join(location, id+".lock")
 	f, err := os.OpenInRoot(location, id+".lock")
@@ -648,49 +607,9 @@ func (q *QuarantineHandler) ListQuarantinedFiles(ctx context.Context) iter.Seq2[
 }
 
 func (q *QuarantineHandler) Close() (err error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
 	err = q.registry.Close()
-	return
-}
-
-func (q *QuarantineHandler) moveQuarantinedFiles(ctx context.Context, oldLocation, newLocation string) (err error) {
-	err = filepath.WalkDir(oldLocation, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			logger.Warn("move quarantined files error", slog.String("error", walkErr.Error()))
-			return nil
-		}
-		if ctx.Err() != nil {
-			return filepath.SkipAll
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".lock") {
-			return nil
-		}
-
-		filename := filepath.Base(path)
-		newPath := filepath.Join(newLocation, filename)
-
-		if moveErr := MoveFile(path, newPath); moveErr != nil {
-			return moveErr
-		}
-
-		id := strings.TrimSuffix(filename, ".lock")
-		entry, getErr := q.registry.Get(ctx, id)
-		if getErr != nil {
-			if errors.Is(getErr, errEntryNotFound) {
-				return nil
-			}
-			return getErr
-		}
-
-		entry.QuarantineLocation = newPath
-		if setErr := q.registry.Set(ctx, entry); setErr != nil {
-			return setErr
-		}
-
-		return nil
-	})
 	return
 }
 

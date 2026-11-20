@@ -40,7 +40,8 @@ type Config struct {
 }
 
 var (
-	_ plugins.Plugin = &SevenZipExtractPlugin{}
+	_ plugins.Plugin    = &SevenZipExtractPlugin{}
+	_ plugins.Validator = &SevenZipExtractPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin SevenZipExtractPlugin
@@ -61,6 +62,42 @@ func (p *SevenZipExtractPlugin) GetDefaultConfig() (config any) {
 	return
 }
 
+// Validate checks the configuration like Init does, without any effect: the
+// sizes are parsed and a configured 7-Zip binary is checked and declared.
+func (p *SevenZipExtractPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("error bad config passed")
+	}
+	_, _, err := parseSizes(config)
+	if err != nil {
+		return err
+	}
+	return declareBinary(config, vc)
+}
+
+func parseSizes(config *Config) (maxFileSize, maxTotalExtractedSize int64, err error) {
+	if maxFileSize, err = units.ParseStrictBytes(config.MaxFileSize); err != nil {
+		return 0, 0, fmt.Errorf("could not parse max_file_size: %w", err)
+	}
+	if maxTotalExtractedSize, err = units.ParseStrictBytes(config.MaxTotalExtractedSize); err != nil {
+		return 0, 0, fmt.Errorf("could not parse max_total_extracted_size: %w", err)
+	}
+	return maxFileSize, maxTotalExtractedSize, nil
+}
+
+// declareBinary declares the configured 7-Zip binary to the core, which checks
+// it before anything runs it.
+func declareBinary(config *Config, vc plugins.ValidationContext) error {
+	if config.SevenZipPath == "" {
+		return nil
+	}
+	if err := vc.DeclareExecutable(config.SevenZipPath); err != nil {
+		return fmt.Errorf("seven_zip_path: %w", err)
+	}
+	return nil
+}
+
 // Init sets up the extraction engine and registers callbacks.
 func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "7z"))
@@ -71,15 +108,11 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 		return errors.New("error bad config passed")
 	}
 
-	maxFileSize, err := units.ParseStrictBytes(config.MaxFileSize)
+	maxFileSize, maxTotalExtractedSize, err := parseSizes(config)
 	if err != nil {
-		err = fmt.Errorf("could not parse max_file_size: %w", err)
 		return
 	}
-
-	maxTotalExtractedSize, err := units.ParseStrictBytes(config.MaxTotalExtractedSize)
-	if err != nil {
-		err = fmt.Errorf("could not parse max_total_extracted_size: %w", err)
+	if err = declareBinary(config, hcc); err != nil {
 		return
 	}
 
@@ -127,14 +160,14 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (
 
 // Close removes temporary 7-Zip binary if one was deployed.
 func (p *SevenZipExtractPlugin) Close(_ context.Context) (err error) {
-	if !p.sze.tmpSevenZip {
+	if p.sze == nil || !p.sze.tmpSevenZip {
 		return
 	}
-	err = os.Remove(p.sze.sevenZipPath)
-	if err != nil {
+	p.sze.tmpSevenZip = false
+	if err = os.Remove(p.sze.sevenZipPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return
 	}
-	return
+	return nil
 }
 
 func main() {}

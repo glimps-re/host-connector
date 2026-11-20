@@ -6,6 +6,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -63,7 +64,8 @@ type FileEntry struct {
 }
 
 var (
-	_ plugins.Plugin = &SessionPlugin{}
+	_ plugins.Plugin    = &SessionPlugin{}
+	_ plugins.Validator = &SessionPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin SessionPlugin
@@ -82,23 +84,49 @@ func (p *SessionPlugin) GetDefaultConfig() (config any) {
 	return
 }
 
-// Init initializes the plugin, registers callbacks, and starts session monitoring.
-func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
+// Validate checks the configuration like Init does and declares the export
+// directories, without any effect.
+func (p *SessionPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
 	config, ok := rawConfig.(*Config)
 	if !ok {
-		return fmt.Errorf("bad config passed to session plugin: %v", config)
+		return errors.New("bad config passed to session plugin")
 	}
+	return checkConfig(config, vc, false)
+}
 
-	workDir := hcc.GetWorkDir()
+// checkConfig is shared by Validate and Init: root_folder must not be the base
+// of the work directory, and the export directories are declared to the core,
+// which refuses one under a monitored path.
+func checkConfig(config *Config, vc plugins.ValidationContext, warn bool) error {
+	workDir := vc.GetWorkDir()
 	if workDir != "" && pathutil.Same(filepath.Dir(workDir), config.RootFolder) {
 		return fmt.Errorf("root_folder %q is the base of the connector work directory: set work_dir elsewhere", config.RootFolder)
 	}
 
-	if workDir != "" && pathutil.Under(config.RootFolder, workDir) {
+	if warn && workDir != "" && pathutil.Under(config.RootFolder, workDir) {
 		msg := fmt.Sprintf("session: the connector work directory %q is under root_folder %q: it is ignored by the sessions, but a work_dir outside root_folder is safer", workDir, config.RootFolder)
-		hcc.GetLogger().Warn(msg)
-		hcc.GetConsoleLogger().Warn(msg)
+		vc.GetLogger().Warn(msg)
+		vc.GetConsoleLogger().Warn(msg)
 	}
+	for _, export := range config.Exports {
+		if err := vc.DeclareOutputDir(export); err != nil {
+			return fmt.Errorf("exports: %w", err)
+		}
+	}
+	return nil
+}
+
+// Init initializes the plugin, registers callbacks, and starts session monitoring.
+func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("bad config passed to session plugin")
+	}
+
+	if err := checkConfig(config, hcc, true); err != nil {
+		return err
+	}
+	workDir := hcc.GetWorkDir()
 
 	p.config = *config
 	p.workDir = workDir

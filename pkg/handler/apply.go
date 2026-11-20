@@ -16,6 +16,7 @@ import (
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
@@ -98,12 +99,48 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 	if p.pluginsConfig, err = readPluginsConfig(conf.PluginsConfig); err != nil {
 		return nil, err
 	}
+	if err = h.validatePluginsConfig(conf, p.pluginsConfig); err != nil {
+		return nil, err
+	}
 	return p, nil
+}
+
+// validatePluginsConfig runs the plugins validation in a scratch directory,
+// then checks what they declared against the configuration. Nothing of the
+// running connector is touched.
+func (h *Handler) validatePluginsConfig(conf *config.Config, pluginsConfig []scanner.PluginConfig) error {
+	if len(pluginsConfig) == 0 {
+		return nil
+	}
+	vc, err := scanner.NewValidationContext(conf.WorkDir)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := vc.Close(); e != nil {
+			logger.Warn("could not remove the validation directory", slog.String("error", e.Error()))
+		}
+	}()
+	validate := h.validatePlugins
+	if validate == nil {
+		validate = scanner.ValidatePlugins
+	}
+	if err = validate(pluginsConfig, vc); err != nil {
+		return fmt.Errorf("plugins validation: %w", err)
+	}
+	return checkDeclarations(conf, vc.Declarations())
 }
 
 func readPluginsConfig(path string) ([]scanner.PluginConfig, error) {
 	if path == "" {
 		return nil, nil
+	}
+	warnings, err := plugins.CheckPluginFile(filepath.Clean(path))
+	if err != nil {
+		return nil, fmt.Errorf("plugins config file: %w", err)
+	}
+	for _, w := range warnings {
+		logger.Warn(w)
 	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
@@ -306,6 +343,9 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 	}
 	if err = conn.LoadPlugins(p.pluginsConfig); err != nil {
 		return fmt.Errorf("could not load plugins, error: %w", err)
+	}
+	if err = checkDeclarations(conf, conn.Declarations()); err != nil {
+		return err
 	}
 	h.Conn = conn
 

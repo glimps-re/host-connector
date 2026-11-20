@@ -49,6 +49,9 @@ type Handler struct {
 	remindMu     sync.Mutex
 	remindStop   chan struct{}
 	lastRejected string
+
+	// validatePlugins replaces scanner.ValidatePlugins when set (tests).
+	validatePlugins func([]scanner.PluginConfig, *scanner.ValidationContext) error
 }
 
 const (

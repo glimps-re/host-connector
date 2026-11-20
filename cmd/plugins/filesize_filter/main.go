@@ -21,7 +21,8 @@ type Config struct {
 }
 
 var (
-	_ plugins.Plugin = &FileSizePlugin{}
+	_ plugins.Plugin    = &FileSizePlugin{}
+	_ plugins.Validator = &FileSizePlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin FileSizePlugin
@@ -46,6 +47,24 @@ func (p *FileSizePlugin) GetDefaultConfig() (config any) {
 	}
 }
 
+// Validate checks the configuration like Init does, without any effect.
+func (p *FileSizePlugin) Validate(rawConfig any, _ plugins.ValidationContext) error {
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("invalid config passed")
+	}
+	_, err := parseMaxSize(config)
+	return err
+}
+
+func parseMaxSize(config *Config) (int64, error) {
+	maxFileSize, err := units.ParseStrictBytes(config.MaxSize)
+	if err != nil {
+		return 0, fmt.Errorf("could not parse max_size: %w", err)
+	}
+	return maxFileSize, nil
+}
+
 // Init parses configuration and registers callbacks.
 func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "filesize_filter"))
@@ -55,9 +74,8 @@ func (p *FileSizePlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) 
 		return errors.New("invalid config passed")
 	}
 
-	maxFileSize, err := units.ParseStrictBytes(config.MaxSize)
+	maxFileSize, err := parseMaxSize(config)
 	if err != nil {
-		err = fmt.Errorf("could not parse max_size: %w", err)
 		return
 	}
 

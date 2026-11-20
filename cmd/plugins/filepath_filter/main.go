@@ -20,7 +20,10 @@ import (
 // HCPlugin is the exported plugin instance.
 var HCPlugin FilePathFilterPlugin
 
-var _ plugins.Plugin = &FilePathFilterPlugin{}
+var (
+	_ plugins.Plugin    = &FilePathFilterPlugin{}
+	_ plugins.Validator = &FilePathFilterPlugin{}
+)
 
 // FilePathFilterPlugin provides path-based file filtering using regexp.
 type FilePathFilterPlugin struct {
@@ -40,6 +43,29 @@ type Config struct {
 
 func (fp *FilePathFilterPlugin) GetDefaultConfig() any { return &Config{} }
 
+// Validate checks the patterns like Init does, without any effect.
+func (fp *FilePathFilterPlugin) Validate(rawConfig any, _ plugins.ValidationContext) error {
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return fmt.Errorf("invalid config type, expected %T, got %T", &Config{}, rawConfig)
+	}
+	_, _, err := compilePatterns(config)
+	return err
+}
+
+func compilePatterns(config *Config) (forbidden, skipped map[string]*regexp.Regexp, err error) {
+	if err = checkPatternsConflicts(config.ForbiddenPaths, config.SkippedPaths); err != nil {
+		return nil, nil, err
+	}
+	if forbidden, err = compileRegexps(config.ForbiddenPaths); err != nil {
+		return nil, nil, err
+	}
+	if skipped, err = compileRegexps(config.SkippedPaths); err != nil {
+		return nil, nil, err
+	}
+	return forbidden, skipped, nil
+}
+
 // Init initializes the plugin with configuration.
 func (fp *FilePathFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	fp.logger = hcc.GetLogger().With(slog.String("plugin", "filepath_filter"))
@@ -51,19 +77,11 @@ func (fp *FilePathFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 		return
 	}
 
-	err = checkPatternsConflicts(config.ForbiddenPaths, config.SkippedPaths)
+	forbidden, skipped, err := compilePatterns(config)
 	if err != nil {
 		return
 	}
-
-	fp.ForbiddenPaths, err = compileRegexps(config.ForbiddenPaths)
-	if err != nil {
-		return
-	}
-	fp.SkippedPaths, err = compileRegexps(config.SkippedPaths)
-	if err != nil {
-		return
-	}
+	fp.ForbiddenPaths, fp.SkippedPaths = forbidden, skipped
 
 	hcc.RegisterOnScanFile(fp.OnScanFile)
 

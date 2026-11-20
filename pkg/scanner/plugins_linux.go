@@ -33,17 +33,9 @@ func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
 	if pluginConfig.File == "" {
 		return fmt.Errorf("plugin %s: %w: missing %q", pluginName, errInvalidPlugin, "file")
 	}
-	plug, err := plugin.Open(pluginConfig.File)
+	pp, err := openPlugin(pluginConfig.File)
 	if err != nil {
-		return fmt.Errorf("plugin %s: open: %w", pluginName, err)
-	}
-	p, err := plug.Lookup(plugins.PluginExportedName)
-	if err != nil {
-		return fmt.Errorf("plugin %s: lookup: %w", pluginName, err)
-	}
-	pp, ok := p.(plugins.Plugin)
-	if !ok {
-		return errors.Join(errInvalidPlugin, fmt.Errorf("plugin: %#v", p))
+		return fmt.Errorf("plugin %s: %w", pluginName, err)
 	}
 
 	config := pp.GetDefaultConfig()
@@ -64,4 +56,36 @@ func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
 	}
 	c.loadedPlugins = append(c.loadedPlugins, pp)
 	return nil
+}
+
+// openPlugin opens a plugin file and returns its exported plugin. A variable so
+// tests can open fakes.
+var openPlugin = func(file string) (plugins.Plugin, error) {
+	// Loading runs the code of the file in this process: check it first.
+	warnings, err := plugins.CheckPluginFile(file)
+	if err != nil {
+		return nil, err
+	}
+	for _, w := range warnings {
+		logger.Warn(w)
+	}
+	plug, err := plugin.Open(file)
+	if err != nil {
+		return nil, fmt.Errorf("open: %w", err)
+	}
+	p, err := plug.Lookup(plugins.PluginExportedName)
+	if err != nil {
+		return nil, fmt.Errorf("lookup: %w", err)
+	}
+	pp, ok := p.(plugins.Plugin)
+	if !ok {
+		return nil, errors.Join(errInvalidPlugin, fmt.Errorf("plugin: %#v", p))
+	}
+	return pp, nil
+}
+
+// ValidatePlugins checks the configuration of every plugin and runs their
+// Validate, without initializing anything or touching the running connector.
+func ValidatePlugins(pluginsConfig []PluginConfig, vc *ValidationContext) error {
+	return validatePlugins(pluginsConfig, vc, openPlugin)
 }

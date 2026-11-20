@@ -32,7 +32,8 @@ type Config struct {
 }
 
 var (
-	_ plugins.Plugin = &FTFilterPlugin{}
+	_ plugins.Plugin    = &FTFilterPlugin{}
+	_ plugins.Validator = &FTFilterPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin FTFilterPlugin
@@ -40,6 +41,15 @@ var (
 
 func (p *FTFilterPlugin) GetDefaultConfig() (config any) {
 	return new(Config)
+}
+
+// Validate checks the configuration type: the MIME type lists need no further
+// check. It has no effect.
+func (p *FTFilterPlugin) Validate(rawConfig any, _ plugins.ValidationContext) error {
+	if _, ok := rawConfig.(*Config); !ok {
+		return errors.New("invalid config passed")
+	}
+	return nil
 }
 
 // Init initializes the plugin with libmagic and configuration.

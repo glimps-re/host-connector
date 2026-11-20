@@ -30,7 +30,8 @@ type ReportPlugin struct {
 }
 
 var (
-	_ plugins.Plugin = &ReportPlugin{}
+	_ plugins.Plugin    = &ReportPlugin{}
+	_ plugins.Validator = &ReportPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin ReportPlugin
@@ -52,8 +53,19 @@ func (p *ReportPlugin) GetDefaultConfig() (config any) {
 	return
 }
 
-// Init loads the template and registers the report generator.
-func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
+// Validate loads the template like Init does, without any effect.
+func (p *ReportPlugin) Validate(rawConfig any, _ plugins.ValidationContext) error {
+	config, ok := rawConfig.(*Config)
+	if !ok {
+		return errors.New("bad config passed to report")
+	}
+	_, err := parseTemplate(config.TemplatePath)
+	return err
+}
+
+// parseTemplate parses the template at path, or the embedded one when path is
+// empty.
+func parseTemplate(path string) (*template.Template, error) {
 	templ := template.New("report").Funcs(template.FuncMap{
 		"mergeArgsIntoSlice": mergeArgsIntoSlice,
 		"formatDuration":     formatDuration,
@@ -67,6 +79,14 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 		},
 	})
 
+	if path != "" {
+		return templ.ParseFiles(filepath.Clean(path))
+	}
+	return templ.Parse(defaultTemplate)
+}
+
+// Init loads the template and registers the report generator.
+func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	config, ok := rawConfig.(*Config)
 	if !ok {
 		err = errors.New("bad config passed to report")
@@ -75,17 +95,14 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) (err error) {
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "report"))
 	p.consoleLogger = hcc.GetConsoleLogger()
 
+	if p.templ, err = parseTemplate(config.TemplatePath); err != nil {
+		return
+	}
 	if config.TemplatePath != "" {
-		if p.templ, err = templ.ParseFiles(filepath.Clean(config.TemplatePath)); err != nil {
-			return
-		}
 		p.logger.Info("plugin initialized", slog.String("template", config.TemplatePath))
 		p.consoleLogger.Info("report plugin initialized, template: " + config.TemplatePath)
 
 		hcc.RegisterGenerateReport(p.GenerateReport)
-		return
-	}
-	if p.templ, err = templ.Parse(defaultTemplate); err != nil {
 		return
 	}
 	p.logger.Info("plugin initialized", slog.String("template", "default"))

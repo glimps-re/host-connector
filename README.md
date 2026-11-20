@@ -373,6 +373,18 @@ type Plugin interface {
 }
 ```
 
+`Close` has no effect when called a second time or on a plugin whose `Init` failed or never ran, and a failed `Init` leaves nothing behind (no goroutine, file or process).
+
+A plugin may also implement `plugins.Validator`:
+
+```go
+type Validator interface {
+    Validate(config any, vc ValidationContext) error
+}
+```
+
+The connector calls `Validate` for every plugin before it applies a configuration (start and `Configure`), with the connector still running the previous one: `Validate` checks the configuration and what `Init` needs (binaries, paths) and changes nothing of the plugin in service. Write it as a function of the package, not as a method that writes into the receiver. `vc.GetWorkDir()` is a scratch directory removed when it returns. `vc.DeclareExecutable(path)` checks that a binary is safe to run (absolute, links resolved, regular and executable, owned by root or the connector account, not writable by others; writable by the group only warns, unless the connector runs as root) and records it: call it before running the binary, in `Validate` and in `Init`. `vc.DeclareOutputDir(path)` records a directory the plugin writes to. After the validation and after `Init`, the connector refuses an output directory that is, or is under, a monitored path or the quarantine directory, and an executable under a monitored path, under `move.destination` or under an output directory. A failing `Validate` stops a first start, and makes a `Configure` fail with the previous configuration kept.
+
 The `Register*` methods of `HCContext` are valid during `Init` only: later calls are ignored with a warning. The error returned by `Init` is logged and shown to the operator as is: never include a configuration value in it, it may be a secret.
 
 #### HCContext Interface
@@ -391,6 +403,11 @@ type HCContext interface {
     GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
     GetLogger() *slog.Logger
     GetConsoleLogger() *slog.Logger
+    GetWorkDir() string
+    DeclareExecutable(path string) error
+    DeclareOutputDir(path string) error
+    NotifyError(ctx context.Context, key string, err error)
+    NotifyResolution(ctx context.Context, key string, message string)
 }
 ```
 

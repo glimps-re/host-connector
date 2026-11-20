@@ -22,6 +22,13 @@ type MockHCContext struct {
 	ConsoleLogger      *slog.Logger
 	Logger             *slog.Logger
 	WorkDir            string
+	// Executables and OutputDirs record the declarations; DeclareExecutableErr
+	// is returned by DeclareExecutable.
+	Executables          []string
+	OutputDirs           []string
+	DeclareExecutableErr error
+	// DeclareExecutableFunc, when set, replaces the check of DeclareExecutable.
+	DeclareExecutableFunc func(path string) error
 }
 
 func NewMockHCContext() *MockHCContext {
@@ -43,6 +50,21 @@ func (m *MockHCContext) RegisterGenerateReport(f plugins.GenerateReport) { m.Gen
 func (m *MockHCContext) GetLogger() *slog.Logger                         { return m.Logger }
 func (m *MockHCContext) GetConsoleLogger() *slog.Logger                  { return m.ConsoleLogger }
 func (m *MockHCContext) GetWorkDir() string                              { return m.WorkDir }
+func (m *MockHCContext) DeclareExecutable(path string) error {
+	m.Executables = append(m.Executables, path)
+	if m.DeclareExecutableFunc != nil {
+		return m.DeclareExecutableFunc(path)
+	}
+	return m.DeclareExecutableErr
+}
+
+func (m *MockHCContext) DeclareOutputDir(path string) error {
+	m.OutputDirs = append(m.OutputDirs, path)
+	return nil
+}
+
+func (m *MockHCContext) NotifyError(context.Context, string, error)       {}
+func (m *MockHCContext) NotifyResolution(context.Context, string, string) {}
 func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
 	if m.GenerateReportFunc != nil {
 		return m.GenerateReportFunc(ctx, reportContext, reports)

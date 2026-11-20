@@ -16,3 +16,9 @@ func (c *Connector) LoadPlugins(pluginsConfig []PluginConfig) error {
 	}
 	return nil
 }
+
+// ValidatePlugins refuses any configured plugin: plugins are not supported on
+// Windows.
+func ValidatePlugins(pluginsConfig []PluginConfig, _ *ValidationContext) error {
+	return (&Connector{}).LoadPlugins(pluginsConfig)
+}

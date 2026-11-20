@@ -193,6 +193,7 @@ type Connector struct {
 	withWaitForOptionsFunc []plugins.WithWaitForOptionsFunc
 	onFileScannedCbs       []namedFileScanned
 	loadingPlugin          string
+	declared               declarations
 	pluginsMu              sync.Mutex
 	pluginsSealed          bool
 	onReportCbs            []plugins.OnReport

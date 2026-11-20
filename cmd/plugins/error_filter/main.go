@@ -14,7 +14,8 @@ import (
 type Config struct{}
 
 var (
-	_ plugins.Plugin = &ErrorFilterPlugin{}
+	_ plugins.Plugin    = &ErrorFilterPlugin{}
+	_ plugins.Validator = &ErrorFilterPlugin{}
 
 	// HCPlugin is the exported plugin instance.
 	HCPlugin ErrorFilterPlugin
@@ -30,6 +31,9 @@ type ErrorFilterPlugin struct {
 func (p *ErrorFilterPlugin) Close(_ context.Context) (err error) {
 	return
 }
+
+// Validate accepts any configuration: the plugin takes none.
+func (p *ErrorFilterPlugin) Validate(any, plugins.ValidationContext) error { return nil }
 
 // GetDefaultConfig returns the default configuration.
 func (p *ErrorFilterPlugin) GetDefaultConfig() (config any) {

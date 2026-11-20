@@ -20,7 +20,11 @@ type (
 
 type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
 
-// Plugin interface must be implemented by host-connector plugins
+// Plugin interface must be implemented by host-connector plugins.
+//
+// Close has no effect when called a second time, or on a plugin whose Init was
+// never called or failed. An Init that fails leaves nothing behind: no
+// goroutine, file or process.
 type Plugin interface {
 	// GetDefaultConfig MUST be used to get a default config, where we can unmarshall read yaml config, and pass it to Init
 	GetDefaultConfig() (config any)
@@ -29,6 +33,8 @@ type Plugin interface {
 }
 
 type HCContext interface {
+	ValidationContext
+
 	SetExtractFile(f ExtractFile)
 
 	// The Register* methods are only valid during Init.
@@ -55,12 +61,39 @@ type HCContext interface {
 	RegisterGenerateReport(f GenerateReport)
 	GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
 
+	// NotifyError raises an error event on the connector manager under key;
+	// NotifyResolution clears it. Both are no-ops without a connector manager.
+	NotifyError(ctx context.Context, key string, err error)
+	NotifyResolution(ctx context.Context, key string, message string)
+}
+
+// ValidationContext is what a plugin may use while validating a configuration.
+// It gives no way to register a hook or change the running connector.
+type ValidationContext interface {
 	GetLogger() *slog.Logger
 	GetConsoleLogger() *slog.Logger
-
-	// GetWorkDir returns the connector private working directory. It never
-	// holds user deposits; plugins must ignore paths under it.
+	// GetWorkDir returns a private directory. During Validate it is a scratch
+	// directory removed when Validate returns; once the plugin is running it is
+	// the connector private working directory, which never holds user deposits
+	// (plugins must ignore paths under it).
 	GetWorkDir() string
+	// DeclareExecutable checks that path is safe to execute (absolute, resolved,
+	// a regular executable file, owned by root or the connector account, not
+	// writable by others) and records it. It must be called before running the
+	// binary, in Validate as in Init.
+	DeclareExecutable(path string) error
+	// DeclareOutputDir records a directory the plugin writes results to. The
+	// core refuses one that is, or is under, a monitored path.
+	DeclareOutputDir(path string) error
+}
+
+// Validator is optional. Validate checks config and everything Init needs
+// (binaries, paths) without changing the state of the plugin in service: write
+// it as a function of the package that receives the configuration, not as a
+// method that writes into the receiver. Everything it creates goes under
+// vc.GetWorkDir(), removed when it returns.
+type Validator interface {
+	Validate(config any, vc ValidationContext) error
 }
 
 var PluginExportedName = "HCPlugin"

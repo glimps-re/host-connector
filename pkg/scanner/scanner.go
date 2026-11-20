@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/connector-integration/sdk/metrics"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -143,12 +145,58 @@ type fileToAnalyze struct {
 	sha256             string
 	location           string
 	filename           string
+	logicalPath        string
 	size               int64
 	archiveTopLocation string
 	archiveID          string
 	archiveLocation    string
+	archiveLogicalPath string // logical path of archiveLocation, what plugins are told
 	archiveSHA256      string
 	archiveSize        int64
+}
+
+// logical is the path plugins see for the file: its real path for a top-level
+// file, else the path of its top-level archive followed by the relative paths
+// of the successive extractions, joined by "/".
+func (f fileToAnalyze) logical() string {
+	if f.logicalPath != "" {
+		return f.logicalPath
+	}
+	return sanitizeControl(f.location)
+}
+
+// archiveLogical is the logical path of the archive the file comes from.
+func (f fileToAnalyze) archiveLogical() string {
+	if f.archiveLogicalPath != "" {
+		return f.archiveLogicalPath
+	}
+	return sanitizeControl(f.archiveLocation)
+}
+
+// sanitizeControl replaces the control characters of a path by "_": a newline
+// in a name would otherwise let it slip past a rule such as
+// `^/in/alice/.*\.exe$`, where "." does not match it.
+func sanitizeControl(p string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, p)
+}
+
+// memberLogicalPath builds the logical path of an extracted file from rel, the
+// path it was really extracted to relative to the extraction folder, never from
+// the name the archive declares. A member that resolved outside that folder
+// (inside is false) keeps only its base name. Control characters become "_"
+// (see sanitizeControl). The result is ambiguous
+// by nature: "/in/a.zip/b.zip/x" names a file of a folder b.zip as well as one
+// of a nested archive b.zip.
+func memberLogicalPath(parent, rel string, inside bool, location string) string {
+	if !inside {
+		rel = filepath.Base(location)
+	}
+	return path.Join(filepath.ToSlash(parent), sanitizeControl(filepath.ToSlash(rel)))
 }
 
 type archiveToAnalyze struct {
@@ -945,6 +993,8 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			location:           fileLocation,
 			archiveID:          archiveID,
 			filename:           relPath,
+			logicalPath:        memberLogicalPath(archive.logical(), relPath, relErr == nil && pathutil.Under(outputDir, fileLocation), fileLocation),
+			archiveLogicalPath: archive.logical(),
 			archiveLocation:    archive.location,
 			sha256:             fileSHA256,
 			archiveSHA256:      archive.sha256,
@@ -1141,7 +1191,8 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	if started {
 		// No onStartScanFile here: a sub-archive belongs to the scan of its
 		// top-level archive and must not start a session of its own.
-		if archiveResult := c.onScanFile(input.archiveLocation, input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
+		if archiveResult := c.onScanFile(input.archiveLogical(), input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
+			archiveResult.Filename = input.archiveLocation
 			ok := c.archiveStatus.setArchiveResult(input.archiveID, *archiveResult)
 			if !ok {
 				archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
@@ -1276,9 +1327,12 @@ func (c *Connector) analyzeFile(input fileToAnalyze) (result datamodel.Result) {
 	opts.Filename = input.location
 
 	fileLogger.Debug("applying onScanFile() from plugins")
-	res := c.onScanFile(input.filename, input.location, input.sha256, false)
+	res := c.onScanFile(input.logical(), input.location, input.sha256, false)
 	if res != nil {
 		result = *res
+		// Reports and MaliciousSubfiles are keyed by the internal name, whatever
+		// the plugin put in Filename.
+		result.Filename = input.filename
 		return
 	}
 

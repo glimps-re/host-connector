@@ -190,7 +190,7 @@ GMHost includes several built-in plugins (**GNU/Linux only**):
 
 - **extract**: Extracts and scans content from various archive formats
 - **filetype_filter**: Filters files based on file type patterns (allow/deny lists)
-- **filepath_filter**: Filters files based on file path patterns (allow/deny lists)
+- **filepath_filter**: Filters files based on file path patterns (allow/deny lists), on the logical path of extracted files
 - **filesize_filter**: Filters files based on maximum size, treating oversized files as threats
 - **error_filter**: Marks files with analysis errors as malicious for proper handling
 - **session**: Manages scanning sessions and tracks progress
@@ -267,16 +267,14 @@ filetype_filter:
 
 #### FilePath Filter Plugin
 
-Filters files based on their path, using regular expressions.
+Filters files based on their path, using regular expressions. A file extracted from an archive is matched on its logical path: the path of the top-level archive followed by the member's path, joined by `/` (`^/in/alice/.*\.exe$` matches `/in/alice/a.zip/x/y.exe`). The temporary folder the archive is extracted into is never part of it, so rules aimed at it (such as `^/tmp/.*`) no longer match. `skipped_paths` and `forbidden_paths` both apply to the members of archives, on their logical path; anchor an allow rule on the archive prefix (`^/in/...`), since an unanchored one also matches a member name chosen by the archive. The logical path is ambiguous by nature: `/in/a.zip/b.zip/x` names a file of a folder `b.zip` as well as one of a nested archive `b.zip`. Control characters in a member name are replaced by `_`.
 
 ```yaml
 filepath_filter:
   file: filepath.so
   config:
     forbidden_paths:                  # regexp paths to flag as malicious (Score=1000)
-      - "^/tmp/.*"                      # any file in /tmp or its subfolders
-      - "^/tmp/[^/]+$"                  # any file strictly in /tmp (not its subfolders)
-      - "^.*.exe$"                      # all exe files
+      - "^.*\\.exe$"                    # all exe files
     skipped_paths:                    # regexp paths to mark as safe (Score=-500)
       - "^.*.png$"                      # all png files
       - "^.*.jpg$"                      # all jpg files

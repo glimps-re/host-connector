@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
+	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
@@ -2631,9 +2633,18 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				}
 			}
 
+			for _, f := range filesSent {
+				if f.logicalPath == "" {
+					continue // the input itself: logical path is its location
+				}
+				if !strings.HasPrefix(f.logicalPath, archive.location+"/") || !strings.HasSuffix(f.logicalPath, "/"+filepath.ToSlash(f.filename)) {
+					t.Errorf("logicalPath = %q, want the top-level archive %q followed by the member path %q", f.logicalPath, archive.location, f.filename)
+				}
+			}
+
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "logicalPath", "archiveLogicalPath", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}
@@ -2753,5 +2764,44 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				t.Errorf("files sent to worker = %d, want %d", len(filesSent), tt.wantFilesSentToWorker)
 			}
 		})
+	}
+}
+
+func TestMemberLogicalPath(t *testing.T) {
+	out := filepath.Join(string(filepath.Separator), "work", "gmhost-1", "extract")
+	tests := []struct {
+		name, parent, location, want string
+	}{
+		{"member", "/in/alice/a.zip", filepath.Join(out, "x", "y.exe"), "/in/alice/a.zip/x/y.exe"},
+		{"nested", "/in/alice/a.zip/b.zip", filepath.Join(out, "f.txt"), "/in/alice/a.zip/b.zip/f.txt"},
+		{"outside the extraction folder keeps its base name", "/in/a.zip", filepath.Join(string(filepath.Separator), "etc", "passwd"), "/in/a.zip/passwd"},
+		{"parent with a trailing slash", "/in/a.zip/", filepath.Join(out, "f"), "/in/a.zip/f"},
+		{"control characters cannot hide a member from a rule", "/in/alice/a.zip", filepath.Join(out, "a\nb.exe"), "/in/alice/a.zip/a_b.exe"},
+		{"carriage return and delete", "/in/a.zip", filepath.Join(out, "a\rb\x7fc"), "/in/a.zip/a_b_c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rel, err := filepath.Rel(out, tt.location)
+			if got := memberLogicalPath(tt.parent, rel, err == nil && pathutil.Under(out, tt.location), tt.location); got != tt.want {
+				t.Errorf("memberLogicalPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileToAnalyze_logicalPathNeutralizesControlCharactersAtTheTopLevel(t *testing.T) {
+	top := fileToAnalyze{location: "/in/alice/a\nb.exe"}
+	if got, want := top.logical(), "/in/alice/a_b.exe"; got != want {
+		t.Errorf("logical() = %q, want %q", got, want)
+	}
+	if !regexp.MustCompile(`^/in/alice/.*\.exe$`).MatchString(top.logical()) {
+		t.Error("a newline in the name must not hide the file from a rule on its path")
+	}
+	sub := fileToAnalyze{archiveLocation: "/in/alice/a\rb.zip"}
+	if got, want := sub.archiveLogical(), "/in/alice/a_b.zip"; got != want {
+		t.Errorf("archiveLogical() = %q, want %q", got, want)
+	}
+	if got := (fileToAnalyze{location: "/in/alice/a.exe"}).logical(); got != "/in/alice/a.exe" {
+		t.Errorf("logical() = %q, want the location unchanged", got)
 	}
 }

@@ -97,31 +97,27 @@ func (fp *FilePathFilterPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 // Close cleans up plugin resources (no-op for this plugin).
 func (fp *FilePathFilterPlugin) Close(context.Context) error { return nil }
 
-// OnScanFile filters files based on their path (location).
-// location example:
-//   - "/home/user/documents/virus.exe"
-//   - "/tmp/extract-abc123/subdir/virus.exe"
-//
-// fileName example:
-//   - "/home/user/documents/virus.exe"
-//   - "subdir/virus.exe" (archive relative path)
+// OnScanFile filters files on their logical path, fileName: the real path of a
+// file, or, for a file extracted from an archive, the path of the top-level
+// archive followed by the member's path ("/in/alice/a.zip/x/y.exe"). location
+// is where the file really is (possibly a temporary folder) and is only used
+// to read its size.
 func (fp *FilePathFilterPlugin) OnScanFile(fileName string, location string, sha256 string, _ bool) (res *datamodel.Result) {
 	location = filepath.Clean(location)
-	fileInfo, err := os.Stat(location)
-	if err != nil {
-		return
-	}
 
-	// forbidden paths take priority over skipped paths
+	// Forbidden paths take priority over skipped paths. The rules are tested
+	// first: a file that cannot be examined must not escape a forbidden path.
 	for strRegexp, regexp := range fp.ForbiddenPaths {
-		if regexp.MatchString(location) {
+		if regexp.MatchString(fileName) {
+			size := fp.sizeOf(location)
 			fp.logger.Debug("filtered file based on its path (blacklist)",
-				slog.String("file", location),
+				slog.String("file", fileName),
+				slog.String("location", location),
 				slog.String("sha256", sha256),
 				slog.String("regexp", strRegexp))
-			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (blacklist) file=%s, regexp=%s", location, strRegexp))
+			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (blacklist) file=%s, regexp=%s", fileName, strRegexp))
 
-			res = &datamodel.Result{
+			return &datamodel.Result{
 				Filename:       fileName,
 				Location:       location,
 				Malware:        true,
@@ -129,34 +125,48 @@ func (fp *FilePathFilterPlugin) OnScanFile(fileName string, location string, sha
 				Score:          1000,
 				Malwares:       []string{"forbidden_file_path"},
 				MalwareReason:  datamodel.FilteredFilePath,
-				FilteredVolume: fileInfo.Size(),
-				FileSize:       fileInfo.Size(),
+				FilteredVolume: size,
+				FileSize:       size,
 			}
-			return
 		}
 	}
 
 	for strRegexp, regexp := range fp.SkippedPaths {
-		if regexp.MatchString(location) {
+		if regexp.MatchString(fileName) {
+			info, err := os.Stat(location)
+			if err != nil {
+				return nil
+			}
 			fp.logger.Debug("filtered file based on its path (whitelist)",
-				slog.String("file", location),
+				slog.String("file", fileName),
+				slog.String("location", location),
 				slog.String("sha256", sha256),
 				slog.String("regexp", strRegexp))
-			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (whitelist) file=%s, regexp=%s", location, strRegexp))
+			fp.consoleLogger.Debug(fmt.Sprintf("filtered file based on its path (whitelist) file=%s, regexp=%s", fileName, strRegexp))
 
-			res = &datamodel.Result{
+			return &datamodel.Result{
 				Filename:       fileName,
 				Location:       location,
 				Malware:        false,
 				SHA256:         sha256,
 				Score:          -500,
-				FilteredVolume: fileInfo.Size(),
-				FileSize:       fileInfo.Size(),
+				FilteredVolume: info.Size(),
+				FileSize:       info.Size(),
 			}
-			return
 		}
 	}
-	return
+	return nil
+}
+
+// sizeOf returns the size of location, or 0 with a warning when it cannot be
+// read: the size only feeds the reports, it must not decide the verdict.
+func (fp *FilePathFilterPlugin) sizeOf(location string) int64 {
+	info, err := os.Stat(location)
+	if err != nil {
+		fp.logger.Warn("could not read the size of a filtered file", slog.String("location", location), slog.String("error", err.Error()))
+		return 0
+	}
+	return info.Size()
 }
 
 // checkPatternsConflicts returns an error if any pattern exists in both lists.

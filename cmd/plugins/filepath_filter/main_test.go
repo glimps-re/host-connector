@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -352,12 +353,12 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 				},
 			},
 			args: args{
-				fileName: "test.txt",
+				fileName: tmpFile,
 				location: tmpFile,
 				sha256:   "abc123",
 			},
 			want: &datamodel.Result{
-				Filename:      "test.txt",
+				Filename:      tmpFile,
 				Location:      tmpFile,
 				Malware:       true,
 				SHA256:        "abc123",
@@ -414,12 +415,12 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 				},
 			},
 			args: args{
-				fileName: "app.log",
+				fileName: logFile,
 				location: logFile,
 				sha256:   "jkl012",
 			},
 			want: &datamodel.Result{
-				Filename:      "app.log",
+				Filename:      logFile,
 				Location:      logFile,
 				Malware:       true,
 				SHA256:        "jkl012",
@@ -436,12 +437,12 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 				},
 			},
 			args: args{
-				fileName: "test.txt",
+				fileName: tmpFile,
 				location: tmpDir + "/../" + filepath.Base(tmpDir) + "/" + testFile1, // e.g., /tmp/abc/../abc/test.txt
 				sha256:   "mno345",
 			},
 			want: &datamodel.Result{
-				Filename:      "test.txt",
+				Filename:      tmpFile,
 				Location:      tmpFile,
 				Malware:       true,
 				SHA256:        "mno345",
@@ -458,12 +459,12 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 				},
 			},
 			args: args{
-				fileName: "test.txt",
+				fileName: tmpFile,
 				location: tmpDir + "//" + testFile1, // e.g., /tmp/abc//test.txt
 				sha256:   "pqr678",
 			},
 			want: &datamodel.Result{
-				Filename:      "test.txt",
+				Filename:      tmpFile,
 				Location:      tmpFile,
 				Malware:       true,
 				SHA256:        "pqr678",
@@ -498,4 +499,52 @@ func Test_FilePathFilterPlugin_OnScanFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_FilePathFilterPlugin_OnScanFile_logicalPath(t *testing.T) {
+	tmp := filepath.Join(t.TempDir(), "extract-1234")
+	if err := os.MkdirAll(tmp, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	member := filepath.Join(tmp, "y.exe")
+	if err := os.WriteFile(member, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fp := &FilePathFilterPlugin{
+		ForbiddenPaths: map[string]*regexp.Regexp{"alice exe": regexp.MustCompile(`^/in/alice/.*\.exe$`)},
+		SkippedPaths:   map[string]*regexp.Regexp{"tmp": regexp.MustCompile(`^` + regexp.QuoteMeta(tmp))},
+		logger:         slog.New(slog.DiscardHandler),
+		consoleLogger:  slog.New(slog.DiscardHandler),
+	}
+	if res := fp.OnScanFile("/in/alice/a.zip/x/y.exe", member, "sha", false); res == nil || !res.Malware {
+		t.Errorf("a member of an archive of alice must match on its logical path, got %+v", res)
+	}
+	if res := fp.OnScanFile("/in/bob/a.zip/x/y.exe", member, "sha", false); res != nil {
+		t.Errorf("the temporary folder must never be matched, got %+v", res)
+	}
+	tests := []struct {
+		name, file string
+		want       bool
+	}{
+		{"nested archive", "/in/alice/a.zip/b.zip/y.exe", true},
+		{"long name", "/in/alice/" + strings.Repeat("a", 4096) + ".exe", true},
+		{"neutralized control character", "/in/alice/a.zip/a_b.exe", true},
+		{"dot-dot does not leave the archive", "/in/alice/a.zip/../../etc/y.exe\x00", false},
+		{"nul at the end", "/in/alice/a.zip/y.exe\x00", false},
+		{"empty name", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res := fp.OnScanFile(tt.file, member, "sha", false)
+			if got := res != nil && res.Malware; got != tt.want {
+				t.Errorf("OnScanFile(%q) malware = %t, want %t (%+v)", tt.file, got, tt.want, res)
+			}
+		})
+	}
+	t.Run("a forbidden path applies even when the file cannot be examined", func(t *testing.T) {
+		res := fp.OnScanFile("/in/alice/a.zip/x/y.exe", filepath.Join(tmp, "gone.exe"), "sha", false)
+		if res == nil || !res.Malware || res.FileSize != 0 {
+			t.Errorf("OnScanFile() = %+v, want malware with an unknown size", res)
+		}
+	})
 }

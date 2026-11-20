@@ -149,7 +149,7 @@ func TestOnScanFile_shippedPluginConfigForbiddenPathBeatsTextPlain(t *testing.T)
 		case "filepath_filter":
 			c.RegisterOnScanFile(func(fn, loc, sha string, _ bool) *datamodel.Result {
 				for _, re := range forbidden {
-					if re.MatchString(loc) {
+					if re.MatchString(fn) {
 						return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Malware: true, Score: 1000, MalwareReason: datamodel.FilteredFilePath}
 					}
 				}
@@ -157,10 +157,13 @@ func TestOnScanFile_shippedPluginConfigForbiddenPathBeatsTextPlain(t *testing.T)
 			})
 		}
 	}
-	if got := c.onScanFile("a.txt", "/tmp/a.txt", "sha", false); got == nil || !got.Malware || got.MalwareReason != datamodel.FilteredFilePath {
+	if got := c.onScanFile("/in/a.exe", "/tmp/a.exe", "sha", false); got == nil || !got.Malware || got.MalwareReason != datamodel.FilteredFilePath {
 		t.Errorf("text/plain at a forbidden path = %+v, want malicious", got)
 	}
-	if got := c.onScanFile("a.txt", "/home/u/a.txt", "sha", false); got == nil || got.Malware {
+	if got := c.onScanFile("/in/alice/a.zip/x/y.txt", "/tmp/gmhost-1/extract/x/y.txt", "sha", false); got == nil || got.Malware {
+		t.Errorf("text/plain member under a temporary location = %+v, want a waiver: the temporary folder is not matched", got)
+	}
+	if got := c.onScanFile("/in/a.txt", "/home/u/a.txt", "sha", false); got == nil || got.Malware {
 		t.Errorf("text/plain at an allowed path = %+v, want a waiver", got)
 	}
 }
@@ -192,5 +195,31 @@ func TestOnFileScanned_softeningWarnNamesPlugin(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, `"level":"WARN"`) || !strings.Contains(out, "error_filter") {
 		t.Errorf("log = %q, want a Warn naming error_filter", out)
+	}
+}
+
+func TestAnalyzeFile_pluginsReceiveTheLogicalPathAndFilenameStaysInternal(t *testing.T) {
+	c := &Connector{}
+	var gotName, gotLocation string
+	c.RegisterOnScanFile(func(name, location, _ string, _ bool) *datamodel.Result {
+		gotName, gotLocation = name, location
+		return &datamodel.Result{Filename: "chosen by the plugin", Malware: true, Malwares: []string{"m"}}
+	})
+	in := fileToAnalyze{
+		filename:    "x/y.exe",
+		logicalPath: "/in/alice/a.zip/x/y.exe",
+		location:    "/work/extract/x/y.exe",
+	}
+	res := c.analyzeFile(in)
+	if gotName != in.logicalPath || gotLocation != in.location {
+		t.Errorf("plugin got (%q, %q), want (%q, %q)", gotName, gotLocation, in.logicalPath, in.location)
+	}
+	if res.Filename != in.filename {
+		t.Errorf("Result.Filename = %q, want the internal name %q", res.Filename, in.filename)
+	}
+	top := fileToAnalyze{filename: "/in/a.bin", location: "/in/a.bin"}
+	c.analyzeFile(top)
+	if gotName != "/in/a.bin" {
+		t.Errorf("first-level file: plugin got %q, want its location", gotName)
 	}
 }

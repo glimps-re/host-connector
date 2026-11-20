@@ -87,7 +87,13 @@ type HCContext interface {
 
 	// The Register* methods are only valid during Init.
 	RegisterOnStartScanFile(f OnStartScanFile)
-	// RegisterOnScanFile callbacks run in plugin file order. A result that is
+	// RegisterOnScanFile callbacks run in plugin file order. filename is the
+	// logical path of the file: its real path, or for a file extracted from an
+	// archive the path of the top-level archive followed by the member's path,
+	// joined by "/" (control characters become "_"); the form is ambiguous:
+	// /in/a.zip/b.zip/x names a file of a folder b.zip as well as one of a nested
+	// archive. location is the real path. The core sets Result.Filename back to
+	// its own value after the callback. A result that is
 	// not malware, has no Error, no AnalysisError and no detection trace
 	// (MalwareReason, Malwares, MaliciousSubfiles, ErrorSubfiles) is a waiver
 	// (the file is not analyzed); any other non-nil result is a refusal. A

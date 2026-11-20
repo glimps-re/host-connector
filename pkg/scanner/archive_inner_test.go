@@ -1042,3 +1042,34 @@ func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testi
 		t.Errorf("the top archive must stay in place: %v", err)
 	}
 }
+
+func TestAnalyzeArchiveFile_nestedArchiveIsPresentedByItsLogicalPath(t *testing.T) {
+	c := &Connector{
+		action:          &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }},
+		archiveStatus:   newArchiveStatusHandler(),
+		ongoingAnalysis: sync.Map{},
+	}
+	var names, locations []string
+	c.RegisterOnScanFile(func(name, location, _ string, isArchive bool) *datamodel.Result {
+		if isArchive {
+			names, locations = append(names, name), append(locations, location)
+		}
+		return &datamodel.Result{Filename: "chosen by the plugin", Malware: true, Malwares: []string{"m"}}
+	})
+	temp := filepath.Join(t.TempDir(), "extract-1", "b.zip")
+	id := c.archiveStatus.addStatus(archiveStatus{archiveLocation: temp, tmpFolder: t.TempDir(), total: 1})
+	in := fileToAnalyze{
+		archiveID:          id,
+		archiveLocation:    temp,
+		archiveLogicalPath: "/in/alice/a.zip/b.zip",
+		filename:           "y.exe",
+		logicalPath:        "/in/alice/a.zip/b.zip/y.exe",
+		location:           filepath.Join(filepath.Dir(temp), "y.exe"),
+	}
+	if err := c.analyzeArchiveFile(in); err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "/in/alice/a.zip/b.zip" || locations[0] != temp {
+		t.Errorf("plugin saw names %v and locations %v, want the logical path of b.zip and its real location", names, locations)
+	}
+}

@@ -2216,7 +2216,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			},
 		},
 		{
-			name: "ok with ExtractFile error for input archive",
+			name: "ExtractFile error for an archive the extractor recognizes: not a plain file",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
 				extractMinThreshold:      1,
@@ -2227,9 +2227,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			args: args{
 				depth: 0,
 			},
-			wantFilesSent: []fileToAnalyze{
-				{filename: "invalid*.zip"},
-			},
+			wantErr: true,
 		},
 		{
 			name: "ok empty archive", // (0 files to extract)

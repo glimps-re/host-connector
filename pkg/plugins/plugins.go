@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 
@@ -10,7 +11,11 @@ import (
 )
 
 type (
-	ExtractFile            = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error)
+	// ExtractFile extracts the archive into outputDir within limits. An error
+	// wrapping ErrUnsupportedFormat means the file is not an archive and is
+	// handled as a plain file; ErrEncrypted, ErrExtractorUnavailable and any other
+	// error leave the archive unhandled.
+	ExtractFile            = func(archiveLocation, outputDir string, limits ExtractLimits) (Extraction, error)
 	OnStartScanFile        = func(file string, sha256 string)
 	OnScanFile             = func(filename string, location string, sha256 string, isArchive bool) (result *datamodel.Result)
 	OnFileScanned          = func(file string, sha256 string, result datamodel.Result) (newResult *datamodel.Result)
@@ -19,6 +24,42 @@ type (
 )
 
 type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+
+// Extraction is the result of one ExtractFile call.
+type Extraction struct {
+	// Size is the total size in bytes of Files.
+	Size uint64
+	// Files are the extracted files, as absolute paths under the output directory.
+	Files []string
+	// Skipped lists what was not extracted, at most datamodel.MaxListedSubfiles
+	// entries with names truncated to datamodel.MaxListedNameLen bytes.
+	Skipped []datamodel.NotAnalyzedFile
+	// SkippedCount is the exact total of skipped members.
+	SkippedCount int
+}
+
+// ExtractLimits bounds one extraction; the values come from the global
+// configuration. A zero or negative budget means: extract nothing.
+type ExtractLimits struct {
+	// MaxFileSize bounds one member.
+	MaxFileSize int64
+	// MaxFiles is the remaining budget of files.
+	MaxFiles int
+	// MaxTotalSize is the remaining budget of bytes.
+	MaxTotalSize int64
+}
+
+var (
+	// ErrEncrypted is returned, wrapped, when no known password opens the archive.
+	ErrEncrypted = errors.New("archive is encrypted and no known password opens it")
+	// ErrUnsupportedFormat is returned, wrapped, when the file is not an archive
+	// the extractor knows: it is then handled as a plain file. It is the only
+	// extraction failure that is.
+	ErrUnsupportedFormat = errors.New("not an archive the extractor supports")
+	// ErrExtractorUnavailable is returned, wrapped, when the extraction process
+	// could not be started, whatever the cause.
+	ErrExtractorUnavailable = errors.New("the extractor is unavailable")
+)
 
 // Plugin interface must be implemented by host-connector plugins.
 //

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/glimps-re/host-connector/pkg/plugins"
+
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
@@ -364,15 +366,21 @@ func TestSetExtractFile_ignoredOnceSealed(t *testing.T) {
 	called := false
 	c := &Connector{}
 	c.setSealed(true)
-	c.SetExtractFile(func(string, string) (uint64, []string, []string, error) { called = true; return 0, nil, nil, nil })
+	c.SetExtractFile(func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		called = true
+		return plugins.Extraction{}, nil
+	})
 	if ExtractFile != nil {
-		if _, _, _, _ = ExtractFile("a", "b"); called {
+		if _, _ = ExtractFile("a", "b", plugins.ExtractLimits{}); called {
 			t.Error("ExtractFile replaced after loading")
 		}
 	}
 	c2 := &Connector{}
-	c2.SetExtractFile(func(string, string) (uint64, []string, []string, error) { called = true; return 0, nil, nil, nil })
-	if _, _, _, _ = ExtractFile("a", "b"); !called {
+	c2.SetExtractFile(func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		called = true
+		return plugins.Extraction{}, nil
+	})
+	if _, _ = ExtractFile("a", "b", plugins.ExtractLimits{}); !called {
 		t.Error("SetExtractFile before sealing must apply")
 	}
 }

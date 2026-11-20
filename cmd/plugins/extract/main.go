@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/alecthomas/units"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
@@ -117,9 +119,9 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 	}
 
 	p.sze, err = newSevenZipExtract(extractorConfig{
-		MaxFileSize:           int(maxFileSize),
+		MaxFileSize:           maxFileSize,
 		MaxExtractedFiles:     config.MaxExtractedFiles,
-		MaxTotalExtractedSize: int(maxTotalExtractedSize),
+		MaxTotalExtractedSize: maxTotalExtractedSize,
 		DefaultPasswords:      config.DefaultPasswords,
 	}, config.SevenZipPath, p.logger)
 	if err != nil {
@@ -140,22 +142,39 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 	return
 }
 
-// ExtractFile extracts archive contents to outputDir with security limits.
-func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
+// ExtractFile extracts archive contents to outputDir within the strictest of
+// the plugin's keys and limits. Every failure of 7z is classified: see the
+// errors wrapped by the returned error.
+func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, limits plugins.ExtractLimits) (extraction plugins.Extraction, err error) {
 	p.consoleLogger.Debug(fmt.Sprintf("start extraction of %s with 7z", archiveLocation))
 
-	result, err := p.sze.extract(archiveLocation, outputDir, []string{}, []string{})
+	ctx, cancel := context.WithTimeout(context.Background(), szExtractTimeout)
+	defer cancel()
+	result, err := p.sze.extract(ctx, archiveLocation, outputDir, nil, limits)
 	if err != nil {
-		return
+		if errors.Is(err, ErrInvalidPassword) {
+			err = fmt.Errorf("%w: %w", plugins.ErrEncrypted, err)
+		}
+		return plugins.Extraction{}, err
 	}
 
 	for _, ep := range result.extractedFiles {
-		files = append(files, ep.Path)
+		extraction.Files = append(extraction.Files, ep.Path)
 		if ep.Size > 0 {
-			size += uint64(ep.Size)
+			extraction.Size += uint64(ep.Size)
 		}
 	}
-	return
+	extraction.Skipped = result.skipped.entries
+	extraction.SkippedCount = result.skipped.count
+	if len(result.anomalies) > 0 {
+		p.logger.Error("extraction anomaly", slog.String("archive", sanitizeOutput(archiveLocation)), slog.String("anomalies", sanitizeOutput(strings.Join(result.anomalies, "; "))))
+		extraction.Skipped = append([]datamodel.NotAnalyzedFile{{FileName: truncateName(filepath.Base(archiveLocation)), Reason: datamodel.NotAnalyzedExtractError}}, extraction.Skipped...)
+		if len(extraction.Skipped) > datamodel.MaxListedSubfiles {
+			extraction.Skipped = extraction.Skipped[:datamodel.MaxListedSubfiles]
+		}
+		extraction.SkippedCount++
+	}
+	return extraction, nil
 }
 
 // Close removes temporary 7-Zip binary if one was deployed.

@@ -305,14 +305,25 @@ func (c *Connector) Start() (err error) {
 }
 
 // ExtractFile can be used to override xtract.ExtractFile method
-var ExtractFile = func(archiveLocation, outputDir string) (size uint64, files []string, volumes []string, err error) {
+//
+// The default extractor applies no limit of its own. Only a file whose type it
+// does not know is reported as plugins.ErrUnsupportedFormat (and handled as a plain
+// file); any other failure is an extraction error.
+var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
 	xFile := &xtractr.XFile{
 		FilePath:  archiveLocation,
 		OutputDir: outputDir,
 		FileMode:  0o600,
 		DirMode:   0o700,
 	}
-	return xtractr.ExtractFile(xFile)
+	size, files, _, err := xtractr.ExtractFile(xFile)
+	switch {
+	case errors.Is(err, xtractr.ErrUnknownArchiveType):
+		return plugins.Extraction{}, fmt.Errorf("%w: %w", plugins.ErrUnsupportedFormat, err)
+	case err != nil:
+		return plugins.Extraction{}, err
+	}
+	return plugins.Extraction{Size: size, Files: files}, nil
 }
 
 func (c *Connector) ScanFile(ctx context.Context, input string) (err error) {
@@ -683,6 +694,18 @@ func (c *Connector) processFile(input fileToAnalyze) {
 	c.finishAnalysis(input.location)
 }
 
+// extractionAnomaly turns an extract-error entry reported by the extractor
+// (an anomaly of the archive: data after its end, a mismatch between what was
+// listed and what was extracted) into an error.
+func extractionAnomaly(e plugins.Extraction) error {
+	for _, s := range e.Skipped {
+		if s.Reason == datamodel.NotAnalyzedExtractError {
+			return fmt.Errorf("the extractor reported an anomaly in %s", s.FileName)
+		}
+	}
+	return nil
+}
+
 // tryExtract starts a recursive extraction for archive.
 func (c *Connector) tryExtract(archive archiveToAnalyze) (err error) {
 	archiveLogger := logger.With(slog.String("input file", archive.location), slog.String("sha256", archive.sha256))
@@ -736,7 +759,23 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	}()
 
 	archiveLogger.Debug("attempting to extract file")
-	extractedSize, extractedFiles, _, extractErr := ExtractFile(archive.location, outputDir)
+	limits := plugins.ExtractLimits{
+		MaxFileSize:  c.config.MaxFileSize,
+		MaxFiles:     c.config.RecursiveExtractMaxFiles - *totalExtractedFiles,
+		MaxTotalSize: c.config.RecursiveExtractMaxSize - *totalExtractedSize,
+	}
+	extraction, extractErr := ExtractFile(archive.location, outputDir, limits)
+	extractedSize, extractedFiles := extraction.Size, extraction.Files
+	if extractErr == nil {
+		extractErr = extractionAnomaly(extraction)
+	}
+	if extractErr != nil && !errors.Is(extractErr, plugins.ErrUnsupportedFormat) && !errors.Is(extractErr, plugins.ErrEncrypted) {
+		// A recognized archive that could not be extracted is an error, never
+		// a plain file: submitting it as is would let its content through.
+		archiveLogger.Error("archive extraction failed", slog.String("error", extractErr.Error()))
+		err = fmt.Errorf("extract-error: %w", extractErr)
+		return
+	}
 	if extractErr != nil {
 		archiveLogger.Debug("error extracting file", slog.String("error", extractErr.Error())) // debug level, because files reaching that point are not necessarily extractable, due to the authorization of type 'application/octet-stream'
 		file := archive
@@ -771,6 +810,12 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		},
 	}
 
+	if len(extractedFiles) == 0 && extraction.SkippedCount > 0 {
+		// Members were left out and none was extracted: submitting the archive
+		// whole would let those members through unanalyzed.
+		err = fmt.Errorf("extract-error: %d members of the archive were not extracted and none was", extraction.SkippedCount)
+		return
+	}
 	if len(extractedFiles) == 0 {
 		file := archive
 		if file.filename == "" {

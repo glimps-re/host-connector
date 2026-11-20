@@ -151,7 +151,8 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 			archivePath := tt.setupArchive()
 			outputDir := t.TempDir()
 
-			size, files, volumes, err := plugin.ExtractFile(archivePath, outputDir)
+			extraction, err := plugin.ExtractFile(archivePath, outputDir, plugins.ExtractLimits{})
+			size, files := extraction.Size, extraction.Files
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SevenZipExtractPlugin.XtractFile() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -168,9 +169,6 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 				}
 				if files == nil {
 					t.Error("SevenZipExtractPlugin.XtractFile() files should not be nil")
-				}
-				if volumes == nil {
-					t.Error("SevenZipExtractPlugin.XtractFile() volumes should not be nil")
 				}
 			}
 		})
@@ -233,8 +231,8 @@ func TestSevenZipExtractPlugin_DefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Failed to parse defaultMaxSize: %v", err)
 	}
-	if plugin.sze.config.MaxFileSize != int(expectedMaxSize) {
-		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, int(expectedMaxSize))
+	if plugin.sze.config.MaxFileSize != expectedMaxSize {
+		t.Errorf("Default MaxFileSize = %v, want %v", plugin.sze.config.MaxFileSize, expectedMaxSize)
 	}
 	if plugin.sze.config.MaxExtractedFiles != defaultMaxFileExtracted {
 		t.Errorf("Default MaxExtractedFiles = %v, want %v", plugin.sze.config.MaxExtractedFiles, defaultMaxFileExtracted)

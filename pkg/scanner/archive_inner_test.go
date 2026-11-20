@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -11,7 +12,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+
+	"github.com/glimps-re/host-connector/pkg/plugins"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
@@ -256,9 +260,9 @@ func TestFinishArchiveAnalysis_changedArchiveNotifiesObserversWithError(t *testi
 func TestRecursiveExtract_lostMemberKeepsArchiveInError(t *testing.T) {
 	prev := ExtractFile
 	t.Cleanup(func() { ExtractFile = prev })
-	ExtractFile = func(_, outputDir string) (uint64, []string, []string, error) {
-		return 1, []string{filepath.Join(outputDir, "sub", "missing.bin")}, nil, nil
-	}
+	ExtractFile = fakeExtractor(func(outputDir string) (uint64, []string, error) {
+		return 1, []string{filepath.Join(outputDir, "sub", "missing.bin")}, nil
+	})
 
 	var mu sync.Mutex
 	var handled []datamodel.Result
@@ -317,11 +321,11 @@ func TestRecursiveExtract_subArchiveWithoutTempDirKeepsArchiveInError(t *testing
 	prev := ExtractFile
 	t.Cleanup(func() { ExtractFile = prev })
 	var c *Connector
-	ExtractFile = func(_, outputDir string) (uint64, []string, []string, error) {
+	ExtractFile = fakeExtractor(func(outputDir string) (uint64, []string, error) {
 		member := filepath.Join(outputDir, "inner.zip")
 		root, err := os.OpenRoot(outputDir)
 		if err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
 		defer func() {
 			if e := root.Close(); e != nil {
@@ -329,13 +333,13 @@ func TestRecursiveExtract_subArchiveWithoutTempDirKeepsArchiveInError(t *testing
 			}
 		}()
 		if err := root.WriteFile("inner.zip", innerBytes, 0o600); err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
 		if err := os.Chmod(c.work.extractDir(), readOnlyDir); err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
-		return uint64(len(innerBytes)), []string{member}, nil, nil
-	}
+		return uint64(len(innerBytes)), []string{member}, nil
+	})
 
 	var handled []datamodel.Result
 	c, err = NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
@@ -379,17 +383,17 @@ func runArchiveWithMembers(t *testing.T, register func(c *Connector)) []datamode
 	t.Helper()
 	prev := ExtractFile
 	t.Cleanup(func() { ExtractFile = prev })
-	ExtractFile = func(_, outputDir string) (uint64, []string, []string, error) {
+	ExtractFile = fakeExtractor(func(outputDir string) (uint64, []string, error) {
 		var files []string
 		for name, content := range map[string]string{"good.bin": "good content", "bad.bin": "bad content"} {
 			p := filepath.Join(outputDir, name)
 			if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-				return 0, nil, nil, err
+				return 0, nil, err
 			}
 			files = append(files, p)
 		}
-		return 24, files, nil, nil
-	}
+		return 24, files, nil
+	})
 	submitter := &gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
 		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
@@ -456,10 +460,10 @@ func TestArchive_cleanMembersLeaveArchiveClean(t *testing.T) {
 func TestRecursiveExtract_emptyMemberIsStillIgnored(t *testing.T) {
 	prev := ExtractFile
 	t.Cleanup(func() { ExtractFile = prev })
-	ExtractFile = func(_, outputDir string) (uint64, []string, []string, error) {
+	ExtractFile = fakeExtractor(func(outputDir string) (uint64, []string, error) {
 		root, err := os.OpenRoot(outputDir)
 		if err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
 		defer func() {
 			if e := root.Close(); e != nil {
@@ -467,10 +471,10 @@ func TestRecursiveExtract_emptyMemberIsStillIgnored(t *testing.T) {
 			}
 		}()
 		if err := root.WriteFile("empty.bin", nil, 0o600); err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
-		return 0, []string{filepath.Join(outputDir, "empty.bin")}, nil, nil
-	}
+		return 0, []string{filepath.Join(outputDir, "empty.bin")}, nil
+	})
 	var handled []datamodel.Result
 	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), ExtractMinThreshold: 1}, nil, nil)
 	if err != nil {
@@ -569,10 +573,10 @@ func TestArchive_noMutationOnceFinishIsClaimed(t *testing.T) {
 func TestRecursiveExtract_lastMemberLostWhileOthersAreInFlight(t *testing.T) {
 	prev := ExtractFile
 	t.Cleanup(func() { ExtractFile = prev })
-	ExtractFile = func(_, outputDir string) (uint64, []string, []string, error) {
+	ExtractFile = fakeExtractor(func(outputDir string) (uint64, []string, error) {
 		root, err := os.OpenRoot(outputDir)
 		if err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
 		defer func() {
 			if e := root.Close(); e != nil {
@@ -580,10 +584,10 @@ func TestRecursiveExtract_lastMemberLostWhileOthersAreInFlight(t *testing.T) {
 			}
 		}()
 		if err := root.WriteFile("ok.bin", []byte("fine content"), 0o600); err != nil {
-			return 0, nil, nil, err
+			return 0, nil, err
 		}
-		return 12, []string{filepath.Join(outputDir, "ok.bin"), filepath.Join(outputDir, "lost.bin")}, nil, nil
-	}
+		return 12, []string{filepath.Join(outputDir, "ok.bin"), filepath.Join(outputDir, "lost.bin")}, nil
+	})
 	var mu sync.Mutex
 	var handled []datamodel.Result
 	var scanned int
@@ -648,5 +652,106 @@ func TestMemberCause(t *testing.T) {
 	plain := errors.New("plain")
 	if memberCause(plain) != plain {
 		t.Error("an error without path is kept as is")
+	}
+}
+
+func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		extractor func(string, string, plugins.ExtractLimits) (plugins.Extraction, error)
+		wantErr   bool
+	}{
+		{"not an archive is a plain file", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrUnsupportedFormat)
+		}, false},
+		{"encrypted keeps the current behavior", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrEncrypted)
+		}, false},
+		{"any other failure is an extract error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{}, errors.New("7z killed")
+		}, true},
+		{"nothing extracted while members were skipped is an error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "big.bin", Reason: datamodel.NotAnalyzedTooBig}}, SkippedCount: 1}, nil
+		}, true},
+		{"an extract-error entry is an error", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "a.7z", Reason: datamodel.NotAnalyzedExtractError}}, SkippedCount: 1}, nil
+		}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := ExtractFile
+			t.Cleanup(func() { ExtractFile = prev })
+			ExtractFile = tt.extractor
+			c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1}, nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.action = &MockAction{HandleMock: func(context.Context, string, datamodel.Result, *datamodel.Report) error { return nil }}
+			t.Cleanup(func() { c.Close(t.Context()) })
+			submitter := archiveCleanSubmitter()
+			var submitted atomic.Int32
+			submitter.WaitForFileMock = func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
+				submitted.Add(1)
+				return gdetect.Result{}, nil
+			}
+			c.submitter = submitter
+			location, sha := createArchive(t, []string{"content"})
+			info, err := os.Stat(location)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var size int64
+			var files int
+			archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}
+			err = c.recursiveExtract(archive, 0, &size, &files, logger)
+			if tt.wantErr != (err != nil && strings.Contains(err.Error(), "extract-error")) {
+				t.Errorf("recursiveExtract() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr && submitted.Load() != 0 {
+				t.Error("an archive in error must never be submitted as a plain file")
+			}
+		})
+	}
+}
+
+// fakeExtractor adapts a function that fills outputDir to plugins.ExtractFile.
+func fakeExtractor(extract func(outputDir string) (size uint64, files []string, err error)) plugins.ExtractFile {
+	return func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+		size, files, err := extract(outputDir)
+		return plugins.Extraction{Size: size, Files: files}, err
+	}
+}
+
+func TestDefaultExtractor_onlyAnUnknownTypeIsAPlainFile(t *testing.T) {
+	dir := t.TempDir()
+	text := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(text, []byte("just text"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExtractFile(text, t.TempDir(), plugins.ExtractLimits{}); !errors.Is(err, plugins.ErrUnsupportedFormat) {
+		t.Errorf("ExtractFile(text) error = %v, want ErrUnsupportedFormat", err)
+	}
+
+	full, _ := createArchive(t, []string{"some content that makes the archive longer than a few bytes"})
+	raw, err := os.ReadFile(filepath.Clean(full))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cut := "cut.zip"
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if e := root.Close(); e != nil {
+			t.Error(e)
+		}
+	}()
+	if err := root.WriteFile(cut, raw[:len(raw)/2], 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cut = filepath.Join(dir, cut)
+	if _, err := ExtractFile(cut, t.TempDir(), plugins.ExtractLimits{}); err == nil || errors.Is(err, plugins.ErrUnsupportedFormat) {
+		t.Errorf("ExtractFile(truncated zip) error = %v, want an extraction error that is not ErrUnsupportedFormat", err)
 	}
 }

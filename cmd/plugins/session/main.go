@@ -425,18 +425,33 @@ func (p *SessionPlugin) generateSessionReport(ctx context.Context, session *Sess
 		End:    time.Now(),
 	}
 
-	reader, err := p.hcc.GenerateReport(ctx, reportContext, session.CompletedReports)
+	generated, err := p.hcc.GenerateReport(ctx, reportContext, datamodel.ReportsSeq(session.CompletedReports))
 	if err != nil {
 		p.logger.Error("failed to generate session report",
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("error", err.Error()))
 		return
 	}
+	if generated.Content == nil {
+		p.logger.Error("the report generator gave no content", slog.String(sessionIDLogKey, session.ID))
+		return
+	}
+	defer func() {
+		if e := generated.Content.Close(); e != nil {
+			p.logger.Warn("failed to close the session report content", slog.String(sessionIDLogKey, session.ID), slog.String("error", e.Error()))
+		}
+	}()
+	if !validExtension(generated.Extension) {
+		p.logger.Error("the report generator gave an invalid extension",
+			slog.String(sessionIDLogKey, session.ID),
+			slog.String("extension", generated.Extension))
+		return
+	}
 	reportPaths := make([]string, 0, len(session.Paths))
 	for _, path := range session.Paths {
-		reportPaths = append(reportPaths, filepath.Join(path, fmt.Sprintf("%s%s-%d.pdf", datamodel.SessionReportPrefix, strings.ReplaceAll(session.ID, "/", "-"), session.StartTime.Unix())))
+		reportPaths = append(reportPaths, filepath.Join(path, fmt.Sprintf("%s%s-%d%s", datamodel.SessionReportPrefix, strings.ReplaceAll(session.ID, "/", "-"), session.StartTime.Unix(), generated.Extension)))
 	}
-	if err := p.saveReport(reader, reportPaths...); err != nil {
+	if err := p.saveReport(generated.Content, reportPaths...); err != nil {
 		p.logger.Error("failed to save session report",
 			slog.String(sessionIDLogKey, session.ID),
 			slog.String("report_paths", strings.Join(reportPaths, ",")),
@@ -450,11 +465,45 @@ func (p *SessionPlugin) generateSessionReport(ctx context.Context, session *Sess
 	)
 }
 
+// validExtension accepts a dot and letters or digits: the generator is a
+// plugin, its extension must not be able to name another place.
+func validExtension(ext string) bool {
+	if len(ext) < 2 || len(ext) > 16 || ext[0] != '.' {
+		return false
+	}
+	for _, c := range ext[1:] {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// closeReportFile closes a report file. Replaced in tests.
+var closeReportFile = func(f *os.File) error { return f.Close() }
+
 func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err error) {
 	if len(filePaths) == 0 {
 		return
 	}
-	files := make([]io.Writer, 0, len(filePaths))
+	var files []*os.File
+	defer func() {
+		// A close that fails after a good copy leaves a truncated report: it is
+		// an error like the others, and none of the files is kept.
+		for _, file := range files {
+			if e := closeReportFile(file); e != nil {
+				p.logger.Warn("failed to close report file", slog.String(filepathLogKey, file.Name()), slog.String("error", e.Error()))
+				err = errors.Join(err, e)
+			}
+		}
+		if err != nil {
+			for _, file := range files {
+				if e := os.Remove(file.Name()); e != nil && !errors.Is(e, os.ErrNotExist) {
+					p.logger.Warn("failed to remove a partial report", slog.String(filepathLogKey, file.Name()), slog.String("error", e.Error()))
+				}
+			}
+		}
+	}()
 	for _, path := range filePaths {
 		cleanPath := filepath.Clean(path)
 		if e := os.MkdirAll(filepath.Dir(cleanPath), 0o750); e != nil {
@@ -468,21 +517,16 @@ func (p *SessionPlugin) saveReport(reader io.Reader, filePaths ...string) (err e
 			p.logger.Error("failed to create folder for session report", slog.String("folder", filepath.Dir(cleanPath)), slog.String("error", createErr.Error()))
 			continue
 		}
-		defer func() {
-			if e := file.Close(); e != nil {
-				p.logger.Warn("failed to close report file",
-					slog.String(filepathLogKey, file.Name()),
-					slog.String("error", e.Error()),
-				)
-			}
-		}()
 		files = append(files, file)
 	}
-	mw := io.MultiWriter(files...)
-	_, err = io.Copy(mw, reader)
-	if err != nil {
-		return
+	if len(files) == 0 {
+		return errors.New("no report file could be created")
 	}
+	writers := make([]io.Writer, len(files))
+	for i, f := range files {
+		writers[i] = f
+	}
+	_, err = io.Copy(io.MultiWriter(writers...), reader)
 	return
 }
 

@@ -402,7 +402,7 @@ type HCContext interface {
     RegisterOnFileScanned(f OnFileScanned)
     RegisterOnReport(f OnReport)
     RegisterGenerateReport(f GenerateReport)
-    GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+    GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (GeneratedReport, error)
     GetLogger() *slog.Logger
     GetConsoleLogger() *slog.Logger
     GetWorkDir() string
@@ -425,7 +425,7 @@ Plugins can register callbacks for different stages of the scanning pipeline:
 - **`WithWaitForOptionsFunc`**: Modify submission options before analysis
 - **`OnFileScanned`**: Called after a file completes scanning. Every plugin is called, in plugin file order, each receiving the current result; a non-nil return replaces it. A plugin can harden a result, never soften it: a non-nil `Error`, `Malware=true` and a non-empty `AnalysisError`, `MalwareReason`, `Malwares`, `MaliciousSubfiles` and `ErrorSubfiles` are restored by the connector (with a warning naming the plugin)
 - **`OnReport`**: Called when a scan report is generated
-- **`GenerateReport`**: Custom report generation function
+- **`GenerateReport`**: Custom report generation function. The reports come as a sequence (`iter.Seq2[datamodel.Report, error]`), to be read once; an error of the sequence must end the generation with that error. It returns a `GeneratedReport{Content io.ReadCloser, Extension string}`: the content is not nil exactly when the error is nil, the caller closes it on every path, and the extension (a dot, then letters or digits, 16 characters at most, `.pdf`, `.json`…) names the file the content belongs in. Without a generator plugin the content is a JSON array and the extension is `.json`
 - **`ExtractFile`**: Custom archive extraction logic
 
 #### Example Plugin Structure

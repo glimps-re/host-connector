@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"iter"
 	"log/slog"
 	"maps"
 	"os"
@@ -309,6 +309,24 @@ func (c *Connector) RegisterGenerateReport(f plugins.GenerateReport) {
 	})
 }
 
-func (c *Connector) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
-	return c.generateReport(ctx, reportContext, reports)
+// GenerateReport renders reports with the generator in service. The content
+// is not nil when the error is nil, and nil otherwise: a generator that breaks
+// that rule gets an error (and its content closed) instead of a nil pointer for
+// the caller. The caller closes the content on every path.
+func (c *Connector) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+	generated, err := c.generateReport(ctx, reportContext, reports)
+	if err != nil {
+		if generated.Content != nil {
+			if e := generated.Content.Close(); e != nil {
+				logger.Warn("could not close the content of a failed report", slog.String("error", e.Error()))
+			}
+		}
+		return plugins.GeneratedReport{}, err
+	}
+	if generated.Content == nil {
+		return plugins.GeneratedReport{}, errNoReportContent
+	}
+	return generated, nil
 }
+
+var errNoReportContent = errors.New("the report generator gave no content and no error")

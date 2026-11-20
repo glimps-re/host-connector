@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"iter"
 	"log/slog"
 	"path/filepath"
 	"time"
@@ -215,12 +216,19 @@ type ReportData struct {
 	Duration          string
 }
 
-// GenerateReport generates a PDF report from scan results.
-func (p *ReportPlugin) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (o io.Reader, err error) {
-	p.consoleLogger.Debug(fmt.Sprintf("generate pdf report for %d analysis", len(reports)))
-	buffer, err := p.generatePDFReport(ctx, reportContext, reports)
-	o = buffer
-	return
+// GenerateReport generates a PDF report from scan results. The reports are read
+// once, as they come.
+func (p *ReportPlugin) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+	p.consoleLogger.Debug("generate pdf report")
+	data, err := reportDataFrom(reportContext, reports)
+	if err != nil {
+		return plugins.GeneratedReport{}, err
+	}
+	buffer, err := p.generatePDFReport(ctx, data)
+	if err != nil {
+		return plugins.GeneratedReport{}, err
+	}
+	return plugins.GeneratedReport{Content: io.NopCloser(buffer), Extension: ".pdf"}, nil
 }
 
 func toUint(n int64) uint64 {
@@ -230,18 +238,22 @@ func toUint(n int64) uint64 {
 	return uint64(n)
 }
 
-// scanResToReportData converts scan results to ReportData for template rendering.
-func scanResToReportData(reportContext datamodel.ScanContext, reports []datamodel.Report) (reportData ReportData) {
+// reportDataFrom converts scan results to ReportData for template rendering, in
+// a single pass over the reports. A report that fails to be read ends it.
+func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (reportData ReportData, err error) {
 	reportData = ReportData{
-		ScanID:          reportContext.ScanID,
-		ScanStartTime:   reportContext.Start.Format(time.RFC3339),
-		Duration:        reportContext.End.Sub(reportContext.Start).Round(time.Second).String(),
-		NbFileSubmitted: len(reports),
+		ScanID:        reportContext.ScanID,
+		ScanStartTime: reportContext.Start.Format(time.RFC3339),
+		Duration:      reportContext.End.Sub(reportContext.Start).Round(time.Second).String(),
 	}
 	var totalSizeAnalyzed int64 = 0
 	var totalSizeFile int64 = 0
 	var totalSizeFiltered int64 = 0
-	for _, report := range reports {
+	for report, readErr := range reports {
+		if readErr != nil {
+			return ReportData{}, readErr
+		}
+		reportData.NbFileSubmitted++
 		reportData.NbFileAnalyzed++
 		totalSizeAnalyzed += report.AnalyzedVolume
 		totalSizeFiltered += report.FilteredVolume
@@ -288,7 +300,7 @@ func scanResToReportData(reportContext datamodel.ScanContext, reports []datamode
 	reportData.AnalyzedVolume = humanize.Bytes(toUint(totalSizeAnalyzed))
 	reportData.FileVolume = humanize.Bytes(toUint(totalSizeFile))
 	reportData.FilteredVolume = humanize.Bytes(toUint(totalSizeFiltered))
-	return
+	return reportData, nil
 }
 
 // convertExtractedFiles recursively converts datamodel.ExtractedFile to ExtractedFileData.
@@ -324,10 +336,7 @@ func (p *ReportPlugin) generateHTMLReport(data ReportData) (htmlBuf *bytes.Buffe
 }
 
 // generatePDFReport converts HTML report to PDF using chromedp.
-func (p *ReportPlugin) generatePDFReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (pdfBuf *bytes.Buffer, err error) {
-	pdfBuf = new(bytes.Buffer)
-
-	data := scanResToReportData(reportContext, reports)
+func (p *ReportPlugin) generatePDFReport(ctx context.Context, data ReportData) (pdfBuf *bytes.Buffer, err error) {
 	htmlBuf, err := p.generateHTMLReport(data)
 	if err != nil {
 		return

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"iter"
 	"log/slog"
 	"maps"
 	"os"
@@ -427,9 +428,16 @@ func TestSessionPlugin_CloseAllSessions(t *testing.T) {
 	var generatedReports [][]datamodel.Report
 
 	mockContext := mock.NewMockHCContext()
-	mockContext.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
-		generatedReports = append(generatedReports, reports)
-		return strings.NewReader("mock report"), nil
+	mockContext.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+		var got []datamodel.Report
+		for r, err := range reports {
+			if err != nil {
+				return plugins.GeneratedReport{}, err
+			}
+			got = append(got, r)
+		}
+		generatedReports = append(generatedReports, got)
+		return plugins.GeneratedReport{Content: io.NopCloser(strings.NewReader("mock report")), Extension: ".pdf"}, nil
 	}
 
 	plugin := &SessionPlugin{}

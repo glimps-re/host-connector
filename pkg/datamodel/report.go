@@ -2,10 +2,9 @@ package datamodel
 
 import (
 	"bufio"
-	"bytes"
-	"context"
 	"encoding/json"
 	"io"
+	"iter"
 	"log/slog"
 	"os"
 	"time"
@@ -113,10 +112,14 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	return
 }
 
-func GenerateReport(_ context.Context, _ ScanContext, reports []Report) (r io.Reader, err error) {
-	buffer := &bytes.Buffer{}
-	out := json.NewEncoder(buffer)
-	out.SetIndent("", "")
-	err = out.Encode(reports)
-	return buffer, err
+// ReportsSeq gives reports as the sequence a report generator reads: once, with
+// no error.
+func ReportsSeq(reports []Report) iter.Seq2[Report, error] {
+	return func(yield func(Report, error) bool) {
+		for _, r := range reports {
+			if !yield(r, nil) {
+				return
+			}
+		}
+	}
 }

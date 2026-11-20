@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"iter"
 	"strings"
 	"testing"
 
@@ -36,13 +37,16 @@ func TestConnector_GenerateReport(t *testing.T) {
 		{
 			name:    "csv",
 			reports: []datamodel.Report{{Filename: "test", SHA256: "123456"}, {Filename: "test2", SHA256: "123457", Malicious: true}},
-			generator: func(_ context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+			generator: func(_ context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 				buffer := &bytes.Buffer{}
 				fmt.Fprintf(buffer, "file,sha256,malicious\n")
-				for _, r := range reports {
+				for r, err := range reports {
+					if err != nil {
+						return plugins.GeneratedReport{}, err
+					}
 					fmt.Fprintf(buffer, "%s,%s,%v\n", r.Filename, r.SHA256, r.Malicious)
 				}
-				return buffer, nil
+				return plugins.GeneratedReport{Content: io.NopCloser(buffer), Extension: ".csv"}, nil
 			},
 			want: `file,sha256,malicious
 test,123456,false
@@ -58,7 +62,7 @@ test2,123457,true`,
 			if tt.generator != nil {
 				c.RegisterGenerateReport(tt.generator)
 			}
-			got, gotErr := c.GenerateReport(t.Context(), datamodel.ScanContext{}, tt.reports)
+			got, gotErr := c.GenerateReport(t.Context(), datamodel.ScanContext{}, datamodel.ReportsSeq(tt.reports))
 			if gotErr != nil {
 				if !tt.wantErr {
 					t.Errorf("GenerateReport() failed: %v", gotErr)
@@ -69,7 +73,7 @@ test2,123457,true`,
 				t.Fatal("GenerateReport() succeeded unexpectedly")
 			}
 			buffer := &bytes.Buffer{}
-			if _, err := io.Copy(buffer, got); err != nil {
+			if _, err := io.Copy(buffer, got.Content); err != nil {
 				t.Errorf("GenerateReport(), could not read io.Readee, error: %s", err)
 				return
 			}

@@ -331,7 +331,7 @@ func NewConnector(cfg Config, quarantiner quarantine.Quarantiner, submitter gdet
 		config:         cfg,
 		archiveStatus:  newArchiveStatusHandler(),
 		action:         newAction(cfg, quarantiner),
-		generateReport: datamodel.GenerateReport,
+		generateReport: defaultGenerateReport,
 		stopIncoming:   make(chan struct{}),
 		stopWorker:     make(chan struct{}),
 		typesToExtract: extractableTypes(),

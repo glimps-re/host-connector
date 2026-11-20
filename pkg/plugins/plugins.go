@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"log/slog"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
@@ -23,7 +24,19 @@ type (
 	WithWaitForOptionsFunc = func(opts *gdetect.WaitForOptions, location string)
 )
 
-type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+// GeneratedReport is a rendered report. The caller must close Content.
+type GeneratedReport struct {
+	Content io.ReadCloser
+	// Extension is the extension of the file the content belongs in, with its
+	// leading dot: ".pdf", ".json".
+	Extension string
+}
+
+// GenerateReport renders the reports of a scan. The reports are given as a
+// sequence, read once: a generator never needs them all in memory. A sequence
+// that fails ends the generation with that error, and nothing partial is given
+// back.
+type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (GeneratedReport, error)
 
 // Extraction is the result of one ExtractFile call.
 type Extraction struct {
@@ -113,7 +126,7 @@ type HCContext interface {
 	RegisterOnReport(f OnReport)
 
 	RegisterGenerateReport(f GenerateReport)
-	GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error)
+	GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (GeneratedReport, error)
 
 	// NotifyError raises an error event on the connector manager under key;
 	// NotifyResolution clears it. Both are no-ops without a connector manager.

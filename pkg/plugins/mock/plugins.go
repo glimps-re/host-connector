@@ -3,6 +3,7 @@ package mock
 import (
 	"context"
 	"io"
+	"iter"
 	"log/slog"
 	"strings"
 
@@ -73,9 +74,10 @@ func (m *MockHCContext) SetTrackingOwners(root string, depth int) error {
 	return m.OwnersErr
 }
 
-func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
+// GenerateReport calls GenerateReportFunc, or returns a fixed ".pdf" content.
+func (m *MockHCContext) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 	if m.GenerateReportFunc != nil {
 		return m.GenerateReportFunc(ctx, reportContext, reports)
 	}
-	return strings.NewReader("mock report content"), nil
+	return plugins.GeneratedReport{Content: io.NopCloser(strings.NewReader("mock report content")), Extension: ".pdf"}, nil
 }

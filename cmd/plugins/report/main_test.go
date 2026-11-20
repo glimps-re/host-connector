@@ -1,7 +1,9 @@
 package main
 
 import (
+	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -181,7 +183,7 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 		},
 	}
 
-	reportData := scanResToReportData(reportContext, reports)
+	reportData := mustReportData(t, reportContext, reports)
 
 	// Check basic fields
 	if reportData.NbFileSubmitted != 3 {
@@ -306,14 +308,14 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 
 	// Note: This test will likely fail in CI/CD environments without chromedp/browser
 	// but will test the data preparation and HTML generation parts
-	result, err := p.GenerateReport(t.Context(), reportContext, reports)
+	result, err := p.GenerateReport(t.Context(), reportContext, datamodel.ReportsSeq(reports))
 	// Check if we got an error due to chromedp not being available
 	if err != nil {
 		// This is expected in environments without a browser
 		t.Logf("GenerateReport failed as expected without browser environment: %v", err)
 
 		// We can still test that the data preparation works
-		reportData := scanResToReportData(reportContext, reports)
+		reportData := mustReportData(t, reportContext, reports)
 
 		// Verify the data was prepared correctly
 		if reportData.ScanID != reportContext.ScanID {
@@ -332,14 +334,14 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 	}
 
 	// If no error, verify we got a valid result
-	if result == nil {
-		t.Error("GenerateReport should return a non-nil reader when successful")
+	if result.Content == nil || result.Extension != ".pdf" {
+		t.Errorf("GenerateReport() = %+v, want a content and the .pdf extension when successful", result)
 		return
 	}
 
 	// Read the content to verify it's not empty
 	content := make([]byte, 1024)
-	n, readErr := result.Read(content)
+	n, readErr := result.Content.Read(content)
 	if readErr != nil && readErr != io.EOF {
 		t.Errorf("Error reading generated report: %v", readErr)
 		return
@@ -355,4 +357,37 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 func TestReportPlugin_Interface(t *testing.T) {
 	// Test that ReportPlugin implements the Plugin interface
 	var _ plugins.Plugin = &ReportPlugin{}
+}
+
+// The reports are read in one pass, and one that cannot be read ends the
+// generation with its error.
+func TestReportPlugin_aFailingSequenceEndsTheGeneration(t *testing.T) {
+	boom := errors.New("spool unreadable")
+	calls := 0
+	seq := func(yield func(datamodel.Report, error) bool) {
+		calls++
+		if !yield(datamodel.Report{Filename: "a"}, nil) {
+			return
+		}
+		yield(datamodel.Report{}, boom)
+	}
+	if _, err := reportDataFrom(datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
+		t.Errorf("reportDataFrom() error = %v, want the error of the sequence", err)
+	}
+	p := &ReportPlugin{consoleLogger: slog.New(slog.DiscardHandler)}
+	if _, err := p.GenerateReport(t.Context(), datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
+		t.Errorf("GenerateReport() error = %v, want the error of the sequence", err)
+	}
+	if calls != 2 {
+		t.Errorf("the sequence was read %d times for 2 generations, want once each", calls)
+	}
+}
+
+func mustReportData(t *testing.T, reportContext datamodel.ScanContext, reports []datamodel.Report) ReportData {
+	t.Helper()
+	data, err := reportDataFrom(reportContext, datamodel.ReportsSeq(reports))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
 }

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -324,5 +325,34 @@ func TestInit_failureKeepsThePreviousState(t *testing.T) {
 	}
 	if p.templ != templ || p.browser != runner || p.logger != logger {
 		t.Error("a failed Init changed the running plugin")
+	}
+}
+
+func TestBrowserEnv(t *testing.T) {
+	d := browserDirs{tmp: "/w/tmp", home: "/w/home", tmpLink: "/t/gmhc-x"}
+	for _, tt := range []struct {
+		name, goos string
+		dirs       browserDirs
+		want       []string
+		not        string
+	}{
+		{"linux with link", "linux", d, []string{"TMPDIR=/t/gmhc-x", "HOME=/w/home", "XDG_CONFIG_HOME=/w/home/.config", "XDG_CACHE_HOME=/w/home/.cache", "XDG_DATA_HOME=/w/home/.local/share"}, "TMP="},
+		{"darwin", "darwin", d, []string{"TMPDIR=/t/gmhc-x", "HOME=/w/home"}, "TEMP="},
+		{"linux without link", "linux", browserDirs{tmp: "/w/tmp", home: "/w/home"}, []string{"TMPDIR=/w/tmp"}, "gmhc"},
+		{"windows", "windows", browserDirs{tmp: `C:\w\tmp`, home: `C:\w\home`}, []string{`TMP=C:\w\tmp`, `TEMP=C:\w\tmp`, `USERPROFILE=C:\w\home`}, "TMPDIR"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := browserEnv(tt.dirs, tt.goos)
+			for _, want := range tt.want {
+				if !slices.Contains(got, want) {
+					t.Errorf("env %q lacks %q", got, want)
+				}
+			}
+			for _, e := range got {
+				if strings.HasPrefix(e, tt.not) {
+					t.Errorf("env has %q, want no %s", e, tt.not)
+				}
+			}
+		})
 	}
 }

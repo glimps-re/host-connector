@@ -121,6 +121,11 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	if err != nil {
 		return err
 	}
+	if removed, purgeErr := purgeTempLinks(); purgeErr != nil {
+		hcc.GetLogger().Warn("cannot purge the temporary links of a previous run", slog.String("error", purgeErr.Error()))
+	} else if removed > 0 {
+		hcc.GetLogger().Info("temporary links of a previous run removed", slog.Int("count", removed))
+	}
 	runner, err := startBrowser(config.ChromePath, hcc)
 	if err != nil {
 		return err

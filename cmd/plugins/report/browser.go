@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -117,6 +118,68 @@ var browserFlags = []chromedp.ExecAllocatorOption{
 	chromedp.Flag("disable-plugins", true),
 }
 
+const (
+	// profilesDir and profilePrefix name the folder of the renderings inside the
+	// work directory.
+	profilesDir   = "report"
+	profilePrefix = "profile-"
+)
+
+// browserDirs are the folders of one rendering, all inside its profile folder.
+type browserDirs struct {
+	data, tmp, home string
+	// tmpLink is the short name the browser is given as its temporary folder:
+	// a Unix socket path is limited to about 100 bytes, a work directory is not.
+	// Empty where the real folder is used.
+	tmpLink string
+}
+
+func (d browserDirs) tmpDir() string {
+	if d.tmpLink != "" {
+		return d.tmpLink
+	}
+	return d.tmp
+}
+
+func createBrowserDirs(profile string) (browserDirs, error) {
+	d := browserDirs{data: filepath.Join(profile, "data"), tmp: filepath.Join(profile, "tmp"), home: filepath.Join(profile, "home")}
+	for _, dir := range []string{d.data, d.tmp, d.home} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			return browserDirs{}, fmt.Errorf("cannot create a browser folder: %w", err)
+		}
+	}
+	return d, nil
+}
+
+// browserEnv is what the browser is given on top of the environment of the
+// connector (which it keeps): everything it would write under the temporary
+// folder, the home or the XDG folders goes under the folders of its rendering.
+func browserEnv(d browserDirs, goos string) []string {
+	if goos == "windows" {
+		return []string{"TMP=" + d.tmpDir(), "TEMP=" + d.tmpDir(), "USERPROFILE=" + d.home}
+	}
+	return []string{
+		"TMPDIR=" + d.tmpDir(),
+		"HOME=" + d.home,
+		"XDG_CONFIG_HOME=" + filepath.Join(d.home, ".config"),
+		"XDG_CACHE_HOME=" + filepath.Join(d.home, ".cache"),
+		"XDG_DATA_HOME=" + filepath.Join(d.home, ".local", "share"),
+	}
+}
+
+// browserOptions are the options of every launch of the browser by the plugin:
+// the restrictions, the profile, and the confinement of what it creates.
+func browserOptions(execPath string, d browserDirs) []chromedp.ExecAllocatorOption {
+	opts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
+	opts = append(opts, browserFlags...)
+	return append(opts,
+		chromedp.ExecPath(execPath),
+		chromedp.UserDataDir(d.data),
+		chromedp.Env(browserEnv(d, runtime.GOOS)...),
+		chromedp.ModifyCmdFunc(confineBrowser),
+	)
+}
+
 // browserRunner renders HTML to PDF with a restricted browser.
 type browserRunner struct {
 	execPath string
@@ -148,11 +211,11 @@ func (b *browserRunner) render(ctx context.Context, html string, params *page.Pr
 	if !filepath.IsAbs(b.workDir) {
 		return nil, fmt.Errorf("the work directory %q is not absolute", b.workDir)
 	}
-	profileRoot := filepath.Join(b.workDir, "report")
+	profileRoot := filepath.Join(b.workDir, profilesDir)
 	if err = os.MkdirAll(profileRoot, 0o700); err != nil {
 		return nil, fmt.Errorf("cannot create the browser profile directory: %w", err)
 	}
-	profile, err := os.MkdirTemp(profileRoot, "profile-")
+	profile, err := os.MkdirTemp(profileRoot, profilePrefix)
 	if err != nil {
 		return nil, fmt.Errorf("cannot create the browser profile: %w", err)
 	}
@@ -162,14 +225,20 @@ func (b *browserRunner) render(ctx context.Context, html string, params *page.Pr
 		}
 	}()
 
-	allocOpts := append([]chromedp.ExecAllocatorOption{}, chromedp.DefaultExecAllocatorOptions[:]...)
-	allocOpts = append(allocOpts, browserFlags...)
-	allocOpts = append(allocOpts,
-		chromedp.ExecPath(b.execPath),
-		chromedp.UserDataDir(profile),
-		chromedp.ModifyCmdFunc(confineBrowser),
-	)
-	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, allocOpts...)
+	dirs, err := createBrowserDirs(profile)
+	if err != nil {
+		return nil, err
+	}
+	if dirs.tmpLink, err = linkTemp(dirs.tmp); err != nil {
+		return nil, err
+	}
+	// Removed once the browser has exited, before the folder it points to.
+	defer func() {
+		if rmErr := removeTempLink(dirs.tmpLink); rmErr != nil {
+			b.logger.Warn("cannot remove the temporary link of the browser", slog.String("link", dirs.tmpLink), slog.String("error", rmErr.Error()))
+		}
+	}()
+	allocCtx, cancelAlloc := chromedp.NewExecAllocator(ctx, browserOptions(b.execPath, dirs)...)
 	browserCtx, cancelBrowser := chromedp.NewContext(allocCtx)
 	// The profile is removed only once the browser has exited.
 	defer func() {

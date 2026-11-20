@@ -34,9 +34,11 @@ func TestMain(m *testing.M) {
 	if err := os.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
 		panic(err)
 	}
+	unpin := pinLinkBase()
 	checkBrowser = func(context.Context, *browserRunner) error { return nil }
 	effectiveUID = func() int { return 1000 }
 	code := m.Run()
+	unpin()
 	if err := os.RemoveAll(dir); err != nil {
 		panic(err)
 	}

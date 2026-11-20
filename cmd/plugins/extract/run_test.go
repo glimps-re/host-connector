@@ -145,7 +145,7 @@ func TestListAndExtractDisableWildcardsWithSpd(t *testing.T) {
 	}
 	var commands [][]string
 	var cur []string
-	for _, a := range strings.Fields(string(b)) {
+	for a := range strings.FieldsSeq(string(b)) {
 		if a == "-p-" && len(cur) > 0 {
 			commands = append(commands, cur)
 			cur = nil

@@ -1306,8 +1306,7 @@ func (c *Connector) abandonArchive(archiveID, top string, run *ongoing, unsent i
 // member is already named by its path in the archive, and the temporary path
 // (inside the work directory) means nothing to the operator.
 func memberCause(err error) error {
-	var pathErr *fs.PathError
-	if errors.As(err, &pathErr) {
+	if pathErr, ok := errors.AsType[*fs.PathError](err); ok {
 		return fmt.Errorf("extracted file unreadable: %w", pathErr.Err)
 	}
 	return err

@@ -91,10 +91,7 @@ var (
 // as unknown, since this package's own zip writer never produces them.
 // Detection is strict: no fallback chain, no guessing.
 func detectFormat(src io.ReaderAt, size int64) (containerFormat, error) {
-	n := int64(detectProbeLen)
-	if size < n {
-		n = size
-	}
+	n := min(size, int64(detectProbeLen))
 	if n <= 0 {
 		return formatUnknown, errUnknownLockFormat
 	}

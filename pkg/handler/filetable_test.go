@@ -112,7 +112,7 @@ func TestFileTable_singleOwnerFillsTheTableWithoutRefusal(t *testing.T) {
 	entry := int64(len(tp("solo", 0))) + fileOverhead
 	limit := int64(len("/in/solo")) + ownerOverhead + 50*entry
 	tab := newTestTable(limit, 25)
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		if !tab.Track(tp("solo", i), scanner.FileIdentity{}, now, now.Add(time.Second)) {
 			t.Fatalf("file %d refused while the table has room: the quota applies under pressure only", i)
 		}
@@ -268,7 +268,7 @@ func TestFileTable_rescanPurge(t *testing.T) {
 		t.Error("an entry under an unreadable folder must be kept")
 	}
 	// Protected for 10 consecutive rescans, then purged.
-	for i := 0; i < maxProtectedScans+1; i++ {
+	for range maxProtectedScans + 1 {
 		tab.BeginRescan()
 		tab.Track("/in/a/seen", scanner.FileIdentity{}, now, now.Add(time.Hour))
 		tab.EndRescan([]string{"/in/b/unreadable"}, false)
@@ -307,7 +307,7 @@ func TestFileTableProperties(t *testing.T) {
 	}
 	t.Logf("seed %d", seed)
 	rng := &prng{state: seed}
-	for round := 0; round < 40; round++ {
+	for round := range 40 {
 		runPropertyRound(t, rng)
 		if t.Failed() {
 			t.Fatalf("failed in round %d (seed %d)", round, seed)
@@ -322,7 +322,7 @@ func runPropertyRound(t *testing.T, rng *prng) {
 	maxBytes := int64(4000 + rng.IntN(60000))
 	tab := newTestTable(maxBytes, 1+rng.IntN(60))
 	var live []string
-	for step := 0; step < 400; step++ {
+	for step := range 400 {
 		switch op := rng.IntN(10); {
 		case op < 6:
 			owner := fmt.Sprintf("o%02d", rng.IntN(nOwners))
@@ -754,16 +754,16 @@ func TestFileTable_smallerOwnerIsNeverEvicted(t *testing.T) {
 	own := int64(len("/in/aaa")) + ownerOverhead
 	tab := newTestTable(2*own+60*entry, 25)
 	fillOwner(tab, "aaa", now, now.Add(time.Hour))
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		tab.Track(tp("bob", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 	}
 	bobBefore := bobEntries(tab)
-	for rescan := 0; rescan < 20; rescan++ {
+	for rescan := range 20 {
 		tab.BeginRescan()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			tab.Track(tp("aaa", 10000+rescan*10+i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 		}
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			tab.Track(tp("bob", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 		}
 		tab.EndRescan(nil, false)
@@ -789,18 +789,18 @@ func TestFileTable_doneEntriesOfAnOwnerThatWaitsAreNeverEvicted(t *testing.T) {
 	entry := int64(len(tp("victim", 0))) + fileOverhead
 	own := int64(len("/in/victim")) + ownerOverhead
 	tab := newTestTable(2*own+80*entry, 25)
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		tab.Track(tp("victim", i), scanner.FileIdentity{}, now, now)
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if p, _, ok := tab.PopDue(now); ok {
 			tab.Done(p, time.Time{}, 1)
 		}
 	}
 	fillOwner(tab, "victim", now, now.Add(time.Hour)) // waiting entries until the table is full
 	doneBefore := victimDone(tab)
-	for rescan := 0; rescan < 20; rescan++ {
-		for i := 0; i < 8; i++ {
+	for rescan := range 20 {
+		for i := range 8 {
 			p := tp("mallory", rescan*8+i)
 			tab.Track(p, scanner.FileIdentity{}, now, now.Add(time.Hour))
 			tab.Forget(p)
@@ -878,7 +878,7 @@ func BenchmarkOwnersUnderPressure(b *testing.B) {
 			now := time.Unix(1000, 0)
 			perOwner := int64(len("/in/u000000/f")) + fileOverhead
 			tab := newFileTable(int64(owners)*(perOwner+int64(len("/in/u000000"))+ownerOverhead), 25, nil, []string{"/in"})
-			for i := 0; i < owners; i++ {
+			for i := range owners {
 				tab.Track(fmt.Sprintf("/in/u%06d/f", i), scanner.FileIdentity{}, now, now.Add(time.Hour))
 			}
 			b.ReportAllocs()

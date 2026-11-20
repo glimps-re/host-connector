@@ -214,8 +214,7 @@ func IsPermanentAction(err error) bool {
 	if err == nil {
 		return false
 	}
-	var joined joinedErrors
-	if errors.As(err, &joined) {
+	if joined, ok := errors.AsType[joinedErrors](err); ok {
 		for _, e := range joined {
 			if !IsPermanentAction(e) {
 				return false

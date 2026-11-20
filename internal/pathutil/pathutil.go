@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -52,10 +53,8 @@ func resolve(abs string) string {
 // Same reports whether a and b designate the same path, links resolved.
 func Same(a, b string) bool {
 	for _, fa := range Forms(a) {
-		for _, fb := range Forms(b) {
-			if fa == fb {
-				return true
-			}
+		if slices.Contains(Forms(b), fa) {
+			return true
 		}
 	}
 	return false

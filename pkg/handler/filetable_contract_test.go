@@ -107,7 +107,7 @@ func (c *ctTable) track(owner string, n int, delay time.Duration) bool {
 
 func (c *ctTable) count(owner string) int {
 	n := 0
-	for i := 0; i < 5000; i++ {
+	for i := range 5000 {
 		if _, ok := c.Get(ctPath(owner, i)); ok {
 			n++
 		}

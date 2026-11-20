@@ -89,8 +89,7 @@ func decodeErrKeys(err error) []string {
 	var keys []string
 	var walk func(error)
 	walk = func(e error) {
-		var de *mapstructure.DecodeError
-		if errors.As(e, &de) {
+		if de, ok := errors.AsType[*mapstructure.DecodeError](e); ok {
 			keys = append(keys, de.Name())
 			return
 		}

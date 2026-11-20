@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -62,9 +63,7 @@ func jsonFields(t reflect.Type) map[string]reflect.Type {
 				ft = ft.Elem()
 			}
 			if ft.Kind() == reflect.Struct {
-				for k, v := range jsonFields(ft) {
-					fields[k] = v
-				}
+				maps.Copy(fields, jsonFields(ft))
 				continue
 			}
 		}

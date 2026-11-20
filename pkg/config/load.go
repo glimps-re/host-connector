@@ -64,12 +64,11 @@ func decodeProblem(err error) string {
 	var invalid, unknown []string
 	var walk func(error)
 	walk = func(e error) {
-		var de *mapstructure.DecodeError
-		if errors.As(e, &de) {
+		if de, ok := errors.AsType[*mapstructure.DecodeError](e); ok {
 			// An unused key is reported as "'section' has invalid keys: a, b".
 			if _, after, ok := strings.Cut(de.Error(), "has invalid keys:"); ok {
 				prefix := de.Name()
-				for _, k := range strings.Split(strings.TrimSpace(strings.SplitN(after, "\n", 2)[0]), ",") {
+				for k := range strings.SplitSeq(strings.TrimSpace(strings.SplitN(after, "\n", 2)[0]), ",") {
 					k = strings.TrimSpace(k)
 					if prefix != "" && !strings.Contains(prefix, "config.Config") {
 						k = prefix + "." + k

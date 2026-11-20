@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
@@ -38,9 +39,7 @@ func newIdentityMonitor(t *testing.T, cfg Config) (*Monitor, func() map[string]s
 		mu.Lock()
 		defer mu.Unlock()
 		out := make(map[string]seenFile, len(seen))
-		for k, v := range seen {
-			out[k] = v
-		}
+		maps.Copy(out, seen)
 		return out
 	}
 }

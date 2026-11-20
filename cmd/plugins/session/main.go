@@ -178,7 +178,8 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 
 // OnReport adds scan reports to their sessions for consolidated reporting.
 func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
-	session, _ := p.getSession(rep.Filename, false)
+	// skipped files may not go through OnStartScanFile, so their session may not exist yet
+	session, _ := p.getSession(rep.Filename, rep.SkipReason != "")
 	if session == nil {
 		return
 	}

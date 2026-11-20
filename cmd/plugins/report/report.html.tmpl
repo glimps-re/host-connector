@@ -180,7 +180,8 @@
             <li><strong>Taille totale des fichiers (avant extraction) : </strong>{{ .FileVolume }}</li>
             <li><strong>Volume analysé : </strong>{{ .AnalyzedVolume }}</li>
             <li><strong>Volume filtré : </strong>{{ .FilteredVolume }}</li>
-            <li><strong>Bloqués : </strong>{{ .TotalMitigated }}, dont fichiers détéctés comme malveillants: {{ .TotalMalware }}</li>
+            <li><strong>Bloqués : </strong>{{ .TotalMitigated }}</li>
+            <li><strong>Fichiers malveillants : </strong>{{ .TotalMalware }}</li>
             <li><strong>Fichiers en erreur : </strong>{{ .TotalErrors }}</li>
             <li><strong>Date de début : </strong>{{ .ScanStartTime }}</li>
             <li><strong>Durée de session: </strong>{{ .Duration }}</li>
@@ -293,6 +294,35 @@
                     <tr>
                         <td>{{ .Name }}</td>
                         <td>{{ .Error }}</td>
+                    </tr>
+                    {{ end }}
+                </tbody>
+            </table>
+        </div>
+    </section>
+    {{ end }}
+
+    {{ if gt (len .SkippedFiles) 0 }}
+    <section id="skipped-files">
+        <h2>Fichiers non analysés</h2>
+        <p>Les fichiers suivants n'ont pas été envoyés aux moteurs d'analyse :</p>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>SHA-256</th>
+                        <th>Nom</th>
+                        <th>Taille</th>
+                        <th>Raison</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{ range $index, $file := .SkippedFiles}}
+                    <tr>
+                        <td>{{ .SHA256 }}</td>
+                        <td>{{ .Name }}</td>
+                        <td>{{ .Size }}</td>
+                        <td>{{ .Reason }}</td>
                     </tr>
                     {{ end }}
                 </tbody>

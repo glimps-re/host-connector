@@ -15,6 +15,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine/mock"
 	"github.com/google/go-cmp/cmp"
+	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
 func TestReportAction_Handle(t *testing.T) {
@@ -62,6 +63,49 @@ func TestReportAction_Handle(t *testing.T) {
 			}
 			if !reflect.DeepEqual(tt.wantReport, *tt.args.report) {
 				t.Errorf("ReportAction.Handle() report = %#v, want %#v", *tt.args.report, tt.wantReport)
+			}
+		})
+	}
+}
+
+func Test_collectSkippedFiles(t *testing.T) {
+	tests := []struct {
+		name             string
+		subfiles         map[string]datamodel.Result
+		wantSkippedFiles []datamodel.ExtractedFile
+	}{
+		{
+			name: "ok nil map",
+		},
+		{
+			name: "ok one entry",
+			subfiles: map[string]datamodel.Result{
+				"filtered.txt": {SHA256: "abc123", FileSize: 10, SkipReason: datamodel.SkipFilteredFilePath},
+			},
+			wantSkippedFiles: []datamodel.ExtractedFile{
+				{FileName: "filtered.txt", SHA256: "abc123", Size: 10, SkipReason: datamodel.SkipFilteredFilePath},
+			},
+		},
+		{
+			name: "ok several entries",
+			subfiles: map[string]datamodel.Result{
+				"filtered.txt": {SHA256: "abc123", FileSize: 10, SkipReason: datamodel.SkipFilteredFilePath},
+				"empty.txt":    {SHA256: "def456", SkipReason: datamodel.SkipEmptyFile},
+				"big.bin":      {SHA256: "ghi789", FileSize: 500, SkipReason: datamodel.SkipTooBig},
+			},
+			wantSkippedFiles: []datamodel.ExtractedFile{
+				{FileName: "filtered.txt", SHA256: "abc123", Size: 10, SkipReason: datamodel.SkipFilteredFilePath},
+				{FileName: "empty.txt", SHA256: "def456", SkipReason: datamodel.SkipEmptyFile},
+				{FileName: "big.bin", SHA256: "ghi789", Size: 500, SkipReason: datamodel.SkipTooBig},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotSkippedFiles := collectSkippedFiles(tt.subfiles)
+			less := func(a, b datamodel.ExtractedFile) bool { return a.FileName < b.FileName }
+			if diff := cmp.Diff(gotSkippedFiles, tt.wantSkippedFiles, cmpopts.SortSlices(less)); diff != "" {
+				t.Errorf("collectSkippedFiles() mismatch (-got +want):\n%s", diff)
 			}
 		})
 	}

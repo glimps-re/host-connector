@@ -72,7 +72,7 @@ type listResult struct {
 
 type extractResult struct {
 	extractedFiles []ExtractedFile
-	ignoredFiles   []string
+	ignoredFiles   []FileProperties
 	symlinkFiles   []string
 	passwordUsed   string
 	logger         *slog.Logger
@@ -243,13 +243,13 @@ func (sze *sevenZipExtract) extract(archivePath string, extractLocation string, 
 
 	totalSizeToExtract := 0
 	filesToExtract := []string{}
-	skippedFiles := []string{}
+	skippedFiles := []FileProperties{}
 	for _, file := range archiveContent.files {
 		if len(files) > 0 && !slices.Contains(files, file.Name) {
 			continue
 		}
 		if file.Size > sze.config.MaxFileSize || len(filesToExtract) >= sze.config.MaxExtractedFiles || totalSizeToExtract+file.Size > sze.config.MaxTotalExtractedSize {
-			skippedFiles = append(skippedFiles, file.Name)
+			skippedFiles = append(skippedFiles, file)
 			continue
 		}
 		totalSizeToExtract += file.Size

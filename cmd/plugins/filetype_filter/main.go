@@ -124,6 +124,7 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 			Score:          -500,
 			FilteredVolume: fileInfo.Size(),
 			FileSize:       fileInfo.Size(),
+			SkipReason:     datamodel.SkipFilteredFileType,
 		}
 	}
 

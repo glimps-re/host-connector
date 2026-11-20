@@ -151,7 +151,7 @@ func TestSevenZipExtractPlugin_ExtractFile(t *testing.T) {
 			archivePath := tt.setupArchive()
 			outputDir := t.TempDir()
 
-			size, files, volumes, err := plugin.ExtractFile(archivePath, outputDir)
+			size, files, volumes, _, err := plugin.ExtractFile(archivePath, outputDir)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SevenZipExtractPlugin.XtractFile() error = %v, wantErr %v", err, tt.wantErr)
 				return

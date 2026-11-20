@@ -9,6 +9,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
+	"github.com/google/go-cmp/cmp"
 )
 
 func TestMergeArgsIntoSlice(t *testing.T) {
@@ -157,71 +158,216 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 		ScanID: "scan1",
 	}
 
-	reports := []datamodel.Report{
+	tests := []struct {
+		name                string
+		reports             []datamodel.Report
+		wantNbFileSubmitted int
+		wantNbFileAnalyzed  int
+		wantMitigatedFiles  []FileReportData
+		wantSkippedFiles    []SkippedFileData
+		wantErrorFiles      []ErrorFileData
+		wantTotalErrors     int
+		wantTotalMalware    int
+	}{
 		{
-			Filename:  "clean_file.txt",
-			SHA256:    "abc123",
-			Malicious: false,
-			Malwares:  []string{},
-			// AnalyzedFileCount: 1,
+			name: "ok clean and malware files",
+			reports: []datamodel.Report{
+				{
+					Filename:       "clean_file.txt",
+					SHA256:         "abc123",
+					AnalyzedVolume: 10,
+					Malicious:      false,
+					Malwares:       []string{},
+					// AnalyzedFileCount: 1,
+				},
+				{
+					Filename:       "malware_file.exe",
+					SHA256:         "def456",
+					AnalyzedVolume: 10,
+					Malicious:      true,
+					Malwares:       []string{"Trojan.Win32.Test", "Backdoor.Generic"},
+					// AnalyzedFileCount: 1,
+				},
+				{
+					Filename:       "another_clean.pdf",
+					SHA256:         "ghi789",
+					AnalyzedVolume: 10,
+					Malicious:      false,
+					Malwares:       []string{},
+					// AnalyzedFileCount: 1,
+				},
+			},
+			wantNbFileSubmitted: 3,
+			wantNbFileAnalyzed:  3,
+			wantMitigatedFiles: []FileReportData{
+				{Name: "malware_file.exe", SHA256: "def456", Malwares: []string{"Trojan.Win32.Test", "Backdoor.Generic"}},
+			},
 		},
 		{
-			Filename:  "malware_file.exe",
-			SHA256:    "def456",
-			Malicious: true,
-			Malwares:  []string{"Trojan.Win32.Test", "Backdoor.Generic"},
-			// AnalyzedFileCount: 1,
+			name: "ok top-level filtered file in SkippedFiles",
+			reports: []datamodel.Report{
+				{
+					Filename:   "filtered.exe",
+					SHA256:     "abc123",
+					FileSize:   1024,
+					SkipReason: datamodel.SkipFilteredFilePath,
+				},
+			},
+			wantNbFileSubmitted: 1,
+			wantNbFileAnalyzed:  0,
+			wantSkippedFiles: []SkippedFileData{
+				{Name: "filtered.exe", SHA256: "abc123", Size: "1.0 kB", Reason: "Fichier filtré par chemin"},
+			},
 		},
 		{
-			Filename:  "another_clean.pdf",
-			SHA256:    "ghi789",
-			Malicious: false,
-			Malwares:  []string{},
-			// AnalyzedFileCount: 1,
+			name: "ok archive skipped extracted files named after archive",
+			reports: []datamodel.Report{
+				{
+					Filename: "archive.zip",
+					SHA256:   "def456",
+					SkippedExtractedFiles: []datamodel.ExtractedFile{
+						{FileName: "inner.txt", SHA256: "ghi789", Size: 10, SkipReason: datamodel.SkipExtractionLimit},
+					},
+				},
+			},
+			wantNbFileSubmitted: 1,
+			wantNbFileAnalyzed:  0,
+			wantSkippedFiles: []SkippedFileData{
+				{Name: "archive.zip > inner.txt", SHA256: "ghi789", Size: "10 B", Reason: "Limite d'extraction atteinte"},
+			},
+		},
+		{
+			name: "ok empty file and symlink not counted as analyzed",
+			reports: []datamodel.Report{
+				{
+					Filename:       "clean_file.txt",
+					SHA256:         "abc123",
+					AnalyzedVolume: 10,
+				},
+				{
+					Filename:   "empty.txt",
+					SHA256:     "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+					SkipReason: datamodel.SkipEmptyFile,
+				},
+				{
+					Filename:   "link",
+					SkipReason: datamodel.SkipSymbolicLink,
+				},
+			},
+			wantNbFileSubmitted: 3,
+			wantNbFileAnalyzed:  1,
+			wantSkippedFiles: []SkippedFileData{
+				{Name: "empty.txt", SHA256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", Size: "0 B", Reason: "Fichier vide"},
+				{Name: "link", Size: "0 B", Reason: "Lien symbolique"},
+			},
+		},
+		{
+			name: "ok top-level error in ErrorFiles",
+			reports: []datamodel.Report{
+				{
+					Filename: "failed.exe",
+					SHA256:   "abc123",
+					Error:    "analysis failed (test)",
+				},
+			},
+			wantNbFileSubmitted: 1,
+			wantNbFileAnalyzed:  0,
+			wantErrorFiles: []ErrorFileData{
+				{Name: "failed.exe", Error: "analysis failed (test)"},
+			},
+			wantTotalErrors: 1,
+		},
+		{
+			name: "ok only detected malware counted in TotalMalware",
+			reports: []datamodel.Report{
+				{
+					Filename:       "malware_file.exe",
+					SHA256:         "abc123",
+					AnalyzedVolume: 10,
+					Malicious:      true,
+					Malwares:       []string{"Trojan.Win32.Test"},
+					MalwareReason:  datamodel.MalwareDetected,
+				},
+				{
+					Filename:      "forbidden.exe",
+					SHA256:        "def456",
+					Malicious:     true,
+					Malwares:      []string{"forbidden_file_path"},
+					MalwareReason: datamodel.FilteredFilePath,
+				},
+			},
+			wantNbFileSubmitted: 2,
+			wantNbFileAnalyzed:  1,
+			wantMitigatedFiles: []FileReportData{
+				{Name: "malware_file.exe", SHA256: "abc123", Malwares: []string{"Trojan.Win32.Test"}},
+				{Name: "forbidden.exe", SHA256: "def456", Malwares: []string{"forbidden_file_path"}},
+			},
+			wantTotalMalware: 1,
 		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reportData := scanResToReportData(reportContext, tt.reports)
 
-	reportData := scanResToReportData(reportContext, reports)
+			// Check basic fields
+			if reportData.NbFileSubmitted != tt.wantNbFileSubmitted {
+				t.Errorf("ReportPlugin.scanResToReportData() NbFileSubmitted = %v, want %v", reportData.NbFileSubmitted, tt.wantNbFileSubmitted)
+			}
 
-	// Check basic fields
-	if reportData.NbFileSubmitted != 3 {
-		t.Errorf("ReportPlugin.scanResToReportData() NbFileSubmitted = %v, want 3", reportData.NbFileSubmitted)
-	}
+			if reportData.NbFileAnalyzed != tt.wantNbFileAnalyzed {
+				t.Errorf("ReportPlugin.scanResToReportData() NbFileAnalyzed = %v, want %v", reportData.NbFileAnalyzed, tt.wantNbFileAnalyzed)
+			}
 
-	if reportData.NbFileAnalyzed != 3 {
-		t.Errorf("ReportPlugin.scanResToReportData() NbFileAnalyzed = %v, want 3", reportData.NbFileAnalyzed)
-	}
+			if reportData.ScanStartTime != startTime.Format(time.RFC3339) {
+				t.Errorf("ReportPlugin.scanResToReportData() ScanStartTime = %v, want %v",
+					reportData.ScanStartTime, startTime.Format(time.RFC3339))
+			}
 
-	if reportData.ScanStartTime != startTime.Format(time.RFC3339) {
-		t.Errorf("ReportPlugin.scanResToReportData() ScanStartTime = %v, want %v",
-			reportData.ScanStartTime, startTime.Format(time.RFC3339))
-	}
+			if reportData.ScanID != reportContext.ScanID {
+				t.Errorf("ReportPlugin.scanResToReportData() ScanID = %v, want %v",
+					reportData.ScanID, reportContext.ScanID)
+			}
 
-	if reportData.ScanID != reportContext.ScanID {
-		t.Errorf("ReportPlugin.scanResToReportData() ScanID = %v, want %v",
-			reportData.ScanID, reportContext.ScanID)
-	}
+			expectedDuration := endTime.Sub(startTime).String()
+			if reportData.Duration != expectedDuration {
+				t.Errorf("ReportPlugin.scanResToReportData() Duration = %v, want %v",
+					reportData.Duration, expectedDuration)
+			}
 
-	expectedDuration := endTime.Sub(startTime).String()
-	if reportData.Duration != expectedDuration {
-		t.Errorf("ReportPlugin.scanResToReportData() Duration = %v, want %v",
-			reportData.Duration, expectedDuration)
-	}
+			// Check file categorization
+			if len(reportData.MitigatedFiles) != len(tt.wantMitigatedFiles) {
+				t.Errorf("ReportPlugin.scanResToReportData() FilesMalware length = %v, want %v", len(reportData.MitigatedFiles), len(tt.wantMitigatedFiles))
+			} else {
+				for i, malwareFile := range reportData.MitigatedFiles {
+					want := tt.wantMitigatedFiles[i]
+					if malwareFile.Name != want.Name {
+						t.Errorf("ReportPlugin.scanResToReportData() malware file name = %v, want %v", malwareFile.Name, want.Name)
+					}
+					if malwareFile.SHA256 != want.SHA256 {
+						t.Errorf("ReportPlugin.scanResToReportData() malware file sha256 = %v, want %v", malwareFile.SHA256, want.SHA256)
+					}
+					if len(malwareFile.Malwares) != len(want.Malwares) {
+						t.Errorf("ReportPlugin.scanResToReportData() malware count = %v, want %v", len(malwareFile.Malwares), len(want.Malwares))
+					}
+				}
+			}
 
-	// Check file categorization
-	if len(reportData.MitigatedFiles) != 1 {
-		t.Errorf("ReportPlugin.scanResToReportData() FilesMalware length = %v, want 1", len(reportData.MitigatedFiles))
-	} else {
-		malwareFile := reportData.MitigatedFiles[0]
-		if malwareFile.Name != "malware_file.exe" {
-			t.Errorf("ReportPlugin.scanResToReportData() malware file name = %v, want malware_file.exe", malwareFile.Name)
-		}
-		if malwareFile.SHA256 != "def456" {
-			t.Errorf("ReportPlugin.scanResToReportData() malware file sha256 = %v, want def456", malwareFile.SHA256)
-		}
-		if len(malwareFile.Malwares) != 2 {
-			t.Errorf("ReportPlugin.scanResToReportData() malware count = %v, want 2", len(malwareFile.Malwares))
-		}
+			if diff := cmp.Diff(reportData.SkippedFiles, tt.wantSkippedFiles); diff != "" {
+				t.Errorf("ReportPlugin.scanResToReportData() SkippedFiles mismatch (-got +want):\n%s", diff)
+			}
+
+			if diff := cmp.Diff(reportData.ErrorFiles, tt.wantErrorFiles); diff != "" {
+				t.Errorf("ReportPlugin.scanResToReportData() ErrorFiles mismatch (-got +want):\n%s", diff)
+			}
+
+			if reportData.TotalErrors != tt.wantTotalErrors {
+				t.Errorf("ReportPlugin.scanResToReportData() TotalErrors = %v, want %v", reportData.TotalErrors, tt.wantTotalErrors)
+			}
+
+			if reportData.TotalMalware != tt.wantTotalMalware {
+				t.Errorf("ReportPlugin.scanResToReportData() TotalMalware = %v, want %v", reportData.TotalMalware, tt.wantTotalMalware)
+			}
+		})
 	}
 }
 

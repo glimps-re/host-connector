@@ -5,14 +5,32 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
 	"github.com/vimeo/go-magic/magic"
 )
+
+// guarded runs f and fails the test, instead of leaving it to the timeout of the
+// package, when it does not return in 5 seconds.
+func guarded[T any](t *testing.T, f func() T) T {
+	t.Helper()
+	done := make(chan T, 1)
+	go func() { done <- f() }()
+	select {
+	case v := <-done:
+		return v
+	case <-time.After(5 * time.Second):
+		t.Fatal("did not return in 5 seconds")
+		var zero T
+		return zero
+	}
+}
 
 func TestFTFilterPlugin_Init(t *testing.T) {
 	tests := []struct {
@@ -62,7 +80,7 @@ func TestFTFilterPlugin_Init(t *testing.T) {
 			plugin := &FTFilterPlugin{}
 			mockContext := mock.NewMockHCContext()
 
-			err := plugin.Init(tt.config, mockContext)
+			err := guarded(t, func() error { return plugin.Init(tt.config, mockContext) })
 			if (err != nil) != tt.wantErr {
 				t.Errorf("FTFilterPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
 				return
@@ -228,7 +246,7 @@ func TestFTFilterPlugin_OnStartScanFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.plugin.OnScanFile(tt.filename, tt.filePath, tt.sha256, false)
+			result := guarded(t, func() *datamodel.Result { return tt.plugin.OnScanFile(tt.filename, tt.filePath, tt.sha256, false) })
 
 			if tt.expectNil {
 				if result != nil {
@@ -271,12 +289,12 @@ func TestFTFilterPlugin_OnStartScanFile_NonExistentFile(t *testing.T) {
 		consoleLogger: slog.New(slog.DiscardHandler),
 	}
 
-	// Test with non-existent file
-	result := plugin.OnScanFile("file.txt", "/non/existent/file.txt", "test_sha256", false)
+	result := guarded(t, func() *datamodel.Result {
+		return plugin.OnScanFile("file.txt", "/non/existent/file.txt", "test_sha256", false)
+	})
 
-	// Should return nil for non-existent files (magic library handles this gracefully)
-	if result != nil {
-		t.Errorf("FTFilterPlugin.OnStartScanFile() with non-existent file = %v, want nil", result)
+	if result == nil || result.Error == nil || result.Malware {
+		t.Errorf("FTFilterPlugin.OnStartScanFile() with non-existent file = %+v, want an error refusal", result)
 	}
 }
 
@@ -308,7 +326,7 @@ func TestFTFilterPlugin_Integration(t *testing.T) {
 	mockContext := mock.NewMockHCContext()
 
 	// Test initialization
-	err := plugin.Init(config, mockContext)
+	err := guarded(t, func() error { return plugin.Init(config, mockContext) })
 	if err != nil {
 		t.Fatalf("FTFilterPlugin.Init() error = %v", err)
 	}
@@ -319,7 +337,7 @@ func TestFTFilterPlugin_Integration(t *testing.T) {
 	}
 
 	// Test the callback functionality
-	result := mockContext.OnScanFile("file.txt", textFile, "test_sha256", false)
+	result := guarded(t, func() *datamodel.Result { return mockContext.OnScanFile("file.txt", textFile, "test_sha256", false) })
 	if result == nil {
 		t.Fatal("Expected result for text file, got nil")
 		return

@@ -199,7 +199,12 @@ type HCContext interface {
 	// "inconsistent plugin result" Error from the core. The first refusal wins
 	// and stops the chain; a waiver is kept while later callbacks still run, and
 	// the first waiver applies when there is no refusal. A waived archive waives
-	// its whole content.
+	// its whole content. On Linux a location of the form /proc/self/fd/<N> (or
+	// /proc/<pid>/fd/<N>) is the connector's own open descriptor of the file: it is
+	// valid for the duration of the call, may be read or typed through that name,
+	// and must be neither closed nor used after the callback returns. Opening that
+	// name again checks the permissions again: a file made unreadable after the
+	// connector opened it cannot be reopened.
 	RegisterOnScanFile(f OnScanFile)
 	RegisterWithWaitForOptions(f WithWaitForOptionsFunc)
 	// RegisterOnFileScanned callbacks all run, in plugin file order, each one

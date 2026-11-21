@@ -30,6 +30,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -796,4 +797,176 @@ func TestE2E_failingReportGeneratorFallsBackToJSON(t *testing.T) {
 	if m := globOne(t, filepath.Join(in.export, "tom", datamodel.SessionReportPrefix+"*.pdf")); len(m) != 0 {
 		t.Errorf("a PDF report was written by a browser that fails: %v", m)
 	}
+}
+
+// outputHas tells whether a file with this content is delivered in OUTPUT: the
+// staging folder of a copy in progress does not count.
+func (in *instance) outputHas(t *testing.T, content []byte) bool {
+	t.Helper()
+	files, problems := listEntries(in.output)
+	if len(problems) != 0 {
+		t.Fatalf("OUTPUT is unreadable: %v", problems)
+	}
+	for _, f := range files {
+		if strings.Contains(f, string(filepath.Separator)+".gmhost-staging"+string(filepath.Separator)) {
+			continue
+		}
+		sum, _, err := fileDigest(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sum == sha256Hex(content) {
+			return true
+		}
+	}
+	return false
+}
+
+// T14b: a restore never replaces a file. With another file at the place the
+// quarantined one came from, the restore is refused, the other file is
+// untouched, the container is kept and the malware is not restored; once the
+// place is free the same restore works.
+func TestE2E_restoreNeverReplacesAFile(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true})
+	bad := []byte("a malware that is restored onto an occupied place")
+	gm.MarkMalicious(bad)
+	in.expect.release(bad)
+	path := in.drop(t, "bad.txt", bad)
+	id := hcquarantine.ComputeCacheID(path, sha256Hex(bad))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
+	in.waitFor(t, "the malware to leave INPUT", func() bool { return in.gone(path) })
+
+	// A depositor keeps writing the file that now sits where the malware was: it
+	// never gets stable, so it stays there while the restore is tried.
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			if _, e := f.WriteString("keeps growing\n"); e != nil {
+				return
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}()
+	stopWriter := sync.OnceFunc(func() {
+		close(stop)
+		<-done
+		if e := f.Close(); e != nil {
+			t.Logf("close: %v", e)
+		}
+	})
+	defer stopWriter()
+
+	msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id}))
+	if !strings.Contains(msg, "destination already exists") {
+		t.Fatalf("refusal = %q, want the destination named as existing", msg)
+	}
+	if in.gone(lock) {
+		t.Error("the container is gone although nothing was restored")
+	}
+	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || bytes.Contains(got, bad) {
+		t.Errorf("the file in the way was changed: %d bytes, %v", len(got), err)
+	}
+	if in.outputHas(t, bad) {
+		t.Error("the malware reached OUTPUT although its restore was refused")
+	}
+
+	stopWriter()
+	in.waitFor(t, "the file in the way to leave INPUT", func() bool { return in.gone(path) })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("the restore was refused once the place was free: %s", msg)
+	}
+	in.waitFor(t, "the restored file to be delivered", func() bool { return in.outputHas(t, bad) })
+}
+
+// restart stops the connector with SIGTERM and starts it again on the same
+// folders and quarantine, with change merged over its configuration. The
+// registry of the quarantine is in memory, so the new run does not know what
+// the previous one quarantined.
+func (in *instance) restart(t *testing.T, change map[string]any) {
+	t.Helper()
+	in.signal(t, syscall.SIGTERM)
+	if _, err := in.wait(t, 20*time.Second); err != nil {
+		t.Fatalf("the connector did not stop cleanly: %v", err)
+	}
+	// The request for tasks of the dead process is still waiting in the fake
+	// console, and answers a poll later: it must be over before a task is pushed.
+	time.Sleep(2 * consolePollWait)
+	conf := in.withConf(t, change)
+	in.conf = conf
+	writeJSON(t, filepath.Join(in.root, "config.yml"), conf)
+	if in.console != nil {
+		in.console.SetConfig(conf)
+	}
+	in.launch(t, in.bin, in.dir, in.args)
+}
+
+// quarantineThenRestart quarantines a malware, restarts the connector with
+// change, and returns the malware, its path and the ID of its container.
+func quarantineThenRestart(t *testing.T, change func(in *instance) map[string]any) (in *instance, bad []byte, path, id string) {
+	t.Helper()
+	gm := newGMalware(t, false)
+	in = startInstance(t, gm, options{agent: true})
+	bad = []byte("a malware whose registry entry is lost by a restart")
+	gm.MarkMalicious(bad)
+	in.expect.release(bad)
+	path = in.drop(t, "bad.txt", bad)
+	id = hcquarantine.ComputeCacheID(path, sha256Hex(bad))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
+	in.waitFor(t, "the malware to leave INPUT", func() bool { return in.gone(path) })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.restart(t, change(in))
+	in.waitFor(t, "the connector to be back", func() bool { return strings.Count(in.stderr.String(), "monitoring successfully completed") >= 2 })
+	return in, bad, path, id
+}
+
+// T14b, Q30: a container whose registry entry is lost (the registry is in
+// memory and the connector restarted) is restored only under a watched folder.
+// Outside the watched folders the restore is refused and nothing is written.
+func TestE2E_restoreWithoutRegistryEntryOutsideWatchedFolders(t *testing.T) {
+	in, bad, path, id := quarantineThenRestart(t, func(in *instance) map[string]any {
+		other := filepath.Join(in.root, "elsewhere")
+		if err := os.MkdirAll(other, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return map[string]any{"paths": []string{other}}
+	})
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg == "" {
+		t.Fatal("a restore outside the watched folders was acknowledged without error")
+	}
+	if in.gone(filepath.Join(in.quarantine, id+".lock")) {
+		t.Error("the container is gone although nothing was restored")
+	}
+	if !in.gone(path) {
+		t.Error("a file was written where the malware came from")
+	}
+	if in.outputHas(t, bad) {
+		t.Error("the malware reached OUTPUT")
+	}
+}
+
+// T14b, Q30: under a watched folder the same restore is served, the console is
+// told that the registry did not know the file, and the restored file is
+// delivered once.
+func TestE2E_restoreWithoutRegistryEntryUnderAWatchedFolder(t *testing.T) {
+	in, bad, _, id := quarantineThenRestart(t, func(*instance) map[string]any { return nil })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("the restore was refused: %s", msg)
+	}
+	in.waitFor(t, "the restored file to be delivered", func() bool { return in.outputHas(t, bad) })
+	in.waitFor(t, "the console to be told", func() bool {
+		return slices.Contains(in.console.errorTypes(), "quarantine-restore-unregistered")
+	})
 }

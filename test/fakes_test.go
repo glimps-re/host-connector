@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -376,6 +377,9 @@ func (g *gmalware) Programmed(sha string) bool {
 	return g.verdicts[sha].malware
 }
 
+// consolePollWait is how long a request for tasks waits before it is answered.
+const consolePollWait = 300 * time.Millisecond
+
 // consoleEvent is an event the connector sent to the console.
 type consoleEvent struct {
 	Type  string          `json:"type"`
@@ -438,18 +442,27 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 		c.json(w, r, map[string]any{"config": c.currentConfig()})
 	case "tasks":
 		select {
-		case <-time.After(300 * time.Millisecond):
+		case <-time.After(consolePollWait):
 		case <-r.Context().Done():
 			return
 		}
+		// A task leaves the queue only once its answer was delivered: the request
+		// of a connector that is gone (a process just restarted) wakes up after
+		// its client died, and must not take the tasks of the next one.
 		c.mu.Lock()
-		pending := c.tasks
-		c.tasks = nil
+		pending := slices.Clone(c.tasks)
 		c.mu.Unlock()
 		if pending == nil {
 			pending = []map[string]any{}
 		}
-		c.json(w, r, map[string]any{"tasks": pending})
+		if !c.json(w, r, map[string]any{"tasks": pending}) {
+			return
+		}
+		c.mu.Lock()
+		c.tasks = slices.DeleteFunc(c.tasks, func(t map[string]any) bool {
+			return slices.ContainsFunc(pending, func(p map[string]any) bool { return p["id"] == t["id"] })
+		})
+		c.mu.Unlock()
 	case "events":
 		var ev consoleEvent
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxFakeEvent)).Decode(&ev); err != nil {

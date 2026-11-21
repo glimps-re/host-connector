@@ -224,6 +224,10 @@ type instance struct {
 	gm         *gmalware
 	// conf is the connector configuration the run started with.
 	conf map[string]any
+	// bin, dir and args are what launch ran, for a restart.
+	bin, dir string
+	args     []string
+	killOnce sync.Once
 	// abortedUploads is how many uploads the scenario announced the connector
 	// would cut short.
 	abortedUploads int
@@ -430,30 +434,39 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 // everything it started, at the end of the test.
 func (in *instance) launch(t *testing.T, bin, dir string, args []string) {
 	t.Helper()
+	in.bin, in.dir, in.args = bin, dir, args
 	// Not tied to the context of the test, which ends before the cleanups: the
 	// process is stopped by finish, then killed.
-	in.cmd = exec.CommandContext(context.Background(), filepath.Join(bin, "GMHost"), args...) //nolint:gosec // G204: the binary the test built, with arguments of its own
-	in.cmd.Stderr = in.stderr
-	in.cmd.Dir = dir
-	in.cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd := exec.CommandContext(context.Background(), filepath.Join(bin, "GMHost"), args...) //nolint:gosec // G204: the binary the test built, with arguments of its own
+	cmd.Stderr = in.stderr
+	cmd.Stdout = in.stderr
+	cmd.Dir = dir
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	in.start = time.Now()
-	if err := in.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
-	in.exited = make(chan struct{})
+	in.cmd = cmd
+	exited := make(chan struct{})
+	in.exited = exited
 	go func() {
-		in.exitErr = in.cmd.Wait()
-		close(in.exited)
+		in.exitErr = cmd.Wait()
+		close(exited)
 	}()
-	t.Cleanup(func() {
-		// A negative pid is the process group: the 7-Zip processes of the
-		// connector must not outlive the test.
-		if err := syscall.Kill(-in.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-			t.Logf("kill: %v", err)
-		}
-		if t.Failed() {
-			t.Logf("log of the process:\n%s", in.stderr.String())
-		}
+	// One cleanup for all the runs of the instance, registered by the first one:
+	// a later registration (a restart) would run before finish, which must stop
+	// the process gracefully first.
+	in.killOnce.Do(func() {
+		t.Cleanup(func() {
+			// A negative pid is the process group: the 7-Zip processes of the
+			// connector must not outlive the test.
+			if err := syscall.Kill(-in.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+				t.Logf("kill: %v", err)
+			}
+			if t.Failed() {
+				t.Logf("log of the process:\n%s", in.stderr.String())
+			}
+		})
 	})
 }
 

@@ -1268,3 +1268,50 @@ func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
 		t.Errorf("spools left: %v", left)
 	}
 }
+
+// D6, guard of shipped behaviour: a detection wins in an archive. A plugin that
+// waives a nested archive (its logical path is a skipped path) does not discard
+// the detection of a member beside it: the outer archive is quarantined, never
+// delivered. The detected member sorts first and the waived archive last. This
+// does not exercise the T55 race (a waiver judged after the detection of the
+// waived archive's own members): with the shipped plugins the waiver is judged
+// first, so no e2e ordering fails before T55; the race is covered by the unit
+// regression tests of T55, with a slow plugin hook.
+func TestE2E_aDetectionBesideAWaivedNestedArchiveWins(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: map[string]any{"workers": 4}, more: map[string]map[string]any{
+		"filepath_filter": {"skipped_paths": []string{`outer\.zip/z-inner\.zip$`}},
+	}})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	bad := []byte(strings.Repeat("a member that is a malware ", 40))
+	gm.MarkMalicious(bad)
+	inner := zipOf(t, map[string]string{"x.txt": strings.Repeat("a member of the waived archive ", 40)})
+	outer := zipOf(t, map[string]string{"a-bad.bin": string(bad), "z-inner.zip": string(inner)})
+	in.expect.archive(outer, bad, inner)
+	path := in.drop(t, "outer.zip", outer)
+	in.waitFor(t, "the archive to leave INPUT", func() bool { return in.gone(path) })
+	in.waitFor(t, "the quarantine", func() bool { return len(globOne(t, filepath.Join(in.quarantine, "*.lock"))) == 1 })
+	if in.inOutput("outer.zip") {
+		t.Error("the archive with a detected member reached OUTPUT: the waiver of its nested archive discarded the detection")
+	}
+}
+
+// D6, guard of shipped behaviour: a detection also outranks an archive that
+// cannot be examined. An archive with a detected member and a nested encrypted
+// archive (the policy of the encrypted files is error, which keeps a file in
+// INPUT) is quarantined, not left in INPUT in error.
+func TestE2E_aDetectionBeatsAnUnexaminableNestedArchive(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true})
+	bad := []byte(strings.Repeat("a member that is a malware ", 40))
+	gm.MarkMalicious(bad)
+	enc := fixtureOf(t, "enc_zipcrypto.zip")
+	outer := zipOf(t, map[string]string{"a-bad.bin": string(bad), "z-enc.zip": string(enc)})
+	in.expect.archive(outer, bad, enc)
+	path := in.drop(t, "outer.zip", outer)
+	in.waitFor(t, "the archive to leave INPUT", func() bool { return in.gone(path) })
+	in.waitFor(t, "the quarantine", func() bool { return len(globOne(t, filepath.Join(in.quarantine, "*.lock"))) == 1 })
+	if in.inOutput("outer.zip") {
+		t.Error("the archive with a detected member reached OUTPUT")
+	}
+}

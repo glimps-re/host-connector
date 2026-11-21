@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -371,7 +372,7 @@ func TestReportPlugin_aFailingSequenceEndsTheGeneration(t *testing.T) {
 		}
 		yield(datamodel.Report{}, boom)
 	}
-	if _, err := reportDataFrom(datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
+	if _, err := reportDataFrom(context.Background(), datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
 		t.Errorf("reportDataFrom() error = %v, want the error of the sequence", err)
 	}
 	p := &ReportPlugin{consoleLogger: slog.New(slog.DiscardHandler)}
@@ -385,9 +386,31 @@ func TestReportPlugin_aFailingSequenceEndsTheGeneration(t *testing.T) {
 
 func mustReportData(t *testing.T, reportContext datamodel.ScanContext, reports []datamodel.Report) ReportData {
 	t.Helper()
-	data, err := reportDataFrom(reportContext, datamodel.ReportsSeq(reports))
+	data, err := reportDataFrom(context.Background(), reportContext, datamodel.ReportsSeq(reports))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestReportDataFrom_stopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	read := 0
+	seq := func(yield func(datamodel.Report, error) bool) {
+		for i := range 100 {
+			read++
+			if i == 2 {
+				cancel()
+			}
+			if !yield(datamodel.Report{Filename: "f"}, nil) {
+				return
+			}
+		}
+	}
+	if _, err := reportDataFrom(ctx, datamodel.ScanContext{}, seq); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if read != 3 {
+		t.Errorf("read %d reports, want 3: the pass must stop at the cancellation", read)
+	}
 }

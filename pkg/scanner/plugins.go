@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"maps"
 	"os"
 	"slices"
+	"sync/atomic"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -324,20 +326,64 @@ func (c *Connector) RegisterGenerateReport(f plugins.GenerateReport) {
 // is not nil when the error is nil, and nil otherwise: a generator that breaks
 // that rule gets an error (and its content closed) instead of a nil pointer for
 // the caller. The caller closes the content on every path.
+//
+// The contract of plugins.GenerateReport is enforced here: once the content is
+// closed (or the generator failed) no report reaches the generator any more,
+// whatever it still does with the sequence, and the sequence it was given ends.
+// A report already being delivered when the content is closed may still reach
+// the generator (at most one in flight). A generator cut this way sees a normal
+// end of sequence, not an error: that is harmless because its content is already
+// closed and its output discarded.
 func (c *Connector) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
-	generated, err := c.generateReport(ctx, reportContext, reports)
+	var closed atomic.Bool
+	// Set even when the generator panics: the sequence must not be read on.
+	returned := false
+	defer func() {
+		if !returned {
+			closed.Store(true)
+		}
+	}()
+	guarded := func(yield func(datamodel.Report, error) bool) {
+		if closed.Load() {
+			return
+		}
+		for report, err := range reports {
+			if closed.Load() || !yield(report, err) {
+				return
+			}
+		}
+	}
+	generated, err := c.generateReport(ctx, reportContext, guarded)
+	returned = true
 	if err != nil {
 		if generated.Content != nil {
 			if e := generated.Content.Close(); e != nil {
 				logger.Warn("could not close the content of a failed report", slog.String("error", e.Error()))
 			}
 		}
+		closed.Store(true)
 		return plugins.GeneratedReport{}, err
 	}
 	if generated.Content == nil {
+		closed.Store(true)
 		return plugins.GeneratedReport{}, errNoReportContent
 	}
+	generated.Content = &guardedContent{ReadCloser: generated.Content, closed: &closed}
 	return generated, nil
+}
+
+// guardedContent closes the content of a generator, then stops the sequence of
+// reports it reads from.
+type guardedContent struct {
+	io.ReadCloser
+	closed *atomic.Bool
+}
+
+// Close closes the content of the generator, then cuts it off from the reports.
+func (g *guardedContent) Close() error {
+	err := g.ReadCloser.Close()
+	g.closed.Store(true)
+	return err
 }
 
 var errNoReportContent = errors.New("the report generator gave no content and no error")

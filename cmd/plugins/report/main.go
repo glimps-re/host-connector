@@ -285,7 +285,7 @@ type ReportData struct {
 // once, as they come.
 func (p *ReportPlugin) GenerateReport(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 	p.consoleLogger.Debug("generate pdf report")
-	data, err := reportDataFrom(reportContext, reports)
+	data, err := reportDataFrom(ctx, reportContext, reports)
 	if err != nil {
 		return plugins.GeneratedReport{}, err
 	}
@@ -304,10 +304,10 @@ func toUint(n int64) uint64 {
 }
 
 // reportDataFrom converts scan results to ReportData for template rendering, in
-// a single pass over the reports. A report that fails to be read ends it. Every
+// a single pass over the reports. A report that fails to be read, or the end of ctx, ends it. Every
 // section stops at maxRows rows; the More fields are what the counters hold
 // beyond what is listed.
-func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (reportData ReportData, err error) {
+func reportDataFrom(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (reportData ReportData, err error) {
 	reportData = ReportData{
 		ScanID:        reportContext.ScanID,
 		ScanStartTime: reportContext.Start.Format(time.RFC3339),
@@ -319,6 +319,9 @@ func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datam
 	for report, readErr := range reports {
 		if readErr != nil {
 			return ReportData{}, readErr
+		}
+		if err = ctx.Err(); err != nil {
+			return ReportData{}, err
 		}
 		reportData.NbFileSubmitted++
 		// A file whose action failed carries an Error too: it is listed among the

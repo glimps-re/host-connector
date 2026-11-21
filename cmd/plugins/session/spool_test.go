@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/google/go-cmp/cmp"
@@ -405,5 +406,29 @@ func TestErrorBudget(t *testing.T) {
 	none.give(1)
 	if def := (&errorBudget{}); !def.reserve(maxPendingErrors) || def.reserve(1) {
 		t.Error("a budget without limit uses maxPendingErrors")
+	}
+}
+
+func TestSession_reportsStopsWhenTheContextEndsMidSpool(t *testing.T) {
+	reports := make([]datamodel.Report, 0, 50)
+	for i := range 50 {
+		reports = append(reports, datamodel.Report{Filename: strconv.Itoa(i)})
+	}
+	s := testSession(t, "tom", time.Unix(1_700_000_000, 0), nil, reports...)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	n := 0
+	var gotErr error
+	for _, err := range s.reports(ctx) {
+		if err != nil {
+			gotErr = err
+			break
+		}
+		if n++; n == 5 {
+			cancel()
+		}
+	}
+	if !errors.Is(gotErr, context.Canceled) || n != 5 {
+		t.Errorf("read %d reports, error %v: want 5 and context.Canceled", n, gotErr)
 	}
 }

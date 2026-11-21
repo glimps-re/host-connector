@@ -480,6 +480,41 @@ func TestRealSevenZip_aFolderEntryThatHoldsDataIsAnAnomalyWithEncryptionPossible
 	}
 }
 
+// A member that declares gigabytes and no packed byte at all is a bomb too, not a
+// member left out by a budget: the ratio of a size over nothing is not defined.
+func TestRealSevenZip_aMemberOfGigabytesWithNoPackedByteIsABomb(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "a.txt", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = zw.CreateRaw(&zip.FileHeader{Name: "huge.bin", Method: zip.Store, UncompressedSize64: 4 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nopacked.zip")
+	if err = os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"check, a small budget":                   {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+		"check, a big budget":                     {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 10 << 30, CheckOnly: true},
+		"extraction, member under the size limit": {MaxFileSize: 1 << 40, MaxFiles: 100, MaxTotalSize: 1 << 30},
+	} {
+		_, err := realPlugin(t).ExtractFile(path, t.TempDir(), limits)
+		// A check says it as an anomaly, an extraction as the ZipBomb refusal.
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) && (err == nil || !strings.Contains(err.Error(), "ZipBomb")) {
+			t.Errorf("%s: error = %v, want a bomb", mode, err)
+		}
+	}
+}
+
 // runCmd runs a command to build test archives with the embedded 7-Zip.
 func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // test helper running the test binary

@@ -91,6 +91,8 @@ type tableState struct {
 	// a depth no file system takes): they are neither selected nor skipped, and
 	// are never extracted nor tested, so nothing is known of their encryption.
 	unexamined int
+	// imageType is set for a file system or a disk image (see imageFormats).
+	imageType bool
 
 	entries         int
 	files           int
@@ -222,7 +224,7 @@ func (s *listSink) startTable() {
 	if s.tables > 1 {
 		s.anomalies = noteAnomaly(s.anomalies, "the listing holds several member tables")
 	}
-	s.table = tableState{}
+	s.table = tableState{imageType: imageFormat(s.archiveType)}
 	s.hasSum = false
 }
 
@@ -405,7 +407,16 @@ func batchNames(names []string, maxCount, maxBytes int) [][]string {
 }
 
 // isBomb tells whether the sizes of the members are far above what the archive
-// holds: more than zipBombThreshold bytes, at a ratio over zipBombRatio.
+// holds: more than zipBombThreshold bytes, at a ratio over zipBombRatio. Members
+// that declare gigabytes and no packed byte at all are a bomb too (a forged
+// header), except in the file systems and disk images, whose listing may give no
+// packed size.
 func (t *tableState) isBomb() bool {
-	return t.totalSize > zipBombThreshold && t.totalCompressed > 0 && t.totalSize/t.totalCompressed > zipBombRatio
+	if t.totalSize <= zipBombThreshold {
+		return false
+	}
+	if t.totalCompressed == 0 {
+		return !t.imageType
+	}
+	return t.totalSize/t.totalCompressed > zipBombRatio
 }

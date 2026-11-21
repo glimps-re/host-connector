@@ -2074,12 +2074,6 @@ func (c *Connector) countOngoing() (n int) {
 
 var errPluginCloseTimeout = errors.New("plugin Close did not return before the end of the closing time")
 
-// pluginCloseGrace is how long, in all, the plugins still closing are waited
-// for once the closing time is over: it stays under the grace of the process
-// guard, so that what a plugin was finishing (a JSON fallback of a session
-// report) is not killed with the process.
-const pluginCloseGrace = 900 * time.Millisecond
-
 // closePlugins closes the plugins concurrently, all under ctx, and returns how
 // many failed. Once ctx has ended the plugins still closing share one grace;
 // those that are not done by then are given up on: a plugin that ignores its
@@ -2109,7 +2103,7 @@ func closePlugins(ctx context.Context, all []plugins.Plugin) (failed int) {
 			record(o)
 		case <-ended:
 			ended = nil
-			timer := time.NewTimer(pluginCloseGrace)
+			timer := time.NewTimer(plugins.CloseGrace)
 			defer timer.Stop()
 			graceOver = timer.C
 		case <-graceOver:

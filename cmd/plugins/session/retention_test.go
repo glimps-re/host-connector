@@ -101,7 +101,7 @@ func newRetention(t *testing.T, cfg Config) *retentionFixture {
 		cfg.Delay = time.Minute
 	}
 	f.p = &SessionPlugin{config: cfg, sessions: map[string]*Session{}, known: map[string]string{}, hcc: f.hcc, now: f.clock.now}
-	f.p.stop, f.p.done = make(chan struct{}), make(chan struct{})
+	f.p.stop, f.p.done, f.p.closed = make(chan struct{}), make(chan struct{}), make(chan struct{})
 	f.p.runCtx, f.p.cancelRun = context.WithCancel(context.Background())
 	t.Cleanup(f.p.cancelRun)
 	f.p.logger = slog.New(slog.NewTextHandler(f.logs, nil))
@@ -248,7 +248,7 @@ func TestSession_retriesOfAFailedFileOpenNoSessionAfterTheClose(t *testing.T) {
 	f.p.OnStartScanFile(a, "h1")
 	f.p.OnFileScanned(a, "h1", datamodel.Result{Error: errors.New("extractor unavailable")})
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if f.session("tom") != nil || len(f.reports(t)) != 1 {
 		t.Fatalf("session = %v, reports = %v, want the session closed with its report", f.session("tom"), f.reports(t))
 	}
@@ -272,7 +272,7 @@ func TestSession_aLateReportReopensASessionAndGetsItsOwnReport(t *testing.T) {
 	f.p.OnStartScanFile(a, "h1")
 	f.p.OnFileScanned(a, "h1", datamodel.Result{})
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1"})
 	s := f.session("tom")
 	if s == nil || len(s.CompletedReports) != 1 {
@@ -280,8 +280,8 @@ func TestSession_aLateReportReopensASessionAndGetsItsOwnReport(t *testing.T) {
 	}
 	f.clock.advance(2 * time.Minute)
 	f.clock.advance(time.Second)
-	f.p.checkAndCloseSessions()
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if f.session("tom") != nil {
 		t.Error("the reopened session must close too")
 	}
@@ -314,12 +314,12 @@ func TestSession_aFailingGeneratorIsRetriedThenTheJSONFallbackIsWritten(t *testi
 	var calls atomic.Int32
 	f.hcc.GenerateReportFunc = failingThenWorking(100, &calls)
 	closeOne(t, f)
-	f.p.checkAndCloseSessions() // attempt 1, session moves to closing
-	f.p.checkAndCloseSessions() // attempt 2
+	f.p.checkAndCloseSessions(f.p.baseCtx()) // attempt 1, session moves to closing
+	f.p.checkAndCloseSessions(f.p.baseCtx()) // attempt 2
 	if len(f.reports(t)) != 0 || len(f.errorsRaised) != 0 {
 		t.Fatalf("reports = %v, events = %v: the fallback must wait for the retries", f.reports(t), f.errorsRaised)
 	}
-	f.p.checkAndCloseSessions() // attempt 3 > retries: fallback
+	f.p.checkAndCloseSessions(f.p.baseCtx()) // attempt 3 > retries: fallback
 	reports := f.reports(t)
 	if len(reports) != 1 || !strings.HasSuffix(reports[0], ".json") || !strings.HasPrefix(filepath.Base(reports[0]), datamodel.SessionReportPrefix) {
 		t.Fatalf("reports = %v, want one JSON report under the reserved prefix", reports)
@@ -337,7 +337,7 @@ func TestSession_theFallbackEventIsResolvedByTheNextGoodReport(t *testing.T) {
 	var calls atomic.Int32
 	f.hcc.GenerateReportFunc = failingThenWorking(1, &calls)
 	closeOne(t, f)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if len(f.errorsRaised) != 1 {
 		t.Fatalf("events = %v", f.errorsRaised)
 	}
@@ -346,7 +346,7 @@ func TestSession_theFallbackEventIsResolvedByTheNextGoodReport(t *testing.T) {
 	f.p.OnFileScanned(b, "h2", datamodel.Result{})
 	f.p.OnReport(&datamodel.Report{Filename: b, SHA256: "h2"})
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if len(f.resolved) != 1 || f.resolved[0] != fallbackEvent {
 		t.Errorf("resolutions = %v, want the event resolved by the first good report", f.resolved)
 	}
@@ -360,7 +360,7 @@ func TestSession_aSlowSessionDoesNotBlockTheNextOnesBeyondItsOwnTimeout(t *testi
 	}
 	closeOne(t, f)
 	start := time.Now()
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if time.Since(start) > 5*time.Second {
 		t.Error("an attempt must be bounded by report_timeout")
 	}
@@ -381,7 +381,7 @@ func TestSession_tooManyClosingSessionsGetTheirFallbackAtOnce(t *testing.T) {
 		f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h"})
 	}
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if n := len(f.p.closing); n > maxClosing {
 		t.Errorf("closing = %d, want at most %d", n, maxClosing)
 	}
@@ -419,7 +419,7 @@ func TestSession_closeWithAnExpiredContextStillWritesAFallbackReport(t *testing.
 func TestSession_aWrittenReportIsAnnouncedWithItsSHA256(t *testing.T) {
 	f := newRetention(t, Config{})
 	closeOne(t, f)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	reports := f.reports(t)
 	if len(reports) != 1 || len(f.written) != 1 {
 		t.Fatalf("reports = %v, announced = %v", reports, f.written)

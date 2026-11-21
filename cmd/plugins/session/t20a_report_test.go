@@ -155,7 +155,7 @@ func TestT20a_aGeneratorThatFailsNTimesGivesTheReportOrTheJSONFallback(t *testin
 			f.scanned("tom", "b.txt")
 			f.advance(2 * time.Minute)
 			for range retries + 3 {
-				f.p.checkAndCloseSessions()
+				f.p.checkAndCloseSessions(f.p.baseCtx())
 			}
 			files := f.exported("tom")
 			if len(files) != 1 || !strings.HasSuffix(files[0], tt.wantExt) {
@@ -199,7 +199,7 @@ func TestT20a_theFallbackEventIsRaisedOnceForSeveralSessions(t *testing.T) {
 	}
 	f.advance(2 * time.Minute)
 	for range 4 {
-		f.p.checkAndCloseSessions()
+		f.p.checkAndCloseSessions(f.p.baseCtx())
 	}
 	for _, u := range []string{"tom", "jerry", "spike"} {
 		if files := f.exported(u); len(files) != 1 || !strings.HasSuffix(files[0], ".json") {
@@ -231,7 +231,7 @@ func TestT20a_aHostileOrEmptyGeneratorResultFallsBackToJSONInsideTheExport(t *te
 			f.scanned("tom", "a.txt")
 			f.advance(2 * time.Minute)
 			for range 3 {
-				f.p.checkAndCloseSessions()
+				f.p.checkAndCloseSessions(f.p.baseCtx())
 			}
 			files := f.exported("tom")
 			if len(files) != 1 || !strings.HasSuffix(files[0], ".json") {
@@ -303,7 +303,7 @@ func TestT20a_anExistingFileAtTheNameOfTheReportIsLeftIntact(t *testing.T) {
 			setup(t, final, outside)
 
 			f.advance(2 * time.Minute)
-			f.p.checkAndCloseSessions()
+			f.p.checkAndCloseSessions(f.p.baseCtx())
 
 			if b, err := os.ReadFile(filepath.Clean(outside)); err == nil && string(b) != "PRECIOUS" {
 				t.Errorf("the target of the link = %q, it was written through", b)

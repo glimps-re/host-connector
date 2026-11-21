@@ -53,7 +53,7 @@ func TestSession_emptyFoldersAreRemovedAfterTheReportIsWritten(t *testing.T) {
 	})
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	waitFor(t, 5*time.Second, ran.Load)
 	if got := calls.list(); got[0] != filepath.Join(f.root, "tom") {
 		t.Errorf("cleanups = %v, want one on the session folder", got)
@@ -69,7 +69,7 @@ func TestSession_theOptionOffMakesNoRemovalCall(t *testing.T) {
 	calls := recordRemoveDirs(t, f, nil)
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if got := calls.list(); len(got) != 0 {
 		t.Errorf("cleanups = %v, want none with remove_empty_dirs off", got)
 	}
@@ -85,7 +85,7 @@ func TestSession_aReportThatIsLostLeavesTheFoldersAlone(t *testing.T) {
 	f.ready("tom")
 	f.ready("ann")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	waitFor(t, 5*time.Second, func() bool { return len(calls.list()) > 0 })
 	if got := calls.list(); len(got) != 1 || got[0] != filepath.Join(f.root, "ann") {
 		t.Errorf("cleanups = %v, want only the session whose report was written", got)
@@ -105,7 +105,7 @@ func TestSession_aStuckCleanupNeverHoldsBackAReport(t *testing.T) {
 		},
 		"closeAllSessions": func(f *retentionFixture, _ []*closingSession) {
 			f.p.cancelRun()
-			f.p.closeAllSessions(t.Context())
+			f.p.closeAllSessions(t.Context(), t.Context())
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -209,7 +209,7 @@ func TestSession_theCleanupLogsOneLineWithTheFailuresAndTheDepth(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newRetention(t, Config{RemoveEmptyDirs: true, CleanupTimeout: time.Minute})
 			recordRemoveDirs(t, f, func(context.Context) (cleanupStats, error) { return tt.stats, tt.err })
-			f.p.cleanup("tom")
+			f.p.cleanup(f.p.baseCtx(), "tom")
 			if got := f.logs.String(); strings.Count(got, "\n") != 1 || !strings.Contains(got, tt.want) {
 				t.Errorf("log = %q, want one line with %q", got, tt.want)
 			}
@@ -228,7 +228,7 @@ func TestSession_theRealCleanupKeepsTheRootTheSessionFolderAndWhatIsRecentOrFull
 	age(t, filepath.Join(session, "old"), time.Hour)
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	waitFor(t, 5*time.Second, func() bool { return !exists(old) })
 	if exists(old) || exists(filepath.Join(session, "old")) {
 		t.Error("an old empty folder was left")
@@ -279,7 +279,7 @@ func TestSession_theWorkDirBelowASessionStaysWhenRootFolderIsSpelledThroughALink
 	}
 	f.p.config.RootFolder, f.p.workDir = link, work
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	waitFor(t, 5*time.Second, func() bool { return !exists(old) })
 	if !exists(extract) || !exists(work) {
 		t.Error("the work directory, or what is in it, was removed")

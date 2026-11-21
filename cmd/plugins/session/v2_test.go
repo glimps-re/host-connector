@@ -11,7 +11,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -85,7 +87,7 @@ func TestSession_aVeryLongFolderNameStillGetsItsReport(t *testing.T) {
 	f.hcc.GenerateReportFunc = workingGenerator
 	f.ready(strings.Repeat("d", 250))
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if got := f.reports(t); len(got) != 1 || len(filepath.Base(got[0])) > 255 {
 		t.Fatalf("reports = %v, want one with a name below 255 bytes", got)
 	}
@@ -109,7 +111,7 @@ func TestSession_aReportThatCannotBeWrittenIsLostLoudlyAndNotRetriedForEver(t *t
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
 	for range 6 {
-		f.p.checkAndCloseSessions()
+		f.p.checkAndCloseSessions(f.p.baseCtx())
 	}
 	if len(f.p.closing) != 0 {
 		t.Errorf("closing = %d, want the lost session given up", len(f.p.closing))
@@ -132,7 +134,7 @@ func TestSession_closeDuringAnAttemptOfTheMonitorLosesNoReport(t *testing.T) {
 		f.ready(u)
 	}
 	f.clock.advance(2 * time.Minute)
-	go f.p.sessionMonitor()
+	go f.p.sessionMonitor(f.p.runCtx, f.p.stop, f.p.done, f.p.runGeneration())
 	waitFor(t, 5*time.Second, func() bool {
 		f.p.closeMu.Lock()
 		defer f.p.closeMu.Unlock()
@@ -180,7 +182,7 @@ func TestSession_closeKeepsAReserveOfTheDeadlineForTheFallbacks(t *testing.T) {
 	}
 }
 
-func TestSession_closeWithAnExpiredDeadlineWritesTheFallbacksInASecond(t *testing.T) {
+func TestSession_closeWithAnExpiredDeadlineWritesTheFallbacksWithinTheGrace(t *testing.T) {
 	f := newRetention(t, Config{})
 	f.hcc.GenerateReportFunc = blockedGenerator
 	for _, u := range []string{"tom", "jerry", "alice"} {
@@ -194,7 +196,7 @@ func TestSession_closeWithAnExpiredDeadlineWritesTheFallbacksInASecond(t *testin
 	if err := f.p.Close(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if time.Since(start) > expiredBound+500*time.Millisecond {
+	if time.Since(start) > plugins.CloseGrace {
 		t.Errorf("Close took %v with an expired deadline", time.Since(start))
 	}
 	if got := f.reports(t); len(got) != 3 {
@@ -214,7 +216,7 @@ func TestSession_report_timeoutBoundsTheCopyOfABlockedContent(t *testing.T) {
 	f.clock.advance(2 * time.Minute)
 	done := make(chan struct{})
 	go func() {
-		f.p.checkAndCloseSessions()
+		f.p.checkAndCloseSessions(f.p.baseCtx())
 		close(done)
 	}()
 	select {
@@ -232,7 +234,7 @@ func TestSession_aReportIsReadableByTheOthers(t *testing.T) {
 	f.hcc.GenerateReportFunc = workingGenerator
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	reports := f.reports(t)
 	if len(reports) != 1 {
 		t.Fatalf("reports = %v", reports)
@@ -253,7 +255,7 @@ func TestSession_aClosedSessionTakesNothingMoreAndTheCallbacksAskForAnother(t *t
 	f.ready("tom")
 	s := f.session("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if s.addReport(datamodel.Report{Filename: "x"}) || s.addFile("x", "h") || s.markFileCompleted("x") || s.addFileError("x", "h", "e") {
 		t.Fatal("a closed session accepted something")
 	}
@@ -268,7 +270,7 @@ func TestSession_aFileThatFailsAfterItsSessionClosedAppearsInAnotherReport(t *te
 	f := newRetention(t, Config{})
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	a := f.file("tom", "big.zip")
 	f.p.OnFileScanned(a, "h9", datamodel.Result{Error: errors.New("extractor unavailable")})
 	s := f.session("tom")
@@ -291,7 +293,7 @@ func TestSession_aFailingExportIsSaidAndOnlyItIsRetried(t *testing.T) {
 	}
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if got := filepath.Join(f.export, "tom"); len(filesIn(t, got)) != 1 {
 		t.Fatalf("the first export holds %v, want one report", filesIn(t, got))
 	}
@@ -304,7 +306,7 @@ func TestSession_aFailingExportIsSaidAndOnlyItIsRetried(t *testing.T) {
 	if err := os.Remove(filepath.Join(second, "tom")); err != nil {
 		t.Fatal(err)
 	}
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if len(filesIn(t, filepath.Join(second, "tom"))) != 1 || len(f.p.closing) != 0 {
 		t.Errorf("second export = %v, closing = %d, want its report now", filesIn(t, filepath.Join(second, "tom")), len(f.p.closing))
 	}
@@ -350,7 +352,7 @@ func TestSession_aHealthyBurstBeyondTheBoundIsNotAFallback(t *testing.T) {
 		f.ready(fmt.Sprintf("u%03d", i))
 	}
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	got := f.reports(t)
 	if len(got) != maxClosing+6 {
 		t.Fatalf("reports = %d, want %d", len(got), maxClosing+6)
@@ -376,7 +378,7 @@ func TestSession_aBacklogIsRaisedAsSuchAndNotAsAFallback(t *testing.T) {
 		f.ready(fmt.Sprintf("u%03d", i))
 	}
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	if f.events(backlogEvent) != 1 || f.events(fallbackEvent) != 0 {
 		t.Errorf("events: backlog %d, fallback %d, want 1 and 0", f.events(backlogEvent), f.events(fallbackEvent))
 	}
@@ -432,7 +434,7 @@ func TestSession_aDepositNamedLikeAReportIsAFileLikeTheOthers(t *testing.T) {
 	f.p.OnReport(&datamodel.Report{Filename: fake, SHA256: "hf", Error: "file name reserved for session reports"})
 	f.ready("tom")
 	f.clock.advance(2 * time.Minute)
-	f.p.checkAndCloseSessions()
+	f.p.checkAndCloseSessions(f.p.baseCtx())
 	reports := f.reports(t)
 	if len(reports) != 1 {
 		t.Fatalf("reports = %v, want the one real report", reports)
@@ -456,5 +458,740 @@ func TestSession_aDepositNamedLikeAReportIsAFileLikeTheOthers(t *testing.T) {
 	}
 	if !strings.Contains(filepath.Base(reports[0]), ".pdf") || strings.Contains(reports[0], ".conflict-") {
 		t.Errorf("report = %s, want the plain name", reports[0])
+	}
+}
+
+func TestFallbackDeadline(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	span := plugins.CloseGrace - closeMargin
+	tests := []struct {
+		name     string
+		deadline time.Time
+		want     time.Time
+	}{
+		{"not expired", now.Add(5 * time.Second), now.Add(5*time.Second + span)},
+		{"just ahead", now.Add(10 * time.Millisecond), now.Add(10*time.Millisecond + span)},
+		{"expired", now.Add(-time.Minute), now.Add(fallbackFloor)},
+		{"at the boundary of the floor", now.Add(fallbackFloor - span), now.Add(fallbackFloor)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := fallbackDeadline(tt.deadline, now); !got.Equal(tt.want) {
+				t.Errorf("fallbackDeadline = %v, want %v", got.Sub(now), tt.want.Sub(now))
+			}
+		})
+	}
+}
+
+func TestFallbackConstants(t *testing.T) {
+	if fallbackFloor >= plugins.CloseGrace-closeMargin {
+		t.Errorf("floor %v is not under the grace %v less the margin %v", fallbackFloor, plugins.CloseGrace, closeMargin)
+	}
+	if lostEventBound >= plugins.CloseGrace {
+		t.Errorf("lostEventBound %v is not under the grace %v", lostEventBound, plugins.CloseGrace)
+	}
+}
+
+// lostIn tells whether the logs, in the text format of slog, say the report of
+// the session is lost.
+func lostIn(logs, id string) bool { return lostCount(logs, id) > 0 }
+
+func lostCount(logs, id string) int {
+	return strings.Count(logs, `session \"`+id+`\" is lost`)
+}
+
+// takeHeld makes the sessions of the fixture the batch of a monitor at work.
+func takeHeld(f *retentionFixture) *heldBatch {
+	f.p.mutex.Lock()
+	ready := make([]*closingSession, 0, len(f.p.sessions))
+	for id, session := range f.p.sessions {
+		ready = append(ready, newClosing(session))
+		delete(f.p.sessions, id)
+	}
+	f.p.mutex.Unlock()
+	return f.p.takeBatch(f.p.runGeneration(), ready)
+}
+
+func TestSession_closeWithASlowMonitorStillWritesTheFallbacks(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.ready("tom")
+	f.p.started = true
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	f.p.onMonitorWait = func() {
+		time.Sleep(200 * time.Millisecond)
+		close(f.p.done)
+	}
+	start := time.Now()
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 2*time.Second+plugins.CloseGrace {
+		t.Errorf("Close took %v, more than the deadline and the grace", took)
+	}
+	if strings.Contains(f.logs.String(), "did not end in time") {
+		t.Errorf("the monitor ended in time: %s", f.logs.String())
+	}
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want a JSON fallback", got)
+	}
+}
+
+func TestSession_closeWithAMonitorThatNeverReturnsLosesItsSessionsByName(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.ready("tom")
+	f.ready("jerry")
+	held := takeHeld(f)
+	f.ready("alice")
+	f.p.started = true
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 300*time.Millisecond+plugins.CloseGrace {
+		t.Errorf("Close took %v, more than the deadline and the grace", took)
+	}
+	logs := f.logs.String()
+	for _, id := range []string{"tom", "jerry"} {
+		if !lostIn(logs, id) {
+			t.Errorf("%s is not named as lost: %s", id, logs)
+		}
+	}
+	if !strings.Contains(logs, "did not end in time") || !strings.Contains(logs, "failures=2") || !strings.Contains(logs, "sessions=3") {
+		t.Errorf("no warning or summary with the held sessions: %s", logs)
+	}
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want the one session the monitor did not hold", got)
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want one for all", n)
+	}
+	if n := f.p.putBack(t.Context(), held, held.sessions); n != 0 {
+		t.Errorf("a late monitor parked %d sessions", n)
+	}
+	if lostCount(f.logs.String(), "tom") != 1 {
+		t.Errorf("tom reported twice: %s", f.logs.String())
+	}
+}
+
+func TestSession_closeWaitsForAMonitorThatReturnsInTheTime(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.ready("tom")
+	held := takeHeld(f)
+	f.p.started = true
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Minute))
+	defer cancel()
+	f.p.onMonitorWait = func() {
+		f.p.putBack(t.Context(), held, held.sessions)
+		close(f.p.done)
+	}
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want the report of the session the monitor gave back", got)
+	}
+	if strings.Contains(f.logs.String(), "is lost") {
+		t.Errorf("a session is lost: %s", f.logs.String())
+	}
+}
+
+func TestSession_aPutBackRacingTheHandOverReportsEachSessionOnce(t *testing.T) {
+	for range 20 {
+		f := newRetention(t, Config{})
+		f.hcc.GenerateReportFunc = workingGenerator
+		f.ready("tom")
+		held := takeHeld(f)
+		var wg sync.WaitGroup
+		wg.Go(func() { f.p.putBack(t.Context(), held, held.sessions) })
+		f.p.closeAllSessions(t.Context(), t.Context())
+		wg.Wait()
+		written, lost := len(f.reports(t)), lostCount(f.logs.String(), "tom")
+		if written+lost != 1 {
+			t.Fatalf("tom written %d times and lost %d times, want exactly one: %s", written, lost, f.logs.String())
+		}
+	}
+}
+
+func TestSession_theSessionsNotAttemptedAreAllNamedAndNotifiedOnce(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.hcc.NotifyErrorFunc = func(ctx context.Context, key string, _ error) {
+		f.mu.Lock()
+		f.errorsRaised = append(f.errorsRaised, key)
+		f.mu.Unlock()
+		<-ctx.Done()
+	}
+	ids := []string{"s1", "s2", "s3", "s4", "s5"}
+	for _, id := range ids {
+		f.ready(id)
+	}
+	over, cancel := context.WithCancel(t.Context())
+	cancel()
+	start := time.Now()
+	f.p.closeAllSessions(t.Context(), over)
+	if took := time.Since(start); took > plugins.CloseGrace {
+		t.Errorf("closing took %v with a notification that never ends, over the grace", took)
+	}
+	for _, id := range ids {
+		if !lostIn(f.logs.String(), id) {
+			t.Errorf("%s is not named: %s", id, f.logs.String())
+		}
+	}
+	if !strings.Contains(f.logs.String(), "sessions not attempted") || !strings.Contains(f.logs.String(), "sessions=5") {
+		t.Errorf("no warning with the count: %s", f.logs.String())
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want 1", n)
+	}
+}
+
+func TestSession_aStopThatEndsAfterTheFirstReportLosesTheOthers(t *testing.T) {
+	f := newRetention(t, Config{})
+	over, cancel := context.WithCancel(t.Context())
+	var first atomic.Bool
+	f.hcc.GenerateReportFunc = func(ctx context.Context, sc datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+		if first.CompareAndSwap(false, true) {
+			cancel()
+		}
+		return workingGenerator(ctx, sc, reports)
+	}
+	for _, id := range []string{"s1", "s2", "s3"} {
+		f.ready(id)
+	}
+	f.p.closeAllSessions(t.Context(), over)
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want one", got)
+	}
+	if !strings.Contains(f.logs.String(), "sessions=2") || !strings.Contains(f.logs.String(), "reports_written=1") {
+		t.Errorf("no warning with the 2 sessions not attempted: %s", f.logs.String())
+	}
+	lostNames := 0
+	for _, id := range []string{"s1", "s2", "s3"} {
+		if lostIn(f.logs.String(), id) {
+			lostNames++
+		}
+	}
+	if lostNames != 2 {
+		t.Errorf("%d sessions named as lost, want 2: %s", lostNames, f.logs.String())
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want one for the 2 sessions", n)
+	}
+}
+
+func TestSession_closeExpiredWithASlowMonitorWritesTheFallbackInTheGrace(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.ready("tom")
+	f.p.started = true
+	deadline := time.Now().Add(100 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	f.p.onMonitorWait = func() {
+		time.Sleep(150 * time.Millisecond)
+		close(f.p.done)
+	}
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if end := time.Now(); end.After(deadline.Add(plugins.CloseGrace)) {
+		t.Errorf("Close ended %v past the deadline, over the grace", end.Sub(deadline))
+	}
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want a JSON fallback", got)
+	}
+}
+
+func TestSession_closeLosesOnlyWhatTheMonitorStillHolds(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = workingGenerator
+	for _, id := range []string{"s1", "s2", "s3"} {
+		f.ready(id)
+	}
+	held := takeHeld(f)
+	first := held.sessions[0]
+	if err := f.p.tryReport(t.Context(), first); err != nil {
+		t.Fatal(err)
+	}
+	f.p.release(held, first)
+	f.p.started = true
+	ctx, cancel := context.WithTimeout(t.Context(), 300*time.Millisecond)
+	defer cancel()
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	logs := f.logs.String()
+	if lostIn(logs, first.session.ID) {
+		t.Errorf("%s was written but is named as lost: %s", first.session.ID, logs)
+	}
+	for _, cs := range held.sessions[1:] {
+		if !lostIn(logs, cs.session.ID) {
+			t.Errorf("%s is held and not named as lost: %s", cs.session.ID, logs)
+		}
+	}
+	if got := f.reports(t); len(got) != 1 {
+		t.Errorf("reports = %v, want the one written before the stop", got)
+	}
+	if !strings.Contains(logs, "failures=2") {
+		t.Errorf("the summary does not count the 2 held sessions: %s", logs)
+	}
+}
+
+func TestSession_aBatchTakenAfterTheStopIsLostCountedAndNotifiedOnce(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.hcc.GenerateReportFunc = blockedGenerator
+	f.p.closeAllSessions(t.Context(), t.Context())
+	f.ready("s1")
+	f.ready("s2")
+	late := takeHeld(f)
+	f.p.putBack(t.Context(), late, late.sessions)
+	logs := f.logs.String()
+	if !lostIn(logs, "s1") || !lostIn(logs, "s2") || !strings.Contains(logs, "arrived after the stop") {
+		t.Errorf("the late sessions are not named and counted: %s", logs)
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want one for both", n)
+	}
+}
+
+func TestLostSessions_keepsTheFirstIDsAndCountsAll(t *testing.T) {
+	var lost lostSessions
+	for i := range maxLostIDs + 5 {
+		lost.add(strconv.Itoa(i))
+	}
+	if lost.count != maxLostIDs+5 || len(lost.ids) != maxLostIDs || lost.ids[0] != "0" {
+		t.Errorf("count %d, ids %v", lost.count, lost.ids)
+	}
+}
+
+func TestSession_aReleaseRacingTheHandOverNeitherRacesNorLosesASession(t *testing.T) {
+	const sessions = 12
+	for range 20 {
+		f := newRetention(t, Config{})
+		f.hcc.GenerateReportFunc = workingGenerator
+		ids := make([]string, 0, sessions)
+		for i := range sessions {
+			id := fmt.Sprintf("s%02d", i)
+			ids = append(ids, id)
+			f.ready(id)
+		}
+		held := takeHeld(f)
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			for _, cs := range held.sessions {
+				if err := f.p.tryReport(t.Context(), cs); err == nil {
+					f.p.release(held, cs)
+				}
+			}
+			f.p.putBack(t.Context(), held, nil)
+		})
+		f.p.closeAllSessions(t.Context(), t.Context())
+		wg.Wait()
+		logs := f.logs.String()
+		lost := 0
+		for _, id := range ids {
+			switch n := lostCount(logs, id); {
+			case n > 1:
+				t.Fatalf("%s named lost %d times: %s", id, n, logs)
+			case n == 1:
+				lost++
+			}
+		}
+		// One-sided on purpose: a session the monitor wrote just before the
+		// hand-over may be named lost too, which the log allows.
+		if written := len(f.reports(t)); written+lost < sessions {
+			t.Fatalf("%d written and %d lost for %d sessions: a session is neither", written, lost, sessions)
+		}
+	}
+}
+
+// attemptFixture is a session held by a monitor whose normal report fails, so
+// that its attempt goes on to the JSON fallback at once.
+func attemptFixture(t *testing.T) (*retentionFixture, *heldBatch, *closingSession) {
+	t.Helper()
+	f := newRetention(t, Config{ReportRetries: 0})
+	f.hcc.GenerateReportFunc = func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+		return plugins.GeneratedReport{}, errors.New("generator down")
+	}
+	f.ready("tom")
+	held := takeHeld(f)
+	return f, held, held.sessions[0]
+}
+
+// monitorGivesBack is what the monitor does after an attempt, then Close.
+func monitorGivesBack(t *testing.T, f *retentionFixture, held *heldBatch, cs *closingSession, done bool) {
+	t.Helper()
+	var still []*closingSession
+	if done {
+		f.p.release(held, cs)
+	} else {
+		still = []*closingSession{cs}
+	}
+	f.p.putBack(t.Context(), held, still)
+	close(f.p.done)
+	f.p.started = true
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+	if err := f.p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSession_aFallbackWrittenBeforeTheStopIsNotRewrittenOrLost(t *testing.T) {
+	for range 20 {
+		f, held, cs := attemptFixture(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		f.hcc.NotifyErrorFunc = func(_ context.Context, key string, _ error) {
+			if key == fallbackEvent {
+				cancel()
+			}
+		}
+		if !f.p.attempt(ctx, cs) {
+			t.Fatal("the fallback is written: the session is done")
+		}
+		monitorGivesBack(t, f, held, cs, true)
+		cancel()
+		if got := f.reports(t); len(got) != 1 {
+			t.Fatalf("reports = %v, want exactly one", got)
+		}
+		if strings.Contains(f.logs.String(), "is lost") {
+			t.Fatalf("a written report is named lost: %s", f.logs.String())
+		}
+	}
+}
+
+func TestSession_aFallbackCutByTheStopIsLeftToClose(t *testing.T) {
+	for range 20 {
+		f, held, cs := attemptFixture(t)
+		ctx, cancel := context.WithCancel(t.Context())
+		var cut atomic.Bool
+		prev := closeReportFile
+		t.Cleanup(func() { closeReportFile = prev })
+		closeReportFile = func(file *os.File) error {
+			if cut.CompareAndSwap(false, true) {
+				cancel()
+				return errors.Join(file.Close(), ctx.Err())
+			}
+			return file.Close()
+		}
+		if f.p.attempt(ctx, cs) {
+			t.Fatal("a fallback cut by the stop must leave the session to Close")
+		}
+		if strings.Contains(f.logs.String(), "is lost") {
+			t.Fatalf("the monitor announced a loss the stop caused: %s", f.logs.String())
+		}
+		monitorGivesBack(t, f, held, cs, false)
+		if got := f.reports(t); len(got) != 1 {
+			t.Fatalf("reports = %v, want exactly one, written by Close", got)
+		}
+		if strings.Contains(f.logs.String(), "is lost") {
+			t.Fatalf("the session is named lost: %s", f.logs.String())
+		}
+	}
+}
+
+func TestSession_aFallbackThatFailsForAnotherReasonIsLostOnceAndNotRetried(t *testing.T) {
+	for range 20 {
+		f, held, cs := attemptFixture(t)
+		var failed atomic.Bool
+		prev := closeReportFile
+		t.Cleanup(func() { closeReportFile = prev })
+		closeReportFile = func(file *os.File) error {
+			if failed.CompareAndSwap(false, true) {
+				return errors.Join(file.Close(), errors.New("disk full"))
+			}
+			return file.Close()
+		}
+		if !f.p.attempt(t.Context(), cs) {
+			t.Fatal("a session lost for good is done")
+		}
+		monitorGivesBack(t, f, held, cs, true)
+		if n := lostCount(f.logs.String(), "tom"); n != 1 {
+			t.Fatalf("tom named lost %d times, want once: %s", n, f.logs.String())
+		}
+		if n := f.events(lostEvent); n != 1 {
+			t.Fatalf("lost events = %d, want 1", n)
+		}
+		if got := f.reports(t); len(got) != 0 {
+			t.Fatalf("reports = %v, want none: Close must not retry a session lost for good", got)
+		}
+	}
+}
+
+// checkAndCloseSessions makes one pass of the monitor of the current run.
+func (p *SessionPlugin) checkAndCloseSessions(ctx context.Context) {
+	p.checkSessions(ctx, p.runGeneration())
+}
+
+// baseCtx is the context the monitor of a test is given.
+func (p *SessionPlugin) baseCtx() context.Context {
+	if p.runCtx != nil {
+		return p.runCtx
+	}
+	return context.Background()
+}
+
+// A monitor that outlived a Close with a deadline and returns after the plugin
+// was started again parks nothing in the new run, and its batch, which Close
+// reported lost, is not reported twice.
+func TestSession_aMonitorOfAnEarlierRunParksNothingInTheNewOne(t *testing.T) {
+	for range 5 {
+		f := newRetention(t, Config{})
+		f.hcc.GenerateReportFunc = blockedGenerator
+		f.ready("tom")
+		held := takeHeld(f)
+		f.p.started = true
+		ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Minute))
+		if err := f.p.Close(ctx); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		if n := lostCount(f.logs.String(), "tom"); n != 1 {
+			t.Fatalf("tom named lost %d times by Close, want once: %s", n, f.logs.String())
+		}
+		f.p.resetRun()
+		f.p.putBack(t.Context(), held, held.sessions)
+		f.p.closeMu.Lock()
+		parked := len(f.p.closing)
+		f.p.closeMu.Unlock()
+		if parked != 0 {
+			t.Fatalf("the old monitor parked %d sessions in the new run", parked)
+		}
+		if n := lostCount(f.logs.String(), "tom"); n != 1 {
+			t.Fatalf("tom named lost %d times, want once: %s", n, f.logs.String())
+		}
+	}
+}
+
+// A batch of an earlier run that Close did not take is a late loss too: logged,
+// counted and notified, never parked in the new run.
+func TestSession_anUntakenBatchOfAnEarlierRunIsLateNotParked(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.ready("tom")
+	old := takeHeld(f)
+	f.p.resetRun()
+	f.p.putBack(t.Context(), old, old.sessions)
+	f.p.closeMu.Lock()
+	parked := len(f.p.closing)
+	f.p.closeMu.Unlock()
+	if parked != 0 {
+		t.Fatalf("parked %d sessions of an earlier run", parked)
+	}
+	if !lostIn(f.logs.String(), "tom") || !strings.Contains(f.logs.String(), "arrived after the stop") {
+		t.Errorf("the late batch is not logged and counted: %s", f.logs.String())
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want one", n)
+	}
+}
+
+// The monitor and the cleanup goroutine of a run use what they were started
+// with: renewing the plugin's channels and context while they end is not a race.
+func TestSession_theMonitorOfAnEarlierRunEndsWithItsOwnChannels(t *testing.T) {
+	f := newRetention(t, Config{RemoveEmptyDirs: true})
+	f.p.tickEvery = time.Millisecond
+	oldStop, oldDone, oldCtx := f.p.stop, f.p.done, f.p.runCtx
+	go f.p.sessionMonitor(oldCtx, oldStop, oldDone, f.p.runGeneration())
+	f.p.resetRun()
+	close(oldStop)
+	select {
+	case <-oldDone:
+	case <-time.After(monitorEndWait):
+		t.Fatal("the monitor of the earlier run did not end")
+	}
+	select {
+	case <-f.p.done:
+		t.Fatal("the new run was ended by the old monitor")
+	default:
+	}
+	f.p.cancelRun()
+}
+
+// monitorEndWait bounds how long a test waits for a monitor that must end.
+const monitorEndWait = 10 * time.Second
+
+// takeBatch of a monitor of an earlier run takes nothing.
+func TestSession_aMonitorOfAnEarlierGenerationTakesNothing(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.ready("tom")
+	oldGen := f.p.runGeneration()
+	f.p.resetRun()
+	if hb := f.p.takeBatch(oldGen, nil); hb != nil {
+		t.Fatal("a monitor of an earlier generation took a batch")
+	}
+	f.p.checkSessions(t.Context(), oldGen)
+	if f.session("tom") == nil {
+		t.Error("a monitor of an earlier generation took a session of the new run")
+	}
+}
+
+// startRealPlugin initializes a plugin with its real monitor, over folders of the
+// test, and a generator that is stuck until release is closed and ignores its
+// context.
+func startRealPlugin(t *testing.T, tick time.Duration) (p *SessionPlugin, cfg *Config, hcc *mock.MockHCContext, entered chan struct{}, release chan struct{}) {
+	t.Helper()
+	prev := previousRunWait
+	previousRunWait = 150 * time.Millisecond
+	t.Cleanup(func() { previousRunWait = prev })
+	hcc = mock.NewMockHCContext()
+	hcc.WorkDir = filepath.Join(t.TempDir(), "gmhost-x")
+	entered, release = make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	hcc.GenerateReportFunc = func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+		once.Do(func() { close(entered) })
+		<-release
+		return plugins.GeneratedReport{}, errors.New("generator stopped")
+	}
+	root := t.TempDir()
+	cfg = &Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, Depth: 1, RootFolder: root, Delay: 1, Exports: []string{t.TempDir()}}
+	p = &SessionPlugin{tickEvery: tick}
+	if err := p.Init(cfg, hcc); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(root, "tom", "a.txt")
+	p.OnStartScanFile(file, "h")
+	p.OnFileScanned(file, "h", datamodel.Result{})
+	p.OnReport(&datamodel.Report{Filename: file, SHA256: "h"})
+	return p, cfg, hcc, entered, release
+}
+
+// A run whose monitor is stuck is not followed by a new one: Init fails, and
+// changes nothing, until the monitor ends. Then it succeeds, and nothing of the
+// old run reaches the new one.
+func TestSession_initWaitsForThePreviousRunAndFailsIfItIsStuck(t *testing.T) {
+	p, cfg, hcc, entered, release := startRealPlugin(t, time.Millisecond)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+	})
+	select {
+	case <-entered:
+	case <-time.After(monitorEndWait):
+		t.Fatal("the monitor never reached the generator")
+	}
+	oldDone, oldSessions, oldGen := p.done, p.sessions, p.runGeneration()
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Minute))
+	defer cancel()
+	if err := p.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(cfg, hcc); !errors.Is(err, errPreviousRun) {
+		t.Fatalf("Init with a stuck previous run = %v, want %v", err, errPreviousRun)
+	}
+	if p.done != oldDone || fmt.Sprintf("%p", p.sessions) != fmt.Sprintf("%p", oldSessions) || p.runGeneration() != oldGen {
+		t.Error("a failed Init changed the state of the plugin")
+	}
+	close(release)
+	released = true
+	select {
+	case <-oldDone:
+	case <-time.After(monitorEndWait):
+		t.Fatal("the old monitor did not end once its generator returned")
+	}
+	if err := p.Init(cfg, hcc); err != nil {
+		t.Fatalf("Init after the previous run ended = %v", err)
+	}
+	p.closeMu.Lock()
+	known, parked, held, stopping := len(p.known), len(p.closing), p.held, p.stopping
+	p.closeMu.Unlock()
+	if known != 0 || parked != 0 || held != nil || stopping {
+		t.Errorf("the new run carries the old one: known %d, closing %d, held %v, stopping %v", known, parked, held, stopping)
+	}
+	if len(p.sessions) != 0 {
+		t.Errorf("the new run has %d sessions of the old one", len(p.sessions))
+	}
+	if err := p.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Init after a Close whose monitor ended is the normal path.
+func TestSession_initAfterACleanCloseSucceeds(t *testing.T) {
+	p, cfg, hcc, _, release := startRealPlugin(t, time.Millisecond)
+	close(release)
+	if err := p.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Init(cfg, hcc); err != nil {
+		t.Fatalf("Init after a clean Close = %v", err)
+	}
+	if err := p.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A Close still running when the scanner gave up on it is waited for: the new run
+// does not start beside it, and the old Close does not mark the new run as not
+// started when it ends.
+func TestSession_initWaitsForACloseStillRunning(t *testing.T) {
+	// The monitor never ticks: it ends at once, and it is Close itself that is
+	// stuck, in the generator.
+	p, cfg, hcc, entered, release := startRealPlugin(t, time.Hour)
+	released := false
+	t.Cleanup(func() {
+		if !released {
+			close(release)
+		}
+	})
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- p.Close(context.Background()) }()
+	select {
+	case <-entered:
+	case <-time.After(monitorEndWait):
+		t.Fatal("Close never reached the generator")
+	}
+	select {
+	case <-p.done:
+	case <-time.After(monitorEndWait):
+		t.Fatal("the monitor did not end")
+	}
+	if err := p.Init(cfg, hcc); !errors.Is(err, errPreviousRun) {
+		t.Fatalf("Init beside a Close still running = %v, want %v", err, errPreviousRun)
+	}
+	close(release)
+	released = true
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(monitorEndWait):
+		t.Fatal("Close did not return once its generator did")
+	}
+	if err := p.Init(cfg, hcc); err != nil {
+		t.Fatalf("Init once the Close returned = %v", err)
+	}
+	if !p.started {
+		t.Fatal("the new run is not started: the old Close marked it stopped")
+	}
+	if err := p.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// Sessions a monitor of an earlier run found are lost by name and counted, never
+// put back: the current run may hold a session of the same name.
+func TestSession_lateLossNeverPutsASessionBack(t *testing.T) {
+	f := newRetention(t, Config{})
+	f.ready("tom")
+	current := f.session("tom")
+	old := newClosing(&Session{ID: "tom"})
+	f.p.lateLoss(t.Context(), []*closingSession{old}, errEarlierRun)
+	if f.session("tom") != current {
+		t.Error("the session of the current run was replaced by one of an earlier run")
+	}
+	if !lostIn(f.logs.String(), "tom") || !strings.Contains(f.logs.String(), "arrived after the stop") {
+		t.Errorf("the late loss is not logged and counted: %s", f.logs.String())
+	}
+	if n := f.events(lostEvent); n != 1 {
+		t.Errorf("lost events = %d, want one", n)
 	}
 }

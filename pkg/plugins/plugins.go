@@ -6,6 +6,7 @@ import (
 	"io"
 	"iter"
 	"log/slog"
+	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -74,15 +75,26 @@ var (
 	ErrExtractorUnavailable = errors.New("the extractor is unavailable")
 )
 
+// CloseGrace is how long, in all, the connector still waits for the plugins
+// closing once the deadline of the context of their Close is over. A plugin
+// must end any work still running at that deadline, such as a fallback written
+// at the last moment, within CloseGrace of it: after that the process ends and
+// the result is lost. It stays under the grace of the process guard of the stop.
+const CloseGrace = 900 * time.Millisecond
+
 // Plugin interface must be implemented by host-connector plugins.
 //
 // Close has no effect when called a second time, or on a plugin whose Init was
 // never called or failed. An Init that fails leaves nothing behind: no
 // goroutine, file or process.
 //
+// Init may be called again after Close; it fails if work of the previous run is
+// still going, rather than start a new run beside it.
+//
 // At stop the connector calls the Close of all its plugins concurrently, under
 // one context whose deadline ends the closing time: a plugin must not rely on
-// the order of the Close calls, nor on another plugin still being open.
+// the order of the Close calls, nor on another plugin still being open. The
+// work a Close still has at the deadline is bound by CloseGrace.
 type Plugin interface {
 	// GetDefaultConfig MUST be used to get a default config, where we can unmarshall read yaml config, and pass it to Init
 	GetDefaultConfig() (config any)

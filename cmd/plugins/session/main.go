@@ -57,11 +57,26 @@ type SessionPlugin struct {
 
 	// closing holds the sessions whose report is not written yet; closeMu
 	// guards it and known.
-	closeMu  sync.Mutex
-	closing  []*closingSession
-	known    map[string]string
-	fallback atomic.Bool
-	backlog  atomic.Bool
+	closeMu sync.Mutex
+	closing []*closingSession
+	// held is the batch the monitor is working on, which closing does not hold
+	// meanwhile; stopping is set once Close took the sessions, after which the
+	// monitor puts nothing back.
+	held     *heldBatch
+	stopping bool
+	// closed is closed by the Close of the run, as the very last thing it does:
+	// Init waits for it, so that a Close still running is not overtaken by the next
+	// run.
+	closed chan struct{}
+	// gen counts the runs (Init after Close on the same instance): a monitor of an
+	// older run parks nothing in the current one.
+	gen uint64
+	// onMonitorWait is only set by tests: Close calls it, with no lock held, when
+	// it starts to wait for a monitor that has not ended.
+	onMonitorWait func()
+	known         map[string]string
+	fallback      atomic.Bool
+	backlog       atomic.Bool
 
 	// now and tickEvery are replaced in tests.
 	now       func() time.Time
@@ -114,11 +129,25 @@ const (
 	// connector runs.
 	fallbackBound = 10 * time.Second
 	// stopReserve is the most of the deadline of Close kept for the JSON
-	// fallbacks; expiredBound is all the time they get when the deadline has
-	// expired already: the guard of the shutdown kills the process a second
-	// after it.
-	stopReserve  = 10 * time.Second
-	expiredBound = time.Second
+	// fallbacks.
+	stopReserve = 10 * time.Second
+	// closeMargin is kept between the end of the fallbacks and the end of the
+	// grace the connector gives to the plugins, so that the last write is not
+	// cut with the process; fallbackFloor is the least time the fallbacks get.
+	// The floor may go past the grace when the deadline expired long ago: a
+	// fallback is written by an atomic rename, so a process ended meanwhile leaves
+	// no half-written report.
+	closeMargin   = 300 * time.Millisecond
+	fallbackFloor = 250 * time.Millisecond
+	// lostEventBound bounds the one notification of the reports lost at stop,
+	// whatever their number.
+	lostEventBound = 100 * time.Millisecond
+	// maxMonitorWait caps the wait of Close for the monitor, so that a slow one
+	// does not eat the time of the generators.
+	maxMonitorWait = time.Second
+	// maxLostIDs bounds the session IDs named in the notification of lost
+	// reports; the log names them all.
+	maxLostIDs = 10
 
 	// maxReportBase bounds the base name of a report (without its extension) so
 	// that the name stays below 255 bytes whatever the folder is called.
@@ -261,6 +290,9 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	if err := checkConfig(config, hcc, true); err != nil {
 		return err
 	}
+	if err := p.waitPreviousRun(); err != nil {
+		return err
+	}
 	workDir := hcc.GetWorkDir()
 
 	root, err := filepath.Abs(config.RootFolder)
@@ -274,12 +306,11 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	p.config = *config
 	p.config.RootFolder = root
 	p.workDir = workDir
+	p.mutex.Lock()
 	p.sessions = make(map[string]*Session)
-	p.closing, p.known = nil, make(map[string]string)
+	p.mutex.Unlock()
 	p.hcc = hcc
-	p.stop = make(chan struct{})
-	p.done = make(chan struct{})
-	p.runCtx, p.cancelRun = context.WithCancel(context.Background())
+	p.resetRun()
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "session"))
 	p.consoleLogger = hcc.GetConsoleLogger()
 
@@ -289,7 +320,7 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	hcc.RegisterOnReport(p.OnReport)
 
 	p.startCleanup()
-	go p.sessionMonitor()
+	go p.sessionMonitor(p.runCtx, p.stop, p.done, p.runGeneration())
 
 	p.logger.Info("plugin initialized",
 		slog.Int("depth", config.Depth),
@@ -304,20 +335,55 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 
 // Close stops session monitoring, then writes the report of every session, open
 // or waiting. The attempts of the monitor are cancelled first and give their
-// sessions back, so none is missed.
+// sessions back; the monitor is waited for half of the time the fallbacks have,
+// one second at most. A ctx with no deadline waits for it without bound.
+// The sessions of a monitor that does not return in that time are lost, named
+// in the log, since only it knows them.
 func (p *SessionPlugin) Close(ctx context.Context) error {
 	if !p.started {
 		return nil
 	}
+	// Deferred first, so that it runs last: after p.started is false.
+	defer close(p.closed)
 	if p.cancelRun != nil {
 		p.cancelRun()
 	}
 	close(p.stop)
-	<-p.done
-	p.closeAllSessions(ctx)
+	fbCtx, cancel := fallbackContext(ctx)
+	defer cancel()
+	if !p.waitMonitor(ctx, fbCtx) {
+		p.logger.Warn("the session monitor did not end in time, the reports are written anyway")
+	}
+	p.closeAllSessions(ctx, fbCtx)
 	p.waitCleanup(ctx)
 	p.started = false
 	return nil
+}
+
+// waitMonitor waits for the monitor to end, up to the midpoint between now and
+// the end of fbCtx: the other half is kept for the fallbacks. It tells whether
+// the monitor ended.
+func (p *SessionPlugin) waitMonitor(ctx, fbCtx context.Context) bool {
+	select {
+	case <-p.done:
+		return true
+	default:
+	}
+	if p.onMonitorWait != nil {
+		p.onMonitorWait()
+	}
+	limit := ctx
+	if end, ok := fbCtx.Deadline(); ok {
+		var cancel context.CancelFunc
+		limit, cancel = context.WithTimeout(context.WithoutCancel(ctx), min(time.Until(end)/2, maxMonitorWait))
+		defer cancel()
+	}
+	select {
+	case <-p.done:
+		return true
+	case <-limit.Done():
+		return false
+	}
 }
 
 // waitCleanup gives the cleanup goroutine, already cancelled, a moment to end:
@@ -529,12 +595,49 @@ func (p *SessionPlugin) tick() time.Duration {
 	return 5 * time.Second
 }
 
-// baseCtx is the context of the attempts of the monitor.
-func (p *SessionPlugin) baseCtx() context.Context {
-	if p.runCtx != nil {
-		return p.runCtx
+// resetRun starts a new run: the lists of sessions waiting and of known errors are
+// emptied, the generation moves on, and the channels and the context of the
+// monitor are renewed. A monitor of an earlier run keeps the ones it was started
+// with.
+func (p *SessionPlugin) resetRun() {
+	p.closeMu.Lock()
+	p.closing, p.known = nil, make(map[string]string)
+	p.held, p.stopping = nil, false
+	p.gen++
+	p.closeMu.Unlock()
+	p.stop = make(chan struct{})
+	p.done = make(chan struct{})
+	p.closed = make(chan struct{})
+	p.cleanupQueue, p.cleanupDone = nil, nil
+	p.runCtx, p.cancelRun = context.WithCancel(context.Background())
+}
+
+// previousRunWait bounds how long Init waits for the goroutines of a previous
+// run to end; replaced in tests.
+var previousRunWait = 2 * time.Second
+
+// errPreviousRun is what Init returns while goroutines of the previous run are
+// still going.
+var errPreviousRun = errors.New("the previous run of the session plugin has not ended")
+
+// waitPreviousRun waits, for previousRunWait in all, for the monitor and the
+// cleanup goroutine of the previous run to end, and for its Close to return. A new run must not start beside
+// them: they would work with the configuration, the sessions and the lists of
+// the new one.
+func (p *SessionPlugin) waitPreviousRun() error {
+	timer := time.NewTimer(previousRunWait)
+	defer timer.Stop()
+	for _, ended := range []chan struct{}{p.done, p.cleanupDone, p.closed} {
+		if ended == nil {
+			continue
+		}
+		select {
+		case <-ended:
+		case <-timer.C:
+			return errPreviousRun
+		}
 	}
-	return context.Background()
+	return nil
 }
 
 func (s *Session) nowTime() time.Time {
@@ -670,18 +773,22 @@ func (p *SessionPlugin) readyForClosure(s *Session) bool {
 	return true
 }
 
-func (p *SessionPlugin) sessionMonitor() {
-	defer close(p.done)
+// sessionMonitor runs until stop is closed, then closes done. It takes its
+// context and channels as parameters: Init may renew the ones of the plugin while
+// a monitor of an earlier run, left behind by a Close with a deadline, is still
+// ending.
+func (p *SessionPlugin) sessionMonitor(ctx context.Context, stop <-chan struct{}, done chan<- struct{}, gen uint64) {
+	defer close(done)
 
 	ticker := time.NewTicker(p.tick())
 	defer ticker.Stop()
 
 	for {
 		select {
-		case <-p.stop:
+		case <-stop:
 			return
 		case <-ticker.C:
-			p.checkAndCloseSessions()
+			p.checkSessions(ctx, gen)
 		}
 	}
 }
@@ -697,12 +804,39 @@ const (
 	viaJSON
 )
 
+// fallbackDeadline is the end of the time the JSON fallbacks of a stop have:
+// the grace the connector gives to the plugins past ctxDeadline, less a margin,
+// and never less than fallbackFloor after now.
+func fallbackDeadline(ctxDeadline, now time.Time) time.Time {
+	deadline := ctxDeadline.Add(plugins.CloseGrace - closeMargin)
+	return later(deadline, now.Add(fallbackFloor))
+}
+
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
+}
+
+// fallbackContext returns a context, detached from the cancellation of ctx,
+// that ends at fallbackDeadline. Without a deadline in ctx there is no end to
+// anchor on: it is ctx itself, and the stop is bounded by whoever cancels it.
+func fallbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return ctx, func() {}
+	}
+	return context.WithDeadline(context.WithoutCancel(ctx), fallbackDeadline(deadline, time.Now()))
+}
+
 // closeAllSessions writes the report of every session, open or waiting. The
 // generators get the deadline of ctx less a reserve (half of what is left, at
-// most stopReserve) and the JSON fallbacks are written in that reserve; when the
-// deadline has expired already they get one second in all. It never asks the
-// core for pending files.
-func (p *SessionPlugin) closeAllSessions(ctx context.Context) {
+// most stopReserve); the JSON fallbacks, under fbCtx, may use the grace of the
+// connector past that deadline. The time is shared by all the sessions: those
+// not reached when it is over are lost and counted. The sessions the monitor
+// still holds are lost too. It never asks the core for pending files.
+func (p *SessionPlugin) closeAllSessions(ctx, fbCtx context.Context) {
 	p.mutex.Lock()
 	var all []*closingSession
 	for id, session := range p.sessions {
@@ -714,40 +848,62 @@ func (p *SessionPlugin) closeAllSessions(ctx context.Context) {
 	p.closeMu.Lock()
 	all = slices.Concat(p.closing, all)
 	p.closing = nil
+	var pending []*closingSession
+	if held := p.held; held != nil {
+		held.taken = true
+		pending, held.pending = held.pending, nil
+		p.held = nil
+	}
+	p.stopping = true
 	p.closeMu.Unlock()
+	var lostSet lostSessions
+	onLost := func(cs *closingSession, cause error) {
+		p.logLost(cs, cause)
+		lostSet.add(cs.session.ID)
+	}
+	heldCount := len(pending)
+	for _, cs := range pending {
+		onLost(cs, errMonitorHeld)
+	}
 
-	genCtx, fbCtx := ctx, ctx
+	genCtx := ctx
 	if deadline, ok := ctx.Deadline(); ok {
-		if left := time.Until(deadline); left <= 0 {
-			var cancel context.CancelFunc
-			fbCtx, cancel = context.WithTimeout(context.WithoutCancel(ctx), expiredBound)
-			defer cancel()
-		} else {
+		if left := time.Until(deadline); left > 0 {
 			var cancel context.CancelFunc
 			genCtx, cancel = context.WithDeadline(ctx, deadline.Add(-min(left/2, stopReserve)))
 			defer cancel()
 		}
 	}
-	var written, lost int
+	var written, lost, skipped int
 	for _, cs := range all {
 		p.logClosing(cs)
-		if p.finish(genCtx, fbCtx, cs) {
+		if fbCtx.Err() != nil {
+			onLost(cs, fbCtx.Err())
+			lost++
+			skipped++
+			continue
+		}
+		if p.finish(genCtx, fbCtx, cs, onLost) {
 			written++
 		} else {
 			lost++
 		}
 	}
-	p.logger.Info("sessions closed at stop", slog.Int("sessions", len(all)), slog.Int("reports_written", written), slog.Int("failures", lost))
+	if skipped > 0 {
+		p.logger.Warn("the time of the stop is over, sessions not attempted", slog.Int("sessions", skipped))
+	}
+	p.notifyLost(fbCtx, lostSet)
+	p.logger.Info("sessions closed at stop", slog.Int("sessions", len(all)+heldCount), slog.Int("reports_written", written), slog.Int("failures", lost+heldCount))
 }
 
 // finish writes the report of a session through the generator, then through the
 // JSON fallback if that fails. It tells whether the report was written.
-func (p *SessionPlugin) finish(genCtx, fbCtx context.Context, cs *closingSession) bool {
+func (p *SessionPlugin) finish(genCtx, fbCtx context.Context, cs *closingSession, onLost lostFunc) bool {
 	err := p.tryReport(genCtx, cs)
 	if err == nil {
 		return true
 	}
-	return p.fallbackOrLose(fbCtx, cs, err)
+	return p.fallbackOrLose(fbCtx, cs, err, onLost)
 }
 
 // tryReport makes one attempt, bounded by report_timeout, at the report of a
@@ -776,7 +932,7 @@ func (p *SessionPlugin) startCleanup() {
 	p.removeDirs = removeEmptyDirs
 	p.cleanupQueue = make(chan string, maxCleanupQueue)
 	p.cleanupDone = make(chan struct{})
-	go p.cleanupLoop()
+	go p.cleanupLoop(p.runCtx, p.cleanupQueue, p.cleanupDone)
 }
 
 // queueCleanup asks for the removal of the empty folders of a session. It never
@@ -795,17 +951,19 @@ func (p *SessionPlugin) queueCleanup(id string) {
 	}
 }
 
-func (p *SessionPlugin) cleanupLoop() {
-	defer close(p.cleanupDone)
+// cleanupLoop takes its context and channels as parameters, for the same reason
+// as sessionMonitor.
+func (p *SessionPlugin) cleanupLoop(ctx context.Context, queue <-chan string, done chan<- struct{}) {
+	defer close(done)
 	for {
 		select {
-		case <-p.runCtx.Done():
+		case <-ctx.Done():
 			return
-		case id := <-p.cleanupQueue:
-			if len(p.cleanupQueue) == 0 {
+		case id := <-queue:
+			if len(queue) == 0 {
 				p.cleanupDropped.Store(false)
 			}
-			p.cleanup(id)
+			p.cleanup(ctx, id)
 		}
 	}
 }
@@ -813,8 +971,8 @@ func (p *SessionPlugin) cleanupLoop() {
 // cleanup removes the empty folders below the folder of a session within
 // cleanup_timeout. The root folder, the folder of the session and the work
 // directory stay.
-func (p *SessionPlugin) cleanup(id string) {
-	ctx, cancel := context.WithTimeout(p.runCtx, p.config.CleanupTimeout)
+func (p *SessionPlugin) cleanup(parent context.Context, id string) {
+	ctx, cancel := context.WithTimeout(parent, p.config.CleanupTimeout)
 	defer cancel()
 	stats, err := p.removeDirs(ctx, p.config.RootFolder, filepath.FromSlash(id), p.config.Delay, p.workDir)
 	attrs := []any{slog.String(sessionIDLogKey, id), slog.Int("removed", stats.removed), slog.Int("kept", stats.kept), slog.Int("failed", stats.failed)}
@@ -832,7 +990,7 @@ func (p *SessionPlugin) cleanup(id string) {
 
 // fallbackOrLose writes the JSON report of a session after cause made the normal
 // one fail. When that fails too the report is lost: said loudly, never retried.
-func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, cause error) bool {
+func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, cause error, onLost lostFunc) bool {
 	p.logger.Error("the session report failed, a JSON fallback is written",
 		slog.String(sessionIDLogKey, cs.session.ID), slog.String("error", cause.Error()))
 	err := p.writeSessionReport(ctx, cs, viaJSON)
@@ -843,23 +1001,67 @@ func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, 
 		}
 		return true
 	}
-	p.loseReport(ctx, cs, err)
+	onLost(cs, err)
 	return false
 }
 
-// loseReport says that the report of a session could not be written.
-func (p *SessionPlugin) loseReport(ctx context.Context, cs *closingSession, cause error) {
+// lostFunc is told of each session whose report could not be written.
+type lostFunc = func(cs *closingSession, cause error)
+
+// errMonitorHeld is why the report of a session held by the monitor at stop is
+// lost: the monitor did not give it back in time.
+var errMonitorHeld = errors.New("held by the session monitor, which did not end in time; the report may have been written meanwhile")
+
+// logLost says, in the logs, that the report of a session could not be written.
+func (p *SessionPlugin) logLost(cs *closingSession, cause error) {
 	msg := fmt.Sprintf("the report of session %q is lost: %v", cs.session.ID, cause)
 	p.logger.Error(msg, slog.String(sessionIDLogKey, cs.session.ID))
 	p.consoleLogger.Error(msg)
-	p.hcc.NotifyError(context.WithoutCancel(ctx), lostEvent, errors.New(msg))
 }
 
-// checkAndCloseSessions moves the sessions that are ready to the closing list,
+// loseReport says that the report of a session could not be written, in the
+// logs and with a notification.
+func (p *SessionPlugin) loseReport(ctx context.Context, cs *closingSession, cause error) {
+	p.logLost(cs, cause)
+	var one lostSessions
+	one.add(cs.session.ID)
+	p.notifyLost(ctx, one)
+}
+
+// lostSessions counts the sessions lost, and keeps the IDs of the first
+// maxLostIDs for the notification; the log names every one.
+type lostSessions struct {
+	ids   []string
+	count int
+}
+
+func (l *lostSessions) add(id string) {
+	l.count++
+	if len(l.ids) < maxLostIDs {
+		l.ids = append(l.ids, id)
+	}
+}
+
+// notifyLost raises one notification for the sessions lost, under one bound
+// whatever their number; the log names each of them.
+func (p *SessionPlugin) notifyLost(ctx context.Context, lost lostSessions) {
+	if lost.count == 0 {
+		return
+	}
+	msg := fmt.Sprintf("the report of %d session(s) is lost, first: %s", lost.count, strings.Join(lost.ids, ", "))
+	notify, cancel := context.WithTimeout(context.WithoutCancel(ctx), lostEventBound)
+	defer cancel()
+	p.hcc.NotifyError(notify, lostEvent, errors.New(msg))
+}
+
+// checkSessions moves the sessions that are ready to the closing list,
 // makes one attempt at the report of each session waiting there, and puts back
 // those that need another. When more than maxClosing remain, the oldest get
 // their JSON fallback at once.
-func (p *SessionPlugin) checkAndCloseSessions() {
+func (p *SessionPlugin) checkSessions(ctx context.Context, gen uint64) {
+	if p.runGeneration() != gen {
+		return
+	}
 	p.mutex.Lock()
 	var ready []*closingSession
 	for sessionID, session := range p.sessions {
@@ -873,33 +1075,129 @@ func (p *SessionPlugin) checkAndCloseSessions() {
 		p.logClosing(cs)
 	}
 
-	p.closeMu.Lock()
-	batch := slices.Concat(p.closing, ready)
-	p.closing = nil
-	p.closeMu.Unlock()
+	hb := p.takeBatch(gen, ready)
+	if hb == nil {
+		p.lateLoss(ctx, ready, errEarlierRun)
+		return
+	}
+	batch := hb.sessions
 
-	ctx := p.baseCtx()
 	var still []*closingSession
 	for i, cs := range batch {
 		if ctx.Err() != nil {
 			still = append(still, batch[i:]...)
 			break
 		}
-		if !p.attempt(ctx, cs) {
+		if p.attempt(ctx, cs) {
+			p.release(hb, cs)
+		} else {
 			still = append(still, cs)
 		}
 	}
 	if n := len(still) - maxClosing; n > 0 && ctx.Err() == nil {
 		p.relieve(ctx, still[:n])
+		for _, cs := range still[:n] {
+			p.release(hb, cs)
+		}
 		still = still[n:]
 	}
-	p.closeMu.Lock()
-	p.closing = append(still, p.closing...)
-	left := len(p.closing)
-	p.closeMu.Unlock()
+	left := p.putBack(ctx, hb, still)
 	if left <= maxClosing && p.backlog.CompareAndSwap(true, false) {
 		p.hcc.NotifyResolution(ctx, backlogEvent, "the sessions no longer wait for their report")
 	}
+}
+
+// heldBatch is the sessions the monitor works on. sessions is the batch, which
+// only the monitor reads; pending is what the monitor still holds, guarded by
+// closeMu, and shrinks as the reports are done; taken tells that Close took
+// pending, to report it lost.
+type heldBatch struct {
+	sessions []*closingSession
+	pending  []*closingSession
+	taken    bool
+	gen      uint64
+}
+
+// runGeneration is the number of the current run.
+func (p *SessionPlugin) runGeneration() uint64 {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	return p.gen
+}
+
+// takeBatch takes the waiting sessions and ready for an attempt, and records
+// them as held so that Close can name them if the monitor does not return. It
+// takes nothing and returns nil for a monitor of an earlier run (gen is not the
+// current generation): Init waits for such a monitor to end, this is the second
+// line of defence.
+func (p *SessionPlugin) takeBatch(gen uint64, ready []*closingSession) *heldBatch {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	if gen != p.gen {
+		return nil
+	}
+	batch := slices.Concat(p.closing, ready)
+	hb := &heldBatch{sessions: batch, pending: slices.Clone(batch), gen: gen}
+	p.closing = nil
+	p.held = hb
+	return hb
+}
+
+// release says that the report of a session is done, written or lost: Close does
+// not count it as held any more. It does nothing once Close took the batch, which
+// then owns pending.
+func (p *SessionPlugin) release(hb *heldBatch, cs *closingSession) {
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	if hb.taken {
+		return
+	}
+	hb.pending = slices.DeleteFunc(hb.pending, func(held *closingSession) bool { return held == cs })
+}
+
+// putBack gives back the sessions that need another attempt, and tells how many
+// wait. Once Close took the sessions it gives back nothing: those of the batch
+// still pending are already reported lost, and none must be parked after the
+// stop. A batch taken after Close took the sessions was not seen by Close: its
+// sessions are logged lost, counted in a Warn, and notified in one event of
+// their own, since they come too late for the summary of Close.
+func (p *SessionPlugin) putBack(ctx context.Context, hb *heldBatch, still []*closingSession) int {
+	p.closeMu.Lock()
+	if p.held == hb {
+		p.held = nil
+	}
+	if !p.stopping && hb.gen == p.gen {
+		p.closing = append(still, p.closing...)
+		defer p.closeMu.Unlock()
+		return len(p.closing)
+	}
+	waiting := len(p.closing)
+	late := !hb.taken
+	p.closeMu.Unlock()
+	if late {
+		p.lateLoss(ctx, still, errMonitorHeld)
+	}
+	return waiting
+}
+
+// errEarlierRun is why the sessions a monitor of an earlier run found are lost.
+var errEarlierRun = errors.New("taken by a monitor of an earlier run")
+
+// lateLoss reports lost the sessions that reach the plugin after the stop took
+// the others: each is logged, they are counted in a Warn (they are not in the
+// summary of Close), and one notification names them. They are never put back:
+// the current run may hold a session of the same name.
+func (p *SessionPlugin) lateLoss(ctx context.Context, sessions []*closingSession, cause error) {
+	if len(sessions) == 0 {
+		return
+	}
+	var lost lostSessions
+	for _, cs := range sessions {
+		p.logLost(cs, cause)
+		lost.add(cs.session.ID)
+	}
+	p.logger.Warn("sessions arrived after the stop took the others, they are lost and not in its summary", slog.Int("sessions", lost.count))
+	p.notifyLost(ctx, lost)
 }
 
 // relieve writes the JSON report of sessions that wait too long, in a bound of
@@ -939,8 +1237,13 @@ func (p *SessionPlugin) attempt(ctx context.Context, cs *closingSession) bool {
 	}
 	fbCtx, cancel := context.WithTimeout(ctx, fallbackBound)
 	defer cancel()
-	p.fallbackOrLose(fbCtx, cs, err)
-	return ctx.Err() == nil
+	// A fallback cut by the stop is not a loss: Close writes the report.
+	written := p.fallbackOrLose(fbCtx, cs, err, func(cs *closingSession, cause error) {
+		if ctx.Err() == nil {
+			p.loseReport(fbCtx, cs, cause)
+		}
+	})
+	return written || ctx.Err() == nil
 }
 
 func (p *SessionPlugin) logClosing(cs *closingSession) {

@@ -208,7 +208,7 @@ func TestExtract_trapMembersAreReportedAloneAndTheRestIsExtracted(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			sze := trapSevenZip(t, trapListing(150, tt.traps...))
 			out := t.TempDir()
-			res, err := sze.extract(t.Context(), "archive.7z", out, nil, limits)
+			res, err := sze.extract(t.Context(), fakeArchive(t), out, nil, limits)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -250,7 +250,7 @@ func equalSets(a, b []string) bool {
 func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsLeftOut(t *testing.T) {
 	traps := []string{"trap1", "trap2", "trap3", "trap4", "trap5", "trap6", "trap7", "trap8", "trap9"}
 	sze := trapSevenZip(t, trapListing(20, traps...))
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 1000, MaxTotalSize: 1 << 30})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 1000, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +268,7 @@ func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsLeftOut(t *testing.T) 
 
 func TestExtract_unidentifiableOffenderLeavesTheBatchOutAsExtractLimit(t *testing.T) {
 	sze := trapSevenZip(t, trapListing(5, "ghost"))
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -286,7 +286,7 @@ for a in "$@"; do case "$a" in -o*) out="${a#-o}";; esac; done
 for a in "$@"; do [ "$a" = l ] && { cat $list; exit 0; }; done
 for n in a b c d e; do head -c 307200 /dev/zero > "$out/$n"; done
 exit 0`)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: mib})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: mib})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ for a in "$@"; do [ "$a" = l ] && { cat <<'EOF'
 exit 0; }; done
 sleep 60`)
 	start := time.Now()
-	_, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits)
+	_, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits)
 	if !errors.Is(err, errSevenZipTimeout) || time.Since(start) > 15*time.Second {
 		t.Errorf("extract() = %v after %v, want errSevenZipTimeout, promptly", err, time.Since(start))
 	}
@@ -335,7 +335,7 @@ func TestListSink_unknownSizeWeighsTheLargestMember(t *testing.T) {
 			// Budget of 10 MiB with members of at most 4 MiB: two unknown members
 			// fit, the third does not.
 			s := newListSink(4*mib, 100, 10*mib)
-			input := listing(nil, line, strings.Replace(line, line[52:], "second", 1), strings.Replace(line, line[52:], "third", 1))
+			input := listing(nil, line, strings.Replace(line, line[53:], "second", 1), strings.Replace(line, line[53:], "third", 1))
 			if err := s.scan(strings.NewReader(input)); err != nil {
 				t.Fatal(err)
 			}
@@ -357,7 +357,7 @@ func TestExtract_exitCodeZeroWithAMemberPastTheLimitReportsOnlyThatMemberWithout
 	counter := filepath.Join(t.TempDir(), "launches")
 	// Count the launches of `x` through a wrapper around the stand-in.
 	wrapper := fakeSevenZip(t, `for a in "$@"; do [ "$a" = x ] && echo x >> `+counter+`; done; exec `+sze.sevenZipPath+` "$@"`)
-	res, err := wrapper.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
+	res, err := wrapper.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -382,7 +382,7 @@ func TestExtract_checkAfter7zAloneCatchesAMemberPastTheLimit(t *testing.T) {
 	t.Cleanup(func() { guardEnabled = prev })
 	sze := trapSevenZip(t, trapListing(5, "trap1"), true)
 	out := t.TempDir()
-	res, err := sze.extract(t.Context(), "archive.7z", out, nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
+	res, err := sze.extract(t.Context(), fakeArchive(t), out, nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ ok=no; for a in "$@"; do [ "$a" = "-Pinfected" ] && ok=yes; done
 printf x > "$out/small.txt"
 exit 0`)
 	sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -426,7 +426,7 @@ list="`+filepath.Join(t.TempDir(), "l")+`"
 for a in "$@"; do [ "$a" = l ] && { cat $list; exit 0; }; done
 touch `+marker+`
 exit 0`)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 1 << 40})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 1 << 40})
 	if err != nil || len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 1 {
 		t.Fatalf("extract() = %+v, %v", res.skipped, err)
 	}
@@ -610,7 +610,7 @@ for a in "$@"; do case "$a" in -o*) out="${a#-o}";; esac; done
 for a in "$@"; do [ "$a" = l ] && { cat $list; exit 0; }; done
 head -c 52428800 /dev/zero > "$out/liar.bin"
 exit 0`)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 5 * mib})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 5 * mib})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -638,7 +638,7 @@ exit 0`)
 	out := t.TempDir()
 	peak := peakWatcher(t, out)
 	start := time.Now()
-	res, err := sze.extract(t.Context(), "archive.7z", out, nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 1000, MaxTotalSize: 3 * mib})
+	res, err := sze.extract(t.Context(), fakeArchive(t), out, nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 1000, MaxTotalSize: 3 * mib})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +668,7 @@ func TestExtract_nineTrapsAcrossBatchesAreEightRelaunchesInTotal(t *testing.T) {
 		lines = append(lines, listingLine(n, 1))
 	}
 	sze := trapSevenZip(t, listing(nil, lines...))
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 1000, MaxTotalSize: 1 << 30})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 1000, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}

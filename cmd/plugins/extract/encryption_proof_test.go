@@ -145,7 +145,7 @@ func TestExtract_anUnreadableOutputFolderIsAHostFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-	ex, err := plugin.ExtractFile("/some/dir/a.7z", out, openLimits)
+	ex, err := plugin.ExtractFile(fakeArchiveNamed(t, "a.7z"), out, openLimits)
 	if err == nil {
 		t.Fatal("ExtractFile() succeeded with an output folder that cannot be read")
 	}
@@ -167,7 +167,7 @@ func TestExtractFile_anOutputFloodIsOneRunAndAnAnomalyWithEncryptionPossible(t *
 	sze := fakeSevenZip(t, "echo run >> "+runs+"\nyes >&2")
 	bigConfig(sze)
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-	_, err := plugin.ExtractFile("/some/dir/a.7z", t.TempDir(), openLimits)
+	_, err := plugin.ExtractFile(fakeArchiveNamed(t, "a.7z"), t.TempDir(), openLimits)
 	if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
 		t.Fatalf("error = %v, want an anomaly with the encryption possible", err)
 	}
@@ -311,7 +311,7 @@ func TestExcludesEncryption_dataBeforeOrAfterTheArchiveLeavesItPossible(t *testi
 func TestExtractFile_aTableLineThatCannotBeReadIsAnAnomalyWithEncryptionPossible(t *testing.T) {
 	sze := fakeWithListings(t, listing(nil, "garbage that is no member line"), techListing(""))
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-	_, err := plugin.ExtractFile("/some/dir/a.zip", t.TempDir(), openLimits)
+	_, err := plugin.ExtractFile(fakeArchiveNamed(t, "a.zip"), t.TempDir(), openLimits)
 	if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
 		t.Fatalf("ExtractFile() error = %v, want an anomaly with the encryption possible", err)
 	}
@@ -334,7 +334,7 @@ func TestExtractFile_aWarningIsEligibleOnlyWithoutDataBeforeOrAfter(t *testing.T
 		t.Run(tt.name, func(t *testing.T) {
 			sze := fakeWithListings(t, table, tt.technical)
 			plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-			_, err := plugin.ExtractFile("/some/dir/a.zip", t.TempDir(), openLimits)
+			_, err := plugin.ExtractFile(fakeArchiveNamed(t, "a.zip"), t.TempDir(), openLimits)
 			if !errors.Is(err, plugins.ErrArchiveAnomaly) {
 				t.Fatalf("ExtractFile() error = %v, want an anomaly", err)
 			}
@@ -369,7 +369,7 @@ func TestCheckOnly_aListingOverTheBudgetIsNotTested(t *testing.T) {
 			sze.sevenZipPath = recordingWrapper(t, sze.sevenZipPath, calls)
 			tt.limits.CheckOnly = true
 			plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-			ex, err := plugin.ExtractFile("/some/dir/a.zip", t.TempDir(), tt.limits)
+			ex, err := plugin.ExtractFile(fakeArchiveNamed(t, "a.zip"), t.TempDir(), tt.limits)
 			if tt.leftOut {
 				if err != nil || ex.SkippedCount == 0 {
 					t.Fatalf("ExtractFile() = %+v, %v, want no error and members left out for the budget", ex, err)
@@ -400,4 +400,26 @@ func recordingWrapper(t *testing.T, target, record string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// A listing that succeeded for an archive whose file cannot be read afterwards cannot
+// be weighed: that is a failure of the host, a plain error that is retried, in
+// extraction and in check; it is neither an anomaly of the archive nor a possible
+// encryption, which would let as_file with encrypted: pass deliver it.
+func TestExtractFile_aStatErrorOfTheArchiveIsAFailureOfTheHost(t *testing.T) {
+	for name, checkOnly := range map[string]bool{"extraction": false, "check": true} {
+		t.Run(name, func(t *testing.T) {
+			sze := fakeWithListings(t, listing(nil, listingLine("a.txt", 3)), techListing(""))
+			plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
+			limits := openLimits
+			limits.CheckOnly = checkOnly
+			_, err := plugin.ExtractFile(filepath.Join(t.TempDir(), "absent.zip"), t.TempDir(), limits)
+			if err == nil || !strings.Contains(err.Error(), "size of the archive could not be read") {
+				t.Fatalf("ExtractFile() = %v, want an error that says the size could not be read", err)
+			}
+			if errors.Is(err, plugins.ErrArchiveAnomaly) || errors.Is(err, plugins.ErrEncryptionPossible) || errors.Is(err, plugins.ErrEncrypted) {
+				t.Errorf("ExtractFile() = %v, want a plain error: the host failed, not the archive", err)
+			}
+		})
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"hash/maphash"
 	"io"
+	"math"
 	"regexp"
 	"slices"
 	"strings"
@@ -98,11 +99,19 @@ type tableState struct {
 	// listing is the central directory, a local header can say more, so the headers
 	// of the zip are walked (see walkZipFolders).
 	folders int
+	// imageType is set for a file system or a disk image (see imageFormats).
+	imageType bool
 
-	entries         int
-	files           int
-	totalSize       int64
-	totalCompressed int64
+	entries   int
+	files     int
+	totalSize int64
+	// declared is the sizes the listing gives for the members within the size
+	// limit, and packed what every member packs to, the ones over the limit
+	// included (a solid block is listed on its first member). packedGiven says that
+	// at least one member has a packed size: bzip2 gives none, Cab and Compound may give none.
+	declared    int64
+	packed      int64
+	packedGiven bool
 }
 
 // skipList keeps the first datamodel.MaxListedSubfiles skipped members and the
@@ -229,7 +238,7 @@ func (s *listSink) startTable() {
 	if s.tables > 1 {
 		s.anomalies = noteAnomaly(s.anomalies, "the listing holds several member tables")
 	}
-	s.table = tableState{}
+	s.table = tableState{imageType: imageFormat(s.archiveType)}
 	s.hasSum = false
 }
 
@@ -333,9 +342,19 @@ func (s *listSink) addLine(line string) error {
 	if fp.Size < 0 {
 		size = s.maxFileSize
 	}
+	// A blank column is unknown, not 0. The packed size of every member counts,
+	// the ones over the size limit included: a solid block is listed on its first
+	// member, which may be over the limit. A size counts as declared only within the
+	// limit, so that what the bomb rule weighs is what would be extracted.
+	if fp.CompressedSize >= 0 {
+		t.packed = addClamped(t.packed, int64(fp.CompressedSize))
+		t.packedGiven = true
+	}
+	if fp.Size >= 0 && int64(fp.Size) <= s.maxFileSize {
+		t.declared = addClamped(t.declared, int64(fp.Size))
+	}
 	if size <= s.maxFileSize {
-		t.totalSize += max(size, 0)
-		t.totalCompressed += int64(max(fp.CompressedSize, 0))
+		t.totalSize = addClamped(t.totalSize, max(size, 0))
 	}
 	if len(fp.Name) > maxMemberNameLen {
 		s.anomalies = noteAnomaly(s.anomalies, fmt.Sprintf("a member name is longer than %d bytes", maxMemberNameLen))
@@ -433,8 +452,62 @@ func batchNames(names []string, maxCount, maxBytes int) [][]string {
 	return batches
 }
 
-// isBomb tells whether the sizes of the members are far above what the archive
-// holds: more than zipBombThreshold bytes, at a ratio over zipBombRatio.
-func (t *tableState) isBomb() bool {
-	return t.totalSize > zipBombThreshold && t.totalCompressed > 0 && t.totalSize/t.totalCompressed > zipBombRatio
+// isBomb tells whether the members declare far more than the archive holds. What
+// is weighed is what the listing gives: the sizes declared by the members within the
+// size limit, over what every member packs to, capped at the size of the archive file
+// (see packedForRatio). A bomb is more than zipBombThreshold declared, a packed size
+// given by the listing, and a ratio over zipBombRatio; with no packed byte at all the
+// ratio is infinite, which is a bomb. The file systems and the disk images (imageType,
+// keyed on a type the archive chooses) are exempt: a sparse image of a few kilobytes
+// declares gigabytes honestly. The type is the container's own choice, and some of
+// those types are real compressors (wim, Dmg, SquashFS, CramFS, QCOW), so a bomb can
+// be written in them: what they hold is bounded by max_file_size, the budget of the
+// extraction and its guard, and by nothing else. A listing that gives no packed size
+// (bzip2, and Cab or Compound when they give none: MSI, .doc, .xls) has no ratio and
+// is no bomb here: what a forged one declares is bounded by the failure of 7z and the
+// guard of the extraction. A blank packed size is not 0.
+func (t *tableState) isBomb(archiveSize int64) bool {
+	switch {
+	case t.declared <= zipBombThreshold, !t.packedGiven, t.imageType:
+		return false
+	}
+	packed := t.packedForRatio(archiveSize)
+	return packed == 0 || t.declared/packed > zipBombRatio
+}
+
+// weigh reads the size of the archive file at archivePath and says whether the
+// table is a bomb for it, with the text of what it packs to. An archive file whose
+// size cannot be read is an error: the clamp would be skipped, and a forged packed
+// size could then hide a bomb.
+func (t *tableState) weigh(archivePath string) (bomb bool, text string, err error) {
+	size, err := fileSize(archivePath)
+	if err != nil {
+		return false, "", err
+	}
+	return t.isBomb(size), t.packedText(size), nil
+}
+
+// packedForRatio is what the members pack to, never more than the archive file
+// holds: a forged entry that declares tens of gigabytes of packed bytes cannot be
+// told apart by the listing, and would dilute the ratio of the honest ones.
+func (t *tableState) packedForRatio(archiveSize int64) int64 {
+	return min(t.packed, archiveSize)
+}
+
+// packedText says what the archive packs to and the ratio, for the message of a bomb.
+func (t *tableState) packedText(archiveSize int64) string {
+	packed := t.packedForRatio(archiveSize)
+	if packed == 0 {
+		return "no packed byte"
+	}
+	return fmt.Sprintf("packed: %d, ratio: %d", packed, t.declared/packed)
+}
+
+// addClamped is a + b, kept at the largest int64 instead of wrapping: the sizes of
+// a hostile listing are not bounded by what an archive can hold.
+func addClamped(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
 }

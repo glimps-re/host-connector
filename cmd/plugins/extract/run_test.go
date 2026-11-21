@@ -136,7 +136,7 @@ func TestListAndExtractDisableWildcardsWithSpd(t *testing.T) {
 	record := filepath.Join(t.TempDir(), "args")
 	sze := scriptFor(t, listing(nil, listingLine("a.txt", 3)), `printf abc > "$out/a.txt"`, record)
 	bigConfig(sze)
-	if _, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits); err != nil {
+	if _, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Clean(record))
@@ -171,7 +171,7 @@ func TestExtract_limitsAndSkippedMembers(t *testing.T) {
 	sze := scriptFor(t, list, `printf abc > "$out/small.txt"; printf abc > "$out/second.txt"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
 	limits := plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 2, MaxTotalSize: 1 << 30}
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, limits)
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, limits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestExtract_limitsAndSkippedMembers(t *testing.T) {
 func TestExtract_zeroBudgetExtractsNothing(t *testing.T) {
 	sze := scriptFor(t, listing(nil, listingLine("a.txt", 3)), `printf abc > "$out/a.txt"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 1 << 20})
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 1 << 20})
 	if err != nil || len(res.extractedFiles) != 0 || res.skipped.count != 1 {
 		t.Errorf("extract() = %d files, %d skipped, %v, want nothing extracted", len(res.extractedFiles), res.skipped.count, err)
 	}
@@ -201,7 +201,7 @@ func TestExtract_twinNameIsAnAnomaly(t *testing.T) {
 	// 7z sanitizes two members to the same name: one file is produced.
 	sze := scriptFor(t, list, `printf abc > "$out/a.txt"; printf abc > "$out/evil_.exe"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits)
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestExtract_tailSizeAndWarningsAreAnomalies(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			sze := scriptFor(t, list, `printf abc > "$out/a.txt"`, filepath.Join(t.TempDir(), "args"))
 			bigConfig(sze)
-			res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits)
+			res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits)
 			if err != nil || len(res.anomalies) != 1 {
 				t.Errorf("extract() anomalies = %v, err = %v, want exactly one", res.anomalies, err)
 			}
@@ -230,7 +230,7 @@ func TestExtract_tailSizeAndWarningsAreAnomalies(t *testing.T) {
 func TestExtract_tailSizeZeroIsNotAnAnomaly(t *testing.T) {
 	sze := scriptFor(t, listing([]string{"Tail Size = 0"}, listingLine("a.txt", 3)), `printf abc > "$out/a.txt"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
-	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits)
+	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits)
 	if err != nil || len(res.anomalies) != 0 {
 		t.Errorf("extract() anomalies = %v, err = %v, want none", res.anomalies, err)
 	}
@@ -247,7 +247,7 @@ func TestList_badListingsAreErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			sze := scriptFor(t, list, "true", filepath.Join(t.TempDir(), "args"))
 			bigConfig(sze)
-			if _, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, openLimits); err == nil {
+			if _, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, openLimits); err == nil {
 				t.Error("extract() error = nil, want an error")
 			}
 		})
@@ -298,7 +298,7 @@ func TestExtract_wrongPasswordIsEncrypted(t *testing.T) {
 	sze := fakeSevenZip(t, `echo "ERROR: Wrong password" >&2; exit 2`)
 	bigConfig(sze)
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-	_, err := plugin.ExtractFile("archive.7z", t.TempDir(), openLimits)
+	_, err := plugin.ExtractFile(fakeArchive(t), t.TempDir(), openLimits)
 	if !errors.Is(err, plugins.ErrEncrypted) {
 		t.Errorf("ExtractFile() error = %v, want ErrEncrypted", err)
 	}
@@ -319,7 +319,7 @@ func TestExtractFile_anomalyIsAnErrorWithAnEntryNamedAfterTheArchiveForTheReport
 	sze := scriptFor(t, listing([]string{"Tail Size = 5"}, listingLine("a.txt", 3)), `printf abc > "$out/a.txt"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
-	ex, err := plugin.ExtractFile("/some/dir/bomb.7z", t.TempDir(), openLimits)
+	ex, err := plugin.ExtractFile(fakeArchiveNamed(t, "bomb.7z"), t.TempDir(), openLimits)
 	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
 		t.Fatalf("ExtractFile() error = %v, want the anomaly", err)
 	}

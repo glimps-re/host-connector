@@ -472,10 +472,16 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 		}
 	}()
 	t := &sink.table
+	bomb, _, weighErr := t.weigh(archivePath)
+	if weighErr != nil {
+		// A failure of the host, not of the archive: a plain error, which is retried.
+		sze.logger.Warn("the size of the archive could not be read", slog.String("error", weighErr.Error()))
+		return res, fmt.Errorf("the size of the archive could not be read: %w", weighErr)
+	}
 	switch {
 	// The bomb first: a member that declares gigabytes is over any small budget,
 	// and must stay what it is, an anomaly, not a document left out by the limits.
-	case t.isBomb():
+	case bomb:
 		res.anomalies = noteAnomaly(res.anomalies, "the sizes of the members are high compared to the archive, potential ZipBomb")
 		res.dataFailure = true
 		return res, nil
@@ -603,8 +609,14 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	t := &sink.table
 
 	// zip bomb detection (only count files that would pass MaxFileSize filter)
-	if t.isBomb() {
-		err = fmt.Errorf("size of files within archive is high compared to archive size, potential ZipBomb (total: %d, compressed: %d, ratio: %d)", t.totalSize, t.totalCompressed, t.totalSize/t.totalCompressed)
+	bomb, text, weighErr := t.weigh(archivePath)
+	if weighErr != nil {
+		sze.logger.Warn("the size of the archive could not be read", slog.String("error", weighErr.Error()))
+		err = fmt.Errorf("the size of the archive could not be read: %w", weighErr)
+		return
+	}
+	if bomb {
+		err = fmt.Errorf("size of files within archive is high compared to archive size, potential ZipBomb (declared: %d, %s)", t.declared, text)
 		return
 	}
 
@@ -919,6 +931,15 @@ var (
 	archiveBytesPerSecond int64 = 5 << 20
 )
 
+// fileSize is the size of the file at path.
+func fileSize(path string) (int64, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, err
+	}
+	return fi.Size(), nil
+}
+
 // archiveTimeout is the time budget of the extraction of the archive at path.
 func archiveTimeout(path string, maxTotal int64) time.Duration {
 	size := int64(0)
@@ -1114,6 +1135,13 @@ func (c *cappedBuffer) Write(p []byte) (int, error) {
 
 const dateFormat7z = "2006-01-02 15:04:05"
 
+// errColumnOverflow is the error of a line whose number does not fit its column of 12
+// characters: 7-Zip then pushes the next columns (the prefix of the packed size, or the
+// two spaces before the name, are then a digit), and the fixed layout is read wrong
+// (a size of 2^50 declared by a forged header, for one). The line is refused rather
+// than read as other numbers and a shorter name.
+var errColumnOverflow = errors.New("unable to parse 7z output: a number overflows its column")
+
 func parse7ZFileListLine(line string) (content FileProperties, err error) {
 	// From https://github.com/ip7z/7zip/blob/5b39dc76f1bc82f941d5c800ab9f34407a06b53a/CPP/7zip/UI/Console/List.cpp//L195
 	// The line is composed of 5 fields of fixed size with a space prefix, in this order:
@@ -1164,6 +1192,9 @@ func parse7ZFileListLine(line string) (content FileProperties, err error) {
 	line = line[szSizePrefix+szSizeSize:]
 
 	// compressed size
+	if strings.Trim(line[:szCompressedPrefix], " ") != "" {
+		return content, errColumnOverflow
+	}
 	compressedStr := strings.Trim(line[szCompressedPrefix:szCompressedPrefix+szCompressedSize], " ")
 	compressed, errConv := strconv.Atoi(compressedStr)
 	if errConv != nil {
@@ -1172,6 +1203,9 @@ func parse7ZFileListLine(line string) (content FileProperties, err error) {
 	line = line[szCompressedPrefix+szCompressedSize:]
 
 	// file name
+	if strings.Trim(line[:szNamePrefix], " ") != "" {
+		return content, errColumnOverflow
+	}
 	nameStr := line[szNamePrefix:]
 
 	content = FileProperties{

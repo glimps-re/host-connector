@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"hash/crc32"
@@ -512,6 +513,41 @@ func TestRealSevenZip_aFolderEntryThatHoldsDataIsAnAnomalyWithEncryptionPossible
 	}
 }
 
+// A member that declares gigabytes and no packed byte at all is a bomb too, not a
+// member left out by a budget: the ratio of a size over nothing is not defined.
+func TestRealSevenZip_aMemberOfGigabytesWithNoPackedByteIsABomb(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "a.txt", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = zw.CreateRaw(&zip.FileHeader{Name: "huge.bin", Method: zip.Store, UncompressedSize64: 4 << 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "nopacked.zip")
+	if err = os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"check, a small budget":                   {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+		"check, a big budget":                     {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 10 << 30, CheckOnly: true},
+		"extraction, member under the size limit": {MaxFileSize: 1 << 40, MaxFiles: 100, MaxTotalSize: 1 << 30},
+	} {
+		_, err := realPlugin(t).ExtractFile(path, t.TempDir(), limits)
+		// A check says it as an anomaly, an extraction as the ZipBomb refusal.
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) && (err == nil || !strings.Contains(err.Error(), "ZipBomb")) {
+			t.Errorf("%s: error = %v, want a bomb", mode, err)
+		}
+	}
+}
+
 // runCmd runs a command to build test archives with the embedded 7-Zip.
 func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
 	return runCmdIn(ctx, "", bin, args...)
@@ -608,5 +644,295 @@ func TestImageFormats_everyNameIsAFormatOf7Zip(t *testing.T) {
 	}
 	if len(known) < 20 {
 		t.Errorf("only %d formats read from `7zzs i`: the parse of its output moved", len(known))
+	}
+}
+
+func forgedZip(t *testing.T, members ...*zip.FileHeader) string {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, h := range members {
+		if _, err := zw.CreateRaw(h); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "forged.zip")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// The listing of members that declare gigabytes and pack to nothing must not divide
+// by the packed size, whatever the members are: before, it crashed the connector
+// (a panic in the plugin, and the file left in INPUT, at every restart).
+func TestRealSevenZip_membersThatPackToNothingAreNoCrash(t *testing.T) {
+	forty := make([]*zip.FileHeader, 40)
+	for i := range forty {
+		forty[i] = &zip.FileHeader{Name: fmt.Sprintf("m%02d.bin", i), Method: zip.Store, UncompressedSize64: 90 << 20}
+	}
+	tests := []struct {
+		name     string
+		zip      string
+		limits   plugins.ExtractLimits
+		wantBomb bool
+	}{
+		{"forty members of 90 MB, extraction", forgedZip(t, forty...), plugins.ExtractLimits{MaxFileSize: 1 << 30, MaxFiles: 1000, MaxTotalSize: 1 << 40}, true},
+		{"forty members of 90 MB, check", forgedZip(t, forty...), plugins.ExtractLimits{MaxFileSize: 1 << 30, MaxFiles: 1000, MaxTotalSize: 1 << 40, CheckOnly: true}, true},
+		{"one member of 4 GiB, a size limit of 1 TiB", forgedZip(t, &zip.FileHeader{Name: "huge.bin", Method: zip.Store, UncompressedSize64: 4 << 30}), plugins.ExtractLimits{MaxFileSize: 1 << 40, MaxFiles: 10, MaxTotalSize: 1 << 41}, true},
+		{"forty members of 90 MB over the size limit: left out, no bomb", forgedZip(t, forty...), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 1000, MaxTotalSize: 1 << 40}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := realPlugin(t).ExtractFile(tt.zip, t.TempDir(), tt.limits)
+			isBomb := errors.Is(err, plugins.ErrArchiveAnomaly) || (err != nil && strings.Contains(err.Error(), "ZipBomb"))
+			if isBomb != tt.wantBomb {
+				t.Errorf("error = %v, want a bomb: %t", err, tt.wantBomb)
+			}
+		})
+	}
+}
+
+// A bzip2 lists no size and no packed size: it is no bomb, whatever the limit on
+// the size of a member.
+func TestRealSevenZip_aBzip2IsNoBomb(t *testing.T) {
+	sample := fixture(t, "sample.bz2")
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"extraction":                 {MaxFileSize: 1 << 40, MaxFiles: 10, MaxTotalSize: 1 << 41},
+		"check with a huge limit":    {MaxFileSize: 1 << 40, MaxFiles: 10, MaxTotalSize: 1 << 41, CheckOnly: true},
+		"check with the usual limit": {MaxFileSize: 100 << 20, MaxFiles: 10, MaxTotalSize: 1 << 30, CheckOnly: true},
+	} {
+		if _, err := realPlugin(t).ExtractFile(sample, t.TempDir(), limits); err != nil {
+			t.Errorf("%s: error = %v, want a clean archive", mode, err)
+		}
+	}
+}
+
+// A header that declares 2^50 bytes makes 7-Zip print a size of 16 digits, which
+// overflows the 12 characters of its column. The listing is then refused, never read
+// as other numbers: the archive is damaged, with encryption possible.
+func TestRealSevenZip_aDeclaredSizeThatOverflowsTheColumnIsAnAnomaly(t *testing.T) {
+	plugin := realPlugin(t)
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{Name: "huge.bin", Method: zip.Store, CRC32: 0xdebb20e3, CompressedSize64: 4, UncompressedSize64: 1 << 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("data")); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "huge.zip")
+	if err = os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 62})
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
+		t.Fatalf("ExtractFile() = %v, want an anomaly of the archive with encryption possible", err)
+	}
+}
+
+// solid7z builds with the embedded 7-Zip a solid archive whose first member is
+// firstSize bytes of first (random or zeros), followed by count members of memberSize
+// zeros. The members are sparse files, which 7-Zip reads as zeros.
+func solid7z(t *testing.T, plugin *SevenZipExtractPlugin, random bool, firstSize int64, count int, memberSize int64) string {
+	t.Helper()
+	src := t.TempDir()
+	first, err := os.Create(filepath.Clean(filepath.Join(src, "0first.bin")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if random {
+		if _, err = io.CopyN(first, rand.Reader, firstSize); err != nil {
+			t.Fatal(err)
+		}
+	} else if err = first.Truncate(firstSize); err != nil {
+		t.Fatal(err)
+	}
+	if err = first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, 1+count)
+	names = append(names, "0first.bin")
+	for i := range count {
+		name := fmt.Sprintf("m%03d.bin", i)
+		f, createErr := os.Create(filepath.Clean(filepath.Join(src, name)))
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if err = f.Truncate(memberSize); err != nil {
+			t.Fatal(err)
+		}
+		if err = f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, name)
+	}
+	archive := filepath.Join(t.TempDir(), "solid.7z")
+	args := append([]string{"a", "-t7z", "-ms=on", "-mx=1", "-mmt=on", archive}, names...)
+	if out, runErr := runCmdIn(t.Context(), src, plugin.sze.sevenZipPath, args...); runErr != nil {
+		t.Fatalf("cannot build the archive: %v\n%s", runErr, out)
+	}
+	return archive
+}
+
+// A solid archive is listed with its packed size on its first member only. When that
+// member is over the size limit it is not extracted, and the members that follow, which
+// would be, declare gigabytes over the few bytes it packs to: a bomb. An honest block,
+// whose first member is large and does not compress, is not.
+func TestRealSevenZip_aSolidArchiveWhoseFirstMemberIsOverTheLimit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds archives of gigabytes of zeros")
+	}
+	const limit = 100 << 20
+	plugin := realPlugin(t)
+	for name, tt := range map[string]struct {
+		random bool
+		bomb   bool
+	}{
+		"a block of zeros":                {false, true},
+		"an honest block of random bytes": {true, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			archive := solid7z(t, plugin, tt.random, 150<<20, 40, 90<<20)
+			for mode, check := range map[string]bool{"extraction": false, "check": true} {
+				if !tt.bomb && !check {
+					continue // the extraction of an honest block writes gigabytes
+				}
+				_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: limit, MaxFiles: 1000, MaxTotalSize: 1 << 40, CheckOnly: check})
+				isBomb := errors.Is(err, plugins.ErrArchiveAnomaly) || (err != nil && strings.Contains(err.Error(), "ZipBomb"))
+				if tt.bomb && !isBomb {
+					t.Errorf("%s: error = %v, want a bomb", mode, err)
+				}
+				if !tt.bomb && isBomb {
+					t.Errorf("%s: error = %v, an honest solid archive is no bomb", mode, err)
+				}
+			}
+		})
+	}
+}
+
+// A member over the size limit that packs to a byte, next to members that pack to
+// nothing, does not give the archive packed bytes to hide behind: every member counts
+// in what the archive packs to, but one byte against gigabytes is still a bomb.
+func TestRealSevenZip_anOverLimitMemberThatPacksToAByteIsNoShelter(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, h := range []*zip.FileHeader{
+		{Name: "huge.bin", Method: zip.Store, UncompressedSize64: 4 << 30},
+		{Name: "over.bin", Method: zip.Store, UncompressedSize64: 8 << 30, CompressedSize64: 1},
+	} {
+		w, err := zw.CreateRaw(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if h.CompressedSize64 > 0 {
+			if _, err = w.Write([]byte{0}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "shelter.zip")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for mode, check := range map[string]bool{"extraction": false, "check": true} {
+		_, err := realPlugin(t).ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 5 << 30, MaxFiles: 100, MaxTotalSize: 10 << 30, CheckOnly: check})
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) && (err == nil || !strings.Contains(err.Error(), "ZipBomb")) {
+			t.Errorf("%s: error = %v, want a bomb", mode, err)
+		}
+	}
+}
+
+// A tar of a file made only of holes (a sparse file) lists the size of the file and
+// no data: it is a bomb by the rule, as is any member that declares gigabytes and packs
+// to nothing. A legitimate sparse tar is an accepted false positive, reported as an
+// anomaly (encryption possible) and not extracted.
+func TestRealSevenZip_anAllHoleSparseTarIsABomb(t *testing.T) {
+	tar, err := exec.LookPath("tar")
+	if err != nil {
+		t.Skip("no tar to make a sparse archive")
+	}
+	src := t.TempDir()
+	f, err := os.Create(filepath.Clean(filepath.Join(src, "holes.bin")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Truncate(4 << 30); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "sparse.tar")
+	if out, runErr := runCmdIn(t.Context(), src, tar, "--sparse", "--format=gnu", "-cf", archive, "holes.bin"); runErr != nil {
+		t.Skipf("cannot make a sparse tar: %v %s", runErr, out)
+	}
+	_, err = realPlugin(t).ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 5 << 30, MaxFiles: 100, MaxTotalSize: 10 << 30})
+	t.Logf("sparse tar: %v", err)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) && (err == nil || !strings.Contains(err.Error(), "ZipBomb")) {
+		t.Errorf("error = %v, want a bomb", err)
+	}
+}
+
+// A forged entry that declares more packed bytes than the archive holds must not
+// dilute the ratio of the real members: forty members of 90 MiB of zeros, packed for
+// real, are a bomb whatever one more entry says it packs to.
+func TestRealSevenZip_aForgedPackedSizeDoesNotHideABomb(t *testing.T) {
+	const member = 90 << 20
+	var packed bytes.Buffer
+	fw, err := flate.NewWriter(&packed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum uint32
+	zeros := make([]byte, 1<<20)
+	for range member / len(zeros) {
+		if _, err = fw.Write(zeros); err != nil {
+			t.Fatal(err)
+		}
+		sum = crc32.Update(sum, crc32.IEEETable, zeros)
+	}
+	if err = fw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	packedSize := uint64(max(packed.Len(), 0))
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for i := range 40 {
+		w, e := zw.CreateRaw(&zip.FileHeader{Name: fmt.Sprintf("z%02d.bin", i), Method: zip.Deflate, CRC32: sum, CompressedSize64: packedSize, UncompressedSize64: member})
+		if e != nil {
+			t.Fatal(e)
+		}
+		if _, e = w.Write(packed.Bytes()); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if _, err = zw.CreateRaw(&zip.FileHeader{Name: "forged.bin", Method: zip.Store, CompressedSize64: 60_000_000_000, UncompressedSize64: 200_000_000_000}); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "forged.zip")
+	if err = os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, checkOnly := range map[string]bool{"extraction": false, "check": true} {
+		t.Run(name, func(t *testing.T) {
+			_, err := realPlugin(t).ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 100 << 20, MaxFiles: 1000, MaxTotalSize: 1 << 40, CheckOnly: checkOnly})
+			if err == nil || !strings.Contains(err.Error(), "potential ZipBomb") {
+				t.Errorf("ExtractFile() = %v, want the zip bomb itself, not any other anomaly", err)
+			}
+		})
 	}
 }

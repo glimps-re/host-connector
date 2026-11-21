@@ -37,3 +37,9 @@ printf A > a.txt; printf E > evil_.exe; printf HIDDEN > $'evil\n.exe'
 cd .. && printf 'TAIL-BYTES-AFTER-THE-ARCHIVE' >> reference.7z
 sha256sum reference.7z
 ```
+
+## sample.bz2
+
+A bzip2 of 70 bytes (`sample.txt`: "honest data " repeated 500 times), written by 7-Zip 25.01
+with `7zzs a -tbzip2 sample.bz2 sample.txt`. Its listing gives no size and no packed size: it
+is not a bomb. sha256 `4842129ee828247b99ba7c1920fae13441a016b72053acfa868c96aed5a836fb`.

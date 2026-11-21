@@ -73,6 +73,12 @@ func TestRealBrowser_theWorstReportsStayUnderHalfTheLimits(t *testing.T) {
 		reports = append(reports, errorReports(maxRows)...)
 		return append(reports, blockedReports(maxRows)...)
 	}
+	// Only the size is a verdict: the heaviest case takes most of the production
+	// timeout when the machine is idle, and more than all of it when other
+	// browsers run. The real timeout is kept for the optional time assertion.
+	productionTimeout := renderTimeout
+	renderTimeout = 10 * time.Minute
+	t.Cleanup(func() { renderTimeout = productionTimeout })
 	cases := map[string][]datamodel.Report{
 		"maxRows archives of one member": hostile(append(full(), archiveReports(maxRows, 1)...)),
 		"one archive of maxRows members": hostile(append(full(), archiveReports(1, maxRows)...)),
@@ -93,9 +99,9 @@ func TestRealBrowser_theWorstReportsStayUnderHalfTheLimits(t *testing.T) {
 			}
 			t.Logf("%s: %d archives, %d rows in all; PDF of %.1f MiB in %s (limits: %d MiB, %s)",
 				name, len(data.MitigatedArchives), len(data.MitigatedFiles)+len(data.ErrorFiles)+len(data.NotAnalyzedFiles),
-				float64(pdf.Len())/(1<<20), took.Round(100*time.Millisecond), maxReportPDF>>20, renderTimeout)
-			if os.Getenv("HC_WORST_CASE_TIME") == "1" && took > renderTimeout/2 {
-				t.Errorf("rendered in %s, want at most half of %s", took, renderTimeout)
+				float64(pdf.Len())/(1<<20), took.Round(100*time.Millisecond), maxReportPDF>>20, productionTimeout)
+			if os.Getenv("HC_WORST_CASE_TIME") == "1" && took > productionTimeout/2 {
+				t.Errorf("rendered in %s, want at most half of %s", took, productionTimeout)
 			}
 			if pdf.Len() > maxReportPDF/2 {
 				t.Errorf("PDF of %d bytes, want at most half of %d", pdf.Len(), maxReportPDF)

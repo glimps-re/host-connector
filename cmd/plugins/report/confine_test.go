@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -80,9 +81,15 @@ func unsafeDir(t *testing.T) string {
 	return dir
 }
 
+// assertNothingIn fails when the folder holds anything. A folder that does not
+// exist holds nothing: a render that ends before the browser made its folders
+// (a timeout of a millisecond) never created it.
 func assertNothingIn(t *testing.T, dir, what string) {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -256,12 +256,12 @@ func TestSession_aClosedSessionTakesNothingMoreAndTheCallbacksAskForAnother(t *t
 	s := f.session("tom")
 	f.clock.advance(2 * time.Minute)
 	f.p.checkAndCloseSessions(f.p.baseCtx())
-	if s.addReport(datamodel.Report{Filename: "x"}) || s.addFile("x", "h") || s.markFileCompleted("x") || s.addFileError("x", "h", "e") {
+	if okAdd(s, datamodel.Report{Filename: "x"}) || s.addFile("x", "h") || s.markFileCompleted("x") || addedError(s, "x", "h", "e") {
 		t.Fatal("a closed session accepted something")
 	}
 	f.p.OnReport(&datamodel.Report{Filename: f.file("tom", "late.txt"), SHA256: "late"})
 	n := f.session("tom")
-	if n == nil || n == s || len(n.CompletedReports) != 1 {
+	if n == nil || n == s || len(sessionReports(t, n)) != 1 {
 		t.Fatalf("session = %+v, want a new one holding the late report", n)
 	}
 }
@@ -274,7 +274,7 @@ func TestSession_aFileThatFailsAfterItsSessionClosedAppearsInAnotherReport(t *te
 	a := f.file("tom", "big.zip")
 	f.p.OnFileScanned(a, "h9", datamodel.Result{Error: errors.New("extractor unavailable")})
 	s := f.session("tom")
-	if s == nil || len(s.CompletedReports) != 1 || s.CompletedReports[0].Filename != a {
+	if s == nil || len(sessionReports(t, s)) != 1 || sessionReports(t, s)[0].Filename != a {
 		t.Fatalf("session = %+v, want one that holds the failed file", s)
 	}
 }
@@ -391,7 +391,7 @@ func TestSession_aBacklogIsRaisedAsSuchAndNotAsAFallback(t *testing.T) {
 }
 
 func TestCheckConfig_refusesWhatWouldBeSilentlyReplaced(t *testing.T) {
-	good := Config{Depth: 1, Delay: time.Minute, RootFolder: t.TempDir(), ReportTimeout: time.Minute, InflightTimeout: time.Hour, ReportRetries: 3}
+	good := Config{Depth: 1, Delay: time.Minute, RootFolder: t.TempDir(), ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: time.Hour, ReportRetries: 3}
 	tests := []struct {
 		name   string
 		mutate func(c *Config)
@@ -407,13 +407,13 @@ func TestCheckConfig_refusesWhatWouldBeSilentlyReplaced(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			c := good
 			tt.mutate(&c)
-			if err := checkConfig(&c, mock.NewMockHCContext(), true); (err == nil) != tt.ok {
+			if err := checkConfig(&c, newMockHCC(t), true); (err == nil) != tt.ok {
 				t.Errorf("checkConfig() error = %v, want ok = %v", err, tt.ok)
 			}
 		})
 	}
 	var logs syncBuffer
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.Logger = slog.New(slog.NewTextHandler(&logs, nil))
 	c := good
 	c.InflightTimeout = time.Second
@@ -747,8 +747,10 @@ func TestSession_aBatchTakenAfterTheStopIsLostCountedAndNotifiedOnce(t *testing.
 	f := newRetention(t, Config{})
 	f.hcc.GenerateReportFunc = blockedGenerator
 	f.p.closeAllSessions(t.Context(), t.Context())
+	setStopping(f, false)
 	f.ready("s1")
 	f.ready("s2")
+	setStopping(f, true)
 	late := takeHeld(f)
 	f.p.putBack(t.Context(), late, late.sessions)
 	logs := f.logs.String()
@@ -899,11 +901,11 @@ func TestSession_aFallbackCutByTheStopIsLeftToClose(t *testing.T) {
 func TestSession_aFallbackThatFailsForAnotherReasonIsLostOnceAndNotRetried(t *testing.T) {
 	for range 20 {
 		f, held, cs := attemptFixture(t)
-		var failed atomic.Bool
 		prev := closeReportFile
 		t.Cleanup(func() { closeReportFile = prev })
+		var closes atomic.Int32
 		closeReportFile = func(file *os.File) error {
-			if failed.CompareAndSwap(false, true) {
+			if closes.Add(1) <= 2 {
 				return errors.Join(file.Close(), errors.New("disk full"))
 			}
 			return file.Close()
@@ -1039,7 +1041,7 @@ func startRealPlugin(t *testing.T, tick time.Duration) (p *SessionPlugin, cfg *C
 	prev := previousRunWait
 	previousRunWait = 150 * time.Millisecond
 	t.Cleanup(func() { previousRunWait = prev })
-	hcc = mock.NewMockHCContext()
+	hcc = newMockHCC(t)
 	hcc.WorkDir = filepath.Join(t.TempDir(), "gmhost-x")
 	entered, release = make(chan struct{}), make(chan struct{})
 	var once sync.Once
@@ -1049,7 +1051,7 @@ func startRealPlugin(t *testing.T, tick time.Duration) (p *SessionPlugin, cfg *C
 		return plugins.GeneratedReport{}, errors.New("generator stopped")
 	}
 	root := t.TempDir()
-	cfg = &Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, Depth: 1, RootFolder: root, Delay: 1, Exports: []string{t.TempDir()}}
+	cfg = &Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, Depth: 1, RootFolder: root, Delay: 1, Exports: []string{t.TempDir()}}
 	p = &SessionPlugin{tickEvery: tick}
 	if err := p.Init(cfg, hcc); err != nil {
 		t.Fatal(err)
@@ -1194,4 +1196,11 @@ func TestSession_lateLossNeverPutsASessionBack(t *testing.T) {
 	if n := f.events(lostEvent); n != 1 {
 		t.Errorf("lost events = %d, want one", n)
 	}
+}
+
+// setStopping makes the plugin think the stop has begun, or not.
+func setStopping(f *retentionFixture, stopping bool) {
+	f.p.closeMu.Lock()
+	f.p.stopping = stopping
+	f.p.closeMu.Unlock()
 }

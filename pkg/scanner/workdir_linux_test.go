@@ -3,12 +3,18 @@
 package scanner
 
 import (
+	"bytes"
+	"fmt"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
+
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
 
 const (
@@ -129,5 +135,156 @@ func TestNewWorkDir_warnsOnMemoryFS(t *testing.T) {
 	})
 	if out := buf.String(); !strings.Contains(out, "memory filesystem") || !strings.Contains(out, `"level":"WARN"`) {
 		t.Errorf("log = %q, want a Warn about the memory filesystem", out)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func captureConsole(t *testing.T) *lockedBuffer {
+	t.Helper()
+	buf := &lockedBuffer{}
+	prev := ConsoleLogger
+	ConsoleLogger = slog.New(slog.NewTextHandler(buf, nil))
+	t.Cleanup(func() { ConsoleLogger = prev })
+	return buf
+}
+
+func writeSpools(t *testing.T, orphan string, names ...string) string {
+	t.Helper()
+	dir := filepath.Join(orphan, datamodel.SessionSpoolDir)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte("{}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return dir
+}
+
+func TestPurgeOrphans_warnsOfTheSessionSpoolsLost(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, orphan string)
+		want  string
+	}{
+		{name: "no session folder", setup: func(*testing.T, string) {}},
+		{name: "empty session folder", setup: func(t *testing.T, o string) { writeSpools(t, o) }},
+		{
+			name:  "three spools and other files",
+			setup: func(t *testing.T, o string) { writeSpools(t, o, "a.jsonl", "b.jsonl", "c.jsonl", "d.tmp", "e.json") },
+			want:  "3 session report(s) of a previous run were lost",
+		},
+		{
+			name: "only regular files at the top level count",
+			setup: func(t *testing.T, o string) {
+				dir := writeSpools(t, o, "a.jsonl")
+				if err := os.Mkdir(filepath.Join(dir, "dir.jsonl"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "nested.txt"), nil, 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink("/etc/passwd", filepath.Join(dir, "link.jsonl")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "1 session report(s) of a previous run were lost",
+		},
+		{
+			name: "session folder that is a link is not followed",
+			setup: func(t *testing.T, o string) {
+				elsewhere := t.TempDir()
+				writeSpools(t, elsewhere, "x.jsonl")
+				if err := os.Symlink(filepath.Join(elsewhere, datamodel.SessionSpoolDir), filepath.Join(o, datamodel.SessionSpoolDir)); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			console := captureConsole(t)
+			base := t.TempDir()
+			orphan := mkOrphan(t, base, "gmhost-crashed", false, true)
+			tt.setup(t, orphan)
+			purgeOrphans(base, "")
+			if exists(orphan) {
+				t.Error("the orphan must be removed")
+			}
+			got := console.String()
+			switch {
+			case tt.want == "" && strings.Contains(got, "were lost"):
+				t.Errorf("unexpected warning: %s", got)
+			case tt.want != "" && !strings.Contains(got, tt.want):
+				t.Errorf("console = %q, want it to contain %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCountOrphanSpools_isCapped(t *testing.T) {
+	orphan := t.TempDir()
+	names := make([]string, maxOrphanSpools+300)
+	for i := range names {
+		names[i] = fmt.Sprintf("%d.jsonl", i)
+	}
+	writeSpools(t, orphan, names...)
+	if got := countOrphanSpools(orphan); got != maxOrphanSpools {
+		t.Errorf("count = %d, want the cap %d", got, maxOrphanSpools)
+	}
+}
+
+func TestPurgeOrphans_aLiveRunSpoolsAreNotCounted(t *testing.T) {
+	console := captureConsole(t)
+	base := t.TempDir()
+	live := mkOrphan(t, base, "gmhost-live", false, true)
+	writeSpools(t, live, "a.jsonl")
+	lock, err := os.Open(filepath.Clean(filepath.Join(live, workDirLock)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := lock.Close(); err != nil {
+			t.Logf("close lock: %v", err)
+		}
+	})
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	purgeOrphans(base, "")
+	if !exists(live) || strings.Contains(console.String(), "were lost") {
+		t.Errorf("a work directory held by a live process must be left alone, console = %q", console.String())
+	}
+}
+
+func TestPurgeOrphans_saysAtLeastWhenTheCountHitsTheCap(t *testing.T) {
+	console := captureConsole(t)
+	base := t.TempDir()
+	orphan := mkOrphan(t, base, "gmhost-crashed", false, true)
+	names := make([]string, maxOrphanSpools+10)
+	for i := range names {
+		names[i] = fmt.Sprintf("%d%s", i, datamodel.SessionSpoolExt)
+	}
+	writeSpools(t, orphan, names...)
+	purgeOrphans(base, "")
+	if want := fmt.Sprintf("at least %d session report(s)", maxOrphanSpools); !strings.Contains(console.String(), want) {
+		t.Errorf("console = %q, want it to contain %q", console.String(), want)
 	}
 }

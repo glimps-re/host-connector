@@ -16,7 +16,6 @@ import (
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
@@ -53,8 +52,8 @@ func TestSession_archiveAbandonedBecauseTheExtractorIsDownDoesNotKeepTheSessionO
 	}
 
 	plugin := &SessionPlugin{}
-	hcc := mock.NewMockHCContext()
-	plugin.config = Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 2, Delay: 50 * time.Millisecond}
+	hcc := newMockHCC(t)
+	plugin.config = Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 2, Delay: 50 * time.Millisecond}
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = hcc
 	plugin.stop = make(chan struct{})

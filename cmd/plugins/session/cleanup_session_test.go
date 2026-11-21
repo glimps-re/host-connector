@@ -12,8 +12,6 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 type removals struct {
@@ -239,17 +237,17 @@ func TestSession_theRealCleanupKeepsTheRootTheSessionFolderAndWhatIsRecentOrFull
 }
 
 func TestCheckConfig_aCleanupWithoutABudgetIsRefused(t *testing.T) {
-	good := Config{Depth: 1, Delay: time.Minute, RootFolder: t.TempDir(), ReportTimeout: time.Minute, InflightTimeout: time.Hour, RemoveEmptyDirs: true, CleanupTimeout: time.Minute}
-	if err := checkConfig(&good, mock.NewMockHCContext(), true); err != nil {
+	good := Config{Depth: 1, Delay: time.Minute, RootFolder: t.TempDir(), ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: time.Hour, RemoveEmptyDirs: true, CleanupTimeout: time.Minute}
+	if err := checkConfig(&good, newMockHCC(t), true); err != nil {
 		t.Fatal(err)
 	}
 	bad := good
 	bad.CleanupTimeout = 0
-	if err := checkConfig(&bad, mock.NewMockHCContext(), true); err == nil || !strings.Contains(err.Error(), "cleanup_timeout") {
+	if err := checkConfig(&bad, newMockHCC(t), true); err == nil || !strings.Contains(err.Error(), "cleanup_timeout") {
 		t.Errorf("error = %v, want cleanup_timeout refused", err)
 	}
 	bad.RemoveEmptyDirs = false
-	if err := checkConfig(&bad, mock.NewMockHCContext(), true); err != nil {
+	if err := checkConfig(&bad, newMockHCC(t), true); err != nil {
 		t.Errorf("error = %v: the budget does not matter when the option is off", err)
 	}
 }

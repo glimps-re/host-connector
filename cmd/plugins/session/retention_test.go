@@ -74,7 +74,7 @@ type retentionFixture struct {
 func newRetention(t *testing.T, cfg Config) *retentionFixture {
 	t.Helper()
 	f := &retentionFixture{clock: &clock{t: time.Unix(1_700_000_000, 0)}, logs: &syncBuffer{}, root: t.TempDir(), export: t.TempDir()}
-	f.hcc = mock.NewMockHCContext()
+	f.hcc = newMockHCC(t)
 	f.hcc.NotifyErrorFunc = func(_ context.Context, key string, _ error) {
 		f.mu.Lock()
 		f.errorsRaised = append(f.errorsRaised, key)
@@ -101,6 +101,7 @@ func newRetention(t *testing.T, cfg Config) *retentionFixture {
 		cfg.Delay = time.Minute
 	}
 	f.p = &SessionPlugin{config: cfg, sessions: map[string]*Session{}, known: map[string]string{}, hcc: f.hcc, now: f.clock.now}
+	f.p.workDir = t.TempDir()
 	f.p.stop, f.p.done, f.p.closed = make(chan struct{}), make(chan struct{}), make(chan struct{})
 	f.p.runCtx, f.p.cancelRun = context.WithCancel(context.Background())
 	t.Cleanup(f.p.cancelRun)
@@ -163,7 +164,7 @@ func TestSession_aFileWaitingForAWorkerHoldsTheSession(t *testing.T) {
 }
 
 func TestSession_pendingFilesDoNotHoldASessionBeyondTheInflightTimeout(t *testing.T) {
-	f := newRetention(t, Config{InflightTimeout: time.Hour})
+	f := newRetention(t, Config{MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: time.Hour})
 	f.hcc.PendingFilesFunc = func(string) int { return 3 }
 	a := f.file("tom", "a.txt")
 	f.p.OnStartScanFile(a, "h1")
@@ -184,7 +185,7 @@ func TestSession_pendingFilesDoNotHoldASessionBeyondTheInflightTimeout(t *testin
 }
 
 func TestSession_aFileThatNeverEndsIsDroppedAfterTheInflightTimeout(t *testing.T) {
-	f := newRetention(t, Config{InflightTimeout: time.Hour})
+	f := newRetention(t, Config{MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: time.Hour})
 	f.p.OnStartScanFile(f.file("tom", "a.txt"), "h1")
 	s := f.session("tom")
 	f.clock.advance(2 * time.Hour)
@@ -230,8 +231,8 @@ func TestSession_aFileThatEndedInErrorAppearsOnceAndItsRetriesAreNoActivity(t *t
 		f.p.OnStartScanFile(a, "h1")
 		f.p.OnFileScanned(a, "h1", datamodel.Result{Error: errors.New("extractor unavailable")})
 	}
-	if len(s.CompletedReports) != 1 || s.CompletedReports[0].Error == "" {
-		t.Fatalf("reports = %+v, want one entry in error", s.CompletedReports)
+	if len(sessionReports(t, s)) != 1 || sessionReports(t, s)[0].Error == "" {
+		t.Fatalf("reports = %+v, want one entry in error", sessionReports(t, s))
 	}
 	if !s.LastActivity.Equal(activity) {
 		t.Error("retries of a failed file must not refresh LastActivity")
@@ -277,8 +278,8 @@ func TestSession_aFileWhoseActionFailedIsReportedOnceAndItsRepeatsOpenNoSession(
 	f.p.OnFileScanned(a, "h1", datamodel.Result{})
 	f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1", Error: moveFailed})
 	s := f.session("tom")
-	if len(s.CompletedReports) != 1 || s.CompletedReports[0].Error != moveFailed {
-		t.Fatalf("reports = %+v, want one entry in error", s.CompletedReports)
+	if len(sessionReports(t, s)) != 1 || sessionReports(t, s)[0].Error != moveFailed {
+		t.Fatalf("reports = %+v, want one entry in error", sessionReports(t, s))
 	}
 	f.clock.advance(2 * time.Minute)
 	f.p.checkAndCloseSessions(f.p.baseCtx())
@@ -340,7 +341,7 @@ func TestSession_aFileThatLeftInputGetsASessionWhenItsBytesAreDroppedAgain(t *te
 			f.p.OnReport(&again)
 			s := f.session("tom")
 			if tt.wantSession {
-				if s == nil || len(s.CompletedReports) != 1 {
+				if s == nil || len(sessionReports(t, s)) != 1 {
 					t.Fatalf("session = %+v, want the second report in a session of its own", s)
 				}
 				return
@@ -361,7 +362,7 @@ func TestSession_aLateReportReopensASessionAndGetsItsOwnReport(t *testing.T) {
 	f.p.checkAndCloseSessions(f.p.baseCtx())
 	f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1"})
 	s := f.session("tom")
-	if s == nil || len(s.CompletedReports) != 1 {
+	if s == nil || len(sessionReports(t, s)) != 1 {
 		t.Fatalf("session = %+v, want one reopened with the report", s)
 	}
 	f.clock.advance(2 * time.Minute)

@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 // The real session reports are written by the plugin straight into the export
@@ -16,9 +15,9 @@ import (
 // which refuses that prefix.
 func TestSessionPlugin_reportsAreWrittenUnderTheReservedPrefix(t *testing.T) {
 	exports := []string{t.TempDir(), t.TempDir()}
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	plugin := &SessionPlugin{}
-	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour, Exports: exports}, hcc); err != nil {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour, Exports: exports}, hcc); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -27,7 +26,7 @@ func TestSessionPlugin_reportsAreWrittenUnderTheReservedPrefix(t *testing.T) {
 		}
 	})
 	start := time.Unix(1_700_000_000, 0)
-	session := &Session{ID: "team/sub", StartTime: start, CompletedReports: []datamodel.Report{{Filename: "a"}}, Paths: []string{filepath.Join(exports[0], "team"), filepath.Join(exports[1], "team")}}
+	session := testSession(t, "team/sub", start, []string{filepath.Join(exports[0], "team"), filepath.Join(exports[1], "team")}, datamodel.Report{Filename: "a"})
 	_ = plugin.writeSessionReport(t.Context(), newClosing(session), viaGenerator)
 
 	for _, dir := range session.Paths {

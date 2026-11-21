@@ -93,7 +93,7 @@ func TestSession_ticketOneWorkerAndASlowNeighbourGiveOneSessionAndOneReport(t *t
 	hcc := &sessionContext{Connector: c, logger: slog.New(slog.NewTextHandler(&console, nil))}
 	if err = plugin.Init(&Config{
 		Depth: 1, Delay: 600 * time.Millisecond, RootFolder: root, Exports: []string{export},
-		ReportTimeout: time.Minute, ReportRetries: 3, InflightTimeout: time.Hour,
+		ReportTimeout: time.Minute, ReportRetries: 3, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: time.Hour,
 	}, hcc); err != nil {
 		t.Fatal(err)
 	}

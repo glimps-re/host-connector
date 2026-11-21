@@ -9,16 +9,14 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 func TestSessionPlugin_ignoresWorkDir(t *testing.T) {
 	const root = "/srv/in"
 	plugin := &SessionPlugin{}
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.WorkDir = root + "/tmp/gmhost-abc"
-	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 1, Delay: time.Second}, hcc); err != nil {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 1, Delay: time.Second}, hcc); err != nil {
 		t.Fatalf("Init() error = %v, a work directory deeper than the root is only a warning case", err)
 	}
 	t.Cleanup(func() {
@@ -56,9 +54,9 @@ func TestSessionPlugin_ignoresWorkDir(t *testing.T) {
 func TestSessionPlugin_InitRefusesWorkDirBaseAsRoot(t *testing.T) {
 	for _, root := range []string{"/srv/in", "/srv/in/"} {
 		plugin := &SessionPlugin{}
-		hcc := mock.NewMockHCContext()
+		hcc := newMockHCC(t)
 		hcc.WorkDir = "/srv/in/gmhost-abc"
-		err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 1, Delay: time.Second}, hcc)
+		err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: root, Depth: 1, Delay: time.Second}, hcc)
 		if err == nil || !strings.Contains(err.Error(), "work_dir") {
 			t.Errorf("Init(root %q) error = %v, want a refusal naming work_dir", root, err)
 		}
@@ -72,9 +70,9 @@ func TestSessionPlugin_InitRefusesRootFolderLinkedToWorkDirBase(t *testing.T) {
 		t.Fatal(err)
 	}
 	plugin := &SessionPlugin{}
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.WorkDir = filepath.Join(base, "gmhost-abc")
-	err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: link, Depth: 1, Delay: time.Second}, hcc)
+	err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: link, Depth: 1, Delay: time.Second}, hcc)
 	if err == nil || !strings.Contains(err.Error(), "work_dir") {
 		t.Errorf("Init() error = %v, want a refusal: root_folder is a link to the work_dir base", err)
 	}
@@ -82,12 +80,12 @@ func TestSessionPlugin_InitRefusesRootFolderLinkedToWorkDirBase(t *testing.T) {
 
 func TestSessionPlugin_InitWarnsWorkDirUnderRoot(t *testing.T) {
 	var logs, console bytes.Buffer
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.Logger = slog.New(slog.NewJSONHandler(&logs, nil))
 	hcc.ConsoleLogger = slog.New(slog.NewJSONHandler(&console, nil))
 	hcc.WorkDir = "/srv/in/tmp/gmhost-abc"
 	plugin := &SessionPlugin{}
-	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: "/srv/in", Depth: 1, Delay: time.Second}, hcc); err != nil {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: "/srv/in", Depth: 1, Delay: time.Second}, hcc); err != nil {
 		t.Fatalf("Init() error = %v: a work directory under root_folder is only a warning", err)
 	}
 	t.Cleanup(func() {
@@ -103,9 +101,9 @@ func TestSessionPlugin_InitWarnsWorkDirUnderRoot(t *testing.T) {
 }
 
 func TestSessionPlugin_DeclaresTrackingOwnersWithAnAbsoluteRoot(t *testing.T) {
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	plugin := &SessionPlugin{}
-	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: "relative/in", Depth: 2, Delay: time.Hour}, hcc); err != nil {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: "relative/in", Depth: 2, Delay: time.Hour}, hcc); err != nil {
 		t.Fatalf("Init() error = %v: a relative root_folder must not stop the start", err)
 	}
 	t.Cleanup(func() {
@@ -126,10 +124,10 @@ func TestSessionPlugin_DeclaresTrackingOwnersWithAnAbsoluteRoot(t *testing.T) {
 }
 
 func TestSessionPlugin_InitFailsWhenTheDeclarationIsRefused(t *testing.T) {
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.OwnersErr = errors.New("overlap")
 	plugin := &SessionPlugin{}
-	if err := plugin.Init(&Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: "/srv/in", Depth: 1, Delay: time.Hour}, hcc); err == nil || !strings.Contains(err.Error(), "overlap") {
+	if err := plugin.Init(&Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: "/srv/in", Depth: 1, Delay: time.Hour}, hcc); err == nil || !strings.Contains(err.Error(), "overlap") {
 		t.Errorf("Init() error = %v, want the refusal", err)
 	}
 }

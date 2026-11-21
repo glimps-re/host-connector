@@ -14,23 +14,22 @@ import (
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 func sessionWithGenerator(t *testing.T, gen plugins.GenerateReport) (*SessionPlugin, *Session, string) {
 	t.Helper()
 	export := t.TempDir()
-	hcc := mock.NewMockHCContext()
+	hcc := newMockHCC(t)
 	hcc.GenerateReportFunc = gen
 	plugin := &SessionPlugin{}
-	plugin.config = Config{ReportTimeout: time.Minute, InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour}
+	plugin.config = Config{ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour, RootFolder: t.TempDir(), Depth: 1, Delay: time.Hour}
 	plugin.sessions = make(map[string]*Session)
 	plugin.hcc = hcc
 	plugin.stop = make(chan struct{})
 	plugin.logger = slog.New(slog.DiscardHandler)
 	plugin.consoleLogger = slog.New(slog.DiscardHandler)
 	dir := filepath.Join(export, "team")
-	return plugin, &Session{ID: "team", StartTime: time.Unix(1_700_000_000, 0), Paths: []string{dir}, CompletedReports: []datamodel.Report{{Filename: "a"}, {Filename: "b"}}}, dir
+	return plugin, testSession(t, "team", time.Unix(1_700_000_000, 0), []string{dir}, datamodel.Report{Filename: "a"}, datamodel.Report{Filename: "b"}), dir
 }
 
 func entriesOf(t *testing.T, dir string) []string {

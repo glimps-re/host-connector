@@ -40,7 +40,7 @@ func newT20Fixture(t *testing.T, cfg Config) *t20Fixture {
 	f := &t20Fixture{logs: &t20Logs{}, root: t.TempDir(), export: t.TempDir()}
 	start := time.Unix(1_700_000_000, 0)
 	f.now.Store(&start)
-	f.hcc = mock.NewMockHCContext()
+	f.hcc = newMockHCC(t)
 	f.hcc.NotifyErrorFunc = func(_ context.Context, key string, _ error) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -62,7 +62,7 @@ func newT20Fixture(t *testing.T, cfg Config) *t20Fixture {
 		cfg.Delay = time.Minute
 	}
 	f.p = &SessionPlugin{
-		config: cfg, sessions: map[string]*Session{}, known: map[string]string{}, hcc: f.hcc,
+		config: cfg, sessions: map[string]*Session{}, known: map[string]string{}, hcc: f.hcc, workDir: t.TempDir(),
 		now: func() time.Time { return *f.now.Load() },
 	}
 	f.p.stop, f.p.done = make(chan struct{}), make(chan struct{})

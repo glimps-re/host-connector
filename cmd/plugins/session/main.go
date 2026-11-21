@@ -22,6 +22,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/alecthomas/units"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -78,6 +79,13 @@ type SessionPlugin struct {
 	fallback      atomic.Bool
 	backlog       atomic.Bool
 
+	// maxSpool is max_spool_size in bytes (0: no limit, only in tests that do not
+	// go through Init). errBudget is shared by all the sessions. spoolFailing is
+	// set while the last write to a spool failed, for the console event.
+	maxSpool     int64
+	errBudget    errorBudget
+	spoolFailing atomic.Bool
+
 	// now and tickEvery are replaced in tests.
 	now       func() time.Time
 	tickEvery time.Duration
@@ -103,6 +111,12 @@ type Config struct {
 	RemoveEmptyDirs bool `mapstructure:"remove_empty_dirs"`
 	// CleanupTimeout bounds the removal of the empty folders of one session.
 	CleanupTimeout time.Duration `mapstructure:"cleanup_timeout"`
+	// MaxDuration closes a session that has been open this long, whatever its
+	// activity: a regular depositor does not hold one open forever.
+	MaxDuration time.Duration `mapstructure:"max_duration"`
+	// MaxSpoolSize closes a session whose reports, on disk, reach this size
+	// (a size such as "1GiB", at least 1MiB).
+	MaxSpoolSize string `mapstructure:"max_spool_size"`
 }
 
 const (
@@ -110,6 +124,9 @@ const (
 	defaultReportRetries   = 3
 	defaultInflightTimeout = 24 * time.Hour
 	defaultCleanupTimeout  = 2 * time.Minute
+	defaultMaxDuration     = 24 * time.Hour
+	defaultMaxSpoolSize    = "1GiB"
+	minSpoolSize           = 1 << 20
 
 	// maxClosing bounds the sessions kept waiting for their report after an
 	// attempt: past it the oldest get their fallback at once.
@@ -160,6 +177,11 @@ const (
 	fallbackEvent = "session-report-fallback"
 	backlogEvent  = "session-report-backlog"
 	lostEvent     = "session-report-lost"
+	// spoolEvent is raised while a spool cannot be written (disk full).
+	spoolEvent = "session-spool-error"
+	// eventBound bounds the notification of a spool failure, raised from the
+	// callbacks of the pipeline.
+	eventBound = time.Second
 )
 
 // closingSession is a closed session whose report is not written yet. written
@@ -186,14 +208,50 @@ type Session struct {
 	// InFlight holds the files started and not yet scanned: it is bounded by the
 	// parallelism of the pipeline, and by the inflight timeout.
 	InFlight map[string]*inflightEntry
-	// CompletedReports holds one report per file; errorAt indexes the ones that
-	// carry an error, which a later report of the same file replaces.
-	CompletedReports []datamodel.Report
-	errorAt          map[string]int
-	closed           bool
-	clock            func() time.Time
-	mutex            sync.RWMutex
+	// pending holds the reports in error, by file: a later report of the same
+	// file replaces them, so they wait in memory (bounded for the plugin by
+	// errBudget); every other report goes to the spool.
+	pending map[string]pendingReport
+	spool   *spool
+	limits  spoolLimits
+	// spoolErr is the failure that ended the use of the spool; healthy tells that
+	// the last write to it succeeded. forced is why the session must close now.
+	spoolErr error
+	healthy  bool
+	forced   forceReason
+	// spilled tells that a report in error went to the spool for lack of memory
+	// budget; spillNoted that the plugin said so.
+	spilled, spillNoted bool
+	// encodeErr is the last failure to encode a report, taken by the status.
+	encodeErr error
+	released  bool
+	closed    bool
+	clock     func() time.Time
+	mutex     sync.RWMutex
 }
+
+// pendingReport is a report in error kept in memory, with its encoded size.
+type pendingReport struct {
+	report datamodel.Report
+	size   int64
+}
+
+// spoolLimits is where a session keeps its reports and how much it may hold.
+type spoolLimits struct {
+	dir     string
+	maxSize int64
+	budget  *errorBudget
+	logger  *slog.Logger
+}
+
+// forceReason says why a session closes without waiting for its idle delay.
+type forceReason string
+
+const (
+	forceSpoolSize  forceReason = "max_spool_size reached"
+	forceSpoolError forceReason = "its spool cannot be written"
+	forceDuration   forceReason = "max_duration reached"
+)
 
 // inflightEntry is a file started in a session. retry marks a new attempt of a
 // file that already failed in this session: it does not count as activity.
@@ -224,6 +282,8 @@ func (p *SessionPlugin) GetDefaultConfig() (config any) {
 		InflightTimeout: defaultInflightTimeout,
 		RemoveEmptyDirs: true,
 		CleanupTimeout:  defaultCleanupTimeout,
+		MaxDuration:     defaultMaxDuration,
+		MaxSpoolSize:    defaultMaxSpoolSize,
 	}
 	return
 }
@@ -251,6 +311,13 @@ func checkConfig(config *Config, vc plugins.ValidationContext, warn bool) error 
 		return fmt.Errorf("report_retries %d must not be negative", config.ReportRetries)
 	case config.RemoveEmptyDirs && config.CleanupTimeout <= 0:
 		return fmt.Errorf("cleanup_timeout %s must be positive", config.CleanupTimeout)
+	case vc.GetWorkDir() == "":
+		return errors.New("the connector has no work directory: the session plugin keeps its reports there")
+	case config.MaxDuration <= 0:
+		return fmt.Errorf("max_duration %s must be positive", config.MaxDuration)
+	}
+	if _, err := parseSpoolSize(config.MaxSpoolSize); err != nil {
+		return err
 	}
 	if warn && config.RemoveEmptyDirs && !cleanupSupported {
 		msg := "session: remove_empty_dirs is not supported on this system: the empty folders are left"
@@ -280,6 +347,18 @@ func checkConfig(config *Config, vc plugins.ValidationContext, warn bool) error 
 	return nil
 }
 
+// parseSpoolSize reads max_spool_size, which must be at least minSpoolSize.
+func parseSpoolSize(value string) (int64, error) {
+	size, err := units.ParseStrictBytes(value)
+	if err != nil {
+		return 0, fmt.Errorf("max_spool_size %q: %w", value, err)
+	}
+	if size < minSpoolSize {
+		return 0, fmt.Errorf("max_spool_size %q must be at least 1MiB", value)
+	}
+	return size, nil
+}
+
 // Init initializes the plugin, registers callbacks, and starts session monitoring.
 func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	config, ok := rawConfig.(*Config)
@@ -303,9 +382,14 @@ func (p *SessionPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 		return fmt.Errorf("session plugin: %w", err)
 	}
 
+	maxSpool, err := parseSpoolSize(config.MaxSpoolSize)
+	if err != nil {
+		return err
+	}
 	p.config = *config
 	p.config.RootFolder = root
 	p.workDir = workDir
+	p.maxSpool = maxSpool
 	p.mutex.Lock()
 	p.sessions = make(map[string]*Session)
 	p.mutex.Unlock()
@@ -406,21 +490,88 @@ func (p *SessionPlugin) waitCleanup(ctx context.Context) {
 // attach runs op on the session of file, asking for a new one when the session
 // found was closed meanwhile; ensure creates the session when there is none. It
 // returns the session op ran on, if any, and whether it was just created.
-func (p *SessionPlugin) attach(file string, ensure bool, op func(*Session) bool) (session *Session, created bool) {
+func (p *SessionPlugin) attach(file string, ensure bool, op func(s *Session, probe bool) (bool, sessionStatus)) (session *Session, created bool) {
 	for range 2 {
 		session, created = p.getSession(file, ensure)
-		if session == nil || op(session) {
+		if session == nil {
+			return session, created
+		}
+		if ok, st := op(session, p.spoolFailing.Load()); ok {
+			p.afterWrite(session, st)
 			return session, created
 		}
 	}
 	return nil, false
 }
 
+// afterWrite acts on what a write to a session showed: it logs what the
+// session could not encode or had to spill, closes the session at once when its
+// spool is full or broken, and raises or resolves the console event of the spool
+// write failures.
+func (p *SessionPlugin) afterWrite(s *Session, st sessionStatus) {
+	if st.encodeErr != nil {
+		p.logger.Error("a report cannot be encoded, it is kept in memory as it is",
+			slog.String(sessionIDLogKey, s.ID), slog.String("error", st.encodeErr.Error()))
+	}
+	if st.spilled {
+		p.logger.Warn("the memory kept for reports in error is spent: they go to the spool, a later success of the same file adds a second line",
+			slog.String(sessionIDLogKey, s.ID), slog.Int("budget_bytes", maxPendingErrors))
+	}
+	if st.forced == "" {
+		if st.works && p.spoolFailing.Load() && p.spoolFailing.CompareAndSwap(true, false) && p.hcc != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), eventBound)
+			defer cancel()
+			p.hcc.NotifyResolution(ctx, spoolEvent, "the session reports are written again")
+		}
+		return
+	}
+	closed := p.forceClose(s)
+	if st.forced != forceSpoolError {
+		if closed {
+			p.logger.Info("session closed at once, the next deposit opens a new one",
+				slog.String(sessionIDLogKey, s.ID), slog.String("reason", string(st.forced)))
+		}
+		return
+	}
+	msg := fmt.Sprintf("session %q: its reports cannot be written to the spool (%v): the session is closed and reported with what it holds", s.ID, st.spoolErr)
+	p.logger.Error(msg, slog.String(sessionIDLogKey, s.ID))
+	p.consoleLogger.Error(msg)
+	if p.spoolFailing.CompareAndSwap(false, true) && p.hcc != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), eventBound)
+		defer cancel()
+		p.hcc.NotifyError(ctx, spoolEvent, errors.New(msg))
+	}
+}
+
+// forceClose takes a session out of the open ones and puts it in the list of
+// those waiting for their report, without waiting for the monitor. It tells
+// whether it did: the monitor may have taken the session already, and a stop
+// that has begun leaves it to closeAllSessions, which still has the time to
+// write its report. Lock order: mutex, then closeMu.
+func (p *SessionPlugin) forceClose(s *Session) bool {
+	p.mutex.Lock()
+	defer p.mutex.Unlock()
+	if p.sessions[s.ID] != s {
+		return false
+	}
+	p.closeMu.Lock()
+	defer p.closeMu.Unlock()
+	// A guard: a session still in p.sessions means the stop has not taken the lists
+	// yet, so this cannot happen while the lock order holds.
+	if p.stopping {
+		return false
+	}
+	s.closeSession()
+	delete(p.sessions, s.ID)
+	p.closing = append(p.closing, newClosing(s))
+	return true
+}
+
 // OnStartScanFile adds files to their appropriate sessions based on directory path.
 // A new attempt at a file that failed, whose session is closed, does not open
 // another session: its outcome is reported when it ends well, by OnReport.
 func (p *SessionPlugin) OnStartScanFile(file string, sha256 string) {
-	session, created := p.attach(file, !p.knownError(file, sha256), func(s *Session) bool { return s.addFile(file, sha256) })
+	session, created := p.attach(file, !p.knownError(file, sha256), func(s *Session, _ bool) (bool, sessionStatus) { return s.addFile(file, sha256), sessionStatus{} })
 	if session != nil {
 		p.logger.Debug("file added to session",
 			slog.String(filepathLogKey, file),
@@ -447,11 +598,14 @@ func (p *SessionPlugin) WaitForOptions(opts *gdetect.WaitForOptions, location st
 // closed, unless it already failed and was reported.
 func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamodel.Result) (newResult *datamodel.Result) {
 	failed := result.Error != nil
-	session, _ := p.attach(file, failed && !p.knownError(file, sha256), func(s *Session) bool {
+	session, _ := p.attach(file, failed && !p.knownError(file, sha256), func(s *Session, probe bool) (bool, sessionStatus) {
 		if !s.markFileCompleted(file) {
-			return false
+			return false, sessionStatus{}
 		}
-		return !failed || s.addFileError(file, sha256, result.Error.Error())
+		if !failed {
+			return true, sessionStatus{}
+		}
+		return s.addFileError(file, sha256, result.Error.Error(), probe)
 	})
 	if session == nil {
 		return
@@ -476,7 +630,7 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 // action) a new one is opened and will write a complementary report. Only a
 // repeated failure of a file already reported as failed opens nothing.
 func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
-	session, _ := p.attach(rep.Filename, rep.Error == "" || leftInput(*rep) || !p.knownError(rep.Filename, rep.SHA256), func(s *Session) bool { return s.addReport(*rep) })
+	session, _ := p.attach(rep.Filename, rep.Error == "" || leftInput(*rep) || !p.knownError(rep.Filename, rep.SHA256), func(s *Session, probe bool) (bool, sessionStatus) { return s.addReport(*rep, probe) })
 	if session == nil {
 		return
 	}
@@ -514,26 +668,30 @@ func leftInput(rep datamodel.Report) bool {
 // rememberErrors keeps the files of a closed session that ended in error and are
 // still in INPUT, to be retried: a retry that fails again opens no new session.
 func (p *SessionPlugin) rememberErrors(s *Session) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
+	_, held := s.view()
+	failed := make(map[string]string, len(held))
+	for path, h := range held {
+		// Reports kept in memory past the budget after a spool failure are not all
+		// failures. A file that left INPUT (quarantined, deleted, moved) is not
+		// retried: the same bytes dropped again are a new file and must get their
+		// session.
+		if h.report.Error != "" && !leftInput(h.report) {
+			failed[path] = h.report.SHA256
+		}
+	}
 	p.closeMu.Lock()
 	defer p.closeMu.Unlock()
 	if p.known == nil {
 		p.known = make(map[string]string)
 	}
-	for path, i := range s.errorAt {
-		// A file that left INPUT (quarantined, deleted, moved) is not retried: the
-		// same bytes dropped again are a new file and must get their session.
-		if leftInput(s.CompletedReports[i]) {
-			continue
-		}
+	for path, sha := range failed {
 		if len(p.known) >= maxKnownErrors {
 			for k := range p.known {
 				delete(p.known, k)
 				break
 			}
 		}
-		p.known[path] = s.CompletedReports[i].SHA256
+		p.known[path] = sha
 	}
 }
 
@@ -566,20 +724,27 @@ func (p *SessionPlugin) getSession(filePath string, ensure bool) (session *Sessi
 	case exists:
 		return
 	case ensure:
+		p.closeMu.Lock()
+		stopping := p.stopping
+		p.closeMu.Unlock()
+		if stopping {
+			p.logger.Warn("a file arrived after the stop took the sessions: it is in no session report", slog.String(filepathLogKey, filePath))
+			return nil, false
+		}
 		created = true
 		sessionPaths := make([]string, 0, len(p.config.Exports))
 		for _, v := range p.config.Exports {
 			sessionPaths = append(sessionPaths, filepath.Join(v, sessionID))
 		}
 		session = &Session{
-			ID:               sessionID,
-			Paths:            sessionPaths,
-			StartTime:        p.nowTime(),
-			LastActivity:     p.nowTime(),
-			InFlight:         make(map[string]*inflightEntry),
-			CompletedReports: make([]datamodel.Report, 0),
-			errorAt:          make(map[string]int),
-			clock:            p.nowTime,
+			ID:           sessionID,
+			Paths:        sessionPaths,
+			StartTime:    p.nowTime(),
+			LastActivity: p.nowTime(),
+			InFlight:     make(map[string]*inflightEntry),
+			pending:      make(map[string]pendingReport),
+			limits:       spoolLimits{dir: p.spoolDir(), maxSize: p.maxSpool, budget: &p.errBudget, logger: p.logger},
+			clock:        p.nowTime,
 		}
 		p.sessions[sessionID] = session
 		p.logger.Info("new session created",
@@ -652,6 +817,15 @@ func (p *SessionPlugin) waitPreviousRun() error {
 	return nil
 }
 
+// spoolDir is the folder of the spool files of the sessions, in the work
+// directory: Validate and Init refuse a connector that has none.
+func (p *SessionPlugin) spoolDir() string {
+	if p.workDir == "" {
+		return ""
+	}
+	return filepath.Join(p.workDir, datamodel.SessionSpoolDir)
+}
+
 func (s *Session) nowTime() time.Time {
 	if s.clock != nil {
 		return s.clock()
@@ -669,8 +843,8 @@ func (s *Session) addFile(filePath, sha256 string) bool {
 	}
 
 	now := s.nowTime()
-	i, failed := s.errorAt[filePath]
-	retry := failed && s.CompletedReports[i].SHA256 == sha256
+	held, failed := s.pending[filePath]
+	retry := failed && held.report.SHA256 == sha256
 	s.InFlight[filePath] = &inflightEntry{start: now, retry: retry}
 	if !retry {
 		s.LastActivity = now
@@ -691,49 +865,6 @@ func (s *Session) markFileCompleted(filePath string) bool {
 			s.LastActivity = s.nowTime()
 		}
 	}
-	return true
-}
-
-// addFileError enters a minimal report for a file that ended in error, unless
-// the session already holds one for it.
-func (s *Session) addFileError(filePath, sha256, msg string) bool {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.closed {
-		return false
-	}
-
-	if _, ok := s.errorAt[filePath]; ok {
-		return true
-	}
-	s.errorAt[filePath] = len(s.CompletedReports)
-	s.CompletedReports = append(s.CompletedReports, datamodel.Report{Filename: filePath, SHA256: sha256, Error: msg})
-	s.LastActivity = s.nowTime()
-	return true
-}
-
-// addReport keeps one report per file that failed: a later report of the same
-// file replaces it, and a repeated failure is no activity.
-func (s *Session) addReport(rep datamodel.Report) bool {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-	if s.closed {
-		return false
-	}
-
-	if i, ok := s.errorAt[rep.Filename]; ok {
-		s.CompletedReports[i] = rep
-		if rep.Error == "" {
-			delete(s.errorAt, rep.Filename)
-			s.LastActivity = s.nowTime()
-		}
-		return true
-	}
-	if rep.Error != "" {
-		s.errorAt[rep.Filename] = len(s.CompletedReports)
-	}
-	s.CompletedReports = append(s.CompletedReports, rep)
-	s.LastActivity = s.nowTime()
 	return true
 }
 
@@ -768,6 +899,15 @@ func (p *SessionPlugin) readyForClosure(s *Session) bool {
 				slog.String(sessionIDLogKey, s.ID), slog.String(filepathLogKey, path))
 			delete(s.InFlight, path)
 		}
+	}
+	if s.forced == "" && p.config.MaxDuration > 0 && now.Sub(s.StartTime) >= p.config.MaxDuration {
+		s.forced = forceDuration
+	}
+	if s.forced != "" {
+		p.logger.Info("session closed at once, the next deposit opens a new one",
+			slog.String(sessionIDLogKey, s.ID), slog.String("reason", string(s.forced)))
+		s.closed = true
+		return true
 	}
 	idle := now.Sub(s.LastActivity)
 	if idle >= p.config.InflightTimeout {
@@ -814,6 +954,9 @@ const (
 	viaGenerator reportSource = iota
 	// viaJSON is the plain JSON report, written when the generator fails.
 	viaJSON
+	// viaRaw is the spool as it is, JSON Lines: the last resort when even the
+	// JSON report cannot be made.
+	viaRaw
 )
 
 // fallbackDeadline is the end of the time the JSON fallbacks of a stop have:
@@ -856,7 +999,9 @@ func (p *SessionPlugin) closeAllSessions(ctx, fbCtx context.Context) {
 		all = append(all, newClosing(session))
 		delete(p.sessions, id)
 	}
-	p.mutex.Unlock()
+	// The stop is marked before p.mutex is released: a session created after
+	// this point is refused (see getSession), so none escapes both lists. Lock
+	// order: mutex, then closeMu.
 	p.closeMu.Lock()
 	all = slices.Concat(p.closing, all)
 	p.closing = nil
@@ -868,6 +1013,7 @@ func (p *SessionPlugin) closeAllSessions(ctx, fbCtx context.Context) {
 	}
 	p.stopping = true
 	p.closeMu.Unlock()
+	p.mutex.Unlock()
 	var lostSet lostSessions
 	onLost := func(cs *closingSession, cause error) {
 		p.logLost(cs, cause)
@@ -932,7 +1078,16 @@ func (p *SessionPlugin) tryReport(ctx context.Context, cs *closingSession) error
 
 func (p *SessionPlugin) reported(s *Session) {
 	p.rememberErrors(s)
+	p.freeSession(s)
 	p.queueCleanup(s.ID)
+}
+
+// freeSession frees the memory and the spool of a session whose report is written
+// or lost.
+func (p *SessionPlugin) freeSession(s *Session) {
+	if err := s.release(); err != nil {
+		p.logger.Warn("cannot remove the spool of a session", slog.String(sessionIDLogKey, s.ID), slog.String("error", err.Error()))
+	}
 }
 
 // startCleanup starts the goroutine that removes empty folders, if the option
@@ -1005,7 +1160,7 @@ func (p *SessionPlugin) cleanup(parent context.Context, id string) {
 func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, cause error, onLost lostFunc) bool {
 	p.logger.Error("the session report failed, a JSON fallback is written",
 		slog.String(sessionIDLogKey, cs.session.ID), slog.String("error", cause.Error()))
-	err := p.writeSessionReport(ctx, cs, viaJSON)
+	err := p.writeFallback(ctx, cs)
 	if err == nil {
 		p.reported(cs.session)
 		if p.fallback.CompareAndSwap(false, true) {
@@ -1017,6 +1172,21 @@ func (p *SessionPlugin) fallbackOrLose(ctx context.Context, cs *closingSession, 
 	return false
 }
 
+// writeFallback writes the JSON report of a session, and when that fails the
+// spool as it is: a report is not lost while the spool can still be copied.
+func (p *SessionPlugin) writeFallback(ctx context.Context, cs *closingSession) error {
+	err := p.writeSessionReport(ctx, cs, viaJSON)
+	if err == nil {
+		return nil
+	}
+	p.logger.Error("the JSON report failed, the spool is copied as it is",
+		slog.String(sessionIDLogKey, cs.session.ID), slog.String("error", err.Error()))
+	if rawErr := p.writeSessionReport(ctx, cs, viaRaw); rawErr != nil {
+		return errors.Join(err, rawErr)
+	}
+	return nil
+}
+
 // lostFunc is told of each session whose report could not be written.
 type lostFunc = func(cs *closingSession, cause error)
 
@@ -1026,6 +1196,7 @@ var errMonitorHeld = errors.New("held by the session monitor, which did not end 
 
 // logLost says, in the logs, that the report of a session could not be written.
 func (p *SessionPlugin) logLost(cs *closingSession, cause error) {
+	p.freeSession(cs.session)
 	msg := fmt.Sprintf("the report of session %q is lost: %v", cs.session.ID, cause)
 	p.logger.Error(msg, slog.String(sessionIDLogKey, cs.session.ID))
 	p.consoleLogger.Error(msg)
@@ -1107,11 +1278,14 @@ func (p *SessionPlugin) checkSessions(ctx context.Context, gen uint64) {
 		}
 	}
 	if n := len(still) - maxClosing; n > 0 && ctx.Err() == nil {
-		p.relieve(ctx, still[:n])
-		for _, cs := range still[:n] {
-			p.release(hb, cs)
+		oldest := still[:n]
+		left := p.relieve(ctx, oldest)
+		for _, cs := range oldest {
+			if !slices.Contains(left, cs) {
+				p.release(hb, cs)
+			}
 		}
-		still = still[n:]
+		still = slices.Concat(left, still[n:])
 	}
 	left := p.putBack(ctx, hb, still)
 	if left <= maxClosing && p.backlog.CompareAndSwap(true, false) {
@@ -1213,21 +1387,27 @@ func (p *SessionPlugin) lateLoss(ctx context.Context, sessions []*closingSession
 }
 
 // relieve writes the JSON report of sessions that wait too long, in a bound of
-// fallbackBound for all, and says that a backlog builds up.
-func (p *SessionPlugin) relieve(ctx context.Context, sessions []*closingSession) {
-	ctx, cancel := context.WithTimeout(ctx, fallbackBound)
+// fallbackBound for all, and says that a backlog builds up. It returns the
+// sessions it did not finish because ctx ended (the stop): they are not lost,
+// Close writes their report.
+func (p *SessionPlugin) relieve(parent context.Context, sessions []*closingSession) (left []*closingSession) {
+	ctx, cancel := context.WithTimeout(parent, fallbackBound)
 	defer cancel()
 	if p.backlog.CompareAndSwap(false, true) {
 		p.hcc.NotifyError(ctx, backlogEvent, fmt.Errorf("%d session reports wait to be written: the oldest are written as JSON", len(sessions)))
 	}
 	for _, cs := range sessions {
-		err := p.writeSessionReport(ctx, cs, viaJSON)
-		if err == nil {
+		err := p.writeFallback(ctx, cs)
+		switch {
+		case err == nil:
 			p.reported(cs.session)
-			continue
+		case parent.Err() != nil:
+			left = append(left, cs)
+		default:
+			p.loseReport(ctx, cs, err)
 		}
-		p.loseReport(ctx, cs, err)
 	}
+	return left
 }
 
 // attempt tries once to write the report of a closing session; after
@@ -1250,12 +1430,14 @@ func (p *SessionPlugin) attempt(ctx context.Context, cs *closingSession) bool {
 	fbCtx, cancel := context.WithTimeout(ctx, fallbackBound)
 	defer cancel()
 	// A fallback cut by the stop is not a loss: Close writes the report.
+	lostHere := false
 	written := p.fallbackOrLose(fbCtx, cs, err, func(cs *closingSession, cause error) {
 		if ctx.Err() == nil {
+			lostHere = true
 			p.loseReport(fbCtx, cs, cause)
 		}
 	})
-	return written || ctx.Err() == nil
+	return written || lostHere
 }
 
 func (p *SessionPlugin) logClosing(cs *closingSession) {
@@ -1263,14 +1445,15 @@ func (p *SessionPlugin) logClosing(cs *closingSession) {
 	session.mutex.RLock()
 	defer session.mutex.RUnlock()
 
+	count := session.countLocked()
 	duration := p.nowTime().Sub(session.StartTime).String()
 	p.logger.Info("closing session",
 		slog.String(sessionIDLogKey, session.ID),
-		slog.Int("completed_reports", len(session.CompletedReports)),
+		slog.Int("completed_reports", count),
 		slog.Int("in_flight", len(session.InFlight)),
 		slog.String("duration", duration))
 
-	p.consoleLogger.Info(fmt.Sprintf("closing session %q (completed reports: %d, duration: %s)", session.ID, len(session.CompletedReports), duration))
+	p.consoleLogger.Info(fmt.Sprintf("closing session %q (completed reports: %d, duration: %s)", session.ID, count, duration))
 }
 
 // reportName is the base name of the report of a session, without extension: a
@@ -1302,11 +1485,12 @@ func (p *SessionPlugin) writeSessionReport(ctx context.Context, cs *closingSessi
 		return nil
 	}
 	session.mutex.RLock()
-	reports := session.CompletedReports
+	empty := session.countLocked() == 0
 	session.mutex.RUnlock()
-	if len(reports) == 0 {
+	if empty {
 		return nil
 	}
+	reports := session.reports(ctx)
 	var (
 		produce func(io.Writer) error
 		ext     = ".json"
@@ -1314,14 +1498,17 @@ func (p *SessionPlugin) writeSessionReport(ctx context.Context, cs *closingSessi
 	switch src {
 	case viaJSON:
 		produce = func(w io.Writer) error {
-			return datamodel.WriteReportsJSON(ctx, w, datamodel.ReportsSeq(reports))
+			return datamodel.WriteReportsJSON(ctx, w, reports)
 		}
+	case viaRaw:
+		ext = datamodel.SessionSpoolExt
+		produce = func(w io.Writer) error { return session.copyRaw(ctx, w) }
 	default:
 		generated, err := p.hcc.GenerateReport(ctx, datamodel.ScanContext{
 			ScanID: fmt.Sprintf("session-%s-%d", session.ID, session.StartTime.Unix()),
 			Start:  session.StartTime,
 			End:    p.nowTime(),
-		}, datamodel.ReportsSeq(reports))
+		}, reports)
 		if err != nil {
 			return fmt.Errorf("failed to generate session report: %w", err)
 		}

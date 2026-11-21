@@ -128,6 +128,15 @@ session:
     # Time given to the removal of the empty folders of one session (default: 2m)
     # cleanup_timeout: 2m
 
+    # Longest a session stays open, whatever its activity (default: 24h, > 0).
+    # Past it the session is closed and the next deposit opens a new one
+    # max_duration: 24h
+
+    # Size of the reports of a session, kept on disk in the work directory
+    # (<work_dir>/session), that closes it at once (default: 1GiB, at least
+    # 1MiB). Plan max_spool_size x the number of sessions open at once
+    # max_spool_size: 1GiB
+
 # Report Plugin - Report generation (PDF/HTML)
 # Generates comprehensive scan reports in PDF or HTML format
 report:

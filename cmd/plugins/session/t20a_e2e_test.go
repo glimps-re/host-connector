@@ -143,7 +143,7 @@ func newT20Rig(t *testing.T, o t20Opts) *t20Rig {
 	hcc := &t20Context{Connector: c, logger: slog.New(slog.NewTextHandler(r.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))}
 	if err = r.plugin.Init(&Config{
 		Depth: 1, Delay: o.delay, RootFolder: r.root, Exports: []string{r.export},
-		ReportTimeout: time.Minute, ReportRetries: 3, InflightTimeout: o.inflight,
+		ReportTimeout: time.Minute, ReportRetries: 3, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: o.inflight,
 	}, hcc); err != nil {
 		t.Fatal(err)
 	}

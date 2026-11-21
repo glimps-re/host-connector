@@ -4,14 +4,24 @@ package scanner
 
 import (
 	"errors"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
 
 const (
+	// maxOrphanSpools caps the count of the spools of a crashed run: it only
+	// feeds a message, so a hostile folder cannot make the purge walk for long.
+	maxOrphanSpools = 10_000
+	// spoolListBatch is how many names are read at a time from the spool folder.
+	spoolListBatch = 256
+
 	tmpfsMagic uint32 = 0x01021994
 	ramfsMagic uint32 = 0x858458f6
 )
@@ -100,9 +110,54 @@ func purgeIfOrphan(dir string) (reason string, kept bool) {
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		return "", false // held by a live process
 	}
+	lost := countOrphanSpools(dir)
 	if err = os.RemoveAll(dir); err != nil {
 		return "cannot remove: " + err.Error(), true
 	}
 	logger.Info("orphan work directory removed", slog.String("path", dir))
+	if lost > 0 {
+		count := strconv.Itoa(lost)
+		if lost >= maxOrphanSpools {
+			count = "at least " + count
+		}
+		msg := count + " session report(s) of a previous run were lost (crash): their files were processed but are not in any session report"
+		logger.Warn(msg, slog.String("path", dir), slog.Int("sessions", lost))
+		ConsoleLogger.Warn(msg)
+	}
 	return "", false
+}
+
+// countOrphanSpools counts the session spools (regular *.jsonl files, directly
+// in the session folder) left in an orphan work directory, up to
+// maxOrphanSpools. Nothing is followed: the folder is opened without following
+// a link, and only entries that are regular files themselves count.
+func countOrphanSpools(dir string) int {
+	d, err := os.OpenFile(filepath.Clean(filepath.Join(dir, datamodel.SessionSpoolDir)), os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_DIRECTORY, 0)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			logger.Warn("cannot read the session spool folder of an orphan work directory", slog.String("path", dir), slog.String("error", err.Error()))
+		}
+		return 0
+	}
+	defer func() {
+		if e := d.Close(); e != nil {
+			logger.Warn("cannot close the session spool folder", slog.String("path", dir), slog.String("error", e.Error()))
+		}
+	}()
+	count := 0
+	for count < maxOrphanSpools {
+		entries, err := d.ReadDir(spoolListBatch)
+		for _, e := range entries {
+			if e.Type().IsRegular() && strings.HasSuffix(e.Name(), datamodel.SessionSpoolExt) {
+				count++
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				logger.Warn("cannot list the session spool folder of an orphan work directory", slog.String("path", dir), slog.String("error", err.Error()))
+			}
+			break
+		}
+	}
+	return min(count, maxOrphanSpools)
 }

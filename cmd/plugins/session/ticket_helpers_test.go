@@ -4,10 +4,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/plugins"
+	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
@@ -42,7 +44,7 @@ func filesIn(t *testing.T, dir string) []string {
 		return nil
 	}
 	for _, e := range entries {
-		if !e.IsDir() {
+		if !e.IsDir() && !strings.HasPrefix(e.Name(), quarantine.TempPrefix) {
 			out = append(out, filepath.Join(dir, e.Name()))
 		}
 	}

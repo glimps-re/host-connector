@@ -55,6 +55,15 @@ type Report struct {
 // destination: it could pass for a report.
 const SessionReportPrefix = "report-session-"
 
+// SessionSpoolDir is the folder, under the work directory of an instance, where
+// the session plugin keeps the reports of its open sessions, one JSON Lines
+// file per session ("<random>.jsonl", one Report per line).
+const SessionSpoolDir = "session"
+
+// SessionSpoolExt is the extension of the spool files of SessionSpoolDir and of
+// the raw copy of a spool written as a last-resort session report.
+const SessionSpoolExt = ".jsonl"
+
 type Action string
 
 const (

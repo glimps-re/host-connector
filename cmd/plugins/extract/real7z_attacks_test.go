@@ -482,7 +482,14 @@ func TestRealSevenZip_aFolderEntryThatHoldsDataIsAnAnomalyWithEncryptionPossible
 
 // runCmd runs a command to build test archives with the embedded 7-Zip.
 func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // test helper running the test binary
+	return runCmdIn(ctx, "", bin, args...)
+}
+
+// runCmdIn runs the test binary in dir (the current directory when empty).
+func runCmdIn(ctx context.Context, dir, bin string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // test helper running the 7-Zip the test deploys
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
 

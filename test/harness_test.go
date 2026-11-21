@@ -46,10 +46,16 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
+// runCommand runs a tool the tests use to build their inputs (the toolchain, the
+// embedded 7-Zip), in dir, and returns what it printed.
+func runCommand(dir, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(context.Background(), name, args...) //nolint:gosec // G204: the tests run the tools they build their inputs with; every argument is their own
+	cmd.Dir = dir
+	return cmd.CombinedOutput()
+}
+
 func goBuild(root, out string, args ...string) error {
-	cmd := exec.CommandContext(context.Background(), "go", append([]string{"build", "-o", out}, args...)...) //nolint:gosec // G204: the test builds the binary it then runs; every argument is its own
-	cmd.Dir = root
-	if b, err := cmd.CombinedOutput(); err != nil {
+	if b, err := runCommand(root, "go", append([]string{"build", "-o", out}, args...)...); err != nil {
 		return fmt.Errorf("go build %v: %w\n%s", args, err, b)
 	}
 	return nil

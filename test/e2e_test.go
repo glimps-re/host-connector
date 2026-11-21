@@ -1380,3 +1380,102 @@ func TestE2E_aSkippedTypeIsNotWaivedForALargeFile(t *testing.T) {
 		t.Error("the small image is not reported as skipped")
 	}
 }
+
+// modeExecutable is the mode of the copy of the embedded 7-Zip.
+const modeExecutable os.FileMode = 0o700
+
+// sevenZip returns a copy of the embedded 7-Zip of the extract plugin that the
+// tests can run, or skips the test when it is not there.
+func sevenZip(t *testing.T) string {
+	t.Helper()
+	src := filepath.Join(repoRoot(t), "cmd", "plugins", "extract", "7zzs")
+	in, err := os.Open(filepath.Clean(src))
+	if err != nil {
+		t.Skipf("embedded 7-Zip not available: %v", err)
+	}
+	defer func() {
+		if e := in.Close(); e != nil {
+			t.Logf("close: %v", e)
+		}
+	}()
+	bin := filepath.Join(t.TempDir(), "7zzs")
+	out, err := os.OpenFile(filepath.Clean(bin), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		t.Fatal(err)
+	}
+	if err = out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Chmod(bin, modeExecutable); err != nil {
+		t.Fatal(err)
+	}
+	return bin
+}
+
+// headerEncrypted7z builds a 7z with the embedded 7-Zip whose headers and
+// content are encrypted with "infected" (-mhe=on), the way samples are commonly
+// shared. members maps a path in the archive to its content.
+func headerEncrypted7z(t *testing.T, members map[string]string) []byte {
+	t.Helper()
+	bin := sevenZip(t)
+	src := t.TempDir()
+	paths := make([]string, 0, len(members))
+	for name, content := range members {
+		p := filepath.Join(src, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		write(t, p, []byte(content))
+		paths = append(paths, name)
+	}
+	archive := filepath.Join(t.TempDir(), "he.7z")
+	if out, err := runCommand(src, bin, append([]string{"a", "-t7z", "-mhe=on", "-pinfected", archive}, paths...)...); err != nil {
+		t.Fatalf("cannot build the archive: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(filepath.Clean(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// A 7z with encrypted headers, whose password is a default one ("infected"), is
+// extracted like any archive: with clean members it is delivered, after its members
+// were analyzed; with a detected member it is quarantined.
+func TestE2E_aHeaderEncryptedSevenZipWithADefaultPassword(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		detected bool
+	}{{name: "clean members"}, {name: "a detected member", detected: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{extract: true})
+			clean := []byte(strings.Repeat("a clean member of the archive ", 40))
+			other := []byte(strings.Repeat("a member that may be a malware ", 40))
+			if tt.detected {
+				gm.MarkMalicious(other)
+				in.expect.flag(other)
+			}
+			archive := headerEncrypted7z(t, map[string]string{"d/clean.txt": string(clean), "other.bin": string(other)})
+			in.expect.archive(archive, clean, other)
+			path := in.drop(t, "he.7z", archive)
+			if tt.detected {
+				lock := filepath.Join(in.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(archive))+".lock")
+				in.waitFor(t, "the quarantine of the archive", func() bool { return !in.gone(lock) && in.gone(path) })
+				if in.outputHas(t, archive) {
+					t.Error("the archive with a detected member was delivered")
+				}
+				return
+			}
+			in.waitFor(t, "the archive to be delivered", func() bool { return in.outputHas(t, archive) })
+			for _, member := range [][]byte{clean, other} {
+				if _, ok := gm.Given(sha256Hex(member)); !ok {
+					t.Error("a member of the archive was not analyzed")
+				}
+			}
+		})
+	}
+}

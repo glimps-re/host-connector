@@ -305,7 +305,8 @@ func TestExtract_wrongPasswordIsEncrypted(t *testing.T) {
 }
 
 func TestExtract_notAnArchiveIsUnsupportedFormat(t *testing.T) {
-	sze := fakeSevenZip(t, `echo "ERROR: file.bin : Cannot open the file as archive" >&2; exit 2`)
+	// 7z names, in its error, the path it was given: the one the plugin staged.
+	sze := fakeSevenZip(t, `for a; do case "$a" in *file.bin) p="$a";; esac; done; echo "ERROR: $p : Cannot open the file as archive" >&2; exit 2`)
 	bigConfig(sze)
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
 	_, err := plugin.ExtractFile("file.bin", t.TempDir(), openLimits)

@@ -96,7 +96,7 @@ func (p *SevenZipExtractPlugin) Init(rawConfig any, hcc plugins.HCContext) (err 
 			p.logger.Warn("cannot remove the 7-Zip of a previous Init", slog.String("error", rmErr.Error()))
 		}
 	}
-	p.sze = &sevenZipExtract{config: econf, sevenZipPath: bin.path, logger: p.logger}
+	p.sze = &sevenZipExtract{config: econf, sevenZipPath: bin.path, logger: p.logger, workDir: hcc.GetWorkDir()}
 	p.bin = bin
 	if p.cancelBase != nil {
 		p.cancelBase()

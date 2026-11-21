@@ -114,8 +114,17 @@ func classifyStderr(stderr string, paths []string) sevenZipOutput {
 		}
 	}
 	var out sevenZipOutput
-	for line := range strings.SplitSeq(stderr, "\n") {
+	lines := strings.Split(stderr, "\n")
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		switch {
+		case line == errLinePrefix+pathToken && i+1 < len(lines) && slices.Contains(encryptedOpenLines, lines[i+1]):
+			// Extracting, 7z writes the refusal of an archive with encrypted
+			// headers on two lines (the path, the sentence), listing on one. The
+			// sentence counts only right after the path of the archive, which is
+			// ours: alone it could come from the content.
+			out.wrongPassword = true
+			i++
 		case line == "":
 		case line == "Is not archive":
 			out.notAnArchive = true

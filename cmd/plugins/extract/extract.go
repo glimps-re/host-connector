@@ -146,6 +146,70 @@ type sevenZipExtract struct {
 	config       extractorConfig
 	sevenZipPath string
 	logger       *slog.Logger
+	// workDir is the private directory where an archive is given its name for 7z
+	// (see stage); the temporary directory when empty.
+	workDir string
+}
+
+// maxStagedName bounds the name given to an archive.
+const maxStagedName = 100
+
+// stagedName is the name 7z is given for an archive: the name of the archive with
+// every character that is not a plain ASCII one made an underscore. 7z names the
+// file inside a single-file compressor after the archive (x.txt.gz holds x.txt), so
+// the name is kept as far as it can be; what 7z prints of the path must be the path
+// we neutralize, and 7z prints a control character, an invalid UTF-8 sequence or a
+// bidirectional mark in another form than the one it was given.
+func stagedName(base string) string {
+	var b strings.Builder
+	for _, r := range base {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', strings.ContainsRune(" ._+@=,~()-", r):
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+	}
+	name := b.String()
+	if len(name) > maxStagedName {
+		ext := filepath.Ext(name)
+		if len(ext) > 16 {
+			ext = ""
+		}
+		name = name[:maxStagedName-len(ext)] + ext
+	}
+	if name == "" || strings.Trim(name, ".") == "" || strings.HasPrefix(name, "-") {
+		name = "archive" + name
+	}
+	return name
+}
+
+// stage links the archive, under a name of ours, in a new private folder, and gives
+// the path of the link: it is what 7z is run on, so that the path it prints in its
+// errors is one we chose, never the one of the depositor (which 7z prints with
+// control characters replaced, and so we could not neutralize). cleanup removes the
+// folder.
+func (sze *sevenZipExtract) stage(archivePath string) (staged string, cleanup func(), err error) {
+	// A link to a relative path would be read from the folder of the link.
+	target, err := filepath.Abs(archivePath)
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+	}
+	dir, err := os.MkdirTemp(sze.workDir, "src-")
+	if err != nil {
+		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+	}
+	cleanup = func() {
+		if rmErr := os.RemoveAll(dir); rmErr != nil {
+			sze.logger.Warn("cannot remove the folder of a staged archive", slog.String("dir", dir), slog.String("error", rmErr.Error()))
+		}
+	}
+	staged = filepath.Join(dir, stagedName(filepath.Base(archivePath)))
+	if err = os.Symlink(target, staged); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+	}
+	return staged, cleanup, nil
 }
 
 func (sze *sevenZipExtract) passwordCandidates(passwords []string) []string {
@@ -364,6 +428,11 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, limits plugins.ExtractLimits) (res extractResult, err error) {
 	ctx, cancel := context.WithTimeout(ctx, archiveTimeout(archivePath, 0))
 	defer cancel()
+	archivePath, cleanup, err := sze.stage(archivePath)
+	if err != nil {
+		return res, err
+	}
+	defer cleanup()
 	nopw := *sze
 	nopw.config = extractorConfig{}
 	// No cap per member: the budget of the extraction (members, total size, ratio) is
@@ -452,6 +521,11 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	maxFileSize, maxFiles, maxTotal := limits.MaxFileSize, limits.MaxFiles, limits.MaxTotalSize
 	ctx, cancel := context.WithTimeout(ctx, archiveTimeout(archivePath, maxTotal))
 	defer cancel()
+	archivePath, cleanup, err := sze.stage(archivePath)
+	if err != nil {
+		return extraction, err
+	}
+	defer cleanup()
 	sink := newListSink(maxFileSize, maxFiles, maxTotal)
 	extraction.logger = sze.logger
 	defer func() {

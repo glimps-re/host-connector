@@ -1315,3 +1315,68 @@ func TestE2E_aDetectionBeatsAnUnexaminableNestedArchive(t *testing.T) {
 		t.Error("the archive with a detected member reached OUTPUT")
 	}
 }
+
+// P7: the plugins that judge a file do not depend on their order. A file that
+// one plugin lets through (a skipped path) and another refuses (a forbidden
+// type) is refused: a refusal beats an exemption, whichever plugin comes first.
+// The same image is dropped outside the trusted folder (the control) and in it:
+// each path gets its own container, so two are quarantined.
+func TestE2E_aRefusalBeatsAnExemptionWhateverTheOrderOfThePlugins(t *testing.T) {
+	for _, order := range [][]string{{"filepath_filter", "filetype_filter"}, {"filetype_filter", "filepath_filter"}} {
+		t.Run(strings.Join(order, ","), func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{order: order, more: map[string]map[string]any{
+				"filepath_filter": {"skipped_paths": []string{`/trusted/`}},
+				"filetype_filter": {"forbidden_types": []string{"image/png"}},
+			}})
+			in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+			pic := realPNG(t)
+			text := []byte("a text in a trusted folder")
+			in.expect.flag(pic)
+			control := in.drop(t, "control.png", pic)
+			trusted := in.drop(t, "trusted/p.png", pic)
+			in.drop(t, "trusted/t.txt", text)
+			in.waitFor(t, "the trusted text to be delivered", func() bool { return in.inOutput("trusted/t.txt") })
+			for _, path := range []string{control, trusted} {
+				lock := filepath.Join(in.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(pic))+".lock")
+				in.waitFor(t, "the quarantine of "+filepath.Base(path), func() bool { return !in.gone(lock) && in.gone(path) })
+			}
+			in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+			if in.inOutput("control.png") || in.inOutput("trusted/p.png") {
+				t.Error("the image reached OUTPUT: the exemption of its path beat the refusal of its type")
+			}
+			if _, ok := gm.Given(sha256Hex(text)); ok {
+				t.Error("the file under a skipped path was analyzed")
+			}
+		})
+	}
+}
+
+// T54: beyond what the type detection reads, a type never waives. A file whose
+// type is in skipped_types is delivered without analysis when it is small, and
+// analyzed when it is larger than what the detection reads (about 7 MiB): the
+// type of such a file is judged from its head alone.
+func TestE2E_aSkippedTypeIsNotWaivedForALargeFile(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{more: map[string]map[string]any{
+		"filetype_filter": {"skipped_types": []string{"image/png"}},
+	}})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	small := realPNG(t)
+	// A real image followed by zeros: still typed image/png, but past the size
+	// the detection reads.
+	large := append(realPNG(t), make([]byte, 9<<20)...)
+	in.drop(t, "small.png", small)
+	in.drop(t, "large.png", large)
+	in.waitFor(t, "both images to be delivered", func() bool { return in.inOutput("small.png") && in.inOutput("large.png") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	if _, ok := gm.Given(sha256Hex(small)); ok {
+		t.Error("the small image of a skipped type was analyzed")
+	}
+	if _, ok := gm.Given(sha256Hex(large)); !ok {
+		t.Error("the large image of a skipped type was waived, not analyzed")
+	}
+	if !slices.ContainsFunc(in.reportsOf(t, small), func(e datamodel.Report) bool { return e.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped }) {
+		t.Error("the small image is not reported as skipped")
+	}
+}

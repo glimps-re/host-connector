@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -249,6 +250,10 @@ type options struct {
 	// more adds plugins, by name of their folder in cmd/plugins, with their
 	// configuration.
 	more map[string]map[string]any
+	// order lists the plugins that go first in the plugins file, in that order;
+	// the others follow by name. The order of the plugins is the order of their
+	// callbacks.
+	order []string
 	// plugins is merged over the configuration of the extract plugin.
 	plugins map[string]any
 }
@@ -278,6 +283,42 @@ func cloneMap(t *testing.T, m map[string]any) map[string]any {
 		t.Fatal(err)
 	}
 	return cp
+}
+
+// writePlugins writes the plugins file with the plugins of order first, in that
+// order, then the others by name (a JSON object keeps the order it is written
+// in).
+func writePlugins(t *testing.T, path string, plugins map[string]map[string]any, order []string) {
+	t.Helper()
+	names := slices.Clone(order)
+	if len(slices.Compact(slices.Sorted(slices.Values(order)))) != len(order) {
+		t.Fatalf("a plugin is listed twice in the order %v", order)
+	}
+	rest := make([]string, 0, len(plugins))
+	for name := range plugins {
+		if !slices.Contains(order, name) {
+			rest = append(rest, name)
+		}
+	}
+	slices.Sort(rest)
+	var buf bytes.Buffer
+	buf.WriteString("{")
+	for i, name := range append(names, rest...) {
+		cfg, ok := plugins[name]
+		if !ok {
+			t.Fatalf("plugin %q is in the order but not in the plugins", name)
+		}
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if i > 0 {
+			buf.WriteString(",")
+		}
+		fmt.Fprintf(&buf, "%q:%s", name, raw)
+	}
+	buf.WriteString("}")
+	write(t, path, buf.Bytes())
 }
 
 // pluginBuilds holds the plugins built on demand, besides the two of buildAll.
@@ -414,7 +455,7 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 	}
 	in.expect.maxFileSize = maxSize
 	confFile := filepath.Join(root, "config.yml")
-	writeJSON(t, pluginsFile, plugins)
+	writePlugins(t, pluginsFile, plugins, opt.order)
 	writeJSON(t, confFile, conf)
 	timeout := opt.timeout
 	if timeout == "" {

@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -31,6 +32,7 @@ type expectations struct {
 	maxFileSize int64
 	reasons     map[datamodel.NotAnalyzedReason]bool
 	archives    map[string][][]byte
+	released    map[string]bool
 }
 
 // allow declares that files may be delivered with these not-analyzed reasons.
@@ -41,6 +43,16 @@ func (e *expectations) allow(reasons ...datamodel.NotAnalyzedReason) {
 	for _, r := range reasons {
 		e.reasons[r] = true
 	}
+}
+
+// release declares that an operator restored this malware from the quarantine:
+// the connector then delivers it on purpose, with the restored mark, and the
+// detection it made earlier stays in the reports.
+func (e *expectations) release(content []byte) {
+	if e.released == nil {
+		e.released = map[string]bool{}
+	}
+	e.released[sha256Hex(content)] = true
 }
 
 // archive declares the members of an archive the scenario delivers: the
@@ -72,6 +84,7 @@ func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
 	violations = append(violations, errs...)
 	files, problems := listEntries(spec.output)
 	violations = append(violations, problems...)
+	delivered := map[string]int{}
 	for _, path := range files {
 		rel, relErr := filepath.Rel(spec.output, path)
 		if relErr != nil {
@@ -86,10 +99,16 @@ func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
 			if gm.Programmed(sum) {
 				violations = append(violations, rel+": programmed as malware")
 			}
-			violations = append(violations, lockReportViolations(rel, path, size, spec.quarantine, gm)...)
+			violations = append(violations, lockReportViolations(rel, path, size, spec, gm, reports)...)
 			continue
 		}
+		delivered[sum]++
 		violations = append(violations, fileViolations(rel, sum, size, reports[sum], spec, gm)...)
+	}
+	for sum, n := range delivered {
+		if n > 1 && spec.released[sum] {
+			violations = append(violations, fmt.Sprintf("a restored malware (%s) is in OUTPUT %d times, once was allowed", sum[:12], n))
+		}
 	}
 	return violations
 }
@@ -133,9 +152,10 @@ func isLockReport(name string) bool {
 }
 
 // lockReportViolations checks that a lock report is exactly the report of a
-// detection of a file the test programmed as malware, whose copy is in the
+// detection of a file the test programmed as malware (or of a declared archive with such a member), whose copy is in the
 // quarantine; a file that hides behind that name is a violation.
-func lockReportViolations(rel, path string, size int64, quarantineDir string, gm *gmalware) []string {
+func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmalware, reports map[string][]datamodel.Report) []string {
+	quarantineDir := spec.quarantine
 	if size > maxReportSize {
 		return []string{rel + ": lock report larger than a report can be"}
 	}
@@ -157,7 +177,7 @@ func lockReportViolations(rel, path string, size int64, quarantineDir string, gm
 	if !r.Malicious {
 		violations = append(violations, rel+": lock report of a file that is not malicious")
 	}
-	if !gm.Programmed(r.SHA256) {
+	if !spec.programmedMalware(r.SHA256, gm) {
 		violations = append(violations, rel+": lock report of a file the test did not program as malware")
 	}
 	if quarantineDir == "" || !isSHA256(r.SHA256) {
@@ -167,7 +187,7 @@ func lockReportViolations(rel, path string, size int64, quarantineDir string, gm
 	if r.MitigationID == "" || r.MitigationID != id {
 		violations = append(violations, rel+": the mitigation ID of the lock report is not the one of its file")
 	}
-	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil {
+	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil && !restoredIn(reports[r.SHA256]) {
 		violations = append(violations, rel+": the file of the lock report is not in the quarantine")
 	}
 	return violations
@@ -176,6 +196,20 @@ func lockReportViolations(rel, path string, size int64, quarantineDir string, gm
 func isSHA256(s string) bool {
 	b, err := hex.DecodeString(s)
 	return err == nil && len(b) == sha256.Size
+}
+
+// programmedMalware tells whether the content is malware for the test: it was
+// programmed as such, or it is a declared archive with a member that was.
+func (e *expectations) programmedMalware(sha string, gm *gmalware) bool {
+	if gm.Programmed(sha) {
+		return true
+	}
+	for _, m := range e.archives[sha] {
+		if gm.Programmed(sha256Hex(m)) {
+			return true
+		}
+	}
+	return false
 }
 
 // reasonAllowed tells whether a file of that size may be delivered with that
@@ -195,12 +229,24 @@ func (e *expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size in
 	}
 }
 
+// restoredEntry tells whether a report entry says the file was restored.
+func restoredEntry(e datamodel.Report) bool {
+	return e.HasBeenRestored || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored
+}
+
+// restoredIn tells whether the reports hold a restored entry: the restore
+// really happened.
+func restoredIn(entries []datamodel.Report) bool {
+	return slices.ContainsFunc(entries, restoredEntry)
+}
+
 // fileViolations judges a delivered file by its reports. A malicious file, or
 // a report that says so, is always a violation. A report in error is not, when
 // a later attempt (a rescan after an outage) gave the file a valid report too:
 // one valid report is enough.
 func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spec checkSpec, gm *gmalware) (violations []string) {
-	if gm.Programmed(sum) {
+	released := spec.released[sum]
+	if !released && spec.programmedMalware(sum, gm) {
 		violations = append(violations, rel+": programmed as malware")
 	}
 	if len(entries) == 0 {
@@ -209,15 +255,45 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 	var problems []string
 	valid := false
 	for _, e := range entries {
+		if released {
+			// The restored entry is the only one excused from the detection; the
+			// others are the earlier detection, which stays in the reports.
+			if restoredEntry(e) {
+				ok, bad, issues := restoredEntryViolations(rel, size, e, spec)
+				valid = valid || ok
+				violations = append(violations, bad...)
+				problems = append(problems, issues...)
+			}
+			continue
+		}
 		ok, bad, issues := entryViolations(rel, sum, size, e, spec, gm)
 		valid = valid || ok
 		violations = append(violations, bad...)
 		problems = append(problems, issues...)
 	}
+	if released && !valid && len(violations) == 0 && len(problems) == 0 {
+		problems = append(problems, rel+": a restored malware delivered without a restored entry in the reports")
+	}
 	if !valid {
 		violations = append(violations, problems...)
 	}
 	return violations
+}
+
+// restoredEntryViolations judges the entry that says an operator restored the
+// malware: it is held to the same checks as any delivery, except for the
+// detection itself.
+func restoredEntryViolations(rel string, size int64, e datamodel.Report, spec checkSpec) (valid bool, violations, problems []string) {
+	if e.Malicious || len(e.MaliciousExtractedFiles) > 0 {
+		violations = append(violations, rel+": the restored entry is reported malicious")
+	}
+	if e.Error != "" {
+		problems = append(problems, rel+": the restored entry is in error: "+e.Error)
+	}
+	if e.NotAnalyzedReason != "" && e.NotAnalyzedReason != datamodel.NotAnalyzedRestored && !spec.reasonAllowed(e.NotAnalyzedReason, size) {
+		violations = append(violations, fmt.Sprintf("%s: the restored entry says %q, which nothing justifies", rel, e.NotAnalyzedReason))
+	}
+	return len(violations) == 0 && len(problems) == 0, violations, problems
 }
 
 // entryViolations judges one report entry: whether it validates the delivery,

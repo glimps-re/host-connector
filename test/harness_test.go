@@ -1,6 +1,10 @@
 //go:build linux
 
 // Package test holds the acceptance tests that run the real binary.
+//
+// A verdict counts as given by the fake GLIMPS Malware Detect only when its
+// answer was written and flushed and the request was still alive: what the
+// server cannot see is a connector that received the bytes and dropped them.
 package test
 
 import (
@@ -194,8 +198,13 @@ type instance struct {
 	export     string
 	quarantine string
 	gm         *gmalware
-	console    *fakeConsole
-	expect     expectations
+	// conf is the connector configuration the run started with.
+	conf map[string]any
+	// abortedUploads is how many uploads the scenario announced the connector
+	// would cut short.
+	abortedUploads int
+	console        *fakeConsole
+	expect         expectations
 }
 
 // options tune a run; every field is optional.
@@ -209,6 +218,8 @@ type options struct {
 	config map[string]any
 	// session is merged over the configuration of the session plugin.
 	session map[string]any
+	// plugins is merged over the configuration of the extract plugin.
+	plugins map[string]any
 }
 
 func mergeMaps(dst, src map[string]any) map[string]any {
@@ -222,6 +233,20 @@ func mergeMaps(dst, src map[string]any) map[string]any {
 		dst[k] = v
 	}
 	return dst
+}
+
+// cloneMap deep-copies a configuration.
+func cloneMap(t *testing.T, m map[string]any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cp map[string]any
+	if err = json.Unmarshal(raw, &cp); err != nil {
+		t.Fatal(err)
+	}
+	return cp
 }
 
 // writeJSON writes v as JSON, which the YAML loaders of the connector read.
@@ -303,7 +328,7 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 	session := mergeMaps(map[string]any{"root_folder": in.input, "exports": []string{in.export}, "delay": "2s"}, opt.session)
 	plugins := map[string]any{"session": map[string]any{"file": filepath.Join(bin, "session.so"), "config": session}}
 	if opt.extract {
-		plugins["extract"] = map[string]any{"file": filepath.Join(bin, "extract.so")}
+		plugins["extract"] = map[string]any{"file": filepath.Join(bin, "extract.so"), "config": opt.plugins}
 	}
 	pluginsFile := filepath.Join(root, "plugins.yml")
 	conf := mergeMaps(map[string]any{
@@ -316,6 +341,11 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 		"monitoring": map[string]any{"prescan": true, "modification_delay": "1s"},
 		"quarantine": map[string]any{"password": "infected", "location": in.quarantine},
 	}, opt.config)
+	if wd, _ := conf["work_dir"].(string); strings.HasPrefix(wd, "INPUT/") {
+		rest, _ := strings.CutPrefix(wd, "INPUT/")
+		conf["work_dir"] = filepath.Join(in.input, rest)
+	}
+	in.conf = cloneMap(t, conf)
 	maxSize, err := effectiveMaxFileSize(conf)
 	if err != nil {
 		t.Fatal(err)
@@ -392,6 +422,12 @@ func (in *instance) finish(t *testing.T) {
 	for _, e := range in.gm.Errors() {
 		t.Errorf("fake GMalware: %s", e)
 	}
+	if n := in.gm.AbortedUploads(); n != in.abortedUploads {
+		t.Errorf("fake GMalware: %d aborted uploads, the scenario announced %d", n, in.abortedUploads)
+	}
+	if n := in.gm.Unconsumed(); n != 0 {
+		t.Errorf("fake GMalware: %d announced aborted uploads never happened", n)
+	}
 	for _, n := range in.gm.Notes() {
 		t.Logf("fake GMalware (expected): %s", n)
 	}
@@ -419,6 +455,13 @@ func (in *instance) wait(t *testing.T, limit time.Duration) (took time.Duration,
 		t.Fatalf("the process did not exit within %s; log:\n%s", limit, in.stderr.String())
 		return 0, nil
 	}
+}
+
+// expectAbortedUploads announces that the connector is going to cut n uploads
+// short; finish holds the run to exactly that.
+func (in *instance) expectAbortedUploads(n int) {
+	in.abortedUploads += n
+	in.gm.ExpectAbortedUploads(n)
 }
 
 // drop writes a file in INPUT, below the owner folder, and returns its path.

@@ -201,6 +201,72 @@ func TestOutputViolations(t *testing.T) {
 			}))
 		}, want: `member "m" delivered not analyzed`},
 
+		{name: "restored malware with the restored reason", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, reason(datamodel.NotAnalyzedRestored)))
+			f.spec.release(content)
+		}},
+		{name: "restored malware with the restored flag", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+			f.spec.release(content)
+		}},
+		{name: "restored malware with no restored report", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }))
+			f.spec.release(content)
+		}, want: "without a restored entry"},
+		{name: "two copies of a restored malware", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.deliver("b.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+			f.spec.release(content)
+		}, want: "in OUTPUT 2 times"},
+		{name: "restored entry reporting a malicious member", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.HasBeenRestored = true
+				r.MaliciousExtractedFiles = []datamodel.ExtractedFile{{FileName: "m"}}
+			}))
+			f.spec.release(content)
+		}, want: "reported malicious"},
+		{name: "restored entry with a reason nothing justifies", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.HasBeenRestored = true
+				r.NotAnalyzedReason = datamodel.NotAnalyzedTooBig
+			}))
+			f.spec.release(content)
+		}, want: "nothing justifies"},
+		{name: "restored entry in error", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.HasBeenRestored = true
+				r.Error = "boom"
+			}))
+			f.spec.release(content)
+		}, want: "in error"},
+		{name: "declared archive with a malware member, delivered whole and clean", setup: func(f *fixture) {
+			member := []byte("the malware inside")
+			f.gm.MarkMalicious(member)
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.gm.see(content)
+			f.report(entry(content, nil))
+		}, want: "programmed as malware"},
+		{name: "malware delivered with the restored reason and no release", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedRestored)))
+			f.spec.allow(datamodel.NotAnalyzedRestored)
+		}, want: "programmed as malware"},
 		{name: "archive of an analyzed member", setup: func(f *fixture) {
 			f.deliver("a.zip", content)
 			f.spec.archive(content, member)
@@ -448,6 +514,63 @@ func TestFakeConsole_protocol(t *testing.T) {
 	}
 }
 
+// The lock report of an archive is the one of a declared archive with a
+// malware member.
+func TestOutputViolations_lockReportOfAnArchive(t *testing.T) {
+	archive, member := []byte("an archive"), []byte("its malware member")
+	for _, tt := range []struct {
+		name       string
+		declared   bool
+		programmed bool
+		want       string
+	}{
+		{name: "declared with a malware member", declared: true, programmed: true},
+		{name: "declared with no malware member", declared: true, want: "did not program"},
+		{name: "not declared", programmed: true, want: "did not program"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tt.programmed {
+				f.gm.MarkMalicious(member)
+			}
+			if tt.declared {
+				f.spec.archive(archive, member)
+			}
+			sum := sha256Hex(archive)
+			f.quarantined(inputBadPath, archive)
+			f.deliver("bad.zip-lockreport211126_0818.json", []byte(detectionOf(sum, hcquarantine.ComputeCacheID(inputBadPath, sum))))
+			got := f.violations()
+			if tt.want == "" && got != "" {
+				t.Errorf("violations = %q, want none", got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("violations = %q, want one containing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The lock report of a malware that was restored stays in OUTPUT although the
+// quarantine no longer holds it, but only when the reports show the restore.
+func TestOutputViolations_lockReportOfARestoredMalware(t *testing.T) {
+	bad := []byte("a malware")
+	f := newFixture(t)
+	f.gm.MarkMalicious(bad)
+	sum := sha256Hex(bad)
+	f.deliver("bad.txt-lockreport211126_0818.json", []byte(detectionOf(sum, hcquarantine.ComputeCacheID(inputBadPath, sum))))
+	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
+		t.Errorf("violations = %q, want the missing container flagged", got)
+	}
+	f.spec.release(bad)
+	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
+		t.Errorf("violations = %q, want the missing container flagged: nothing shows a restore", got)
+	}
+	f.report(entry(bad, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+	if got := f.violations(); got != "" {
+		t.Errorf("violations = %q, want none once the reports show the restore", got)
+	}
+}
+
 // A lock report padded past the bound cannot hide data behind the cap of the
 // read, and a lock report that is itself a programmed malware is flagged.
 func TestOutputViolations_lockReportTraps(t *testing.T) {
@@ -530,8 +653,8 @@ func TestErrLog(t *testing.T) {
 		if got := l.Errors(); len(got) != 0 {
 			t.Errorf("errors = %v, want none for a closed connection", got)
 		}
-		if got := l.AbortedUploads(); got != 2 {
-			t.Errorf("aborted = %d, want 2", got)
+		if got := l.AbortedUploads(); got != 0 {
+			t.Errorf("aborted = %d, want 0: a failed answer is not an aborted upload", got)
 		}
 	})
 	t.Run("another write failure is an error naming the endpoint", func(t *testing.T) {
@@ -547,6 +670,14 @@ func TestErrLog(t *testing.T) {
 		l.drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
 		if got := l.Errors(); len(got) != 1 {
 			t.Errorf("errors = %v, want one", got)
+		}
+	})
+	t.Run("an announced abort that never happens is unconsumed", func(t *testing.T) {
+		var l errLog
+		l.ExpectAbortedUploads(2)
+		l.drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
+		if got := l.Unconsumed(); got != 1 {
+			t.Errorf("unconsumed = %d, want 1", got)
 		}
 	})
 	t.Run("a cut body that was announced is a note, once", func(t *testing.T) {
@@ -573,11 +704,14 @@ func TestErrLog(t *testing.T) {
 			t.Errorf("errors = %v, want one", got)
 		}
 	})
-	t.Run("a connection reset while reading is a note", func(t *testing.T) {
+	t.Run("a connection reset while reading is a note and an aborted upload", func(t *testing.T) {
 		var l errLog
 		l.drain(req(t.Context(), iotest.ErrReader(syscall.ECONNRESET)), 10)
 		if got := l.Errors(); len(got) != 0 {
 			t.Errorf("errors = %v, want none", got)
+		}
+		if got := l.AbortedUploads(); got != 1 {
+			t.Errorf("aborted = %d, want 1", got)
 		}
 	})
 }
@@ -667,7 +801,7 @@ func TestGMalware_givenOnlyToAClientThatWaited(t *testing.T) {
 	gm := newGMalware(t, false)
 	gm.DelayResults(600 * time.Millisecond)
 	resultOver(t, gm, content, 150*time.Millisecond)
-	time.Sleep(900 * time.Millisecond)
+	waitFor(t, "the slow handler to end", func() bool { return gm.handled.Load() == 1 })
 	if _, ok := gm.Given(sum); ok {
 		t.Error("a verdict nobody waited for is reported as given")
 	}
@@ -684,4 +818,15 @@ func TestGMalware_givenOnlyToAClientThatWaited(t *testing.T) {
 		_, ok := gm.Given(sum)
 		return ok && gm.answered.Load() == 1
 	})
+}
+
+// A scenario announces the uploads it expects the connector to cut, once, on
+// the instance: the fake and the final check are told the same number.
+func TestInstance_expectAbortedUploads(t *testing.T) {
+	in := &instance{gm: newGMalware(t, false)}
+	in.expectAbortedUploads(1)
+	in.expectAbortedUploads(2)
+	if in.abortedUploads != 3 || in.gm.Unconsumed() != 3 {
+		t.Errorf("announced = %d, unconsumed = %d, want 3 and 3", in.abortedUploads, in.gm.Unconsumed())
+	}
 }

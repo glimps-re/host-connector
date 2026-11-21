@@ -57,7 +57,6 @@ func (l *errLog) record(what string, err error) (ok bool) {
 	line := what + ": " + err.Error()
 	if closedConnection(err) {
 		l.notes = append(l.notes, line)
-		l.aborted++
 		return false
 	}
 	l.errs = append(l.errs, line)
@@ -86,12 +85,20 @@ func (l *errLog) ExpectAbortedUploads(n int) {
 	l.announced += n
 }
 
-// AbortedUploads counts the uploads the connector cut short or whose
-// connection it closed, for the scenarios to assert.
+// AbortedUploads counts the uploads whose body the connector cut short or
+// whose connection it closed while it was read, for the scenarios to assert.
 func (l *errLog) AbortedUploads() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.aborted
+}
+
+// Unconsumed counts the aborted uploads a scenario announced and that never
+// happened.
+func (l *errLog) Unconsumed() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.announced
 }
 
 // Errors returns the failures recorded so far.
@@ -147,18 +154,23 @@ func (l *errLog) text(w http.ResponseWriter, r *http.Request, s string) bool {
 // short is a note only for an upload the scenario announced.
 func (l *errLog) drain(r *http.Request, limit int64) {
 	_, err := io.Copy(io.Discard, io.LimitReader(r.Body, limit))
-	if errors.Is(err, io.ErrUnexpectedEOF) {
-		l.mu.Lock()
-		if l.announced > 0 {
-			l.announced--
-			l.aborted++
-			l.notes = append(l.notes, "reading the body of "+endpoint(r)+": "+err.Error())
-			l.mu.Unlock()
-			return
-		}
-		l.mu.Unlock()
+	what := "reading the body of " + endpoint(r)
+	if err == nil {
+		return
 	}
-	l.record("reading the body of "+endpoint(r), err)
+	l.mu.Lock()
+	switch {
+	case errors.Is(err, io.ErrUnexpectedEOF) && l.announced > 0:
+		l.announced--
+		l.aborted++
+		l.notes = append(l.notes, what+": "+err.Error())
+		l.mu.Unlock()
+		return
+	case closedConnection(err):
+		l.aborted++
+	}
+	l.mu.Unlock()
+	l.record(what, err)
 }
 
 // verdict is what the fake GLIMPS Malware Detect answers for a content.
@@ -186,7 +198,9 @@ type gmalware struct {
 
 	submitted atomic.Int32
 	answered  atomic.Int32
-	failed    atomic.Int32
+	// handled counts the result requests whose handler has ended.
+	handled atomic.Int32
+	failed  atomic.Int32
 }
 
 func newGMalware(t *testing.T, hang bool) *gmalware {
@@ -275,6 +289,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
+	defer g.handled.Add(1)
 	if g.injected(w, r) {
 		return
 	}

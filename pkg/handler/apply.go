@@ -78,7 +78,7 @@ type prepared struct {
 
 // prepare validates conf without any effect on what is running or on disk.
 func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
-	if err = config.Validate(conf); err != nil {
+	if err = errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	p = new(prepared)

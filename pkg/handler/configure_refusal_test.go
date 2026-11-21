@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -24,6 +25,35 @@ func TestHandler_ConfigureRefusesUnknownExtractErrorPolicy(t *testing.T) {
 			err := h.Configure(t.Context(), json.RawMessage(tt.raw))
 			if err == nil || !strings.Contains(err.Error(), tt.wantKey) {
 				t.Errorf("Configure() error = %v, want key %q", err, tt.wantKey)
+			}
+		})
+	}
+}
+
+// Between the SDK keys and the code that enforces them, a setting that nothing
+// enforces is refused, and the previous configuration is kept.
+func TestHandler_ConfigureRefusesWhatNothingEnforcesYet(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		wantKey string
+	}{
+		{"analysis_error mitigate", `{"unanalyzable_policy":{"analysis_error":"mitigate"}}`, "unanalyzable_policy.analysis_error"},
+		{"analysis_error pass", `{"unanalyzable_policy":{"analysis_error":"pass"}}`, "unanalyzable_policy.analysis_error"},
+		{"forbidden paths", `{"filepath_filter":{"forbidden_paths":["a"]}}`, "filepath_filter"},
+		{"skipped paths", `{"filepath_filter":{"skipped_paths":["a"]}}`, "filepath_filter"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldConf := &config.Config{}
+			h := &Handler{conf: oldConf, needSetup: true, configured: true}
+			t.Cleanup(h.stopRejectReminder)
+			err := h.Configure(t.Context(), json.RawMessage(tt.raw))
+			if !errors.Is(err, config.ErrNotImplemented) || !strings.Contains(err.Error(), tt.wantKey) {
+				t.Fatalf("Configure() error = %v, want ErrNotImplemented naming %q", err, tt.wantKey)
+			}
+			if h.conf != oldConf {
+				t.Error("h.conf changed after a refused Configure")
 			}
 		})
 	}

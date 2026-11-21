@@ -16,6 +16,8 @@ require (
 	github.com/gabriel-vasile/mimetype v1.4.13
 	github.com/glimps-re/connector-integration v0.10.0
 	github.com/glimps-re/rfsnotify v0.2.0
+	github.com/go-playground/universal-translator v0.18.1
+	github.com/go-playground/validator/v10 v10.30.3
 	github.com/go-viper/mapstructure/v2 v2.5.0
 	github.com/gonutz/wui/v2 v2.8.2
 	github.com/google/go-cmp v0.7.0
@@ -39,8 +41,6 @@ require (
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260623181947-01eb4420fa68 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
-	github.com/go-playground/universal-translator v0.18.1 // indirect
-	github.com/go-playground/validator/v10 v10.30.3 // indirect
 	github.com/gobwas/httphead v0.1.0 // indirect
 	github.com/gobwas/pool v0.2.1 // indirect
 	github.com/gobwas/ws v1.4.0 // indirect

@@ -5,6 +5,8 @@ import (
 	"fmt"
 
 	"github.com/glimps-re/connector-integration/sdk"
+	ut "github.com/go-playground/universal-translator"
+	"github.com/go-playground/validator/v10"
 )
 
 // ErrWatcherNeedsPeriod is returned by Validate when filesystem events are
@@ -24,6 +26,7 @@ func Validate(conf *Config) error {
 		value any
 	}{
 		{"unanalyzable_policy", conf.UnanalyzablePolicy},
+		{"filepath_filter", conf.FilepathFilter},
 		{"move", conf.Move},
 		{"monitoring", conf.Monitoring},
 		{"quarantine", conf.Quarantine},
@@ -31,11 +34,28 @@ func Validate(conf *Config) error {
 	var errs []error
 	for _, s := range sections {
 		if err := v.Validate(s.value); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", s.name, err))
+			errs = append(errs, fmt.Errorf("%s: %w", s.name, withReasons(err, v.Trans)))
 		}
 	}
 	if conf.Monitoring.DisableFSWatcher && conf.Monitoring.Period == 0 {
 		errs = append(errs, ErrWatcherNeedsPeriod)
 	}
 	return errors.Join(errs...)
+}
+
+// withReasons adds to a validation error the message of each refused pattern of
+// filepath_filter (which list, which index, why): the raw error only names the
+// tag.
+func withReasons(err error, trans ut.Translator) error {
+	verrs, ok := errors.AsType[validator.ValidationErrors](err)
+	if !ok {
+		return err
+	}
+	reasons := []error{err}
+	for _, fe := range verrs {
+		if fe.Tag() == "filepath_pattern" {
+			reasons = append(reasons, errors.New(fe.Translate(trans)))
+		}
+	}
+	return errors.Join(reasons...)
 }

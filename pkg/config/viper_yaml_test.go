@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -40,6 +41,22 @@ func TestValidate_ViperYAML(t *testing.T) {
 		{"extract_error as_file", "unanalyzable_policy:\n  extract_error: as_file\n", ""},
 		{"extract_error error", "unanalyzable_policy:\n  extract_error: error\n", ""},
 		{"extract_error pass", "unanalyzable_policy:\n  extract_error: pass\n", "extract_error"},
+		{"analysis_error error", "unanalyzable_policy:\n  analysis_error: error\n", ""},
+		{"analysis_error mitigate", "unanalyzable_policy:\n  analysis_error: mitigate\n", ""},
+		{"analysis_error pass", "unanalyzable_policy:\n  analysis_error: pass\n", ""},
+		{"analysis_error skip", "unanalyzable_policy:\n  analysis_error: skip\n", "analysis_error"},
+		{"filepath_filter both lists", "filepath_filter:\n  forbidden_paths:\n    - '\\.exe$'\n  skipped_paths:\n    - '^/srv/in/trusted/'\n", ""},
+		{"filepath_filter 256 patterns", "filepath_filter:\n  forbidden_paths: [" + strings.TrimSuffix(strings.Repeat("a, ", 256), ", ") + "]\n", ""},
+		{"filepath_filter 257 patterns", "filepath_filter:\n  skipped_paths: [" + strings.TrimSuffix(strings.Repeat("a, ", 257), ", ") + "]\n", "skipped_paths"},
+		{"filepath_filter empty pattern", "filepath_filter:\n  skipped_paths: ['']\n", "skipped_paths[0]"},
+		{"filepath_filter invalid pattern", "filepath_filter:\n  forbidden_paths: ['(']\n", "forbidden_paths[0]"},
+		{"filepath_filter 1025 bytes", "filepath_filter:\n  forbidden_paths:\n    - " + strings.Repeat("a", 1025) + "\n", "forbidden_paths[0]"},
+		{"filepath_filter 512 two-byte runes", "filepath_filter:\n  skipped_paths:\n    - " + strings.Repeat("é", 512) + "\n", ""},
+		{"filepath_filter 513 two-byte runes", "filepath_filter:\n  skipped_paths:\n    - " + strings.Repeat("é", 513) + "\n", "skipped_paths[0]"},
+		{"filepath_filter 32 KiB in all", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(16, 1024, "a") + "\n  skipped_paths: " + yamlPatterns(16, 1024, "b") + "\n", ""},
+		{"filepath_filter 32 KiB and one byte", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(16, 1024, "a") + "\n  skipped_paths: " + yamlPatterns(15, 1024, "b")[:len(yamlPatterns(15, 1024, "b"))-1] + ", " + strings.Repeat("c", 1024) + "x]\n", "32768 in all"},
+		{"filepath_filter 20000 entries", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(20_000, 6, "a") + "\n", "20000 patterns, at most 256"},
+		{"filepath_filter pattern in both lists", "filepath_filter:\n  forbidden_paths: [same]\n  skipped_paths: [same]\n", "also in forbidden_paths"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -59,4 +76,15 @@ func assertRefusal(t *testing.T, err error, wantKey string) {
 	if err == nil || !strings.Contains(err.Error(), wantKey) {
 		t.Fatalf("error = %v, want a refusal naming %q", err, wantKey)
 	}
+}
+
+// yamlPatterns is a YAML list (flow style) of n different patterns of size bytes,
+// each made of letter and its number.
+func yamlPatterns(n, size int, letter string) string {
+	items := make([]string, n)
+	for i := range items {
+		tail := fmt.Sprintf("%06d", i)
+		items[i] = strings.Repeat(letter, size-len(tail)) + tail
+	}
+	return "[" + strings.Join(items, ", ") + "]"
 }

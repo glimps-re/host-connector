@@ -620,7 +620,7 @@ func (h *Handler) reportUnknownKeys(ctx context.Context, keys []string) {
 		}
 		return
 	}
-	msg := fmt.Sprintf("unknown configuration keys: %v; %s", capKeys(keys), unknownKeysNoEffect)
+	msg := fmt.Sprintf("unknown configuration keys: %s; %s", boundedList(quoteKeys(keys)), unknownKeysNoEffect)
 	logger.Warn(msg)
 	if e := eventHandler.NotifyError(ctx, HostConfigUnknownKeys, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))
@@ -755,25 +755,4 @@ func checkReportLocation(location string) error {
 			return fmt.Errorf("print.location %q: %w", location, statErr)
 		}
 	}
-}
-
-const (
-	maxReportedKeys   = 50
-	maxReportedKeyLen = 256
-)
-
-// capKeys bounds what is reported: the keys come from the network.
-func capKeys(keys []string) []string {
-	out := make([]string, 0, min(len(keys), maxReportedKeys)+1)
-	for i, k := range keys {
-		if i == maxReportedKeys {
-			out = append(out, fmt.Sprintf("... and %d more", len(keys)-maxReportedKeys))
-			break
-		}
-		if len(k) > maxReportedKeyLen {
-			k = k[:maxReportedKeyLen] + "..."
-		}
-		out = append(out, k)
-	}
-	return out
 }

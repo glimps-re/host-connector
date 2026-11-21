@@ -413,7 +413,8 @@ func ListedErrors(errs map[string]string) int {
 
 // CutText shortens s to at most n bytes, except that the result is never shorter
 // than the mark that tells it was cut, and without splitting a character. A text
-// that fits is returned as it is.
+// that fits is returned as it is. Bytes that are not valid UTF-8 are dropped from
+// the kept prefix.
 func CutText(s string, n int) string {
 	if len(s) <= n {
 		return s

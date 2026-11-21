@@ -93,12 +93,17 @@ func rawConf(t *testing.T, conf *config.Config) json.RawMessage {
 	return raw
 }
 
-func newRunningHandler(t *testing.T, conf *config.Config) *Handler {
+// newRunningHandler is a started handler; options adjust it before it is set up
+// (the seams of its tests).
+func newRunningHandler(t *testing.T, conf *config.Config, opts ...func(*Handler)) *Handler {
 	t.Helper()
 	h := new(Handler)
 	h.stopped = true
 	h.submitter = &gdetectMock.MockGDetectSubmitter{
 		ReconfigureMock: func(context.Context, gdetect.ClientConfig) error { return nil },
+	}
+	for _, opt := range opts {
+		opt(h)
 	}
 	if err := h.setup(t.Context(), conf); err != nil {
 		t.Fatalf("setup() error = %v", err)
@@ -614,13 +619,11 @@ func TestUnknownKeys_caseInsensitiveAndCapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := capKeys(unknownKeys(raw))
-	if len(reported) != maxReportedKeys+1 || !strings.Contains(reported[len(reported)-1], "950 more") {
-		t.Errorf("reported %d entries, last %q", len(reported), reported[len(reported)-1])
+	reported := boundedList(quoteKeys(unknownKeys(raw)))
+	if !strings.HasSuffix(reported, ", ... and 950 more") || strings.Count(reported, `"`) != 2*maxReportedKeys {
+		t.Errorf("reported %.120q", reported)
 	}
-	for _, k := range reported[:maxReportedKeys] {
-		if len(k) > maxReportedKeyLen+3 {
-			t.Fatalf("key of %d bytes reported", len(k))
-		}
+	if len(reported) > maxReportedKeys*(maxReportedKeyLen+2)+32 {
+		t.Errorf("the list is %d bytes long", len(reported))
 	}
 }

@@ -2,16 +2,16 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/glimps-re/connector-integration/sdk"
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
-	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/google/go-cmp/cmp"
@@ -140,8 +140,6 @@ func TestReportRemovedPlugins_raisesAtEachReportAndResolvesOnce(t *testing.T) {
 	}
 }
 
-// A configuration whose installation fails raises nothing about the entry: it
-// was not applied.
 // sealOnly stands for the load of the plugins: a plugin is a shared object, the
 // test only needs the connector sealed as after a load.
 func sealOnly(conn *scanner.Connector, _ []scanner.PluginConfig) error { return conn.LoadPlugins(nil) }
@@ -150,26 +148,10 @@ func sealOnly(conn *scanner.Connector, _ []scanner.PluginConfig) error { return 
 // replaced, so that a plugins file can be applied without a shared object.
 func newPluginHandler(t *testing.T, conf *config.Config, load func(*scanner.Connector, []scanner.PluginConfig) error) *Handler {
 	t.Helper()
-	h := new(Handler)
-	h.stopped = true
-	h.submitter = &gdetectMock.MockGDetectSubmitter{
-		ReconfigureMock: func(context.Context, gdetect.ClientConfig) error { return nil },
-	}
-	h.validatePlugins = func([]scanner.PluginConfig, *scanner.ValidationContext) error { return nil }
-	h.loadPlugins = load
-	if err := h.setup(t.Context(), conf); err != nil {
-		t.Fatalf("setup() error = %v", err)
-	}
-	if err := h.Start(t.Context()); err != nil {
-		t.Fatalf("Start() error = %v", err)
-	}
-	t.Cleanup(func() {
-		h.stopRejectReminder()
-		if err := h.Stop(context.Background()); err != nil {
-			t.Errorf("Stop() error = %v", err)
-		}
+	return newRunningHandler(t, conf, func(h *Handler) {
+		h.validatePlugins = func([]scanner.PluginConfig, *scanner.ValidationContext) error { return nil }
+		h.loadPlugins = load
 	})
-	return h
 }
 
 func withRemovedEntry(t *testing.T, tooBig string) *config.Config {
@@ -180,6 +162,8 @@ func withRemovedEntry(t *testing.T, tooBig string) *config.Config {
 	return conf
 }
 
+// captureScannerConsole replaces a global: a test that uses it must not run in
+// parallel with another.
 func captureScannerConsole(t *testing.T) *bytes.Buffer {
 	t.Helper()
 	var buf bytes.Buffer
@@ -285,15 +269,122 @@ func TestRemovedFilesizeWarning_isBoundedAndEscapesWhatTheFileSays(t *testing.T)
 		dropped[i] = hostile
 	}
 	got := removedFilesizeWarning(dropped, "")
-	if len(got) > 50*(maxReportedKeyLen+8)+1024 {
+	if len(got) > maxReportedKeys*(maxReportedKeyLen+8)+1024 {
 		t.Errorf("the message is %d bytes long, want it bounded", len(got))
 	}
-	if !strings.Contains(got, "1950 more") {
+	if !strings.Contains(got, fmt.Sprintf("%d more", len(dropped)-maxReportedKeys)) {
 		t.Errorf("the message does not say how many entries are not listed: %.200q", got)
 	}
 	for _, bad := range []string{"\n", "\x1b", "\u202e"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("the message holds the raw character %q", bad)
+		}
+	}
+}
+
+// Whatever bytes an entry is made of, the message keeps valid UTF-8 and both parts
+// (name and file) of each entry it lists, within the bound once quoted.
+func TestRemovedFilesizeWarning_isBoundedAfterQuotingAndKeepsBothPartsOfAnEntry(t *testing.T) {
+	texts := map[string]string{
+		"control bytes":   strings.Repeat("\x01", 300),
+		"invalid bytes":   strings.Repeat("\xff", 300),
+		"bidi marks":      strings.Repeat("\u202e", 300),
+		"two byte runes":  strings.Repeat("é", 300),
+		"four byte runes": strings.Repeat("😀", 300),
+		"printable":       strings.Repeat("a", 300),
+	}
+	for name, text := range texts {
+		t.Run(name, func(t *testing.T) {
+			entry := scanner.PluginConfig{Name: text, File: text + ".so"}
+			dropped := make([]scanner.PluginConfig, 60)
+			for i := range dropped {
+				dropped[i] = entry
+			}
+			got := removedFilesizeWarning(dropped, "")
+			if !utf8.ValidString(got) {
+				t.Error("the message is not valid UTF-8")
+			}
+			if n := strings.Count(got, "(file "); n != maxReportedKeys {
+				t.Errorf("%d entries keep their file part, want the %d listed", n, maxReportedKeys)
+			}
+			if !strings.Contains(got, "10 more") {
+				t.Errorf("the message does not say how many entries are not listed: %.200q", got)
+			}
+			for _, raw := range []string{"\x01", "\xff", "\u202e"} {
+				if strings.Contains(got, raw) {
+					t.Errorf("the message holds the raw %q", raw)
+				}
+			}
+			if len(got) > maxReportedKeys*(maxReportedNameLen+maxReportedFileLen+16)+1024 {
+				t.Errorf("the message is %d bytes long", len(got))
+			}
+		})
+	}
+}
+
+func TestQuoteBounded(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		budget int
+		whole  bool
+	}{
+		{"short", "abc", 20, true},
+		{"fits exactly", "abcd", 6, true},
+		{"an invalid byte", "a\xffb", 20, true},
+		{"a bidi mark", "a\u202eb", 20, true},
+		{"control bytes", strings.Repeat("\x01", 100), 40, false},
+		{"invalid bytes", strings.Repeat("\xfe", 100), 40, false},
+		{"two byte runes", strings.Repeat("é", 100), 40, false},
+		{"four byte runes", strings.Repeat("😀", 100), 40, false},
+		{"bidi", strings.Repeat("\u202e", 100), 40, false},
+		{"a budget below the mark", "abcdef", 3, false},
+		{"a budget of zero", "abcdef", 0, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := quoteBounded(tt.in, tt.budget)
+			if !utf8.ValidString(got) {
+				t.Errorf("not valid UTF-8: %q", got)
+			}
+			if !strings.HasPrefix(got, `"`) || !strings.HasSuffix(got, `"`) {
+				t.Errorf("not quoted: %q", got)
+			}
+			if tt.whole {
+				if want := strconv.Quote(tt.in); got != want {
+					t.Errorf("quoteBounded() = %q, want %q", got, want)
+				}
+				return
+			}
+			if !strings.HasSuffix(got, truncationMark+`"`) {
+				t.Errorf("a cut text lacks the mark: %q", got)
+			}
+			if len(got) > max(tt.budget, len(truncationMark)+2) {
+				t.Errorf("quoteBounded() is %d bytes, budget %d: %q", len(got), tt.budget, got)
+			}
+		})
+	}
+}
+
+// The unknown keys of a configuration come from the network: they are quoted and
+// bounded too.
+func TestReportUnknownKeys_quotesWhatTheNetworkSends(t *testing.T) {
+	rec := recordEvents(t)
+	logs := captureHandlerLogs(t)
+	h := new(Handler)
+	h.reportUnknownKeys(t.Context(), []string{"ok\nERROR forged line\x1b[31m\u202e", strings.Repeat("\x01", 1000)})
+	events := rec.find("error", HostConfigUnknownKeys)
+	if len(events) != 1 {
+		t.Fatalf("%d events, want one", len(events))
+	}
+	for name, text := range map[string]string{"event": events[0].msg, "log": logs.String()} {
+		for _, raw := range []string{"\n", "\x1b", "\u202e", "\x01"} {
+			if name == "log" && raw == "\n" {
+				continue // the log line ends with one
+			}
+			if strings.Contains(text, raw) {
+				t.Errorf("%s holds the raw %q: %.200q", name, raw, text)
+			}
 		}
 	}
 }

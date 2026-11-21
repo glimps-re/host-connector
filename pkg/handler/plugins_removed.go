@@ -3,10 +3,8 @@ package handler
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"path/filepath"
-	"strings"
 
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
@@ -21,7 +19,7 @@ const removedFilesizeName = "filesize_filter"
 func removedFilesizeWarning(dropped []scanner.PluginConfig, tooBig string) string {
 	entries := make([]string, len(dropped))
 	for i, pc := range dropped {
-		entries[i] = fmt.Sprintf("%q (file %q)", pc.Name, pc.File)
+		entries[i] = quoteBounded(pc.Name, maxReportedNameLen) + " (file " + quoteBounded(pc.File, maxReportedFileLen) + ")"
 	}
 	policy := "unanalyzable_policy.too_big is " + effectiveTooBig(tooBig)
 	if tooBig == scanner.PolicyMitigate {
@@ -29,7 +27,7 @@ func removedFilesizeWarning(dropped []scanner.PluginConfig, tooBig string) strin
 	} else {
 		policy += ": set it to mitigate to keep oversized files quarantined"
 	}
-	return "the " + removedFilesizeName + " plugin was removed and these entries of the plugins file are ignored: " + strings.Join(capKeys(entries), ", ") +
+	return "the " + removedFilesizeName + " plugin was removed and these entries of the plugins file are ignored: " + boundedList(entries) +
 		"; their configuration (max_size) is not carried over, max_file_size and unanalyzable_policy.too_big apply instead (" + policy + ")"
 }
 

@@ -125,7 +125,9 @@ func relOr(dir, path string) string {
 }
 
 // isLockReport tells the name of the detection report the connector leaves
-// where it would have moved a malicious file.
+// where it would have moved a malicious file. A user file that has such a name
+// is held to the same checks, so it is flagged unless it is a genuine detection
+// report: that is deliberate.
 func isLockReport(name string) bool {
 	return strings.Contains(name, "-lockreport") && filepath.Ext(name) == ".json"
 }

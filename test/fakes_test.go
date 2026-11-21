@@ -31,49 +31,134 @@ const (
 
 // errLog records what a fake failed to read or write while answering. A
 // connection that the connector closed or reset (it does at shutdown) is only a
-// note; anything else is an error the run asserts at its end.
+// note; anything else is an error the run asserts at its end. A body cut short
+// (io.ErrUnexpectedEOF) is a note only for the aborted uploads a scenario
+// announced: a connector that cuts its uploads otherwise is an error.
 type errLog struct {
-	mu    sync.Mutex
-	errs  []string
-	notes []string
+	mu        sync.Mutex
+	errs      []string
+	notes     []string
+	announced int
+	aborted   int
 }
 
-func (l *errLog) record(what string, err error) {
+// closedConnection tells the errors of a peer that went away.
+func closedConnection(err error) bool {
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled)
+}
+
+// record keeps the failure of an operation and tells whether it succeeded.
+func (l *errLog) record(what string, err error) (ok bool) {
 	if err == nil {
-		return
+		return true
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	line := what + ": " + err.Error()
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+	if closedConnection(err) {
 		l.notes = append(l.notes, line)
-		return
+		l.aborted++
+		return false
 	}
 	l.errs = append(l.errs, line)
+	return false
 }
 
-// Errors returns the failures to read or write recorded so far.
+// note keeps a failure that is expected, such as a client that went away.
+func (l *errLog) note(what string, err error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.notes = append(l.notes, what+": "+err.Error())
+}
+
+// fail keeps a failure of the protocol, which is always an error.
+func (l *errLog) fail(msg string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.errs = append(l.errs, msg)
+}
+
+// ExpectAbortedUploads announces that n uploads are going to be cut short by
+// the connector (a timeout, a stop): their truncated bodies are notes.
+func (l *errLog) ExpectAbortedUploads(n int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.announced += n
+}
+
+// AbortedUploads counts the uploads the connector cut short or whose
+// connection it closed, for the scenarios to assert.
+func (l *errLog) AbortedUploads() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.aborted
+}
+
+// Errors returns the failures recorded so far.
 func (l *errLog) Errors() []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]string(nil), l.errs...)
 }
 
-// json answers with v as JSON.
-func (l *errLog) json(w http.ResponseWriter, v any) {
-	l.record("writing a JSON answer", json.NewEncoder(w).Encode(v))
+// Notes returns the expected failures recorded so far, for the log of a test.
+func (l *errLog) Notes() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.notes...)
 }
 
-// text answers with s.
-func (l *errLog) text(w http.ResponseWriter, s string) {
-	_, err := io.WriteString(w, s)
-	l.record("writing an answer", err)
+func endpoint(r *http.Request) string { return r.Method + " " + r.URL.Path }
+
+// deliver writes an answer, flushes it, and tells whether it reached the
+// client as far as the server can see: no write or flush error, and the request
+// not cancelled once the answer is flushed. The writes of net/http go to a
+// buffer and succeed even when the client has gone: only the context of the
+// request tells. What the server cannot see is a client that receives the bytes
+// and then drops them.
+func (l *errLog) deliver(w http.ResponseWriter, r *http.Request, write func() error) bool {
+	if !l.record("writing the answer to "+endpoint(r), write()) {
+		return false
+	}
+	if !l.record("flushing the answer to "+endpoint(r), http.NewResponseController(w).Flush()) {
+		return false
+	}
+	if err := r.Context().Err(); err != nil {
+		l.note("the client of "+endpoint(r)+" gave up before the answer", err)
+		return false
+	}
+	return true
 }
 
-// drain reads and drops a body, up to max bytes.
-func (l *errLog) drain(r io.Reader, limit int64) {
-	_, err := io.Copy(io.Discard, io.LimitReader(r, limit))
-	l.record("reading a body", err)
+// json answers with v as JSON and tells whether the answer was delivered.
+func (l *errLog) json(w http.ResponseWriter, r *http.Request, v any) bool {
+	return l.deliver(w, r, func() error { return json.NewEncoder(w).Encode(v) })
+}
+
+// text answers with s and tells whether the answer was delivered.
+func (l *errLog) text(w http.ResponseWriter, r *http.Request, s string) bool {
+	return l.deliver(w, r, func() error {
+		_, err := io.WriteString(w, s)
+		return err
+	})
+}
+
+// drain reads and drops the body of the request, up to limit bytes. A body cut
+// short is a note only for an upload the scenario announced.
+func (l *errLog) drain(r *http.Request, limit int64) {
+	_, err := io.Copy(io.Discard, io.LimitReader(r.Body, limit))
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		l.mu.Lock()
+		if l.announced > 0 {
+			l.announced--
+			l.aborted++
+			l.notes = append(l.notes, "reading the body of "+endpoint(r)+": "+err.Error())
+			l.mu.Unlock()
+			return
+		}
+		l.mu.Unlock()
+	}
+	l.record("reading the body of "+endpoint(r), err)
 }
 
 // verdict is what the fake GLIMPS Malware Detect answers for a content.
@@ -96,6 +181,8 @@ type gmalware struct {
 	given    map[string]verdict
 	failure  int
 	delay    time.Duration
+	// resultDelay is how long the results wait before they are answered.
+	resultDelay time.Duration
 
 	submitted atomic.Int32
 	answered  atomic.Int32
@@ -106,14 +193,14 @@ func newGMalware(t *testing.T, hang bool) *gmalware {
 	t.Helper()
 	g := &gmalware{hang: hang, uuids: map[string]string{}, verdicts: map[string]verdict{}, given: map[string]verdict{}}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/versions", func(w http.ResponseWriter, _ *http.Request) {
-		g.text(w, `{"/api/lite/v2":"2.0"}`)
+	mux.HandleFunc("/api/versions", func(w http.ResponseWriter, r *http.Request) {
+		g.text(w, r, `{"/api/lite/v2":"2.0"}`)
 	})
 	// The client of go-gdetect v1.6.6 deadlocks in Reconfigure when the server
 	// has no profile status (a 404 makes it ask the API version while it holds
 	// its write lock): the fake serves it so that Stop then Start works.
-	mux.HandleFunc("/api/lite/v2/status", func(w http.ResponseWriter, _ *http.Request) {
-		g.text(w, `{"cache":false,"malware_threshold":100}`)
+	mux.HandleFunc("/api/lite/v2/status", func(w http.ResponseWriter, r *http.Request) {
+		g.text(w, r, `{"cache":false,"malware_threshold":100}`)
 	})
 	mux.HandleFunc("/api/lite/v2/submit", g.submit)
 	mux.HandleFunc("/api/lite/v2/results/", g.results)
@@ -137,7 +224,7 @@ func (g *gmalware) injected(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	g.failed.Add(1)
-	g.drain(r.Body, maxFakeSubmission)
+	g.drain(r, maxFakeSubmission)
 	http.Error(w, `{"status":false,"error":"injected failure"}`, status)
 	return true
 }
@@ -147,7 +234,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 	if g.hang {
 		// The body is read first: the server notices a closed connection only
 		// after that.
-		g.drain(r.Body, maxFakeSubmission)
+		g.drain(r, maxFakeSubmission)
 		<-r.Context().Done()
 		return
 	}
@@ -184,7 +271,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.uuids[uuid] = sum
 	g.mu.Unlock()
-	g.json(w, map[string]any{"status": true, "uuid": uuid})
+	g.json(w, r, map[string]any{"status": true, "uuid": uuid})
 }
 
 func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
@@ -195,21 +282,32 @@ func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	sum, known := g.uuids[id]
 	v := g.verdicts[sum]
-	if known {
-		g.given[sum] = v
-	}
 	g.mu.Unlock()
 	if !known {
 		http.Error(w, `{"status":false,"error":"unknown analysis"}`, http.StatusNotFound)
 		return
 	}
-	g.answered.Add(1)
 	res := map[string]any{"uuid": id, "sha256": sum, "done": true, "is_malware": v.malware, "score": 0, "size": 1}
 	if v.malware {
 		res["score"] = 1000
 		res["malwares"] = v.malwares
 	}
-	g.json(w, res)
+	g.mu.Lock()
+	delay := g.resultDelay
+	g.mu.Unlock()
+	// Not interrupted by the cancellation of the request: the handler goes on to
+	// the answer, as a slow server does, and must see that nobody listens.
+	time.Sleep(delay)
+	// The verdict counts as given only once it was delivered: a connector that
+	// never received it must not pass for one that analyzed the file. The lock is
+	// taken to record only, never while a slow client is being written to.
+	if !g.json(w, r, res) {
+		return
+	}
+	g.mu.Lock()
+	g.given[sum] = v
+	g.mu.Unlock()
+	g.answered.Add(1)
 }
 
 func sha256Hex(content []byte) string {
@@ -237,6 +335,14 @@ func (g *gmalware) DelaySubmissions(d time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.delay = d
+}
+
+// DelayResults makes every result wait d before it is answered, whatever
+// happens to the request meanwhile.
+func (g *gmalware) DelayResults(d time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.resultDelay = d
 }
 
 // Given tells whether the service gave a result for the SHA256, and which.
@@ -275,7 +381,6 @@ type fakeConsole struct {
 	config map[string]any
 	tasks  []map[string]any
 	events []consoleEvent
-	errs   []string
 	nextID int
 }
 
@@ -293,9 +398,7 @@ var consoleRoutes = map[string]string{
 }
 
 func (c *fakeConsole) protocolError(w http.ResponseWriter, format string, args ...any) {
-	c.mu.Lock()
-	c.errs = append(c.errs, fmt.Sprintf(format, args...))
-	c.mu.Unlock()
+	c.fail(fmt.Sprintf(format, args...))
 	http.Error(w, "protocol error", http.StatusBadRequest)
 }
 
@@ -315,9 +418,9 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch route {
 	case "register":
-		c.json(w, map[string]any{"stopped": false, "config": c.currentConfig(), "unresolved_errors": map[string]string{}})
+		c.json(w, r, map[string]any{"stopped": false, "config": c.currentConfig(), "unresolved_errors": map[string]string{}})
 	case "config":
-		c.json(w, map[string]any{"config": c.currentConfig()})
+		c.json(w, r, map[string]any{"config": c.currentConfig()})
 	case "tasks":
 		select {
 		case <-time.After(300 * time.Millisecond):
@@ -331,7 +434,7 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 		if pending == nil {
 			pending = []map[string]any{}
 		}
-		c.json(w, map[string]any{"tasks": pending})
+		c.json(w, r, map[string]any{"tasks": pending})
 	case "events":
 		var ev consoleEvent
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxFakeEvent)).Decode(&ev); err != nil {
@@ -341,10 +444,10 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.events = append(c.events, ev)
 		c.mu.Unlock()
-		c.text(w, `{}`)
+		c.text(w, r, `{}`)
 	default:
-		c.drain(r.Body, maxFakeEvent)
-		c.text(w, `{}`)
+		c.drain(r, maxFakeEvent)
+		c.text(w, r, `{}`)
 	}
 }
 
@@ -393,10 +496,7 @@ func (c *fakeConsole) Events() []consoleEvent {
 // ProtocolErrors returns what the connector sent that strays from the
 // protocol.
 func (c *fakeConsole) ProtocolErrors() []string {
-	c.mu.Lock()
-	out := append([]string(nil), c.errs...)
-	c.mu.Unlock()
-	return append(out, c.Errors()...)
+	return c.Errors()
 }
 
 // Ack returns the error text the connector gave for the task, and whether the

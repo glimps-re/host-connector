@@ -4,10 +4,12 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -473,22 +475,33 @@ func TestOutputViolations_lockReportTraps(t *testing.T) {
 
 func TestEffectiveMaxFileSize(t *testing.T) {
 	tests := []struct {
-		raw     string
+		name    string
+		conf    map[string]any
 		want    int64
 		wantErr bool
 	}{
-		{raw: "100MiB", want: 100 << 20},
-		{raw: "1MiB", want: 1 << 20},
-		{raw: "10KB", want: 10000},
-		{raw: "5GB", want: 100 << 20},
-		{raw: "0", want: 100 << 20},
-		{raw: "plenty", wantErr: true},
+		{name: "100MiB", conf: map[string]any{"max_file_size": "100MiB"}, want: 100 << 20},
+		{name: "1MiB", conf: map[string]any{"max_file_size": "1MiB"}, want: 1 << 20},
+		{name: "10KB", conf: map[string]any{"max_file_size": "10KB"}, want: 10000},
+		{name: "above the limit", conf: map[string]any{"max_file_size": "5GB"}, want: 100 << 20},
+		{name: "zero", conf: map[string]any{"max_file_size": "0"}, want: 100 << 20},
+		{name: "negative without unit", conf: map[string]any{"max_file_size": "-1"}, wantErr: true},
+		{name: "not a size", conf: map[string]any{"max_file_size": "plenty"}, wantErr: true},
+		{name: "empty", conf: map[string]any{"max_file_size": ""}, wantErr: true},
+		{name: "absent", conf: map[string]any{}, wantErr: true},
+		{name: "not a string", conf: map[string]any{"max_file_size": 5}, wantErr: true},
+		{name: "syndetect", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": true}, wantErr: true},
+		{name: "syndetect as a string", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "true"}, wantErr: true},
+		{name: "syndetect as a string, off", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "false"}, want: 100 << 20},
+		{name: "syndetect off", conf: map[string]any{"max_file_size": "1MiB", "gmalware_syndetect": false}, want: 1 << 20},
+		{name: "syndetect as a number", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": 1}, wantErr: true},
+		{name: "syndetect not a boolean", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "maybe"}, wantErr: true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.raw, func(t *testing.T) {
-			got, err := effectiveMaxFileSize(map[string]any{"max_file_size": tt.raw})
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := effectiveMaxFileSize(tt.conf)
 			if (err != nil) != tt.wantErr || got != tt.want {
-				t.Errorf("effectiveMaxFileSize(%q) = %d, %v; want %d, error %v", tt.raw, got, err, tt.want, tt.wantErr)
+				t.Errorf("effectiveMaxFileSize(%v) = %d, %v; want %d, error %v", tt.conf, got, err, tt.want, tt.wantErr)
 			}
 		})
 	}
@@ -506,15 +519,169 @@ func (w *failingWriter) Write([]byte) (int, error) { return 0, w.err }
 // A fake that cannot answer says so, except when the connector closed the
 // connection, which is only noted.
 func TestErrLog(t *testing.T) {
-	var l errLog
-	l.json(&failingWriter{header: http.Header{}, err: syscall.EPIPE}, map[string]any{})
-	l.text(&failingWriter{header: http.Header{}, err: syscall.ECONNRESET}, "x")
-	if got := l.Errors(); len(got) != 0 {
-		t.Fatalf("errors = %v, want none for a closed connection", got)
+	req := func(ctx context.Context, body io.Reader) *http.Request {
+		return httptest.NewRequestWithContext(ctx, http.MethodPost, "/api/lite/v2/submit", body)
 	}
-	l.text(&failingWriter{header: http.Header{}, err: io.ErrShortWrite}, "x")
-	l.drain(iotest.ErrReader(io.ErrUnexpectedEOF), 10)
-	if got := l.Errors(); len(got) != 2 {
-		t.Errorf("errors = %v, want two", got)
+	t.Run("a closed connection is a note", func(t *testing.T) {
+		var l errLog
+		r := req(t.Context(), nil)
+		l.json(&failingWriter{header: http.Header{}, err: syscall.EPIPE}, r, map[string]any{})
+		l.text(&failingWriter{header: http.Header{}, err: syscall.ECONNRESET}, r, "x")
+		if got := l.Errors(); len(got) != 0 {
+			t.Errorf("errors = %v, want none for a closed connection", got)
+		}
+		if got := l.AbortedUploads(); got != 2 {
+			t.Errorf("aborted = %d, want 2", got)
+		}
+	})
+	t.Run("another write failure is an error naming the endpoint", func(t *testing.T) {
+		var l errLog
+		l.text(&failingWriter{header: http.Header{}, err: io.ErrShortWrite}, req(t.Context(), nil), "x")
+		got := l.Errors()
+		if len(got) != 1 || !strings.Contains(got[0], "POST /api/lite/v2/submit") {
+			t.Errorf("errors = %v, want one naming the endpoint", got)
+		}
+	})
+	t.Run("a cut body that nobody announced is an error", func(t *testing.T) {
+		var l errLog
+		l.drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
+		if got := l.Errors(); len(got) != 1 {
+			t.Errorf("errors = %v, want one", got)
+		}
+	})
+	t.Run("a cut body that was announced is a note, once", func(t *testing.T) {
+		var l errLog
+		l.ExpectAbortedUploads(1)
+		l.drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
+		if got := l.Errors(); len(got) != 0 {
+			t.Fatalf("errors = %v, want none for an announced abort", got)
+		}
+		if got := l.AbortedUploads(); got != 1 {
+			t.Errorf("aborted = %d, want 1", got)
+		}
+		l.drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
+		if got := l.Errors(); len(got) != 1 {
+			t.Errorf("errors = %v, want the second, unannounced abort to be an error", got)
+		}
+	})
+	t.Run("a cancelled request does not excuse a cut body", func(t *testing.T) {
+		var l errLog
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		l.drain(req(ctx, iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
+		if got := l.Errors(); len(got) != 1 {
+			t.Errorf("errors = %v, want one", got)
+		}
+	})
+	t.Run("a connection reset while reading is a note", func(t *testing.T) {
+		var l errLog
+		l.drain(req(t.Context(), iotest.ErrReader(syscall.ECONNRESET)), 10)
+		if got := l.Errors(); len(got) != 0 {
+			t.Errorf("errors = %v, want none", got)
+		}
+	})
+}
+
+// A verdict whose answer never reached the connector is not given: a connector
+// that fails open must not pass for one that analyzed the file.
+func TestGMalware_givenOnlyOnceWritten(t *testing.T) {
+	content := []byte("some content")
+	sum := sha256Hex(content)
+	uuid := "00000000-0000-0000-0000-000000000001"
+	newReq := func() *http.Request {
+		return httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/api/lite/v2/results/"+uuid, http.NoBody)
 	}
+	setup := func() *gmalware {
+		g := &gmalware{uuids: map[string]string{uuid: sum}, verdicts: map[string]verdict{}, given: map[string]verdict{}}
+		return g
+	}
+
+	g := setup()
+	g.results(&failingWriter{header: http.Header{}, err: syscall.ECONNRESET}, newReq())
+	if _, ok := g.Given(sum); ok {
+		t.Error("a verdict that was not delivered is reported as given")
+	}
+	if g.answered.Load() != 0 {
+		t.Error("an answer that was not delivered is counted")
+	}
+
+	g = setup()
+	g.results(httptest.NewRecorder(), newReq())
+	if _, ok := g.Given(sum); !ok {
+		t.Error("a delivered verdict is not reported as given")
+	}
+}
+
+// resultOver asks the fake, through its server, for the result of a content
+// that was submitted, with a client that gives up after patience.
+func resultOver(t *testing.T, gm *gmalware, content []byte, patience time.Duration) {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	post, err := http.NewRequestWithContext(t.Context(), http.MethodPost, gm.URL+"/api/lite/v2/submit", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	var sub struct {
+		UUID string `json:"uuid"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&sub); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), patience)
+	defer cancel()
+	get, err := http.NewRequestWithContext(ctx, http.MethodGet, gm.URL+"/api/lite/v2/results/"+sub.UUID, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2, err := http.DefaultClient.Do(get)
+	if err != nil {
+		return
+	}
+	_ = r2.Body.Close()
+}
+
+// A verdict that a client gave up waiting for is not given, although the
+// server wrote it without an error: net/http buffers the write, only the
+// request context tells that nobody listens.
+func TestGMalware_givenOnlyToAClientThatWaited(t *testing.T) {
+	content := []byte("some content for the slow server")
+	sum := sha256Hex(content)
+
+	gm := newGMalware(t, false)
+	gm.DelayResults(600 * time.Millisecond)
+	resultOver(t, gm, content, 150*time.Millisecond)
+	time.Sleep(900 * time.Millisecond)
+	if _, ok := gm.Given(sum); ok {
+		t.Error("a verdict nobody waited for is reported as given")
+	}
+	if gm.answered.Load() != 0 {
+		t.Error("an answer nobody waited for is counted")
+	}
+
+	gm = newGMalware(t, false)
+	gm.DelayResults(100 * time.Millisecond)
+	resultOver(t, gm, content, 5*time.Second)
+	// The handler records once it has flushed, which can be after the client
+	// has read the answer.
+	waitFor(t, "the verdict to be reported as given", func() bool {
+		_, ok := gm.Given(sum)
+		return ok && gm.answered.Load() == 1
+	})
 }

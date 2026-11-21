@@ -329,15 +329,29 @@ func TestMoveAction_lockReportWithALongName(t *testing.T) {
 
 type mitigationRecorder struct {
 	events.NoopEventHandler
-	mu   sync.Mutex
-	seen []events.FileInfos
+	mu      sync.Mutex
+	seen    []events.FileInfos
+	reasons []events.MitigationReason
 }
 
-func (m *mitigationRecorder) NotifyFileMitigation(_ context.Context, _ events.MitigationAction, _ string, _ events.MitigationReason, info events.FileInfos) error {
+func (m *mitigationRecorder) NotifyFileMitigation(_ context.Context, _ events.MitigationAction, _ string, reason events.MitigationReason, info events.FileInfos) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.seen = append(m.seen, info)
+	m.reasons = append(m.reasons, reason)
 	return nil
+}
+
+func (m *mitigationRecorder) reasonsOf(name string) []events.MitigationReason {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var got []events.MitigationReason
+	for i, info := range m.seen {
+		if filepath.Base(info.File) == name {
+			got = append(got, m.reasons[i])
+		}
+	}
+	return got
 }
 
 func recordMitigations(t *testing.T) *mitigationRecorder {

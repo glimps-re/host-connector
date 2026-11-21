@@ -2116,6 +2116,10 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		AnalyzedVolume: gdetectResult.FileSize,
 	}
 
+	if gdetectResult.Malware {
+		result.MalwareReason = datamodel.MalwareDetected
+	}
+
 	switch {
 	case gdetectResult.Error != "":
 		analysisError := gdetectResult.Error
@@ -2129,7 +2133,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, analysisError))
 		result.AnalysisError = analysisError
 	case gdetectResult.Malware:
-		result.MalwareReason = datamodel.MalwareDetected
+		// A detection outranks every unanalyzable policy: the file stays malware.
 	case input.encrypted:
 		result = c.policiedResult(input, result, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure())
 	case input.limitSkipped:

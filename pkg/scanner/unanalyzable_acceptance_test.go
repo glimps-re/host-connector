@@ -3,10 +3,12 @@ package scanner
 import (
 	"archive/zip"
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -68,6 +70,16 @@ type accSetup struct {
 	policy  Unanalyzable
 	files   map[string]string // name -> content
 	extract plugins.ExtractFile
+	// submit answers the analysis of a file by its name; nil means a clean verdict.
+	submit func(name string) (gdetect.Result, error)
+	// scanned is registered as an OnFileScanned callback.
+	scanned plugins.OnFileScanned
+	// maxDepth is the extraction depth, 3 when 0.
+	maxDepth int
+	// remove deletes the detected files instead of quarantining them.
+	remove bool
+	// inform receives the console line of each file.
+	inform io.WriteCloser
 }
 
 // runAcc runs the real pipeline (move + quarantine actions) on the files.
@@ -107,8 +119,11 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		return nil
 	}}
 	submitter := archiveCleanSubmitter()
-	submitter.WaitForFileMock = func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
+	submitter.WaitForFileMock = func(_ context.Context, path string, _ gdetect.WaitForOptions) (gdetect.Result, error) {
 		r.submitted.Add(1)
+		if s.submit != nil {
+			return s.submit(filepath.Base(path))
+		}
 		return gdetect.Result{}, nil
 	}
 	echoReader(submitter)
@@ -118,13 +133,16 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 	c, err := NewConnector(Config{
 		MaxFileSize: accMax, Unanalyzable: s.policy, WorkDir: t.TempDir(),
 		Extract: s.extract != nil, ExtractMinThreshold: 1, Workers: 2, ExtractWorkers: 1,
-		RecursiveExtractMaxDepth: 3,
-		Actions:                  Actions{Move: true, Quarantine: true},
+		RecursiveExtractMaxDepth: cmp.Or(s.maxDepth, 3),
+		Actions:                  Actions{Move: true, Quarantine: !s.remove, Deleted: s.remove, Inform: s.inform != nil, InformDest: s.inform},
 		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: MoveModeCopy,
 		CustomActions: []Action{capture},
 	}, q, submitter)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if s.scanned != nil {
+		c.RegisterOnFileScanned(s.scanned)
 	}
 	if err = c.Start(); err != nil {
 		t.Fatal(err)

@@ -49,7 +49,9 @@ func TestT27_removeRunLeavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
 	}
 
 	sze := &sevenZipExtract{logger: discardLogger()}
-	sze.removeRun(dir, before)
+	if err := sze.removeRun(dir, before); err != nil {
+		t.Fatalf("removeRun() error = %v", err)
+	}
 
 	after, err := snapshot(dir)
 	if err != nil {
@@ -77,9 +79,13 @@ func TestT27_removeRunLeavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
 
 func TestT27_removeRunToleratesAMissingOrEmptyFolder(t *testing.T) {
 	sze := &sevenZipExtract{logger: discardLogger()}
-	sze.removeRun(filepath.Join(t.TempDir(), "never-created"), map[string]struct{}{})
 	empty := t.TempDir()
-	sze.removeRun(empty, map[string]struct{}{})
+	if err := sze.removeRun(empty, map[string]struct{}{}); err != nil {
+		t.Errorf("removeRun() of an empty folder error = %v", err)
+	}
+	if err := sze.removeRun(filepath.Join(t.TempDir(), "never-created"), map[string]struct{}{}); err != nil && !errors.Is(err, errOutputFolder) {
+		t.Errorf("removeRun() of a missing folder error = %v, want nil or a failure of the host", err)
+	}
 	if entries, _ := os.ReadDir(empty); len(entries) != 0 {
 		t.Errorf("empty folder now holds %v", entries)
 	}

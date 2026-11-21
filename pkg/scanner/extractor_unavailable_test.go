@@ -22,7 +22,7 @@ type extractorFixture struct {
 
 // newExtractorFixture builds a connector that moves clean files from src to
 // dst and extracts archives with extract.
-func newExtractorFixture(t *testing.T, extract plugins.ExtractFile) *extractorFixture {
+func newExtractorFixture(t *testing.T, extract plugins.ExtractFile, opts ...func(*Config)) *extractorFixture {
 	t.Helper()
 	root := t.TempDir()
 	f := &extractorFixture{src: filepath.Join(root, "in"), dst: filepath.Join(root, "out")}
@@ -35,7 +35,7 @@ func newExtractorFixture(t *testing.T, extract plugins.ExtractFile) *extractorFi
 	EventHandler = &recordingEventHandler{}
 	ExtractFile = extract
 	t.Cleanup(func() { EventHandler, ExtractFile = prevEvents, prevExtract })
-	c, err := NewConnector(Config{
+	conf := Config{
 		Extract:                  true,
 		WorkDir:                  t.TempDir(),
 		RecursiveExtractMaxDepth: 3,
@@ -44,7 +44,11 @@ func newExtractorFixture(t *testing.T, extract plugins.ExtractFile) *extractorFi
 		MoveFrom:                 f.src,
 		MoveTo:                   f.dst,
 		Roots:                    []string{f.src},
-	}, nil, nil)
+	}
+	for _, opt := range opts {
+		opt(&conf)
+	}
+	c, err := NewConnector(conf, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

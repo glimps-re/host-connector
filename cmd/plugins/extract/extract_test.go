@@ -114,13 +114,33 @@ func Test_handleSevenZipError(t *testing.T) {
 			wantSpecificErr: ErrUnsupportedFormat,
 		},
 		{
+			name: "ko the path repeated by 7z, with the line that says why",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: archive.7z : archive.7z\nOpen ERROR: Cannot open the file as [7z] archive\n\nERRORS:\nUnexpected end of archive\n",
+				paths:       []string{"archive.7z"},
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko the path repeated by 7z, with nothing that says why, is the raw error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: archive.7z : archive.7z\n",
+				paths:       []string{"archive.7z"},
+			},
+			wantErr:         true,
+			wantSpecificErr: sevenZipErr,
+		},
+		{
 			name: "ko a member named like a password error is no password error",
 			args: args{
 				sevenZipErr: sevenZipErr,
 				stderr:      "ERROR: CRC Failed : Wrong password",
 			},
 			wantErr:         true,
-			wantSpecificErr: sevenZipErr,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ko a member named like a link error is no refused link",
@@ -129,7 +149,7 @@ func Test_handleSevenZipError(t *testing.T) {
 				stderr:      "ERROR: CRC Failed : Dangerous link path was ignored",
 			},
 			wantErr:         true,
-			wantSpecificErr: sevenZipErr,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ko a member named like the not-an-archive error",
@@ -138,7 +158,7 @@ func Test_handleSevenZipError(t *testing.T) {
 				stderr:      "ERROR: CRC Failed : Cannot open the file as archive",
 			},
 			wantErr:         true,
-			wantSpecificErr: sevenZipErr,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ko an archive named like a password error is no password error",
@@ -157,7 +177,7 @@ func Test_handleSevenZipError(t *testing.T) {
 				paths:       []string{"Cannot open the file as archive.zip"},
 			},
 			wantErr:         true,
-			wantSpecificErr: sevenZipErr,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ko a refused link does not hide another error",
@@ -166,7 +186,7 @@ func Test_handleSevenZipError(t *testing.T) {
 				stderr:      "ERROR: Dangerous link path was ignored : l : /etc/passwd\nERROR: CRC Failed : b.txt",
 			},
 			wantErr:         true,
-			wantSpecificErr: sevenZipErr,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ok no error",

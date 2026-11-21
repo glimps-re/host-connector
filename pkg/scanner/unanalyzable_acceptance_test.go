@@ -424,7 +424,7 @@ func TestT16a_configValidation(t *testing.T) {
 		{"encrypted skip", Unanalyzable{Encrypted: "skip"}, false},
 		{"extract_error error", Unanalyzable{ExtractError: "error"}, true},
 		{"extract_error pass", Unanalyzable{ExtractError: "pass"}, false},
-		{"extract_error as_file", Unanalyzable{ExtractError: "as_file"}, false},
+		{"extract_error as_file", Unanalyzable{ExtractError: "as_file"}, true},
 		{"case matters", Unanalyzable{TooBig: "PASS"}, false},
 		{"whitespace", Unanalyzable{TooBig: " pass"}, false},
 	}
@@ -527,9 +527,9 @@ func TestT16a_onFileScannedCannotEraseNotAnalyzed(t *testing.T) {
 	}
 }
 
-// extract_error stays error-only: another value is refused at startup.
-func TestT16a_extractErrorOnlyError(t *testing.T) {
-	for _, v := range []string{"pass", "mitigate", "as_file", "skip"} {
+// extract_error is error or as_file: another value is refused at startup.
+func TestT16a_extractErrorOnlyErrorOrAsFile(t *testing.T) {
+	for _, v := range []string{"pass", "mitigate", "skip"} {
 		if _, err := NewConnector(Config{Unanalyzable: Unanalyzable{ExtractError: v}, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
 			t.Errorf("extract_error=%q accepted", v)
 		}

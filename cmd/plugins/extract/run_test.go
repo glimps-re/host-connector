@@ -314,13 +314,13 @@ func TestExtract_notAnArchiveIsUnsupportedFormat(t *testing.T) {
 	}
 }
 
-func TestExtractFile_anomalyBecomesAnExtractErrorEntryNamedAfterTheArchive(t *testing.T) {
+func TestExtractFile_anomalyIsAnErrorWithAnEntryNamedAfterTheArchiveForTheReport(t *testing.T) {
 	sze := scriptFor(t, listing([]string{"Tail Size = 5"}, listingLine("a.txt", 3)), `printf abc > "$out/a.txt"`, filepath.Join(t.TempDir(), "args"))
 	bigConfig(sze)
 	plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
 	ex, err := plugin.ExtractFile("/some/dir/bomb.7z", t.TempDir(), openLimits)
-	if err != nil {
-		t.Fatal(err)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Fatalf("ExtractFile() error = %v, want the anomaly", err)
 	}
 	if len(ex.Files) != 1 || ex.SkippedCount != 1 || len(ex.Skipped) != 1 || ex.Skipped[0].FileName != "bomb.7z" || ex.Skipped[0].Reason != datamodel.NotAnalyzedExtractError {
 		t.Errorf("Extraction = %+v, want one file and an extract-error entry named bomb.7z", ex)

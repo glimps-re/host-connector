@@ -836,7 +836,7 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 			var files int
 			archive := fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), identity: IdentityOf(info), size: info.Size()}
 			err = c.recursiveExtract(archive, 0, &size, &files, logger)
-			if tt.wantErr != (err != nil && (strings.Contains(err.Error(), "extract-error") || strings.Contains(err.Error(), "limits of the extraction"))) {
+			if tt.wantErr != (err != nil && (strings.Contains(err.Error(), "extract-error") || strings.Contains(err.Error(), "limits of the extraction") || strings.Contains(err.Error(), "damaged or inconsistent"))) {
 				t.Errorf("recursiveExtract() error = %v, wantErr %v", err, tt.wantErr)
 			}
 			if tt.wantErr && submitted.Load() != 0 {

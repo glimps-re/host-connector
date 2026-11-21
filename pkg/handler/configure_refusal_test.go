@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -11,22 +10,19 @@ import (
 	"github.com/glimps-re/host-connector/pkg/config"
 )
 
-func TestHandler_ConfigureRefusesPendingKey(t *testing.T) {
+func TestHandler_ConfigureRefusesUnknownExtractErrorPolicy(t *testing.T) {
 	tests := []struct {
 		name    string
 		raw     string
 		wantKey string
 	}{
-		{"extract_error", `{"unanalyzable_policy":{"extract_error":"as_file"}}`, "unanalyzable_policy.extract_error"},
+		{"extract_error", `{"unanalyzable_policy":{"extract_error":"pass"}}`, "extract_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := new(Handler)
 			err := h.Configure(t.Context(), json.RawMessage(tt.raw))
-			if !errors.Is(err, config.ErrNotImplemented) {
-				t.Fatalf("Configure() error = %v, want ErrNotImplemented", err)
-			}
-			if !strings.Contains(err.Error(), tt.wantKey) {
+			if err == nil || !strings.Contains(err.Error(), tt.wantKey) {
 				t.Errorf("Configure() error = %v, want key %q", err, tt.wantKey)
 			}
 		})
@@ -62,8 +58,8 @@ func TestHandler_ConfigureRefusalNotifiesAndKeepsState(t *testing.T) {
 	h := &Handler{conf: oldConf, needSetup: true, configured: true}
 	t.Cleanup(h.stopRejectReminder)
 	err := h.Configure(t.Context(), json.RawMessage(`{"unanalyzable_policy":{"extract_error":"pass"}}`))
-	if !errors.Is(err, config.ErrNotImplemented) {
-		t.Fatalf("Configure() error = %v, want ErrNotImplemented", err)
+	if err == nil {
+		t.Fatal("Configure() error = nil, want a refusal")
 	}
 	if len(rec.types) != 1 || rec.types[0] != HostConfigRejected {
 		t.Errorf("NotifyError calls = %v, want exactly one %q", rec.types, HostConfigRejected)

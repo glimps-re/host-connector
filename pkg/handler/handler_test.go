@@ -2,22 +2,18 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/config"
 )
 
-func TestHandler_SetupRefusesPendingKey(t *testing.T) {
+func TestHandler_SetupRefusesUnknownExtractErrorPolicy(t *testing.T) {
 	h := new(Handler)
 	conf := &config.Config{}
 	conf.UnanalyzablePolicy.ExtractError = "pass"
 	err := h.setup(t.Context(), conf)
-	if !errors.Is(err, config.ErrNotImplemented) {
-		t.Fatalf("setup() error = %v, want ErrNotImplemented", err)
-	}
-	if !strings.Contains(err.Error(), "unanalyzable_policy.extract_error") {
+	if err == nil || !strings.Contains(err.Error(), "extract_error") {
 		t.Errorf("setup() error = %v, want key name", err)
 	}
 }

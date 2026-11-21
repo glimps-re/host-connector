@@ -1,7 +1,6 @@
 package config
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -23,7 +22,7 @@ func loadViperYAML(t *testing.T, content string) *Config {
 	return c
 }
 
-func TestCheckImplemented_ViperYAML(t *testing.T) {
+func TestValidate_ViperYAML(t *testing.T) {
 	tests := []struct {
 		name    string
 		yaml    string
@@ -38,16 +37,18 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"empty pass", "unanalyzable_policy:\n  empty: pass\n", ""},
 		{"encrypted pass", "unanalyzable_policy:\n  encrypted: pass\n", ""},
 		{"encrypted mitigate", "unanalyzable_policy:\n  encrypted: mitigate\n", ""},
-		{"extract_error", "unanalyzable_policy:\n  extract_error: as_file\n", "unanalyzable_policy.extract_error"},
+		{"extract_error as_file", "unanalyzable_policy:\n  extract_error: as_file\n", ""},
+		{"extract_error error", "unanalyzable_policy:\n  extract_error: error\n", ""},
+		{"extract_error pass", "unanalyzable_policy:\n  extract_error: pass\n", "extract_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			assertPending(t, CheckImplemented(loadViperYAML(t, tt.yaml)), tt.wantKey)
+			assertRefusal(t, Validate(loadViperYAML(t, tt.yaml)), tt.wantKey)
 		})
 	}
 }
 
-func assertPending(t *testing.T, err error, wantKey string) {
+func assertRefusal(t *testing.T, err error, wantKey string) {
 	t.Helper()
 	if wantKey == "" {
 		if err != nil {
@@ -55,7 +56,7 @@ func assertPending(t *testing.T, err error, wantKey string) {
 		}
 		return
 	}
-	if !errors.Is(err, ErrNotImplemented) || !strings.Contains(err.Error(), wantKey) {
-		t.Fatalf("error = %v, want ErrNotImplemented naming %q", err, wantKey)
+	if err == nil || !strings.Contains(err.Error(), wantKey) {
+		t.Fatalf("error = %v, want a refusal naming %q", err, wantKey)
 	}
 }

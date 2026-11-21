@@ -60,9 +60,6 @@ func TestSDKDefaultConfigAccepted(t *testing.T) {
 	if err := Validate(conf); err != nil {
 		t.Errorf("Validate(SDK default) = %v", err)
 	}
-	if err := CheckImplemented(conf); err != nil {
-		t.Errorf("CheckImplemented(SDK default) = %v", err)
-	}
 }
 
 func TestExplicitAcceptedValues(t *testing.T) {
@@ -75,15 +72,15 @@ func TestExplicitAcceptedValues(t *testing.T) {
 	conf.UnanalyzablePolicy.TooBig = "error"
 	conf.UnanalyzablePolicy.Empty = "skip"
 	conf.Quarantine.Format = "tar"
-	if err := CheckImplemented(conf); err != nil {
-		t.Errorf("CheckImplemented(explicit accepted values) = %v", err)
+	if err := Validate(conf); err != nil {
+		t.Errorf("Validate(explicit accepted values) = %v", err)
 	}
 	for _, mutate := range []func(){
-		func() { conf.UnanalyzablePolicy.ExtractError = "as_file" },
+		func() { conf.UnanalyzablePolicy.ExtractError = "pass" },
 	} {
 		mutate()
-		if err := CheckImplemented(conf); err == nil {
-			t.Errorf("CheckImplemented() = nil after mutation, want refusal")
+		if err := Validate(conf); err == nil {
+			t.Errorf("Validate() = nil after mutation, want refusal")
 		}
 		conf = &Config{}
 	}
@@ -99,7 +96,7 @@ func TestDisableFSWatcherSameInYAMLAndJSON(t *testing.T) {
 		if !c.Monitoring.DisableFSWatcher || c.Monitoring.Period != sdk.Duration(time.Hour) {
 			t.Errorf("%s: monitoring = %+v", name, c.Monitoring)
 		}
-		if err := errors.Join(Validate(c), CheckImplemented(c)); err != nil {
+		if err := Validate(c); err != nil {
 			t.Errorf("%s: refused: %v", name, err)
 		}
 	}

@@ -222,7 +222,7 @@ func TestApplyContract_prepareRefusals(t *testing.T) {
 		{"unknown move mode", func(c *config.Config) { c.Move.Mode = "rnme" }, "mode"},
 		{"unparsable move throughput", func(c *config.Config) { c.Move.MinThroughput = "fast" }, "move.min_throughput"},
 		{"zero move throughput", func(c *config.Config) { c.Move.MinThroughput = "0" }, "move.min_throughput"},
-		{"pending key", func(c *config.Config) { c.UnanalyzablePolicy.ExtractError = "pass" }, "unanalyzable_policy.extract_error"},
+		{"unknown extract_error policy", func(c *config.Config) { c.UnanalyzablePolicy.ExtractError = "pass" }, "extract_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

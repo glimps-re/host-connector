@@ -22,6 +22,9 @@ const (
 	PolicyMitigate = "mitigate"
 	// PolicySkip ignores the file (the policy of an empty file).
 	PolicySkip = "skip"
+	// PolicyAsFile treats an archive that cannot be extracted as a plain file,
+	// submitted as is and marked extract-error (Unanalyzable.ExtractError only).
+	PolicyAsFile = "as_file"
 )
 
 // Unanalyzable is what becomes of the files that cannot be analyzed. A field
@@ -34,8 +37,8 @@ type Unanalyzable struct {
 	Empty string
 	// Encrypted is the policy of a file the extraction reports as encrypted.
 	Encrypted string
-	// ExtractError is the policy of an archive that cannot be extracted; only
-	// PolicyError is available.
+	// ExtractError is the policy of an archive found damaged or inconsistent by
+	// the extractor: PolicyError or PolicyAsFile.
 	ExtractError string
 }
 
@@ -91,7 +94,7 @@ func (u Unanalyzable) validate(mode MoveMode) error {
 		{"too_big", u.TooBig, []string{PolicyError, PolicyPass, PolicyMitigate}},
 		{"empty", u.Empty, []string{PolicySkip, PolicyPass, PolicyMitigate}},
 		{"encrypted", u.Encrypted, []string{PolicyError, PolicyPass, PolicyMitigate}},
-		{"extract_error", u.ExtractError, []string{PolicyError}},
+		{"extract_error", u.ExtractError, []string{PolicyError, PolicyAsFile}},
 	} {
 		ok := false
 		for _, a := range c.allowed {

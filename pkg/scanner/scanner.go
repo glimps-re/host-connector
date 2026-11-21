@@ -70,10 +70,13 @@ var (
 	ConsoleLogger                           = slog.New(slog.DiscardHandler)
 	MetricCollecter metrics.MetricCollecter = metrics.NoopMetricCollecter{}
 
-	errFileTooBig    = errors.New("file is too big to be analyzed")
-	errEmptyFile     = errors.New("file is empty")
-	errEncrypted     = errors.New("file is encrypted and cannot be analyzed")
-	errScannerClosed = errors.New("scanner instance is closing and is no longer accepting new files")
+	errFileTooBig = errors.New("file is too big to be analyzed")
+	errEmptyFile  = errors.New("file is empty")
+	errEncrypted  = errors.New("file is encrypted and cannot be analyzed")
+	// errEncryptedOrDamaged is errEncrypted for an archive that is damaged and
+	// may be encrypted: the report says that it cannot be told which.
+	errEncryptedOrDamaged error = undeterminedEncryption{}
+	errScannerClosed            = errors.New("scanner instance is closing and is no longer accepting new files")
 
 	// An archive with a failed extracted file is never moved. These sentinels
 	// only tell whether retrying can change the outcome: permanent wins when
@@ -191,6 +194,30 @@ type fileToAnalyze struct {
 	// limitSkipped is set for an archive the limits of the extraction did not let
 	// open: the policy of the files too big decides, as for the members left out.
 	limitSkipped bool
+	// extractError is set for an archive the extractor found damaged or
+	// inconsistent, under the policy PolicyAsFile: it is analyzed as a plain file.
+	extractError bool
+	// undetermined is set with encrypted for an archive that is damaged, when
+	// nothing proves that it holds no encrypted content: it is not told from an
+	// encrypted one.
+	undetermined bool
+}
+
+// named is the file with a name: the location of a deposited one.
+func (f fileToAnalyze) named() fileToAnalyze {
+	if f.filename == "" {
+		f.filename = f.location
+	}
+	return f
+}
+
+// encryptedFailure is the failure of the file under the policy that fails the
+// encrypted files.
+func (f fileToAnalyze) encryptedFailure() error {
+	if f.undetermined {
+		return errEncryptedOrDamaged
+	}
+	return errEncrypted
 }
 
 // logical is the path plugins see for the file: its real path for a top-level
@@ -1076,16 +1103,41 @@ func (c *Connector) extractorAvailable() {
 	}
 }
 
+// undeterminedEncryption is the failure of a damaged archive that may be
+// encrypted: an encrypted file for what follows from it.
+type undeterminedEncryption struct{}
+
+func (undeterminedEncryption) Error() string {
+	return "the archive is encrypted, or damaged and it cannot be told which"
+}
+
+func (undeterminedEncryption) Is(target error) bool { return target == errEncrypted }
+
 // extractionAnomaly turns an extract-error entry reported by the extractor
 // (an anomaly of the archive: data after its end, a mismatch between what was
 // listed and what was extracted) into an error.
 func extractionAnomaly(e plugins.Extraction) error {
 	for _, s := range e.Skipped {
 		if s.Reason == datamodel.NotAnalyzedExtractError {
-			return fmt.Errorf("the extractor reported an anomaly in %s", s.FileName)
+			return fmt.Errorf("%w: %w: the extractor reported an anomaly in %s", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible, s.FileName)
 		}
 	}
 	return nil
+}
+
+// errExtractAnomaly is the failure of an archive the extractor found damaged or
+// inconsistent, under the policy that fails: it is definitive, and its text is
+// fixed (the cause, which comes from the archive, stays in the log).
+var errExtractAnomaly = fmt.Errorf("%w: the archive is damaged or inconsistent and could not be extracted", errInnerPermanent)
+
+// isArchiveAnomaly tells whether an extraction failed because of the archive
+// itself. Only an extractor that says so counts (ErrEncryptionPossible alone
+// says it too); a cut, a timeout or a cancellation says nothing about the
+// archive and wins over it, so that a transient failure never makes an archive
+// definitive nor lets it through.
+func isArchiveAnomaly(err error) bool {
+	return (errors.Is(err, plugins.ErrArchiveAnomaly) || errors.Is(err, plugins.ErrEncryptionPossible)) &&
+		!errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }
 
 // tryExtract starts a recursive extraction for archive.
@@ -1125,10 +1177,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	checkErr := c.checkBeforeExtract(archivePath, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
 	if checkErr != nil {
 		archiveLogger.Debug("file cannot be extracted", slog.String(logReasonKey, checkErr.Error()))
-		file := archive
-		if file.filename == "" {
-			file.filename = file.location
-		}
+		file := archive.named()
 		// An archive the limits do not let us open is left out, not analyzed as a
 		// plain file: submitting it whole would let its members through unseen.
 		file.limitSkipped = errors.Is(checkErr, errExtractLimit) && c.isArchiveType(archivePath)
@@ -1181,17 +1230,33 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	c.extractorAvailable()
 	if extractErr != nil && !errors.Is(extractErr, plugins.ErrUnsupportedFormat) && !errors.Is(extractErr, plugins.ErrEncrypted) {
 		// A recognized archive that could not be extracted is an error, never
-		// a plain file: submitting it as is would let its content through.
-		archiveLogger.Error("archive extraction failed", slog.String("error", extractErr.Error()))
-		err = fmt.Errorf("extract-error: %w", extractErr)
+		// a plain file unless the policy says so for an anomaly of the archive:
+		// submitting it as is would let its content through.
+		if !isArchiveAnomaly(extractErr) || c.config.Unanalyzable.ExtractError != PolicyAsFile {
+			archiveLogger.Error("archive extraction failed", slog.String("error", extractErr.Error()))
+		}
+		switch {
+		case !isArchiveAnomaly(extractErr):
+			err = fmt.Errorf("extract-error: %w", extractErr)
+		case c.config.Unanalyzable.ExtractError != PolicyAsFile:
+			err = errExtractAnomaly
+		default:
+			file := archive.named()
+			if errors.Is(extractErr, plugins.ErrEncryptionPossible) {
+				// Nothing proves that the damage hides no encryption: the policy of
+				// the encrypted files decides.
+				file.encrypted, file.undetermined = true, true
+			} else {
+				file.extractError = true
+			}
+			archiveLogger.Warn("damaged archive handled as a file", slog.String(logReasonKey, extractErr.Error()), slog.Bool("possibly_encrypted", file.encrypted))
+			err = c.sendForAnalyze(file, archiveLogger)
+		}
 		return
 	}
 	if extractErr != nil {
 		archiveLogger.Debug("error extracting file", slog.String("error", extractErr.Error())) // debug level, because files reaching that point are not necessarily extractable, due to the authorization of type 'application/octet-stream'
-		file := archive
-		if file.filename == "" {
-			file.filename = file.location
-		}
+		file := archive.named()
 		// An archive whose password is unknown is not a plain file: the policy
 		// of the encrypted files decides what becomes of it, as a member too if
 		// it is a sub-archive.
@@ -1237,11 +1302,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		}
 	}
 	if len(extractedFiles) == 0 && skipped == 0 {
-		file := archive
-		if file.filename == "" {
-			file.filename = file.location
-		}
-		err = c.sendForAnalyze(file, archiveLogger)
+		err = c.sendForAnalyze(archive.named(), archiveLogger)
 		return
 	}
 
@@ -1776,7 +1837,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 			*tooBig = true
 		}
 		if input.encrypted {
-			return c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+			return c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure())
 		}
 		if input.limitSkipped {
 			return c.unanalyzedResult(input, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
@@ -1890,9 +1951,11 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	case gdetectResult.Malware:
 		result.MalwareReason = datamodel.MalwareDetected
 	case input.encrypted:
-		result = c.policiedResult(input, result, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, errEncrypted)
+		result = c.policiedResult(input, result, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure())
 	case input.limitSkipped:
 		result = c.policiedResult(input, result, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
+	case input.extractError:
+		result = c.policiedResult(input, result, datamodel.NotAnalyzedExtractError, PolicyPass, nil)
 	}
 	return
 }

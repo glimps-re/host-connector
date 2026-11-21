@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
 // realPlugin runs the embedded 7-Zip, copied where it can be executed.
@@ -81,11 +83,11 @@ func TestRealSevenZip_controlCharactersInMemberNamesAreAnExtractError(t *testing
 		t.Run(name, func(t *testing.T) {
 			out := t.TempDir()
 			ex, err := realPlugin(t).ExtractFile(fixture(t, name), out, openLimits)
-			if err != nil {
-				t.Fatalf("ExtractFile() error = %v", err)
+			if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+				t.Fatalf("ExtractFile() error = %v, want an anomaly: a name with a control character must put the archive in error", err)
 			}
 			if ex.SkippedCount != 1 || len(ex.Skipped) != 1 || ex.Skipped[0].Reason != datamodel.NotAnalyzedExtractError || ex.Skipped[0].FileName != name {
-				t.Errorf("Skipped = %+v (%d), want one extract-error named %s: a name with a control character must put the archive in error", ex.Skipped, ex.SkippedCount, name)
+				t.Errorf("Skipped = %+v (%d), want one extract-error named %s for the report", ex.Skipped, ex.SkippedCount, name)
 			}
 			for _, f := range ex.Files {
 				if !strings.HasPrefix(f, out) {
@@ -98,8 +100,8 @@ func TestRealSevenZip_controlCharactersInMemberNamesAreAnExtractError(t *testing
 
 func TestRealSevenZip_twinNamesAreAnAnomalyNotASilentLoss(t *testing.T) {
 	ex, err := realPlugin(t).ExtractFile(fixture(t, "twin.7z"), t.TempDir(), openLimits)
-	if err != nil {
-		t.Fatalf("ExtractFile() error = %v", err)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Fatalf("ExtractFile() error = %v, want an anomaly: one of the two members was lost", err)
 	}
 	if ex.SkippedCount != 1 || len(ex.Skipped) != 1 {
 		t.Fatalf("Extraction = %+v, want one extract-error entry: one of the two members was lost", ex)
@@ -111,8 +113,11 @@ func TestRealSevenZip_twinNamesAreAnAnomalyNotASilentLoss(t *testing.T) {
 
 func TestRealSevenZip_trailingBytesAreAnAnomaly(t *testing.T) {
 	ex, err := realPlugin(t).ExtractFile(fixture(t, "trailing.7z"), t.TempDir(), openLimits)
-	if err != nil {
-		t.Fatalf("ExtractFile() error = %v", err)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Fatalf("ExtractFile() error = %v, want an anomaly: data hides after the archive", err)
+	}
+	if !errors.Is(err, plugins.ErrEncryptionPossible) {
+		t.Errorf("ExtractFile() error = %v: data after the archive can be another archive, the encryption is possible", err)
 	}
 	if ex.SkippedCount != 1 || len(ex.Skipped) != 1 || ex.Skipped[0].Reason != datamodel.NotAnalyzedExtractError || ex.Skipped[0].FileName != "trailing.7z" {
 		t.Errorf("Extraction = %+v, want an extract-error entry named trailing.7z: data hides after the archive", ex)

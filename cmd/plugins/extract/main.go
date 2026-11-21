@@ -128,10 +128,7 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	defer cancel()
 	result, err := p.sze.extract(ctx, archiveLocation, outputDir, nil, limits)
 	if err != nil {
-		if errors.Is(err, ErrInvalidPassword) {
-			err = fmt.Errorf("%w: %w", plugins.ErrEncrypted, err)
-		}
-		return plugins.Extraction{}, err
+		return plugins.Extraction{}, classifyFailure(err)
 	}
 
 	for _, ep := range result.extractedFiles {
@@ -143,12 +140,17 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	extraction.Skipped = result.skipped.entries
 	extraction.SkippedCount = result.skipped.count
 	if len(result.anomalies) > 0 {
-		p.logger.Error("extraction anomaly", slog.String("archive", sanitizeOutput(archiveLocation)), slog.String("anomalies", sanitizeOutput(strings.Join(result.anomalies, "; "))))
+		p.logger.Error("extraction anomaly", slog.String("archive", sanitizeOutput(archiveLocation)), slog.String("anomalies", sanitizeOutput(strings.Join(result.anomalies, "; "))), slog.Bool("encryption_excluded", result.encryptionExcluded))
 		extraction.Skipped = append([]datamodel.NotAnalyzedFile{{FileName: truncateName(filepath.Base(archiveLocation)), Reason: datamodel.NotAnalyzedExtractError}}, extraction.Skipped...)
 		if len(extraction.Skipped) > datamodel.MaxListedSubfiles {
 			extraction.Skipped = extraction.Skipped[:datamodel.MaxListedSubfiles]
 		}
 		extraction.SkippedCount++
+		err = fmt.Errorf("%w: %s", plugins.ErrArchiveAnomaly, sanitizeOutput(strings.Join(result.anomalies, "; ")))
+		if !result.encryptionExcluded {
+			err = errors.Join(err, plugins.ErrEncryptionPossible)
+		}
+		return extraction, err
 	}
 	return extraction, nil
 }
@@ -172,3 +174,24 @@ func (p *SevenZipExtractPlugin) Close(_ context.Context) error {
 }
 
 func main() {}
+
+// classifyFailure wraps the failures of an extraction that the scanner tells
+// apart: a password no one knows is plugins.ErrEncrypted, and what 7z found
+// damaged or inconsistent in the archive is plugins.ErrArchiveAnomaly, with
+// plugins.ErrEncryptionPossible since nothing proves that no encrypted content is
+// hidden by the damage. Whether a failure that came with a timeout or a
+// cancellation is retried is the scanner's to decide.
+func classifyFailure(err error) error {
+	switch {
+	case errors.Is(err, ErrInvalidPassword):
+		return fmt.Errorf("%w: %w", plugins.ErrEncrypted, err)
+	case errors.Is(err, plugins.ErrArchiveAnomaly):
+		if errors.Is(err, plugins.ErrEncryptionPossible) {
+			return err
+		}
+		return errors.Join(err, plugins.ErrEncryptionPossible)
+	case errors.Is(err, errSevenZipRecoverable), errors.Is(err, errBadListing), errors.Is(err, errEncryptionHint), errors.Is(err, errSevenZipOutputTooLarge):
+		return fmt.Errorf("%w: %w: %w", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible, err)
+	}
+	return err
+}

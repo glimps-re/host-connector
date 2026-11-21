@@ -17,6 +17,18 @@ type (
 	// wrapping ErrUnsupportedFormat means the file is not an archive and is
 	// handled as a plain file; ErrEncrypted, ErrExtractorUnavailable and any other
 	// error leave the archive unhandled.
+	//
+	// Each kind of failure has one channel:
+	//   - damage of the archive is returned as an error wrapping ErrArchiveAnomaly,
+	//     with ErrEncryptionPossible unless the extractor proved that the archive
+	//     holds no encrypted content; an extract-error entry of Skipped may
+	//     accompany it, for the report only;
+	//   - a failure of the host (output folder unreadable, unmeasurable or not
+	//     removable) is a plain error, never an anomaly nor an entry of Skipped:
+	//     the archive is retried;
+	//   - a breach of a limit of ExtractLimits leaves the members concerned in
+	//     Skipped as extract-limit or too-big, without an error: the policy of the
+	//     files too big decides.
 	ExtractFile            = func(archiveLocation, outputDir string, limits ExtractLimits) (Extraction, error)
 	OnStartScanFile        = func(file string, sha256 string)
 	OnScanFile             = func(filename string, location string, sha256 string, isArchive bool) (result *datamodel.Result)
@@ -73,6 +85,19 @@ var (
 	// ErrExtractorUnavailable is returned, wrapped, when the extraction process
 	// could not be started, whatever the cause.
 	ErrExtractorUnavailable = errors.New("the extractor is unavailable")
+	// ErrArchiveAnomaly is returned, wrapped, when the extractor recognized an
+	// archive and found it damaged or inconsistent (data error, listing that does
+	// not match what was extracted, data after the end, twin members). It is never
+	// returned for a timeout, a killed extractor, a cancelled context, an I/O
+	// error of the host or an unavailable extractor.
+	ErrArchiveAnomaly = errors.New("the archive is damaged or inconsistent")
+	// ErrEncryptionPossible is returned, always joined to ErrArchiveAnomaly, when
+	// the extractor could not establish that the archive holds no encrypted
+	// content: an encryption hint, a member whose Encrypted flag is not "-", a
+	// technical listing that is incomplete or unreadable, a member that failed
+	// its data check, a member that was not extracted, or an archive cut before
+	// its encryption could be read.
+	ErrEncryptionPossible = errors.New("the archive may hold encrypted content")
 )
 
 // CloseGrace is how long, in all, the connector still waits for the plugins

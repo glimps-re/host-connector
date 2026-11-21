@@ -42,7 +42,7 @@ func TestUnanalyzable_defaultsAndValidation(t *testing.T) {
 	if got := c.config.Unanalyzable; got != (Unanalyzable{TooBig: PolicyError, Empty: PolicyPass, Encrypted: PolicyError, ExtractError: PolicyError}) {
 		t.Errorf("defaults = %+v", got)
 	}
-	for _, bad := range []Unanalyzable{{TooBig: "skip"}, {Empty: "error"}, {Encrypted: "skip"}, {ExtractError: "as_file"}, {TooBig: "bogus"}} {
+	for _, bad := range []Unanalyzable{{TooBig: "skip"}, {Empty: "error"}, {Encrypted: "skip"}, {ExtractError: "pass"}, {TooBig: "bogus"}} {
 		if _, err := NewConnector(Config{Unanalyzable: bad, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
 			t.Errorf("NewConnector(%+v) accepted an invalid policy", bad)
 		}

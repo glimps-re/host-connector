@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log/slog"
+	"os/exec"
 	"slices"
 	"strings"
 	"unicode"
@@ -19,6 +20,9 @@ const (
 
 	errLinePrefix = "ERROR: "
 	labelSep      = " : "
+
+	// exitFatal is the exit code of 7z for a fatal error.
+	exitFatal = 2
 
 	// maxQuotedOutput bounds the 7z output quoted in an error or a log.
 	maxQuotedOutput = 1024
@@ -57,7 +61,7 @@ var (
 		"Data Error in encrypted file. Wrong password?",
 		"CRC Failed in encrypted file. Wrong password?",
 	}
-	recoverableLabels = []string{"Headers Error", "Data Error", "Unexpected end of archive"}
+	recoverableLabels = []string{"Headers Error", "Data Error", "CRC Failed", "Unexpected end of archive"}
 	// recoverableLines are the lines 7z prints alone, under its ERRORS: or WARNINGS: blocks.
 	recoverableLines = []string{
 		"Headers Error", "Data Error", "Unexpected end of archive",
@@ -139,6 +143,9 @@ func (o *sevenZipOutput) classifyError(body string) {
 		o.links = append(o.links, name)
 	case label == pathToken && rest == "Cannot open the file as archive":
 		o.notAnArchive = true
+	case label == pathToken && rest == pathToken:
+		// 7z repeats the path of an archive it cannot open; the lines that follow
+		// say why, and are classified on their own.
 	case strings.HasPrefix(label, "errno=") && rest == "No such file or directory":
 		o.notFound = true
 	case slices.Contains(recoverableLabels, label) || slices.Contains(recoverableLabels, body):
@@ -192,6 +199,11 @@ func handleSevenZipError(sevenZipErr error, stderr string, logger *slog.Logger, 
 		return nil, nil
 	}
 	if stderr == "" {
+		// 7z says nothing but "fatal error" (exit code 2) when it only found the
+		// archive damaged, as when a listing stops on a truncated zip.
+		if exitErr, ok := errors.AsType[*exec.ExitError](sevenZipErr); ok && exitErr.ExitCode() == exitFatal {
+			return nil, errors.Join(errSevenZipRecoverable, sevenZipErr)
+		}
 		return nil, sevenZipErr
 	}
 	out := classifyStderr(stderr, paths)

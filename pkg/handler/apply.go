@@ -36,7 +36,13 @@ const (
 	// entry of the removed filesize_filter plugin in the plugins file, and
 	// resolved by the next one without it.
 	HostPluginRemovedFilesize events.ErrorEventType = "plugin-removed-filesize-filter"
+	// HostExtractErrorAsFile is raised at each configuration applied with
+	// unanalyzable_policy.extract_error set to as_file, and resolved by the next
+	// one that is not.
+	HostExtractErrorAsFile events.ErrorEventType = "extract-error-as-file"
 )
+
+const extractErrorAsFileWarning = "unanalyzable_policy.extract_error is as_file: an archive that is damaged in a structural way (data after its end, a stub in front of it, members sharing a name) is analyzed as a plain file and delivered when nothing is detected, its members are not analyzed, and a member hidden by the damage can reach the destination; an archive damaged in its data, which may be encrypted, follows unanalyzable_policy.encrypted; use error to keep every damaged archive in place"
 
 const moveRenameWarning = "move.mode is rename: files are moved as the inode that was analyzed, a writer that still holds one open can change what reaches the destination; use copy to publish exactly what was analyzed"
 
@@ -72,7 +78,7 @@ type prepared struct {
 
 // prepare validates conf without any effect on what is running or on disk.
 func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
-	if err = errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
+	if err = config.Validate(conf); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	p = new(prepared)
@@ -630,6 +636,24 @@ func (h *Handler) reportMoveMode(ctx context.Context, conf *config.Config) {
 	logger.Warn(msg)
 	scanner.ConsoleLogger.Warn(msg)
 	if e := eventHandler.NotifyError(ctx, HostMoveRename, errors.New(msg)); e != nil {
+		logger.Warn("could not push console error", slog.String("error", e.Error()))
+	}
+}
+
+// reportExtractErrorPolicy keeps the as_file policy of the damaged archives
+// visible for as long as it is in service: the content such an archive hides is
+// not analyzed.
+func (h *Handler) reportExtractErrorPolicy(ctx context.Context, conf *config.Config) {
+	if conf.UnanalyzablePolicy.ExtractError != scanner.PolicyAsFile {
+		if e := eventHandler.NotifyResolution(ctx, "damaged archives are kept in place", HostExtractErrorAsFile); e != nil {
+			logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
+		}
+		return
+	}
+	msg := extractErrorAsFileWarning
+	logger.Warn(msg)
+	scanner.ConsoleLogger.Warn(msg)
+	if e := eventHandler.NotifyError(ctx, HostExtractErrorAsFile, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))
 	}
 }

@@ -3,8 +3,6 @@ package config
 import (
 	"os"
 	"regexp"
-	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,31 +11,13 @@ import (
 	"github.com/google/go-cmp/cmp/cmpopts"
 )
 
-func TestCheckImplemented_Multiple(t *testing.T) {
-	prev := pendingKeys
-	t.Cleanup(func() { pendingKeys = prev })
-	pendingKeys = append(slices.Clone(pendingKeys), pendingKey{"debug", func(c *Config) string {
-		if c.Debug {
-			return "on"
-		}
-		return ""
-	}, nil})
-	c := &Config{}
-	c.Debug = true
-	c.UnanalyzablePolicy.ExtractError = "pass"
-	err := CheckImplemented(c)
-	if err == nil || !strings.Contains(err.Error(), "debug") || !strings.Contains(err.Error(), "unanalyzable_policy.extract_error") {
-		t.Errorf("CheckImplemented() = %v, want both keys named", err)
-	}
-}
-
 func TestShippedYAMLUnchanged(t *testing.T) {
 	b, err := os.ReadFile("../../rsc/config.yml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := loadViperYAML(t, string(b))
-	if err := CheckImplemented(got); err != nil {
+	if err := Validate(got); err != nil {
 		t.Fatalf("rsc/config.yml refused: %v", err)
 	}
 	// Effective values with SDK v0.8.4; v0.10.0 only adds zero-valued fields.
@@ -71,7 +51,7 @@ func TestREADMEExamplesAccepted(t *testing.T) {
 			continue
 		}
 		checked++
-		if err := CheckImplemented(loadViperYAML(t, m[1])); err != nil {
+		if err := Validate(loadViperYAML(t, m[1])); err != nil {
 			t.Errorf("README example %d refused: %v", i, err)
 		}
 	}
@@ -80,12 +60,12 @@ func TestREADMEExamplesAccepted(t *testing.T) {
 	}
 }
 
-func TestCheckImplemented_QuarantineFormats(t *testing.T) {
+func TestValidate_QuarantineFormats(t *testing.T) {
 	for _, format := range []string{"", "tar", "zip"} {
 		conf := &Config{}
 		conf.Quarantine.Format = format
-		if err := CheckImplemented(conf); err != nil {
-			t.Errorf("CheckImplemented(format=%q) error = %v", format, err)
+		if err := Validate(conf); err != nil {
+			t.Errorf("Validate(format=%q) error = %v", format, err)
 		}
 	}
 }

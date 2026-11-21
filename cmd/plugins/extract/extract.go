@@ -94,7 +94,15 @@ type extractResult struct {
 	dropped   int
 	skipped   skipList
 	anomalies []string
-	logger    *slog.Logger
+	// dataFailure is set when 7z reported a failure on the data of the archive
+	// during the listing or the extraction, even one a later password cured.
+	dataFailure bool
+	// listComplete is set when the listing reached its end.
+	listComplete bool
+	// encryptionExcluded is set, when there are anomalies, once it is proven that
+	// the archive holds no encrypted content.
+	encryptionExcluded bool
+	logger             *slog.Logger
 }
 
 // drop reports a selected member that will not be extracted.
@@ -153,6 +161,7 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 	args := []string{"-spd", "--", "l", archivePath}
 	var err error
 	var trace encTrace
+	failed := false
 	for _, pwd := range sze.passwordCandidates(passwords) {
 		*sink = *newListSink(sink.maxFileSize, sink.maxFiles, sink.maxTotal)
 		_, err = sze.runStream(ctx, pwd, args, sink.scan, archivePath)
@@ -160,15 +169,19 @@ func (sze *sevenZipExtract) list(ctx context.Context, archivePath string, passwo
 		case err == nil:
 		case errors.Is(err, errSevenZipRecoverable):
 			sze.recoverableAnomaly(&sink.anomalies, "list", err)
+			sink.dataFailure = true
 		case errors.Is(err, ErrInvalidPassword):
 			trace.wrong++
+			failed = true
 			continue
 		case errors.Is(err, errEncryptionHint):
 			trace.hintRuns++
+			failed = true
 			continue
 		default:
 			return err
 		}
+		sink.dataFailure = sink.dataFailure || failed
 		// A listing that stops early is an anomaly 7z explained, or a failure.
 		if !sink.complete && len(sink.anomalies) == 0 {
 			return fmt.Errorf("%w: header or footer not found", errBadListing)
@@ -245,6 +258,21 @@ func (sze *sevenZipExtract) decideEncryption(ctx context.Context, archivePath st
 type encryptionInfo struct {
 	zip       bool // the archive is a zip
 	encrypted bool // a member says Encrypted = +
+	// allPlain is set when every member says Encrypted = -, and none says anything
+	// else or nothing.
+	allPlain bool
+	// attached is set when the archive says it has data after its end (Tail Size)
+	// or before it (Offset, Embedded Stub Size, or the warning that it is open
+	// with an offset), or says it with a value that cannot be read: another
+	// archive can hide there, which 7z does not list.
+	attached bool
+}
+
+// nonZero tells whether the value of a size line is not zero; a value that cannot
+// be read counts as not zero.
+func nonZero(value []byte) bool {
+	n, err := strconv.ParseUint(string(bytes.TrimSpace(value)), 10, 64)
+	return err != nil || n > 0
 }
 
 const technicalSeparator = "----------"
@@ -257,7 +285,7 @@ const technicalSeparator = "----------"
 // that is known.
 func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath string, entries int) (info encryptionInfo, err error) {
 	var archiveType string
-	var records, separators int
+	var records, separators, plain int
 	inBlock, sawEncrypted := false, false
 	_, runErr := sze.runStream(ctx, "", []string{"-spd", "-slt", "--", "l", archivePath}, func(r io.Reader) error {
 		sc := bufio.NewScanner(r)
@@ -272,6 +300,14 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 					separators++
 				case archiveType == "" && bytes.HasPrefix(line, []byte("Type = ")):
 					archiveType = string(bytes.TrimPrefix(line, []byte("Type = ")))
+				case bytes.HasPrefix(line, []byte("Tail Size = ")):
+					info.attached = info.attached || nonZero(bytes.TrimPrefix(line, []byte("Tail Size = ")))
+				case bytes.HasPrefix(line, []byte("Offset = ")):
+					info.attached = info.attached || nonZero(bytes.TrimPrefix(line, []byte("Offset = ")))
+				case bytes.HasPrefix(line, []byte("Embedded Stub Size = ")):
+					info.attached = info.attached || nonZero(bytes.TrimPrefix(line, []byte("Embedded Stub Size = ")))
+				case bytes.HasPrefix(line, []byte("Warning: The archive is open with offset")):
+					info.attached = true
 				}
 			case string(line) == technicalSeparator:
 				// One separator, between the archive and its members: a second one is
@@ -287,8 +323,11 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 				return fmt.Errorf("%w: a member field before the first member", errBadListing)
 			case inBlock && !sawEncrypted && bytes.HasPrefix(line, []byte("Encrypted = ")):
 				sawEncrypted = true
-				if string(line) == "Encrypted = +" {
+				switch string(line) {
+				case "Encrypted = +":
 					info.encrypted = true
+				case "Encrypted = -":
+					plain++
 				}
 			}
 		}
@@ -303,7 +342,28 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 		return info, fmt.Errorf("%w: %d members in the technical listing, %d announced", errBadListing, records, entries)
 	}
 	info.zip = archiveType == "zip"
+	info.allPlain = plain == records
 	return info, nil
+}
+
+// excludesEncryption is the one proof that an archive with anomalies holds no
+// encrypted content, which the archive controls the flags of (7z's own
+// Encrypted flag can be cleared, and a check byte can collide). It holds only
+// when nothing could hide an encryption: the listing was complete, 7z reported no
+// failure on the data of any member (nor a wrong password, nor a hint of
+// encryption, even one a later password cured), every listed member was
+// extracted, and the technical listing, complete and parsed, says Encrypted = -
+// for every member and no data before or after the archive (an archive hidden
+// there is not listed by 7z). Anything else leaves the encryption possible.
+func (sze *sevenZipExtract) excludesEncryption(ctx context.Context, archivePath string, res *extractResult) bool {
+	if res.dataFailure || !res.listComplete || res.skipped.count > 0 || res.dropped > 0 || res.produced != res.announced {
+		return false
+	}
+	info, err := sze.encryptionInfo(ctx, archivePath, res.listedEntries)
+	if err != nil {
+		sze.logger.Warn("the technical listing of an archive with anomalies is not as expected", slog.String("error", err.Error()))
+	}
+	return err == nil && info.allPlain && !info.attached
 }
 
 // maxListingLine bounds a line of a technical listing, as buffSize bounds a line
@@ -319,6 +379,11 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	defer cancel()
 	sink := newListSink(maxFileSize, maxFiles, maxTotal)
 	extraction.logger = sze.logger
+	defer func() {
+		if err == nil && len(extraction.anomalies) > 0 {
+			extraction.encryptionExcluded = sze.excludesEncryption(ctx, archivePath, &extraction)
+		}
+	}()
 	if err = sze.list(ctx, archivePath, passwords, sink); err != nil {
 		return
 	}
@@ -329,6 +394,8 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	extraction.listedEntries = sink.table.entries
 	extraction.listedSize = sink.table.totalSize
 	extraction.tail = sink.tail
+	extraction.dataFailure = sink.dataFailure
+	extraction.listComplete = sink.complete
 	t := &sink.table
 
 	// zip bomb detection (only count files that would pass MaxFileSize filter)
@@ -351,7 +418,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	lim := limits
 	if err = sze.extractBatches(ctx, archivePath, extractLocation, passwords, filesToExtract, &extraction, &ignoredLinks, baseAnomalies, lim); err != nil {
 		if errors.Is(err, ErrUnsupportedFormat) {
-			err = fmt.Errorf("7z failed to extract an archive it had listed: %s", sanitizeOutput(err.Error()))
+			err = fmt.Errorf("%w: %w: 7z failed to extract an archive it had listed: %s", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible, sanitizeOutput(err.Error()))
 		}
 		return
 	}
@@ -400,7 +467,15 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	// Counted, not matched by name: a name 7z sanitizes can hide behind a
 	// genuine file of the sanitized name.
 	if producedBytes > maxTotal {
-		extraction.anomalies = noteAnomaly(extraction.anomalies, "7z wrote more bytes than the extraction budget allows")
+		sze.logger.Error("7z wrote more bytes than the extraction budget allows", slog.String("archive", sanitizeOutput(archivePath)))
+		for _, f := range extraction.extractedFiles {
+			if rmErr := removeInside(extractLocation, f.ArchivePath); rmErr != nil {
+				err = fmt.Errorf("%w: a file over the budget could not be removed: %w", errOutputFolder, rmErr)
+				return
+			}
+			extraction.drop(f.ArchivePath, int64(f.Size), datamodel.NotAnalyzedExtractLimit)
+		}
+		extraction.extractedFiles, produced = nil, 0
 	}
 	expected := t.selectedCount - removed - extraction.dropped
 	extraction.produced, extraction.announced = produced, expected
@@ -457,6 +532,7 @@ PASSWORD_LOOP:
 				extraction.passwordUsed = pwd
 				trace.extracted = true
 			case errors.Is(err, ErrInvalidPassword), errors.Is(err, errEncryptionHint):
+				extraction.dataFailure = true
 				if errors.Is(err, ErrInvalidPassword) {
 					trace.wrong++
 				} else {
@@ -481,6 +557,7 @@ PASSWORD_LOOP:
 				extraction.anomalies = slices.Clone(baseAnomalies)
 				continue PASSWORD_LOOP
 			case errors.Is(err, errSevenZipRecoverable):
+				extraction.dataFailure = true
 				sze.recoverableAnomaly(&extraction.anomalies, "extract", err)
 			default:
 				return err
@@ -493,15 +570,19 @@ PASSWORD_LOOP:
 	return sze.decideEncryption(ctx, archivePath, trace, extraction.listedEntries, err)
 }
 
-// abandon reports members that will not be extracted because of an anomaly:
-// they are extract-error, never too-big, so no policy about big files can let
-// them through.
+// abandon leaves the members that will not be extracted because a limit was
+// breached in the skipped list as extract-limit: the policy of the files too big
+// decides, nothing lets them through unseen.
 func (sze *sevenZipExtract) abandon(extraction *extractResult, names []string, why string) {
-	extraction.anomalies = noteAnomaly(extraction.anomalies, why)
+	sze.logger.Warn("members left out", slog.String("reason", why), slog.Int("members", len(names)))
 	for _, n := range names {
-		extraction.drop(n, 0, datamodel.NotAnalyzedExtractError)
+		extraction.drop(n, 0, datamodel.NotAnalyzedExtractLimit)
 	}
 }
+
+// errOutputFolder is the failure of the host: the output folder of 7z cannot be
+// read, measured or cleaned. It says nothing of the archive, which is retried.
+var errOutputFolder = errors.New("the output folder of 7z cannot be used")
 
 // fileLimitFor is the size the kernel lets one file grow to, plus one byte (a
 // file that reaches it is past the limit): the per-file limit, or what is left
@@ -526,8 +607,9 @@ func fileLimitFor(maxFileSize, maxTotal, written int64) int64 {
 // too-big. 7z stopped by the guard or the kernel: files written by the run are
 // deleted and the batch is run again without the offender, at most maxRelaunches
 // times for the batch and maxTotalRelaunches for the extraction. A breach of the
-// budget, an output that cannot be measured, a member that cannot be identified
-// or the end of the relaunches abandon the rest of the batch as extract-error.
+// budget, a member that cannot be identified or the end of the relaunches leave
+// the rest of the batch out as extract-limit; an output folder that cannot be read,
+// measured or cleaned is the failure of the host, returned as an error.
 // aborted tells that the remaining batches must be abandoned too.
 func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extractLocation string, batch []string, extraction *extractResult, lim plugins.ExtractLimits) (links []string, aborted bool, err error) {
 	remaining := batch
@@ -535,9 +617,7 @@ func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extr
 		before, snapErr := snapshot(extractLocation)
 		written, writtenErr := bytesWritten(extractLocation)
 		if readErr := errors.Join(snapErr, writtenErr); readErr != nil {
-			sze.logger.Warn("cannot read the output folder of 7z", slog.String("error", readErr.Error()))
-			sze.abandon(extraction, remaining, "the output folder of 7z could not be read")
-			return nil, true, nil
+			return nil, true, fmt.Errorf("%w: %w", errOutputFolder, readErr)
 		}
 		args := slices.Concat([]string{"-aou", "-o" + extractLocation, "-y", "-spd", "--", "x", archivePath}, remaining)
 		spec := runSpec{password: pwd, args: args, paths: []string{archivePath, extractLocation}, fileLimit: fileLimitFor(lim.MaxFileSize, lim.MaxTotalSize, written)}
@@ -551,28 +631,29 @@ func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extr
 		}
 		switch {
 		case hit.broken:
-			sze.removeRun(extractLocation, before)
-			sze.abandon(extraction, remaining, "the output folder of 7z could not be measured")
-			return nil, true, nil
+			return nil, true, errors.Join(fmt.Errorf("%w: it could not be measured", errOutputFolder), sze.removeRun(extractLocation, before))
 		case hit.budget:
-			sze.removeRun(extractLocation, before)
-			sze.logger.Error("7z wrote more than the extraction budget allows")
+			if err = sze.removeRun(extractLocation, before); err != nil {
+				return nil, true, err
+			}
 			sze.abandon(extraction, remaining, "7z wrote more than the sizes announced by the archive")
 			return nil, true, nil
 		case !slices.Contains(remaining, hit.offender):
-			sze.removeRun(extractLocation, before)
+			if err = sze.removeRun(extractLocation, before); err != nil {
+				return nil, true, err
+			}
 			sze.abandon(extraction, remaining, "a file written past the size limit cannot be matched to a member")
 			return nil, true, nil
 		case hit.completed:
 			if rmErr := removeInside(extractLocation, hit.offender); rmErr != nil {
-				sze.logger.Warn("cannot remove a file past the size limit", slog.String("error", rmErr.Error()))
-				sze.abandon(extraction, remaining, "a file written past the size limit could not be removed")
-				return nil, true, nil
+				return nil, true, fmt.Errorf("%w: a file past the size limit could not be removed: %w", errOutputFolder, rmErr)
 			}
 			extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedTooBig)
 			return links, false, nil
 		}
-		sze.removeRun(extractLocation, before)
+		if err = sze.removeRun(extractLocation, before); err != nil {
+			return nil, true, err
+		}
 		extraction.relaunches++
 		if relaunch >= maxRelaunches || extraction.relaunches > maxTotalRelaunches {
 			sze.abandon(extraction, remaining, "too many members written past the size limit")
@@ -586,12 +667,13 @@ func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extr
 	}
 }
 
-// removeRun deletes what a run of 7z wrote; a failure is logged, the output
-// folder is removed with the rest of the extraction anyway.
-func (sze *sevenZipExtract) removeRun(dir string, before map[string]struct{}) {
+// removeRun deletes what a run of 7z wrote. A failure is the host's: the files
+// left would be taken for the output of the next run.
+func (sze *sevenZipExtract) removeRun(dir string, before map[string]struct{}) error {
 	if err := removeNewFiles(dir, before, sze.logger); err != nil {
-		sze.logger.Warn("cannot remove the files of a stopped run", slog.String("error", err.Error()))
+		return fmt.Errorf("%w: the files of a stopped run cannot be removed: %w", errOutputFolder, err)
 	}
+	return nil
 }
 
 // removeLinkPlaceholders deletes the empty files 7z leaves where it refused a
@@ -660,7 +742,7 @@ func removeInside(dir, rel string) error {
 }
 
 // errSevenZipTimeout is returned when 7z ran past the time allowed.
-var errSevenZipTimeout = errors.New("7z exceeded the time allowed")
+var errSevenZipTimeout = fmt.Errorf("7z exceeded the time allowed: %w", context.DeadlineExceeded)
 
 // runSpec describes one run of 7z.
 type runSpec struct {

@@ -87,12 +87,23 @@ func rewriteFile(t *testing.T, path string, data []byte) {
 
 func requireAnomaly(t *testing.T, ex plugins.Extraction, err error, archive string) {
 	t.Helper()
-	if err != nil {
-		t.Fatalf("ExtractFile() error = %v, want an extract-error entry", err)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Fatalf("ExtractFile() error = %v, want plugins.ErrArchiveAnomaly", err)
 	}
 	if len(ex.Skipped) == 0 || ex.Skipped[0].Reason != datamodel.NotAnalyzedExtractError || ex.Skipped[0].FileName != filepath.Base(archive) {
-		t.Fatalf("Extraction = %+v, want an extract-error entry named %s", ex, filepath.Base(archive))
+		t.Fatalf("Extraction = %+v, want an extract-error entry named %s for the report", ex, filepath.Base(archive))
 	}
+}
+
+// requireDamaged accepts what a damaged archive gives: an anomaly, or a failure
+// told from those of the extractor.
+func requireDamaged(t *testing.T, ex plugins.Extraction, err error, archive string) {
+	t.Helper()
+	if errors.Is(err, plugins.ErrArchiveAnomaly) && len(ex.Skipped) > 0 {
+		requireAnomaly(t, ex, err, archive)
+		return
+	}
+	requireFailure(t, err)
 }
 
 func requireFailure(t *testing.T, err error) {
@@ -104,6 +115,9 @@ func requireFailure(t *testing.T, err error) {
 		if errors.Is(err, bad) {
 			t.Fatalf("ExtractFile() error = %v, must not be %v", err, bad)
 		}
+	}
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Fatalf("ExtractFile() error = %v, want plugins.ErrArchiveAnomaly: a damaged archive is told from a failure of the extractor", err)
 	}
 }
 
@@ -146,8 +160,8 @@ func TestRealSevenZip_corruptMemberWithADangerousLinkIsAnError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "crc.zip")
 	writeZip(t, path, "", zipMember{name: "link", data: "/etc/passwd", symlink: true}, zipMember{name: "b.txt", data: "PAYLOADPAYLOAD"})
 	corruptPayload(t, path, "PAYLOADPAYLOAD")
-	_, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
-	requireFailure(t, err)
+	ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
+	requireDamaged(t, ex, err, path)
 }
 
 func TestRealSevenZip_memberNamesLikeErrorMessagesDoNotSteerTheClassification(t *testing.T) {
@@ -163,11 +177,7 @@ func TestRealSevenZip_memberNamesLikeErrorMessagesDoNotSteerTheClassification(t 
 				writeZip(t, path, "", members...)
 				corruptPayload(t, path, "PAYLOADPAYLOAD")
 				ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
-				if err == nil {
-					requireAnomaly(t, ex, err, path)
-					return
-				}
-				requireFailure(t, err)
+				requireDamaged(t, ex, err, path)
 			})
 		}
 	}
@@ -178,11 +188,7 @@ func TestRealSevenZip_memberNameWithAnInjectedErrorLine(t *testing.T) {
 	writeZip(t, path, "", zipMember{name: "x\nERROR: Wrong password : y", data: "PAYLOADPAYLOAD"}, zipMember{name: "ok.txt", data: "fine"})
 	corruptPayload(t, path, "PAYLOADPAYLOAD")
 	ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
-	if err == nil {
-		requireAnomaly(t, ex, err, path)
-		return
-	}
-	requireFailure(t, err)
+	requireDamaged(t, ex, err, path)
 }
 
 func TestRealSevenZip_archiveNamedLikeAnErrorMessage(t *testing.T) {
@@ -191,8 +197,8 @@ func TestRealSevenZip_archiveNamedLikeAnErrorMessage(t *testing.T) {
 			path := filepath.Join(t.TempDir(), name)
 			writeZip(t, path, "", zipMember{name: "a.txt", data: "PAYLOADPAYLOAD"})
 			corruptPayload(t, path, "PAYLOADPAYLOAD")
-			_, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
-			requireFailure(t, err)
+			ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
+			requireDamaged(t, ex, err, path)
 		})
 	}
 }
@@ -234,11 +240,7 @@ func TestRealSevenZip_memberNameLongerThanAnyPathIsAnAnomaly(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "long.zip")
 	writeZip(t, path, "", zipMember{name: "a.txt", data: "A"}, zipMember{name: strings.Repeat("n", maxMemberNameLen+10), data: "B"})
 	ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
-	if err == nil {
-		requireAnomaly(t, ex, err, path)
-		return
-	}
-	requireFailure(t, err)
+	requireDamaged(t, ex, err, path)
 }
 
 func TestRealSevenZip_manyLongNamesAreBatched(t *testing.T) {
@@ -278,11 +280,7 @@ func TestRealSevenZip_truncatedArchivesAreErrorsNotPlainFiles(t *testing.T) {
 			ex, err := plugin.ExtractFile(cut, t.TempDir(), openLimits)
 			// A cut zip still lists, 7z only says "Errors: 1" and exits with 2: either
 			// an anomaly entry or a failure, both end as an extract-error in the core.
-			if err == nil {
-				requireAnomaly(t, ex, err, cut)
-				return
-			}
-			requireFailure(t, err)
+			requireDamaged(t, ex, err, cut)
 		})
 	}
 }

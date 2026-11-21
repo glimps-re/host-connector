@@ -247,7 +247,7 @@ func equalSets(a, b []string) bool {
 	return true
 }
 
-func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsAnError(t *testing.T) {
+func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsLeftOut(t *testing.T) {
 	traps := []string{"trap1", "trap2", "trap3", "trap4", "trap5", "trap6", "trap7", "trap8", "trap9"}
 	sze := trapSevenZip(t, trapListing(20, traps...))
 	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 1000, MaxTotalSize: 1 << 30})
@@ -257,27 +257,27 @@ func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsAnError(t *testing.T) 
 	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 8 {
 		t.Errorf("too-big = %v, want 8 members", skippedBy(res, datamodel.NotAnalyzedTooBig))
 	}
-	errs := skippedBy(res, datamodel.NotAnalyzedExtractError)
-	if len(errs) != 20+1 || len(res.anomalies) == 0 {
-		t.Errorf("extract-error = %d members and %v, want the 21 left members abandoned with an anomaly", len(errs), res.anomalies)
+	left := skippedBy(res, datamodel.NotAnalyzedExtractLimit)
+	if len(left) != 20+1 || len(res.anomalies) != 0 {
+		t.Errorf("extract-limit = %d members and anomalies %v, want the 21 left members left out by the limit, no anomaly", len(left), res.anomalies)
 	}
 	if len(res.extractedFiles) != 0 {
 		t.Errorf("%d files were handed over after an abandoned batch: nothing partial may pass", len(res.extractedFiles))
 	}
 }
 
-func TestExtract_unidentifiableOffenderAbandonsTheBatchAsExtractError(t *testing.T) {
+func TestExtract_unidentifiableOffenderLeavesTheBatchOutAsExtractLimit(t *testing.T) {
 	sze := trapSevenZip(t, trapListing(5, "ghost"))
 	res, err := sze.extract(t.Context(), "archive.7z", t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 0 || len(skippedBy(res, datamodel.NotAnalyzedExtractError)) != 6 || len(res.anomalies) == 0 {
-		t.Errorf("skipped = %+v, anomalies %v, want the 6 members extract-error and never too-big", res.skipped.entries, res.anomalies)
+	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 0 || len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) != 6 || len(res.anomalies) != 0 {
+		t.Errorf("skipped = %+v, anomalies %v, want the 6 members extract-limit, no anomaly and never too-big", res.skipped.entries, res.anomalies)
 	}
 }
 
-func TestExtract_writingMoreThanAnnouncedBreaksTheBudgetAndAbandonsEveryMember(t *testing.T) {
+func TestExtract_writingMoreThanAnnouncedBreaksTheBudgetAndLeavesEveryMemberOut(t *testing.T) {
 	// Announced: 5 members of 1 byte; written: 5 x 300 KiB with a 1 MiB budget.
 	sze := fakeSevenZip(t, `
 list="`+filepath.Join(t.TempDir(), "listing")+`"
@@ -290,11 +290,11 @@ exit 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := skippedBy(res, datamodel.NotAnalyzedExtractError); len(got) != 5 {
-		t.Errorf("extract-error = %v, want the 5 members: an archive that lies is an anomaly, never extract-limit", got)
+	if got := skippedBy(res, datamodel.NotAnalyzedExtractLimit); len(got) != 5 {
+		t.Errorf("extract-limit = %v, want the 5 members: a breach of the budget is a limit, decided by too_big", got)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) != 0 || len(res.extractedFiles) != 0 || len(res.anomalies) == 0 {
-		t.Errorf("result = %+v, want nothing extracted, no extract-limit, an anomaly", res)
+	if len(skippedBy(res, datamodel.NotAnalyzedExtractError)) != 0 || len(res.extractedFiles) != 0 || len(res.anomalies) != 0 {
+		t.Errorf("result = %+v, want nothing extracted, no extract-error and no anomaly", res)
 	}
 }
 
@@ -600,7 +600,7 @@ func BenchmarkExtract_bigMember(b *testing.B) {
 	}
 }
 
-func TestExtract_memberAnnouncedSmallButWritingPastTheBudgetIsAnAnomalyNotTooBig(t *testing.T) {
+func TestExtract_memberAnnouncedSmallButWritingPastTheBudgetIsExtractLimitNotTooBig(t *testing.T) {
 	// Announced 1 MiB, writes 50 MiB, with a 5 MiB budget and a 100 MiB per-file limit.
 	sze := fakeSevenZip(t, `
 list="`+filepath.Join(t.TempDir(), "l")+`"
@@ -613,8 +613,8 @@ exit 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 0 || !equalSets(skippedBy(res, datamodel.NotAnalyzedExtractError), []string{"liar.bin"}) || len(res.anomalies) == 0 {
-		t.Errorf("skipped = %+v, anomalies %v, want liar.bin extract-error and never too-big: too_big: pass would let it through", res.skipped.entries, res.anomalies)
+	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 0 || !equalSets(skippedBy(res, datamodel.NotAnalyzedExtractLimit), []string{"liar.bin"}) || len(res.anomalies) != 0 {
+		t.Errorf("skipped = %+v, anomalies %v, want liar.bin extract-limit, never too-big, no anomaly", res.skipped.entries, res.anomalies)
 	}
 	if len(res.extractedFiles) != 0 {
 		t.Errorf("%d files handed over after the budget was broken", len(res.extractedFiles))
@@ -641,8 +641,8 @@ exit 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedExtractError)) != 1 {
-		t.Errorf("skipped = %+v, want the member extract-error", res.skipped.entries)
+	if len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) != 1 {
+		t.Errorf("skipped = %+v, want the member extract-limit", res.skipped.entries)
 	}
 	if p := peak(); p > 12*mib {
 		t.Errorf("up to %d MiB were written for a budget of 3 MiB: the first measure past the threshold must stop 7z", p/mib)
@@ -674,12 +674,12 @@ func TestExtract_nineTrapsAcrossBatchesAreEightRelaunchesInTotal(t *testing.T) {
 	if n := len(skippedBy(res, datamodel.NotAnalyzedTooBig)); n != 8 {
 		t.Errorf("too-big = %d members, want 8: the relaunches are counted over all the batches", n)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedExtractError)) == 0 || len(res.anomalies) == 0 {
-		t.Errorf("skipped = %d, anomalies %v, want the members left after the 8th relaunch as extract-error", res.skipped.count, res.anomalies)
+	if len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) == 0 || len(res.anomalies) != 0 {
+		t.Errorf("skipped = %d, anomalies %v, want the members left after the 8th relaunch as extract-limit", res.skipped.count, res.anomalies)
 	}
 }
 
-func TestRealSevenZip_budgetLeftIsTheKernelLimitAndMeansTheArchiveLied(t *testing.T) {
+func TestRealSevenZip_budgetLeftIsTheKernelLimitAndLeavesTheMemberOut(t *testing.T) {
 	// The per-file limit is 1 GiB but only 4 MiB of budget remain: the kernel
 	// stops the file at the budget, which is an archive that lied, not a big member.
 	limits := plugins.ExtractLimits{MaxFileSize: 1 << 30, MaxFiles: 100, MaxTotalSize: 4 * mib}
@@ -697,12 +697,12 @@ func TestRealSevenZip_budgetLeftIsTheKernelLimitAndMeansTheArchiveLied(t *testin
 		switch s.Reason {
 		case datamodel.NotAnalyzedTooBig:
 			tooBig++
-		case datamodel.NotAnalyzedExtractError:
+		case datamodel.NotAnalyzedExtractLimit:
 			extractErr++
 		}
 	}
 	if tooBig != 0 || extractErr == 0 || len(ex.Files) != 0 {
-		t.Errorf("Extraction = %+v, want an extract-error and never too-big (too_big: pass would let it through)", ex)
+		t.Errorf("Extraction = %+v, want an extract-limit entry and never too-big", ex)
 	}
 	if p := peak(); p > limits.MaxTotalSize+slack {
 		t.Errorf("up to %d MiB were written for a budget of 4 MiB", p/mib)

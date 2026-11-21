@@ -62,9 +62,13 @@ type listSink struct {
 	// tail is set when 7z reports data after the end of the archive.
 	tail      bool
 	anomalies []string
-	complete  bool
-	summary   int
-	hasSum    bool
+	// dataFailure is set when 7z reported a failure on the data of the archive
+	// (as opposed to a structural anomaly): errors, a wrong password, a hint of
+	// encryption, a failed check.
+	dataFailure bool
+	complete    bool
+	summary     int
+	hasSum      bool
 }
 
 type tableState struct {
@@ -225,6 +229,7 @@ func (s *listSink) noteMeta(line string) {
 		s.anomalies = noteAnomaly(s.anomalies, "7z reported warnings")
 	case strings.HasPrefix(line, szErrorsPrefix), strings.HasPrefix(line, szErrorsCount), strings.HasPrefix(line, szOpenErrorPrefix):
 		s.anomalies = noteAnomaly(s.anomalies, "7z reported errors")
+		s.dataFailure = true
 	}
 }
 
@@ -240,7 +245,7 @@ func (s *listSink) addLine(line string) error {
 	}
 	fp, err := parse7ZFileListLine(line)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errBadListing, err)
 	}
 	if fp.IsDirectory {
 		return nil

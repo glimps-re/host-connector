@@ -28,6 +28,8 @@ members (`a.txt`, `b.txt`, `p.txt`). The password of the encrypted ones is
 | homonym_mixed.7z | two members named `a.txt` (renamed with `7z rn`): one plain, one encrypted with `wrong-pw-1`, 7z non-solid | `07467a495a97386c6712caf551be3dcce88194d0c120c9b5a3c44c082f60e767` |
 | enc_with_empty.7z | six data members and one empty member, 7z non-solid, content encrypted, password `wrong-pw-1` (unknown to the plugin) | `431549bd216d01a4eb1c91ebe1bf40edc8aaab9e8f2c6865546f2494ae4788bd` |
 
+| zc_collision.zip | a.txt, ZipCrypto, password `pw279`: the check byte of the password `infected` (a default one) collides, so 7-Zip says "CRC Failed in encrypted file" instead of "Wrong password" | `9974d88fb76f9b6d347e795ae9b3310e3d46ae31d186ac53fcdb893bb33936c4` |
+
 The last ten were made with the same 7-Zip (`7zzs a -tzip -pinfected -mem=AES256`,
 `-mem=ZipCrypto`), then patched with a script: a flipped byte in the encrypted
 data of a member (after the salt and the password check value), and the method

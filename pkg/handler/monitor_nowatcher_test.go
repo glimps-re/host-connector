@@ -198,7 +198,7 @@ func TestHandler_ConsoleDefaultsFileAcceptedAsIs(t *testing.T) {
 	if err := json.Unmarshal(raw, conf); err != nil {
 		t.Fatal(err)
 	}
-	if err := errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
+	if err := config.Validate(conf); err != nil {
 		t.Errorf("console defaults refused by the connector: %v", err)
 	}
 }

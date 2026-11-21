@@ -329,7 +329,7 @@ func TestE2E_refusedAtStart(t *testing.T) {
 		want string
 	}{
 		{name: "work dir under a watched path (P14)", opt: options{config: map[string]any{"work_dir": "INPUT/work"}}, want: "is, or is under, the monitored path"},
-		{name: "browser that does not exist (P19)", opt: options{more: map[string]map[string]any{"report": {"chrome_path": "/nonexistent/chromium"}}}, want: "plugin report: browser /nonexistent/chromium: unsafe executable"},
+		{name: "browser that does not exist (P19)", opt: options{more: map[string]map[string]any{"report": {"chrome_path": "/nonexistent/chromium"}}}, want: `plugin "report": browser /nonexistent/chromium: unsafe executable`},
 		{name: "7-Zip that does not exist (P18)", opt: options{extract: true, plugins: map[string]any{"seven_zip_path": "/nonexistent/7z"}}, want: "install the binary or fix the configured path"},
 	}
 	for _, tt := range tests {

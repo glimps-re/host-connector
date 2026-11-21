@@ -97,6 +97,11 @@ func possiblyEncryptedCases() map[string]asFileCase {
 		"plain zip then a ZipCrypto zip": {"plain_then_zc.zip", func(t *testing.T) []byte {
 			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), t17Fixture(t, "enc_zipcrypto.zip")...)
 		}},
+		"a member name over the limit":    {"longname.zip", longNamesZip},
+		"a member component over 255":     {"longcomponent.zip", longComponentZip},
+		"a member path of 64 folders":     {"deep.zip", deepPathZip},
+		"a folder entry that holds data":  {"folderdata.zip", folderDataZip},
+		"a tar directory that holds data": {"folderdata.tar", folderDataTar},
 		"plain 7z then an encrypted 7z": {"plain7_then_enc7.7z", func(t *testing.T) []byte {
 			return append(plainSevenZip(t), t17Fixture(t, "enc_content.7z")...)
 		}},
@@ -146,20 +151,17 @@ func trailingDataZip(t *testing.T) []byte {
 	return append(storedZip(t, map[string]string{"a.txt": "first member", "b.txt": "second member"}), []byte("DATA AFTER THE END OF THE ARCHIVE")...)
 }
 
-// A structural anomaly with every member plain and extracted, and nothing before
-// or after the archive, is what as_file is for: the archive is analyzed as a plain
-// file and delivered, marked extract-error.
+// Under as_file a structural anomaly whose members were all extracted and tested
+// is analyzed as a plain file and delivered, marked extract-error: a control
+// character in a name is what 7-Zip changes, and every member is still extracted.
 func TestT17b_asFileDeliversAStructuralAnomalyMarkedExtractError(t *testing.T) {
-	r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "longname.zip", content: longNamesZip(t)})
-	got := r.one(t, "longname.zip")
+	r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "control.zip", content: storedZip(t, map[string]string{"a\x01b.txt": "first member", "ok.txt": "second member"})})
+	got := r.one(t, "control.zip")
 	if got.result.Error != nil || got.result.Malware || got.result.NotAnalyzedReason != datamodel.NotAnalyzedExtractError {
 		t.Errorf("result = %+v, want a clean file marked extract-error", got.result)
 	}
-	if !r.exists(r.out, "longname.zip") || r.quarantined(t) != 0 {
+	if !r.exists(r.out, "control.zip") || r.quarantined(t) != 0 {
 		t.Error("the archive must be delivered to OUTPUT")
-	}
-	if got.report.NotAnalyzedReason != datamodel.NotAnalyzedExtractError {
-		t.Errorf("Report.NotAnalyzedReason = %q", got.report.NotAnalyzedReason)
 	}
 }
 
@@ -228,6 +230,19 @@ func stubbedZip(t *testing.T) []byte {
 func longNamesZip(t *testing.T) []byte {
 	t.Helper()
 	return storedZip(t, map[string]string{"a.txt": "plain member", strings.Repeat("n", maxMemberNameLen+10): "plain too"})
+}
+
+// longComponentZip is a zip whose second member has a path component over 255
+// bytes: never extracted nor tested, so nothing proves it is not encrypted.
+func longComponentZip(t *testing.T) []byte {
+	t.Helper()
+	return storedZip(t, map[string]string{"a.txt": "plain member", "d/" + strings.Repeat("x", 300) + ".exe": "left out"})
+}
+
+// deepPathZip is a zip whose second member sits 64 folders deep.
+func deepPathZip(t *testing.T) []byte {
+	t.Helper()
+	return storedZip(t, map[string]string{"a.txt": "plain member", strings.Repeat("f/", maxMemberDepth) + "deep.exe": "left out"})
 }
 
 // twinNamesZip is a zip of two plain members with the same name.

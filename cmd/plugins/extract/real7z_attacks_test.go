@@ -1,11 +1,15 @@
 package main
 
 import (
+	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -331,12 +335,6 @@ func TestRealSevenZip_aBombIsAnAnomalyWhateverTheBudgetLeft(t *testing.T) {
 	}
 }
 
-// runCmd runs a command to build test archives with the embedded 7-Zip.
-func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
-	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // test helper running the test binary
-	return string(out), err
-}
-
 func TestRealSevenZip_aCheckOverTheBudgetLeavesMembersOutInsteadOfDamage(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "five.zip")
 	members := make([]zipMember, 0, 5)
@@ -356,5 +354,215 @@ func TestRealSevenZip_aCheckOverTheBudgetLeavesMembersOutInsteadOfDamage(t *test
 	writeZip(t, path, "", append(members, zipMember{name: strings.Repeat("n", maxMemberNameLen+10), data: "y"})...)
 	if _, err = plugin.ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 2, MaxTotalSize: 1 << 30, CheckOnly: true}); !errors.Is(err, plugins.ErrArchiveAnomaly) {
 		t.Errorf("error = %v, want the anomaly to win over a budget that is exceeded too", err)
+	}
+}
+
+func TestRealSevenZip_aPathComponentLongerThanANameIsAnAnomalyNotARetry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "component.zip")
+	writeZip(t, path, "", zipMember{name: "a.txt", data: "A"}, zipMember{name: "dir/" + strings.Repeat("n", 300) + ".txt", data: "B"})
+	ex, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
+	requireDamaged(t, ex, err, path)
+}
+
+// A member left out as an anomaly is neither extracted nor tested: the archive
+// must not be proven free of encryption by what its own flags say of the others.
+func TestRealSevenZip_aMemberLeftOutAsAnAnomalyKeepsTheEncryptionPossible(t *testing.T) {
+	shapes := map[string]string{
+		"a component over 255 bytes": "d/" + strings.Repeat("x", 300) + ".exe",
+		"a name over the limit":      strings.Repeat("n", maxMemberNameLen+10),
+		"a path of 64 folders":       strings.Repeat("f/", maxMemberDepth) + "deep.exe",
+	}
+	for name, member := range shapes {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "left-out.zip")
+			writeZip(t, path, "", zipMember{name: "ok.txt", data: "A"}, zipMember{name: member, data: "B"})
+			plugin := realPlugin(t)
+			for mode, limits := range map[string]plugins.ExtractLimits{
+				"extraction": openLimits,
+				"check only": {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+			} {
+				_, err := plugin.ExtractFile(path, t.TempDir(), limits)
+				if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
+					t.Errorf("%s: error = %v, want an anomaly with the encryption possible: the member left out was never tested", mode, err)
+				}
+			}
+		})
+	}
+}
+
+// A name that 7z extracts but the file system refuses, once renamed on a clash or
+// joined to the output folder, is damage: it is not retried for ever.
+func TestRealSevenZip_aNameTheFileSystemRefusesIsAnAnomalyNotARetry(t *testing.T) {
+	long := strings.Repeat("a", maxNameComponent)
+	deep := make([]string, 16)
+	for i := range deep {
+		deep[i] = strings.Repeat("d", maxNameComponent)
+	}
+	shapes := map[string][]zipMember{
+		"two members with the same name of 255 bytes": {{name: long, data: "A"}, {name: long, data: "B"}},
+		"a path over PATH_MAX":                        {{name: "ok.txt", data: "A"}, {name: strings.Join(deep, "/"), data: "B"}},
+	}
+	for name, members := range shapes {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "names.zip")
+			writeZip(t, path, "", members...)
+			_, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
+			if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
+				t.Errorf("error = %v, want an anomaly with the encryption possible, not a failure that is retried", err)
+			}
+		})
+	}
+}
+
+func TestClassifyStderr_aNameTooLongIsRecoverable(t *testing.T) {
+	long := "ERROR: Cannot open output file : errno=36 : File name too long : /out/" + strings.Repeat("a", 300)
+	if out := classifyStderr(long, nil); !out.recoverable || out.other {
+		t.Errorf("classifyStderr() = %+v, want a recoverable error", out)
+	}
+	if out := classifyStderr("ERROR: Cannot open output file : errno=13 : Permission denied : /out/a", nil); out.recoverable || !out.other {
+		t.Errorf("classifyStderr(permission denied) = %+v, want an unknown error", out)
+	}
+}
+
+// 7-Zip lists a backslash as a slash on Linux: a member named with backslashes
+// is held to the limit of its components all the same.
+func TestRealSevenZip_aBackslashNameIsSplitIntoComponents(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "backslash.zip")
+	writeZip(t, path, "", zipMember{name: "a.txt", data: "A"}, zipMember{name: `dir\` + strings.Repeat("n", maxNameComponent+1), data: "B"})
+	_, err := realPlugin(t).ExtractFile(path, t.TempDir(), openLimits)
+	if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Errorf("error = %v, want an anomaly: the component after the backslash is over 255 bytes", err)
+	}
+}
+
+// folderDataZip is a zip whose second entry is flagged as a folder (a FAT host, the
+// directory attribute) and holds data: 7-Zip lists it as a folder and never
+// extracts it, while other readers extract it as a file.
+func folderDataZip(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, h := range []*zip.FileHeader{
+		{Name: "a.txt", Method: zip.Store},
+		{Name: "evil.exe", Method: zip.Store, CreatorVersion: 20, ExternalAttrs: 0x10},
+	} {
+		w, err := zw.CreateHeader(h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write([]byte("0123456789")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// An entry flagged as a folder that holds data is never extracted by 7-Zip, but
+// other readers extract it as a file: the archive is an anomaly with the
+// encryption possible, in extraction and in check-only alike.
+func TestRealSevenZip_aFolderEntryThatHoldsDataIsAnAnomalyWithEncryptionPossible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "folderdata.zip")
+	if err := os.WriteFile(path, folderDataZip(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plugin := realPlugin(t)
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"extraction": openLimits,
+		"check only": {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+	} {
+		_, err := plugin.ExtractFile(path, t.TempDir(), limits)
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
+			t.Errorf("%s: error = %v, want an anomaly with the encryption possible", mode, err)
+		}
+	}
+}
+
+// runCmd runs a command to build test archives with the embedded 7-Zip.
+func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // test helper running the test binary
+	return string(out), err
+}
+
+// folderDataTar is a tar whose second entry is a directory (type '5') followed by
+// the data of a file: other readers extract that data as a file named evil.exe.
+func folderDataTar(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, name := range []string{"a.txt", "evil.exe"} {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o600, Size: 10, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte("0123456789")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw := buf.Bytes()
+	const block = 512
+	header := raw[2*block : 3*block] // header of the second entry: a.txt takes two blocks
+	header[156] = tar.TypeDir
+	copy(header[148:156], "        ")
+	sum := 0
+	for _, b := range header {
+		sum += int(b)
+	}
+	copy(header[148:156], fmt.Sprintf("%06o\x00 ", sum))
+	return raw
+}
+
+func TestRealSevenZip_aTarDirectoryThatHoldsDataIsAnAnomalyWithEncryptionPossible(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "folderdata.tar")
+	if err := os.WriteFile(path, folderDataTar(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"extraction": openLimits,
+		"check only": {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+	} {
+		_, err := realPlugin(t).ExtractFile(path, t.TempDir(), limits)
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) || !strings.Contains(fmt.Sprint(err), "a folder entry holds data") {
+			t.Errorf("%s: error = %v, want an anomaly with the encryption possible, for a folder entry that holds data", mode, err)
+		}
+	}
+}
+
+// The exclusion list names formats of 7-Zip 25.01 exactly: a renamed or removed
+// one is caught here, not silently held to the rule of the folders.
+func TestImageFormats_everyNameIsAFormatOf7Zip(t *testing.T) {
+	var out strings.Builder
+	_, err := realPlugin(t).sze.runStream(t.Context(), "", []string{"i"}, func(r io.Reader) error {
+		sc := bufio.NewScanner(r)
+		for sc.Scan() {
+			out.WriteString(sc.Text() + "\n")
+		}
+		return sc.Err()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	known := map[string]bool{}
+	formats := false
+	for line := range strings.SplitSeq(out.String(), "\n") {
+		if strings.HasPrefix(line, "Formats:") {
+			formats = true
+			continue
+		}
+		if fields := strings.Fields(line); formats && len(fields) >= 2 {
+			known[fields[1]] = true
+		}
+	}
+	for _, name := range imageFormats {
+		if !known[name] {
+			t.Errorf("%q is not a format of this 7-Zip (7zzs i)", name)
+		}
+	}
+	if len(known) < 20 {
+		t.Errorf("only %d formats read from `7zzs i`: the parse of its output moved", len(known))
 	}
 }

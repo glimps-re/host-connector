@@ -217,12 +217,45 @@ func prove(sze *sevenZipExtract, workDir string) error {
 	}
 	res, err := test.extract(ctx, archive, out, nil, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 10, MaxTotalSize: 1 << 20})
 	if err != nil {
-		if errors.Is(err, plugins.ErrExtractorUnavailable) || errors.Is(err, errSevenZipTimeout) {
-			return cannotRun(sze.sevenZipPath, err)
-		}
-		return unsupportedVersion(sze.sevenZipPath, "the reference archive cannot be listed and extracted: "+sanitizeOutput(err.Error()))
+		return proofError(sze.sevenZipPath, "the reference archive cannot be listed and extracted", err)
 	}
-	return checkKnownAnswer(sze.sevenZipPath, res)
+	if err = checkKnownAnswer(sze.sevenZipPath, res); err != nil {
+		return err
+	}
+	return checkTechnicalListing(ctx, test, archive)
+}
+
+// proofError is the error of a step of the proof that failed to run: a 7-Zip that
+// does not run, or one whose output cannot be used.
+func proofError(path, what string, err error) error {
+	if errors.Is(err, plugins.ErrExtractorUnavailable) || errors.Is(err, errSevenZipTimeout) {
+		return cannotRun(path, err)
+	}
+	return unsupportedVersion(path, what+": "+sanitizeOutput(err.Error()))
+}
+
+// referenceMembers is the number of members of the reference archive.
+const referenceMembers = 3
+
+// checkTechnicalListing runs the technical listing (-slt) over the reference
+// archive. It is not redundant with the proof of the table (l): the encryption
+// decision reads another output, the blocks of -slt, whose own lines must be
+// proven. A supported 7-Zip lists the 3 members there, reports the data attached
+// to the archive (the reference has data after its end) and says Encrypted = - of
+// every member. The reference is a 7z: the -slt of a zip (its Type, and the
+// flags of its members) is not proven by it.
+func checkTechnicalListing(ctx context.Context, sze *sevenZipExtract, archive string) error {
+	info, err := sze.encryptionInfo(ctx, archive, referenceMembers)
+	if err != nil {
+		return proofError(sze.sevenZipPath, "its technical listing of the reference archive cannot be read", err)
+	}
+	switch {
+	case !info.attached:
+		return unsupportedVersion(sze.sevenZipPath, "its technical listing does not report data attached to the reference archive (Tail Size, an offset or a stub), on which the encryption decision relies")
+	case info.encrypted || !info.allPlain:
+		return unsupportedVersion(sze.sevenZipPath, "its technical listing does not say Encrypted = - of every member of the reference archive, on which the encryption decision relies")
+	}
+	return nil
 }
 
 // checkKnownAnswer compares what 7-Zip made of the reference archive with

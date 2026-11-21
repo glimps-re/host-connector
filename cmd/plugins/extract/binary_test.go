@@ -193,18 +193,58 @@ Headers Size = 174
 Warnings: 1
 `
 
-// fakeBinary is a 7z stand-in: banner for `i`, the given listing for `l`, and
-// the given command for `x`.
-func fakeBinary(t *testing.T, banner, listing, extract string) *sevenZipExtract {
+// refTechnical is the technical listing (-slt) of the reference archive as a
+// supported 7z prints it.
+const refTechnical = `
+7-Zip (z) 25.01 (x64)
+
+Listing archive: %ARCHIVE%
+
+--
+Path = reference.7z
+Type = 7z
+WARNINGS:
+There are data after the end of archive
+Physical Size = 182
+Tail Size = 28
+Headers Size = 174
+
+----------
+Path = a.txt
+Size = 1
+Encrypted = -
+
+Path = evil_.exe
+Size = 6
+Encrypted = -
+
+Path = evil_.exe
+Size = 1
+Encrypted = -
+`
+
+// fakeBinary is a 7z stand-in: banner for `i`, the given listing for `l`, the
+// technical listing for `-slt l` (the reference one unless one is given), and the
+// given command for `x`.
+func fakeBinary(t *testing.T, banner, listing, extract string, technical ...string) *sevenZipExtract {
 	t.Helper()
-	list := filepath.Join(t.TempDir(), "listing")
+	tech := refTechnical
+	if len(technical) > 0 && technical[0] != "" {
+		tech = technical[0]
+	}
+	dir := t.TempDir()
+	list, techFile := filepath.Join(dir, "listing"), filepath.Join(dir, "technical")
 	if err := os.WriteFile(list, []byte(listing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(techFile, []byte(tech), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	body := `
 for a in "$@"; do case "$a" in -o*) out="${a#-o}";; esac; done
 for a in "$@"; do
   if [ "$a" = i ]; then printf '%s\n' '` + banner + `'; exit 0; fi
+  if [ "$a" = -slt ]; then cat ` + techFile + `; exit 0; fi
   if [ "$a" = l ]; then cat ` + list + `; exit 0; fi
   if [ "$a" = x ]; then ` + extract + `; exit 0; fi
 done`
@@ -219,6 +259,7 @@ func TestProve_fakeBinaries(t *testing.T) {
 		banner      string
 		listing     string
 		extract     string
+		technical   string
 		wantErr     string
 		wantUnavail bool
 	}{
@@ -231,11 +272,16 @@ func TestProve_fakeBinaries(t *testing.T) {
 		{name: "names not sanitized", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract + `; printf H > "$out/evil_1.exe"`, wantErr: "sanitize"},
 		{name: "shifted columns", banner: "7-Zip (z) 25.01 (x64)", listing: strings.ReplaceAll(refListing, "....A            1", "....A  x         1"), extract: goodExtract, wantErr: "not supported"},
 		{name: "no separator line", banner: "7-Zip (z) 25.01 (x64)", listing: strings.Replace(refListing, "------------------- ----- ------------ ------------  ------------------------\n2026", "2026", 1), extract: goodExtract, wantErr: "not supported"},
+		{name: "technical listing without Tail Size", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract, technical: strings.NewReplacer("Tail Size = 28\n", "", "WARNINGS:\nThere are data after the end of archive\n", "").Replace(refTechnical), wantErr: "does not report data attached"},
+		{name: "technical listing without Encrypted lines", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract, technical: strings.ReplaceAll(refTechnical, "Encrypted = -\n", ""), wantErr: "Encrypted = -"},
+		{name: "technical listing that says a member is encrypted", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract, technical: strings.Replace(refTechnical, "Encrypted = -", "Encrypted = +", 1), wantErr: "Encrypted = -"},
+		{name: "technical listing with another member count", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract, technical: strings.Replace(refTechnical, "Path = evil_.exe\nSize = 1\nEncrypted = -\n", "", 1), wantErr: "technical listing"},
+		{name: "technical listing without members", banner: "7-Zip (z) 25.01 (x64)", listing: refListing, extract: goodExtract, technical: "Path = reference.7z\nType = 7z\nTail Size = 28\n", wantErr: "technical listing"},
 		{name: "wrong member count", banner: "7-Zip (z) 25.01 (x64)", listing: strings.Replace(refListing, "2026-11-20 10:07:18 ....A            1            1  evil_.exe\n", "", 1), extract: goodExtract, wantErr: "not supported"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			sze := fakeBinary(t, tt.banner, tt.listing, tt.extract)
+			sze := fakeBinary(t, tt.banner, tt.listing, tt.extract, tt.technical)
 			err := prove(sze, t.TempDir())
 			switch {
 			case tt.wantErr == "" && err != nil:

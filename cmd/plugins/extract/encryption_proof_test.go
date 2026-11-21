@@ -41,6 +41,7 @@ func TestExcludesEncryption_oneMissingConditionLeavesItPossible(t *testing.T) {
 		{"the listing did not reach its end", func(r *extractResult) { r.listComplete = false }, false},
 		{"a member was left out by a limit", func(r *extractResult) { r.skipped.add("big.bin", 10, "too-big") }, false},
 		{"a member was dropped", func(r *extractResult) { r.dropped = 1 }, false},
+		{"a member was left out as an anomaly, never extracted nor tested", func(r *extractResult) { r.unexamined = 1 }, false},
 		{"fewer files than announced", func(r *extractResult) { r.produced = 0 }, false},
 		{"more files than announced", func(r *extractResult) { r.produced = 2 }, false},
 	}

@@ -93,9 +93,12 @@ type extractResult struct {
 	produced, announced int
 	// dropped counts the selected members that were not extracted (too big once
 	// written, or abandoned after a breach): they are in skipped.
-	dropped   int
-	skipped   skipList
-	anomalies []string
+	dropped int
+	skipped skipList
+	// unexamined counts the members left out as an anomaly, never extracted nor
+	// tested: they keep the encryption possible.
+	unexamined int
+	anomalies  []string
 	// dataFailure is set when 7z reported a failure on the data of the archive
 	// during the listing or the extraction, even one a later password cured.
 	dataFailure bool
@@ -374,6 +377,7 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 	res.anomalies = slices.Clone(sink.anomalies)
 	res.dataFailure, res.listComplete, res.listedEntries = sink.dataFailure, sink.complete, sink.table.entries
 	res.skipped = sink.table.skipped
+	res.unexamined = sink.table.unexamined
 	defer func() {
 		if err == nil && len(res.anomalies) > 0 {
 			res.encryptionExcluded = nopw.excludesEncryption(ctx, archivePath, &res)
@@ -419,14 +423,15 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 // excludesEncryption is the one proof that an archive with anomalies holds no
 // encrypted content, which the archive controls the flags of (7z's own
 // Encrypted flag can be cleared, and a check byte can collide). It holds only
-// when nothing could hide an encryption: the listing was complete, 7z reported no
+// when nothing could hide an encryption: the listing was complete, no member was
+// left out as an anomaly (it is neither extracted nor tested), 7z reported no
 // failure on the data of any member (nor a wrong password, nor a hint of
 // encryption, even one a later password cured), every listed member was
 // extracted, and the technical listing, complete and parsed, says Encrypted = -
 // for every member and no data before or after the archive (an archive hidden
 // there is not listed by 7z). Anything else leaves the encryption possible.
 func (sze *sevenZipExtract) excludesEncryption(ctx context.Context, archivePath string, res *extractResult) bool {
-	if res.dataFailure || !res.listComplete || res.skipped.count > 0 || res.dropped > 0 || res.produced != res.announced {
+	if res.dataFailure || !res.listComplete || res.skipped.count > 0 || res.dropped > 0 || res.unexamined > 0 || res.produced != res.announced {
 		return false
 	}
 	info, err := sze.encryptionInfo(ctx, archivePath, res.listedEntries)
@@ -460,6 +465,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	baseAnomalies := slices.Clone(sink.anomalies)
 	extraction.anomalies = slices.Clone(baseAnomalies)
 	extraction.skipped = sink.table.skipped
+	extraction.unexamined = sink.table.unexamined
 	extraction.listed = sink.table.files
 	extraction.listedEntries = sink.table.entries
 	extraction.listedSize = sink.table.totalSize

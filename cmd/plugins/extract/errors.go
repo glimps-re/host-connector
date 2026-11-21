@@ -21,6 +21,11 @@ const (
 	errLinePrefix = "ERROR: "
 	labelSep      = " : "
 
+	// outputFileLabel and nameTooLong are what 7z says when the file system refuses
+	// the name of a member it extracts (ENAMETOOLONG).
+	outputFileLabel = "Cannot open output file"
+	nameTooLong     = "errno=36 : File name too long"
+
 	// exitFatal is the exit code of 7z for a fatal error.
 	exitFatal = 2
 
@@ -148,6 +153,11 @@ func (o *sevenZipOutput) classifyError(body string) {
 		// say why, and are classified on their own.
 	case strings.HasPrefix(label, "errno=") && rest == "No such file or directory":
 		o.notFound = true
+	case label == outputFileLabel && strings.HasPrefix(rest, nameTooLong):
+		// The extraction cannot create a member (a name made too long by a rename
+		// on a clash, a path over PATH_MAX): the archive is damaged for it, and
+		// retrying would fail the same way for ever.
+		o.recoverable = true
 	case slices.Contains(recoverableLabels, label) || slices.Contains(recoverableLabels, body):
 		o.recoverable = true
 	default:

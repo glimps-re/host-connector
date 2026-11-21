@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -254,5 +255,95 @@ func TestScan_errorsLineUnderTheTableIsAnAnomaly(t *testing.T) {
 		if len(s.anomalies) != 1 {
 			t.Errorf("tail %q: anomalies = %v, want one (a cut zip still lists and only says so there)", tail, s.anomalies)
 		}
+	}
+}
+
+func TestLongComponent(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "short", path: "a/b/c.txt"},
+		{name: "255 bytes", path: "d/" + strings.Repeat("n", maxNameComponent)},
+		{name: "256 bytes", path: strings.Repeat("n", maxNameComponent+1), want: true},
+		{name: "long folder", path: strings.Repeat("n", 300) + "/a.txt", want: true},
+		{name: "254 bytes", path: strings.Repeat("n", maxNameComponent-1)},
+		{name: "128 two-byte runes are 256 bytes", path: strings.Repeat("é", 128), want: true},
+		{name: "127 two-byte runes and a letter are 255 bytes", path: strings.Repeat("é", 127) + "x"},
+		{name: "long path of short components", path: strings.Repeat("dir/", 200) + "a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := longComponent(tt.path); got != tt.want {
+				t.Errorf("longComponent(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestListSink_aComponentLongerThanANameIsAnAnomalyAndNotSelected(t *testing.T) {
+	s := newListSink(1<<20, 10, 1<<30)
+	long := "dir/" + strings.Repeat("n", maxNameComponent+1)
+	if err := s.scan(strings.NewReader(listing(nil, listingLine("a.txt", 1), listingLine(long, 1)))); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.anomalies) != 1 || !strings.Contains(s.anomalies[0], "component longer than 255") {
+		t.Errorf("anomalies = %v, want the long component reported", s.anomalies)
+	}
+	if len(s.table.selected) != 1 || s.table.selected[0] != "a.txt" {
+		t.Errorf("selected = %v, want the long member left out", s.table.selected)
+	}
+}
+
+func TestListSink_aFolderThatHoldsDataIsAnAnomalyExceptInImageFormats(t *testing.T) {
+	folder := func(size int) string {
+		return fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "D....", size, size, "evil.exe")
+	}
+	tests := []struct {
+		name        string
+		archiveType string
+		line        string
+		wantAnomaly bool
+	}{
+		{"zip, a folder with data", "zip", folder(10), true},
+		{"7z, a folder with data", "7z", folder(10), true},
+		{"tar, a folder with data", "tar", folder(10), true},
+		{"cab, a folder with data", "Cab", folder(10), true},
+		{"arj, a folder with data", "Arj", folder(10), true},
+		{"cpio, a folder with data", "Cpio", folder(10), true},
+		{"a format 7-Zip may add, a folder with data", "Newfangled", folder(10), true},
+		{"no type, a folder with data", "", folder(10), true},
+		{"zip, an empty folder", "zip", folder(0), false},
+		{"7z, an empty folder", "7z", folder(0), false},
+		{"tar, an empty folder", "tar", folder(0), false},
+		{"no type, an empty folder", "", folder(0), false},
+		{"iso, a folder with the size of its record", "Iso", folder(2048), false},
+		{"udf, a folder with the size of its record", "Udf", folder(2048), false},
+		{"wim, a folder with a size", "wim", folder(64), false},
+		{"a name is exact: ISO is not Iso", "ISO", folder(2048), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newListSink(1<<20, 10, 1<<30)
+			var header []string
+			if tt.archiveType != "" {
+				// A comment can forge more Type lines after the real one.
+				header = []string{"Path = a", "Type = " + tt.archiveType, "Type = Iso"}
+			}
+			if err := s.scan(strings.NewReader(listing(header, listingLine("a.txt", 1), tt.line))); err != nil {
+				t.Fatal(err)
+			}
+			got := slices.ContainsFunc(s.anomalies, func(a string) bool { return strings.Contains(a, "folder entry holds data") })
+			if got != tt.wantAnomaly {
+				t.Errorf("anomalies = %v, want the folder anomaly = %t", s.anomalies, tt.wantAnomaly)
+			}
+			if wantUnexamined := map[bool]int{true: 1, false: 0}[tt.wantAnomaly]; s.table.unexamined != wantUnexamined {
+				t.Errorf("unexamined = %d, want %d", s.table.unexamined, wantUnexamined)
+			}
+			if len(s.table.selected) != 1 {
+				t.Errorf("selected = %v, the folder entry is never selected", s.table.selected)
+			}
+		})
 	}
 }

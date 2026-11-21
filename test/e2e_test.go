@@ -20,6 +20,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"image"
+	"image/png"
 	"io"
 	"io/fs"
 	"os"
@@ -1040,5 +1042,125 @@ func TestE2E_extractErrorAsFile(t *testing.T) {
 				t.Error("the archive left INPUT")
 			}
 		})
+	}
+}
+
+// mitigationReasons returns the reasons of the mitigation events the console
+// received.
+func (c *fakeConsole) mitigationReasons() (reasons []string) {
+	for _, raw := range c.EventsOfType("mitigation") {
+		var ev struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal(raw, &ev) == nil {
+			reasons = append(reasons, ev.Reason)
+		}
+	}
+	return reasons
+}
+
+// D6: a detection always wins. A result that carries a detection and an
+// analysis error is malware: quarantined, never delivered, never left as a plain
+// error; the report says malicious with the reason malware-detected, and the
+// console is told it is a malware. Same for an archive with a member in that
+// case beside a member in analysis error.
+func TestE2E_aDetectionWithAnAnalysisErrorIsMalware(t *testing.T) {
+	t.Run("file", func(t *testing.T) {
+		gm := newGMalware(t, false)
+		in := startInstance(t, gm, options{agent: true})
+		bad := []byte("a malware the service also fails to finish analyzing")
+		gm.MarkMaliciousWithError(bad, "an engine crashed")
+		path := in.drop(t, "bad.txt", bad)
+		lock := filepath.Join(in.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(bad))+".lock")
+		in.waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
+		in.waitFor(t, "the file to leave INPUT", func() bool { return in.gone(path) })
+		in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+		if in.inOutput("bad.txt") {
+			t.Error("the malware reached OUTPUT")
+		}
+		entries := in.reportsOf(t, bad)
+		if len(entries) == 0 {
+			t.Fatal("the file is in no session report")
+		}
+		for _, e := range entries {
+			if !e.Malicious || e.MalwareReason != datamodel.MalwareDetected {
+				t.Errorf("report entry: malicious=%v reason=%q error=%q, want a malware with the reason %q", e.Malicious, e.MalwareReason, e.Error, datamodel.MalwareDetected)
+			}
+		}
+		in.waitFor(t, "the console mitigation", func() bool { return len(in.console.mitigationReasons()) > 0 })
+		if got := in.console.mitigationReasons(); !slices.Equal(got, []string{"malware"}) {
+			t.Errorf("console mitigation reasons = %q, want [malware]", got)
+		}
+	})
+	t.Run("archive", func(t *testing.T) {
+		gm := newGMalware(t, false)
+		in := startInstance(t, gm, options{extract: true, agent: true})
+		detected := []byte(strings.Repeat("a member that is a malware with an error ", 40))
+		broken := []byte(strings.Repeat("a member whose analysis fails ", 40))
+		gm.MarkMaliciousWithError(detected, "an engine crashed")
+		gm.MarkAnalysisError(broken, "the analysis failed")
+		archive := zipOf(t, map[string]string{"evil.exe": string(detected), "broken.txt": string(broken)})
+		in.expect.archive(archive, detected, broken)
+		path := in.drop(t, "a.zip", archive)
+		in.waitFor(t, "the archive to leave INPUT", func() bool { return in.gone(path) })
+		in.waitFor(t, "the quarantine", func() bool { return len(globOne(t, filepath.Join(in.quarantine, "*.lock"))) == 1 })
+		in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+		if in.inOutput("a.zip") {
+			t.Error("the archive reached OUTPUT")
+		}
+		entries := in.reportsOf(t, archive)
+		if len(entries) == 0 {
+			t.Fatal("the archive is in no session report")
+		}
+		for _, e := range entries {
+			if !e.Malicious || e.MalwareReason != datamodel.MalwareDetected {
+				t.Errorf("report entry of the archive: malicious=%v reason=%q error=%q, want a malware with the reason %q", e.Malicious, e.MalwareReason, e.Error, datamodel.MalwareDetected)
+			}
+		}
+		in.waitFor(t, "the console mitigation", func() bool { return len(in.console.mitigationReasons()) > 0 })
+		if got := in.console.mitigationReasons(); !slices.Equal(got, []string{"malware"}) {
+			t.Errorf("console mitigation reasons = %q, want [malware]", got)
+		}
+	})
+}
+
+// realPNG is a small image the type detection recognizes.
+func realPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for i := range img.Pix {
+		img.Pix[i] = byte(i * 7)
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// A type the filter forbids is refused inside an archive too: the member is
+// judged by its content, on the real path it has once extracted, and the whole
+// archive is quarantined. An archive without such a member is delivered.
+func TestE2E_aForbiddenTypeInsideAZipIsRefused(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, more: map[string]map[string]any{
+		"filetype_filter": {"forbidden_types": []string{"image/png"}},
+	}})
+	pic := realPNG(t)
+	text := []byte(strings.Repeat("a text member beside an image ", 40))
+	other := []byte(strings.Repeat("another text member ", 40))
+	with := zipOf(t, map[string]string{"pic.png": string(pic), "a.txt": string(text)})
+	without := zipOf(t, map[string]string{"a.txt": string(text), "b.txt": string(other)})
+	in.expect.flag(pic)
+	in.expect.archive(with, pic, text)
+	in.expect.archive(without, text, other)
+	withPath := in.drop(t, "with.zip", with)
+	in.drop(t, "without.zip", without)
+	in.waitFor(t, "the archive without the image to be delivered", func() bool { return in.inOutput("without.zip") })
+	in.waitFor(t, "the archive with the image to leave INPUT", func() bool { return in.gone(withPath) })
+	in.waitFor(t, "the quarantine", func() bool { return len(globOne(t, filepath.Join(in.quarantine, "*.lock"))) == 1 })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	if in.inOutput("with.zip") {
+		t.Error("the archive with a forbidden type reached OUTPUT")
 	}
 }

@@ -178,6 +178,9 @@ func (l *errLog) drain(r *http.Request, limit int64) {
 type verdict struct {
 	malware  bool
 	malwares []string
+	// analysisError is an error the service reports with its answer, a
+	// detection or not.
+	analysisError string
 }
 
 // gmalware is a GLIMPS Malware Detect whose answers the test programs: a
@@ -308,6 +311,9 @@ func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
 		res["score"] = 1000
 		res["malwares"] = v.malwares
 	}
+	if v.analysisError != "" {
+		res["error"] = v.analysisError
+	}
 	g.mu.Lock()
 	delay := g.resultDelay
 	g.mu.Unlock()
@@ -336,6 +342,22 @@ func (g *gmalware) MarkMalicious(content []byte) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.verdicts[sha256Hex(content)] = verdict{malware: true, malwares: []string{"Test.Malware"}}
+}
+
+// MarkMaliciousWithError makes the content a malware that the service also
+// reports an analysis error for.
+func (g *gmalware) MarkMaliciousWithError(content []byte, analysisError string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.verdicts[sha256Hex(content)] = verdict{malware: true, malwares: []string{"Test.Malware"}, analysisError: analysisError}
+}
+
+// MarkAnalysisError makes the service report an analysis error, and no
+// detection, for the content.
+func (g *gmalware) MarkAnalysisError(content []byte, analysisError string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.verdicts[sha256Hex(content)] = verdict{analysisError: analysisError}
 }
 
 // FailWith makes every request fail with status (an outage), until

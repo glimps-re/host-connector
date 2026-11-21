@@ -284,6 +284,10 @@ func (h *Handler) Configure(ctx context.Context, rawConfig json.RawMessage) (err
 	return
 }
 
+// Restore restores a quarantined file. The console events about what the
+// restoration left (registry, container) are raised before the answer; a file
+// restored whose container could not be removed is a success, with a warning and
+// the event quarantine-restore-lock-kept.
 func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionContent) (err error) {
 	logger.Debug("received Restore action from connector-manager")
 	defer func() {
@@ -302,6 +306,10 @@ func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionCont
 	}
 	err = quarantiner.Restore(ctx, restoreInfo.ID)
 	notifyRestoreRegistry(ctx, restoreInfo.ID, err)
+	if restoredButContainerKept(err) {
+		logger.Warn("the file was restored but its container could not be removed: remove it by hand", slog.String("id", restoreInfo.ID), slog.String("error", err.Error()))
+		err = nil
+	}
 	return
 }
 

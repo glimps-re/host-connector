@@ -348,6 +348,11 @@ var (
 	// allowed by its SHA256 although nothing was restored. The container is kept.
 	ErrRestoreRollbackFailed = errors.New("the registry change of a failed restore could not be undone")
 
+	// ErrRestoredLockKept is joined to the error of a restoration that published
+	// the file but could not remove its container: the file is restored, and
+	// restoring it again would fail with a destination that exists.
+	ErrRestoredLockKept = errors.New("the file was restored but its container could not be removed")
+
 	// ErrRestoredNotRegistered is joined to the error of a restoration of a
 	// container without registry entry that published the file but could not
 	// register it: the file is there, and the registry does not know it, so its

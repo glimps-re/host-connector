@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -52,30 +53,34 @@ func TestNotifyUnregisteredRestore_raisesOneWarningAndOneEvent(t *testing.T) {
 	}
 }
 
+var restoreEventKeys = []events.ErrorEventType{HostQuarantineRestoreUnmarkFailed, HostQuarantineRestoreNotRegistered, HostQuarantineRestoreLockKept}
+
 func TestNotifyRestoreRegistry(t *testing.T) {
+	lockKept := errors.Join(quarantine.ErrRestoredLockKept, errors.New("permission denied"))
 	tests := []struct {
 		name string
 		err  error
-		want events.ErrorEventType
+		want []events.ErrorEventType
 	}{
-		{"the registry could not be put back", errors.Join(errors.New("exists"), quarantine.ErrRestoreRollbackFailed), HostQuarantineRestoreUnmarkFailed},
-		{"restored but not registered", errors.Join(quarantine.ErrRestoredNotRegistered, errors.New("db locked")), HostQuarantineRestoreNotRegistered},
-		{"any other failure", errors.New("destination already exists"), ""},
-		{"no failure", nil, ""},
+		{"the registry could not be put back", errors.Join(errors.New("exists"), quarantine.ErrRestoreRollbackFailed), []events.ErrorEventType{HostQuarantineRestoreUnmarkFailed}},
+		{"restored but not registered", errors.Join(quarantine.ErrRestoredNotRegistered, errors.New("db locked")), []events.ErrorEventType{HostQuarantineRestoreNotRegistered}},
+		{"the container is kept", lockKept, []events.ErrorEventType{HostQuarantineRestoreLockKept}},
+		{"not registered and the container is kept", errors.Join(lockKept, quarantine.ErrRestoredNotRegistered), []events.ErrorEventType{HostQuarantineRestoreNotRegistered, HostQuarantineRestoreLockKept}},
+		{"any other failure", errors.New("destination already exists"), nil},
+		{"no failure", nil, nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := recordEvents(t)
 			captureHandlerLogs(t)
 			notifyRestoreRegistry(t.Context(), "abc", tt.err)
-			for _, key := range []events.ErrorEventType{HostQuarantineRestoreUnmarkFailed, HostQuarantineRestoreNotRegistered} {
-				got := rec.find("error", key)
+			for _, key := range restoreEventKeys {
 				want := 0
-				if key == tt.want {
+				if slices.Contains(tt.want, key) {
 					want = 1
 				}
-				if len(got) != want {
-					t.Errorf("events %q = %d, want %d", key, len(got), want)
+				if got := len(rec.find("error", key)); got != want {
+					t.Errorf("events %q = %d, want %d", key, got, want)
 				}
 				if len(rec.find("resolution", key)) != 0 {
 					t.Errorf("event %q must never be resolved", key)
@@ -85,30 +90,47 @@ func TestNotifyRestoreRegistry(t *testing.T) {
 	}
 }
 
-// Handler.Restore raises the event that matches how the restoration left the
-// registry, once.
-func TestHandler_Restore_raisesTheEventOfTheRegistry(t *testing.T) {
+// Handler.Restore raises the events of what the restoration left, once each; a file
+// that is restored with its container kept is a success.
+func TestHandler_Restore_raisesTheEventsOfWhatTheRestorationLeft(t *testing.T) {
+	lockKept := errors.Join(quarantine.ErrRestoredLockKept, errors.New("permission denied"))
 	tests := []struct {
-		name string
-		err  error
-		want events.ErrorEventType
+		name    string
+		err     error
+		want    []events.ErrorEventType
+		wantErr bool
+		warn    string
 	}{
-		{"rollback failed", errors.Join(errors.New("exists"), quarantine.ErrRestoreRollbackFailed), HostQuarantineRestoreUnmarkFailed},
-		{"not registered", errors.Join(quarantine.ErrRestoredNotRegistered, errors.New("db")), HostQuarantineRestoreNotRegistered},
+		{"rollback failed", errors.Join(errors.New("exists"), quarantine.ErrRestoreRollbackFailed), []events.ErrorEventType{HostQuarantineRestoreUnmarkFailed}, true, ""},
+		{"not registered", errors.Join(quarantine.ErrRestoredNotRegistered, errors.New("db")), []events.ErrorEventType{HostQuarantineRestoreNotRegistered}, true, ""},
+		{"the container is kept", lockKept, []events.ErrorEventType{HostQuarantineRestoreLockKept}, false, "remove it by hand"},
+		{"not registered and the container is kept", errors.Join(lockKept, quarantine.ErrRestoredNotRegistered), []events.ErrorEventType{HostQuarantineRestoreNotRegistered, HostQuarantineRestoreLockKept}, true, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := recordEvents(t)
-			captureHandlerLogs(t)
+			logs := captureHandlerLogs(t)
 			h := &Handler{Quarantiner: &quarantineMock.QuarantineMock{
 				RestoreMock: func(context.Context, string) error { return tt.err },
 			}}
 			err := h.Restore(t.Context(), sdk.RestoreActionContent{ID: "abc"})
-			if !errors.Is(err, tt.err) {
-				t.Fatalf("Restore() = %v, want the error of the quarantine", err)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("Restore() = %v, want an error: %t", err, tt.wantErr)
 			}
-			if got := len(rec.find("error", tt.want)); got != 1 {
-				t.Errorf("events %q = %d, want 1", tt.want, got)
+			if err != nil && !errors.Is(err, tt.err) {
+				t.Errorf("Restore() = %v, want the error of the quarantine", err)
+			}
+			for _, key := range restoreEventKeys {
+				want := 0
+				if slices.Contains(tt.want, key) {
+					want = 1
+				}
+				if got := len(rec.find("error", key)); got != want {
+					t.Errorf("events %q = %d, want %d", key, got, want)
+				}
+			}
+			if tt.warn != "" && !strings.Contains(logs.String(), tt.warn) {
+				t.Errorf("no warning %q: %s", tt.warn, logs)
 			}
 		})
 	}

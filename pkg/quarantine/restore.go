@@ -14,13 +14,15 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/glimps-re/host-connector/internal/pathutil"
 )
 
 var lockFileName = regexp.MustCompile(`^[0-9a-f]{64}\.lock$`)
 
-// betweenLstatAndOpen is where tests swap the name for something else.
+// betweenLstatAndOpen is where tests swap the name for something else; a test that
+// replaces it must not run in parallel with another.
 var betweenLstatAndOpen = func() {}
 
 // openContainer opens the container called name in the quarantine directory and
@@ -159,11 +161,22 @@ func publishWithoutLink(root *os.Root, tmpName, base string) (removed bool, err 
 // hook of SetUnregisteredRestoreHook. It is published first and registered after,
 // so that a crash between the two leaves no entry that allows content with no file:
 // when the registry then fails, the file is there and ErrRestoredNotRegistered is
-// returned.
+// returned. A file that was restored but whose container could not be removed
+// returns ErrRestoredLockKept.
+//
+// The hook of the unregistered restorations runs in its own goroutine, after
+// Restore returned.
 func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) {
 	notify, err := q.restore(ctx, id)
 	if notify != nil {
-		go notify()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Error("the hook of the unregistered restorations panicked", slog.String("id", id), slog.Any("panic", r))
+				}
+			}()
+			notify()
+		}()
 	}
 	return err
 }
@@ -208,7 +221,7 @@ func (q *QuarantineHandler) restore(ctx context.Context, id string) (notify func
 		return nil, err
 	}
 
-	entry, err := q.registry.Get(ctx, id)
+	entry, err := q.boundedGet(ctx, id)
 	registered := err == nil
 	if err != nil && !errors.Is(err, errEntryNotFound) {
 		return nil, err
@@ -306,23 +319,65 @@ func (q *QuarantineHandler) restore(ctx context.Context, id string) (notify func
 	marked := *entry
 	marked.QuarantineLocation = ""
 	marked.RestoredAt = now()
-	if err = q.registry.Set(ctx, &marked); err != nil {
-		return nil, fmt.Errorf("error set cache for sha256 %v, %w", got, err)
+	if err = q.boundedSet(ctx, &marked); err != nil {
+		err = fmt.Errorf("error set cache for sha256 %v, %w", got, err)
+		if (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded)) && !errors.Is(err, errRegistryNotWritten) {
+			// A write that was cut may still have been made: sqlite makes it atomic,
+			// another registry may not. The entry is put back as it was, unless the
+			// write never began: undoing it would wait for the same gate for nothing
+			// and report a rollback failure that did not happen.
+			if undoErr := q.boundedSet(context.WithoutCancel(ctx), entry); undoErr != nil {
+				logger.Error("Restore cannot put the registry entry back after a marking that was cut", slog.String("id", id), slog.String("error", undoErr.Error()))
+				err = errors.Join(err, ErrRestoreRollbackFailed, fmt.Errorf("the registry entry of %s could not be put back: %w", id, undoErr))
+			}
+		}
+		return nil, err
 	}
 	removed, err := publishRestored(root, tmpName, base)
 	tmpRemoved = removed
 	if err != nil {
-		if undoErr := q.registry.Set(context.WithoutCancel(ctx), entry); undoErr != nil {
+		// The request may be over by now: the undo is not cut with it.
+		if undoErr := q.boundedSet(context.WithoutCancel(ctx), entry); undoErr != nil {
 			logger.Error("Restore cannot put the registry entry back after a failed restoration", slog.String("id", id), slog.String("error", undoErr.Error()))
 			err = errors.Join(err, ErrRestoreRollbackFailed, fmt.Errorf("the registry entry of %s could not be put back: %w", id, undoErr))
 		}
 		return nil, err
 	}
 	logger.Info("file restored", slog.String("file", dest), slog.String("reason", locked.Reason))
-	if e := os.Remove(lockPath); e != nil {
+	return nil, removeRestoredContainer(lockPath)
+}
+
+// registryTimeout bounds a write of the registry made while the locks of a
+// restoration are held: a registry that hangs must not hold them for ever, since a
+// reconfiguration waits for them. A variable so that tests can shorten it.
+var registryTimeout = 30 * time.Second
+
+// boundedSet writes an entry within registryTimeout, whatever the registry is
+// doing: a call that waits behind a stuck one gives up with the deadline. The
+// caller says, by the context it gives, whether the end of the request still ends
+// the write.
+func (q *QuarantineHandler) boundedSet(ctx context.Context, entry *Entry) error {
+	ctx, cancel := context.WithTimeout(ctx, registryTimeout)
+	defer cancel()
+	return q.registry.Set(ctx, entry)
+}
+
+// boundedGet reads an entry within registryTimeout.
+func (q *QuarantineHandler) boundedGet(ctx context.Context, id string) (*Entry, error) {
+	ctx, cancel := context.WithTimeout(ctx, registryTimeout)
+	defer cancel()
+	return q.registry.Get(ctx, id)
+}
+
+// removeRestoredContainer removes the container of a file that was restored. When it
+// cannot, the file is restored all the same and the container is still there, which
+// the error says: restoring it again would fail with a destination that exists.
+func removeRestoredContainer(lockPath string) error {
+	if e := osRemove(lockPath); e != nil && !errors.Is(e, fs.ErrNotExist) {
 		logger.Error("Restore cannot remove lock file", slog.String("error", e.Error()))
+		return errors.Join(ErrRestoredLockKept, fmt.Errorf("the container %s could not be removed: %w", lockPath, e))
 	}
-	return nil, nil
+	return nil
 }
 
 // publishThenRegister restores a container that has no registry entry: the file is
@@ -335,19 +390,18 @@ func (q *QuarantineHandler) publishThenRegister(ctx context.Context, root *os.Ro
 		return nil, err
 	}
 	logger.Info("file restored", slog.String("file", dest), slog.String("reason", reason))
-	if e := os.Remove(lockPath); e != nil {
-		logger.Error("Restore cannot remove lock file", slog.String("error", e.Error()))
-	}
+	lockErr := removeRestoredContainer(lockPath)
 	entry := Entry{ID: id, SHA256: sha, CreatedAt: now(), RestoredAt: now(), InitialLocation: dest}
-	if e := q.registry.Set(context.WithoutCancel(ctx), &entry); e != nil {
+	// The file is published: the registration is not cut with the request.
+	if e := q.boundedSet(context.WithoutCancel(ctx), &entry); e != nil {
 		logger.Error("Restore published a file but cannot register it: its content will be quarantined again", slog.String("id", id), slog.String("file", dest), slog.String("error", e.Error()))
-		return nil, errors.Join(ErrRestoredNotRegistered, fmt.Errorf("the entry of %s could not be written: %w", id, e))
+		return nil, errors.Join(ErrRestoredNotRegistered, fmt.Errorf("the entry of %s could not be written: %w", id, e), lockErr)
 	}
 	if hook != nil {
 		bound := context.WithoutCancel(ctx)
 		notify = func() { hook(bound, id, dest, sha) }
 	}
-	return notify, nil
+	return notify, lockErr
 }
 
 // QuarantinedFile is a container of the quarantine directory: the index it holds

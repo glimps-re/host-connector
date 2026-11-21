@@ -50,7 +50,6 @@ func (l *lockerMock) GetHeader(src io.ReaderAt, size int64) (entry LockEntry, er
 type registryMock struct {
 	GetLocationMock func() (location string)
 	SetMock         func(ctx context.Context, entry *Entry) error
-	DeleteMock      func(ctx context.Context, id string) error
 	GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
 	CloneMock       func(ctx context.Context, newLocation string, mergeExisting bool) (quarantineRegistry, error)
 	DiscardMock     func() error
@@ -70,13 +69,6 @@ func (m *registryMock) Set(ctx context.Context, entry *Entry) error {
 		return m.SetMock(ctx, entry)
 	}
 	panic("Set not implemented")
-}
-
-func (m *registryMock) Delete(ctx context.Context, id string) error {
-	if m.DeleteMock != nil {
-		return m.DeleteMock(ctx, id)
-	}
-	panic("Delete not implemented")
 }
 
 func (m *registryMock) Get(ctx context.Context, id string) (*Entry, error) {

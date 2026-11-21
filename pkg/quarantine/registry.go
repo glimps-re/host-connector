@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -41,9 +40,6 @@ type quarantineRegistry interface {
 	// Set adds or updates an entry
 	Set(ctx context.Context, entry *Entry) error
 
-	// Delete removes an entry; one that does not exist is not an error.
-	Delete(ctx context.Context, id string) error
-
 	// Get fetch an entry
 	Get(ctx context.Context, id string) (entry *Entry, err error)
 	// HasRestored reports whether any entry with this content was restored.
@@ -67,11 +63,42 @@ type quarantineRegistry interface {
 
 var errEntryNotFound = errors.New("entry not found")
 
+// errRegistryNotWritten is wrapped in the error of a call that gave up before it
+// reached the database: nothing was written, so there is nothing to undo.
+var errRegistryNotWritten = errors.New("the registry was not reached")
+
 type sqliteRegistry struct {
 	db          *sql.DB
 	location    string
 	createdFile bool
-	sync.RWMutex
+	// gate is the lock of the registry: one slot, taken with the context of the
+	// call, so that a caller that gives up does not wait behind a call that is
+	// stuck. A call that never returns (a hung disk or file system) still holds it:
+	// the callers that wait are freed by their own deadline, the call is not. The
+	// gate is in-process only and no busy_timeout is set: a second process that
+	// holds the database lock makes a call fail with SQLITE_BUSY at once instead of
+	// waiting.
+	gate chan struct{}
+}
+
+// wait takes the lock of the registry, however long it takes, for the calls that
+// end the registry.
+func (c *sqliteRegistry) wait() (unlock func()) {
+	c.gate <- struct{}{}
+	return func() { <-c.gate }
+}
+
+// lock takes the lock of the registry, or fails when ctx ends first.
+func (c *sqliteRegistry) lock(ctx context.Context) (unlock func(), err error) {
+	if err = ctx.Err(); err != nil {
+		return nil, fmt.Errorf("%w: %w", errRegistryNotWritten, err)
+	}
+	select {
+	case c.gate <- struct{}{}:
+		return func() { <-c.gate }, nil
+	case <-ctx.Done():
+		return nil, fmt.Errorf("%w: %w", errRegistryNotWritten, ctx.Err())
+	}
 }
 
 var _ quarantineRegistry = &sqliteRegistry{}
@@ -162,7 +189,7 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 	}
 
 	logger.Info("create new db", slog.Any("result", result))
-	c = &sqliteRegistry{db: db, location: finalLocation, createdFile: createdFile}
+	c = &sqliteRegistry{db: db, location: finalLocation, createdFile: createdFile, gate: make(chan struct{}, 1)}
 	return
 }
 
@@ -179,7 +206,9 @@ func (c *sqliteRegistry) GetLocation() (location string) {
 	return c.location
 }
 
+// Close waits, without bound, for the call in progress.
 func (c *sqliteRegistry) Close() error {
+	defer c.wait()()
 	return c.db.Close()
 }
 
@@ -198,8 +227,11 @@ func (c *sqliteRegistry) Clone(ctx context.Context, newLocation string, mergeExi
 		return nil, errors.Join(fmt.Errorf("the registry %s already holds %d entries", newLocation, existing), clone.Discard())
 	}
 
-	c.RLock()
-	defer c.RUnlock()
+	unlock, err := c.lock(ctx)
+	if err != nil {
+		return nil, errors.Join(err, clone.Discard())
+	}
+	defer unlock()
 	rows, err := c.db.QueryContext(ctx, "SELECT id, sha256, created_at, updated_at, quarantine, location, restored_at FROM entries")
 	if err != nil {
 		return nil, errors.Join(err, clone.Discard())
@@ -228,7 +260,9 @@ func (c *sqliteRegistry) Clone(ctx context.Context, newLocation string, mergeExi
 	return clone, nil
 }
 
+// Discard waits, without bound, for the call in progress.
 func (c *sqliteRegistry) Discard() error {
+	defer c.wait()()
 	err := c.db.Close()
 	removeCreated(c.location, c.createdFile)
 	if c.createdFile {
@@ -241,8 +275,11 @@ func (c *sqliteRegistry) Discard() error {
 }
 
 func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err error) {
-	c.RLock()
-	defer c.RUnlock()
+	unlock, err := c.lock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	entry = &Entry{}
 	var createdAt, updatedAt, restoredAt int64
 	err = c.db.QueryRowContext(ctx, "SELECT * FROM entries where id = ?", id).Scan(
@@ -267,8 +304,11 @@ func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err 
 }
 
 func (c *sqliteRegistry) HasRestored(ctx context.Context, sha256 string) (restored bool, err error) {
-	c.RLock()
-	defer c.RUnlock()
+	unlock, err := c.lock(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	err = c.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM entries WHERE sha256 = ? AND restored_at > 0)", sha256).Scan(&restored)
 	return
 }
@@ -276,8 +316,11 @@ func (c *sqliteRegistry) HasRestored(ctx context.Context, sha256 string) (restor
 var now = time.Now
 
 func (c *sqliteRegistry) Set(ctx context.Context, entry *Entry) (err error) {
-	c.Lock()
-	defer c.Unlock()
+	unlock, lockErr := c.lock(ctx)
+	if lockErr != nil {
+		return lockErr
+	}
+	defer unlock()
 	tx, err := c.db.BeginTx(ctx, nil)
 	if err != nil {
 		return
@@ -319,15 +362,6 @@ ON CONFLICT(id) DO UPDATE SET
 		entry.RestoredAt.UnixMilli(),
 	)
 	return
-}
-
-func (c *sqliteRegistry) Delete(ctx context.Context, id string) error {
-	c.Lock()
-	defer c.Unlock()
-	if _, err := c.db.ExecContext(ctx, "DELETE FROM entries WHERE id = ?", id); err != nil {
-		return fmt.Errorf("cannot delete the entry %s: %w", id, err)
-	}
-	return nil
 }
 
 func ComputeCacheID(path string, contentSHA256 string) (id string) {

@@ -20,24 +20,35 @@ func TestRestore_aFIFOCalledLikeAContainerIsRefusedAtOnce(t *testing.T) {
 	if err := removeContainer(dir, id); err != nil {
 		t.Fatal(err)
 	}
-	if err := syscall.Mkfifo(filepath.Join(dir, id+".lock"), 0o600); err != nil {
+	lock := filepath.Join(dir, id+".lock")
+	if err := syscall.Mkfifo(lock, 0o600); err != nil {
 		t.Skip("named pipes not available:", err)
 	}
-	done := make(chan struct{})
+	type outcome struct {
+		restoreErr error
+		listed     []string
+	}
+	done := make(chan outcome, 1)
 	go func() {
-		defer close(done)
-		if err := q.Restore(t.Context(), id); err == nil {
-			t.Error("Restore() accepted a named pipe")
-		}
+		var out outcome
+		out.restoreErr = q.Restore(t.Context(), id)
 		for f, err := range q.ListQuarantinedFiles(t.Context()) {
 			if err != nil || f != nil {
-				t.Errorf("a named pipe is listed: %+v, %v", f, err)
+				out.listed = append(out.listed, fmt.Sprintf("%+v, %v", f, err))
 			}
 		}
+		done <- out
 	}()
 	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
+	case out := <-done:
+		if out.restoreErr == nil {
+			t.Error("Restore() accepted a named pipe")
+		}
+		if len(out.listed) != 0 {
+			t.Errorf("a named pipe is listed: %v", out.listed)
+		}
+	case <-time.After(testDeadline):
+		releaseFIFO(t, lock)
 		t.Fatal("Restore or the listing blocked on a named pipe")
 	}
 }
@@ -66,7 +77,8 @@ func TestRestore_aFIFOSwappedInAfterTheExaminationIsRefusedWithoutBlocking(t *te
 		if err == nil {
 			t.Error("Restore() accepted a named pipe")
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testDeadline):
+		releaseFIFO(t, lock)
 		t.Fatal("Restore() blocked on a named pipe swapped in after the examination of its name")
 	}
 }
@@ -126,4 +138,19 @@ func mustRoot(t *testing.T, dir string) *os.Root {
 		}
 	})
 	return root
+}
+
+// releaseFIFO opens a named pipe for writing, which lets a reader blocked on it
+// go: a test that found a blocked opening must not leave it holding the locks of
+// the handler, which the cleanup of the test needs.
+func releaseFIFO(t *testing.T, path string) {
+	t.Helper()
+	f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		t.Logf("the named pipe could not be released: %v", err)
+		return
+	}
+	if err = f.Close(); err != nil {
+		t.Logf("the named pipe could not be closed after its release: %v", err)
+	}
 }

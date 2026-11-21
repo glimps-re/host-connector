@@ -39,28 +39,52 @@ const (
 	// registry entry was restored but the registry could not be told: the content
 	// is detected and quarantined again at the next pass.
 	HostQuarantineRestoreNotRegistered events.ErrorEventType = "quarantine-restore-not-registered"
+	// HostQuarantineRestoreLockKept is raised when a file was restored and
+	// registered but its container could not be removed: it stays listed until it
+	// is removed by hand.
+	HostQuarantineRestoreLockKept events.ErrorEventType = "quarantine-restore-lock-kept"
 )
 
-// notifyRestoreRegistry raises the event that matches how a restoration left the
-// registry, within notifyTimeout; nothing for any other outcome.
+// notifyRestoreRegistry raises the events that match how a restoration left the
+// registry and the container, within notifyTimeout; nothing for any other outcome.
 func notifyRestoreRegistry(ctx context.Context, id string, err error) {
-	var key events.ErrorEventType
-	var what string
-	switch {
-	case errors.Is(err, quarantine.ErrRestoreRollbackFailed):
-		key, what = HostQuarantineRestoreUnmarkFailed, "the restoration failed and its registry entry could not be put back: the content is allowed although nothing was restored"
-	case errors.Is(err, quarantine.ErrRestoredNotRegistered):
-		key, what = HostQuarantineRestoreNotRegistered, "the file was restored but the registry does not know it: its content will be detected and quarantined again at the next pass"
-	default:
-		return
+	for _, ev := range []struct {
+		sentinel error
+		key      events.ErrorEventType
+		what     string
+		warn     bool
+	}{
+		{quarantine.ErrRestoreRollbackFailed, HostQuarantineRestoreUnmarkFailed, "the restoration failed and its registry entry could not be put back: the content is allowed although nothing was restored", false},
+		{quarantine.ErrRestoredNotRegistered, HostQuarantineRestoreNotRegistered, "the file was restored but the registry does not know it: its content will be detected and quarantined again at the next pass", false},
+		{quarantine.ErrRestoredLockKept, HostQuarantineRestoreLockKept, "the file was restored; remove its container by hand, it stays listed until then", true},
+	} {
+		if !errors.Is(err, ev.sentinel) {
+			continue
+		}
+		msg := fmt.Sprintf("quarantined file %s: %s: %v", id, ev.what, err)
+		if ev.warn {
+			consoleLogger.Warn(msg)
+		} else {
+			consoleLogger.Error(msg)
+		}
+		pushRestoreEvent(ctx, ev.key, msg)
 	}
-	msg := fmt.Sprintf("quarantined file %s: %s: %v", id, what, err)
-	consoleLogger.Error(msg)
+}
+
+func pushRestoreEvent(ctx context.Context, key events.ErrorEventType, msg string) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), notifyTimeout)
 	defer cancel()
 	if e := eventHandler.NotifyError(ctx, key, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))
 	}
+}
+
+// restoredButContainerKept tells whether a restoration succeeded but for its
+// container, which is still there: the file is restored and the registry is right,
+// so it is a success the operator is told about, not a failure.
+func restoredButContainerKept(err error) bool {
+	return errors.Is(err, quarantine.ErrRestoredLockKept) &&
+		!errors.Is(err, quarantine.ErrRestoredNotRegistered) && !errors.Is(err, quarantine.ErrRestoreRollbackFailed)
 }
 
 // restoreBindings is what the quarantine of the connector takes from the running

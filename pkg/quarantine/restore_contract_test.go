@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,22 +16,18 @@ import (
 	"time"
 )
 
-// flakyRegistry is a registry whose writes can be made to fail, and that records
-// them.
+// testDeadline is how long a test waits for what must not hang.
+const testDeadline = 10 * time.Second
+
+// flakyRegistry is a registry whose writes can be made to fail, or to hang until
+// their context ends or release is closed, and that records them.
 type flakyRegistry struct {
 	quarantineRegistry
-	mu     sync.Mutex
-	failAt map[int]error // the n-th call of Set (from 1) fails with this error
-	sets   []Entry
-	// deletes are the ids of the entries removed.
-	deletes []string
-}
-
-func (r *flakyRegistry) Delete(ctx context.Context, id string) error {
-	r.mu.Lock()
-	r.deletes = append(r.deletes, id)
-	r.mu.Unlock()
-	return r.quarantineRegistry.Delete(ctx, id)
+	mu      sync.Mutex
+	failAt  map[int]error // the n-th call of Set (from 1) fails with this error
+	hangAt  map[int]bool  // the n-th call of Set (from 1) hangs
+	release chan struct{} // closed by the test: frees the calls that hang
+	sets    []Entry
 }
 
 func (r *flakyRegistry) Set(ctx context.Context, e *Entry) error {
@@ -38,11 +35,29 @@ func (r *flakyRegistry) Set(ctx context.Context, e *Entry) error {
 	r.sets = append(r.sets, *e)
 	n := len(r.sets)
 	err := r.failAt[n]
+	hang := r.hangAt[n]
 	r.mu.Unlock()
+	if hang {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-r.release:
+			return errors.New("released")
+		}
+	}
 	if err != nil {
 		return err
 	}
 	return r.quarantineRegistry.Set(ctx, e)
+}
+
+// hangingOn wraps the registry of q so that its n-th write hangs; the writes that
+// hang are freed when the test ends.
+func hangingOn(t *testing.T, q *QuarantineHandler, n int) {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	q.registry = &flakyRegistry{quarantineRegistry: q.registry, hangAt: map[int]bool{n: true}, release: release}
 }
 
 // quarantined quarantines a sample and deletes it, as the removal does: what a
@@ -271,7 +286,7 @@ func TestRestore_aContainerWithoutARegistryEntryIsRestoredAndSaidSo(t *testing.T
 		if got != (call{id, path, sha256Hex([]byte("unregistered content"))}) {
 			t.Errorf("hook call = %+v, want one for %s", got, path)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testDeadline):
 		t.Error("the hook was not called")
 	}
 	if !strings.Contains(logs.String(), "has no registry entry") {
@@ -497,8 +512,8 @@ func TestRestore_aFailedPublicationOfAContainerWithoutEntryWritesNoEntry(t *test
 	if err := other.Restore(t.Context(), id); !errors.Is(err, ErrDestinationExists) {
 		t.Fatalf("Restore() = %v, want ErrDestinationExists", err)
 	}
-	if len(reg.sets) != 0 || len(reg.deletes) != 0 {
-		t.Errorf("registry writes = %+v, deletes %v, want none: nothing is registered before the file is published", reg.sets, reg.deletes)
+	if len(reg.sets) != 0 {
+		t.Errorf("registry writes = %+v, want none: nothing is registered before the file is published", reg.sets)
 	}
 	if _, err := other.registry.Get(t.Context(), id); !errors.Is(err, errEntryNotFound) {
 		t.Errorf("Get() = %v, want no entry: content must not stay allow-listed", err)
@@ -674,12 +689,12 @@ func TestRestore_aBlockingHookDoesNotDelayTheReply(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Restore() = %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testDeadline):
 		t.Fatal("Restore() waited for the hook")
 	}
 	select {
 	case <-started:
-	case <-time.After(10 * time.Second):
+	case <-time.After(testDeadline):
 		t.Error("the hook was never called")
 	}
 }
@@ -753,7 +768,379 @@ func TestRestore_theHookIsNotCancelledWithTheRequest(t *testing.T) {
 		if err != nil {
 			t.Errorf("the context of the hook ended with the request: %v", err)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(testDeadline):
 		t.Error("the hook was never called")
+	}
+}
+
+// A registry that hangs does not hold the locks of a restoration for ever: its
+// writes are bounded, and the restoration ends with the error that says what the
+// registry was left as.
+func TestRestore_aRegistryThatHangsIsBounded(t *testing.T) {
+	prev := registryTimeout
+	registryTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { registryTimeout = prev })
+	within := func(t *testing.T, restore func(ctx context.Context) error) error {
+		t.Helper()
+		ctx, cancel := context.WithCancel(t.Context())
+		result := make(chan error, 1)
+		finished := make(chan struct{})
+		go func() {
+			defer close(finished)
+			result <- restore(ctx)
+		}()
+		t.Cleanup(func() {
+			cancel()
+			select {
+			case <-finished:
+			case <-time.After(time.Second):
+			}
+		})
+		select {
+		case err := <-result:
+			return err
+		case <-time.After(time.Second):
+			t.Fatal("Restore() did not end: the registry holds it")
+			return nil
+		}
+	}
+	t.Run("the marking hangs", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		hangingOn(t, q, 1)
+		if err := within(t, func(ctx context.Context) error { return q.Restore(ctx, id) }); err == nil {
+			t.Error("Restore() = nil, want the failure of the registry")
+		}
+		if _, err := os.Stat(path); err == nil {
+			t.Error("a file was published although the registry could not be marked")
+		}
+	})
+	t.Run("the undo hangs", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		if err := os.WriteFile(path, []byte("in the way"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		hangingOn(t, q, 2)
+		if err := within(t, func(ctx context.Context) error { return q.Restore(ctx, id) }); !errors.Is(err, ErrRestoreRollbackFailed) {
+			t.Errorf("Restore() = %v, want ErrRestoreRollbackFailed", err)
+		}
+	})
+	t.Run("the registration of a container without entry hangs", func(t *testing.T) {
+		q, dir := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		other := unregisteredHandler(t, dir, Config{WatchedPaths: []string{filepath.Dir(path)}})
+		hangingOn(t, other, 1)
+		if err := within(t, func(ctx context.Context) error { return other.Restore(ctx, id) }); !errors.Is(err, ErrRestoredNotRegistered) {
+			t.Errorf("Restore() = %v, want ErrRestoredNotRegistered", err)
+		}
+	})
+	t.Run("the lock of the registry is held by a call that is stuck", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		reg, ok := q.registry.(*sqliteRegistry)
+		if !ok {
+			t.Fatalf("the registry is a %T", q.registry)
+		}
+		unlock, err := reg.lock(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer unlock()
+		start := time.Now()
+		if err = within(t, func(ctx context.Context) error { return q.Restore(ctx, id) }); err == nil {
+			t.Error("Restore() = nil, want the failure of the registry")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("Restore() took %v with a registry that is held, want about the timeout", elapsed)
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			t.Error("a file was published although the registry could not be read")
+		}
+	})
+}
+
+// A write of the registry that was cut but made all the same is undone: the entry
+// goes back as it was, and when it cannot, the restoration says so.
+func TestRestore_aMarkingThatWasCutIsUndone(t *testing.T) {
+	cutButWritten := func(q *QuarantineHandler, failUndo bool) {
+		q.registry = &cutRegistry{quarantineRegistry: q.registry, failUndo: failUndo}
+	}
+	t.Run("the undo works", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		cutButWritten(q, false)
+		err := q.Restore(t.Context(), id)
+		if err == nil || errors.Is(err, ErrRestoreRollbackFailed) {
+			t.Fatalf("Restore() = %v, want the cut marking and no failed rollback", err)
+		}
+		if _, statErr := os.Stat(path); statErr == nil {
+			t.Error("a file was published")
+		}
+		assertNotRestored(t, q, id)
+	})
+	t.Run("the undo fails", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		_, id := quarantined(t, q, "f.bin", "content")
+		cutButWritten(q, true)
+		if err := q.Restore(t.Context(), id); !errors.Is(err, ErrRestoreRollbackFailed) {
+			t.Fatalf("Restore() = %v, want ErrRestoreRollbackFailed", err)
+		}
+	})
+}
+
+// gateTakingRegistry reads through the registry, then takes its real gate and
+// keeps it until the test ends: the writes that follow wait for a gate that is
+// never freed, so nothing is written.
+type gateTakingRegistry struct {
+	quarantineRegistry
+	reg    *sqliteRegistry
+	unlock func()
+}
+
+func (r *gateTakingRegistry) Get(ctx context.Context, id string) (*Entry, error) {
+	entry, err := r.quarantineRegistry.Get(ctx, id)
+	if err != nil || r.unlock != nil {
+		return entry, err
+	}
+	r.unlock, err = r.reg.lock(ctx)
+	return entry, err
+}
+
+// A marking that gave up waiting for the registry wrote nothing: there is nothing
+// to undo, so it neither waits again nor says that a rollback failed.
+func TestRestore_aMarkingThatNeverStartedIsNotUndone(t *testing.T) {
+	prev := registryTimeout
+	registryTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { registryTimeout = prev })
+	q, _ := newE2EHandler(t, FormatTar)
+	path, id := quarantined(t, q, "f.bin", "content")
+	reg, ok := q.registry.(*sqliteRegistry)
+	if !ok {
+		t.Fatalf("the registry is a %T", q.registry)
+	}
+	gate := &gateTakingRegistry{quarantineRegistry: reg, reg: reg}
+	t.Cleanup(func() {
+		if gate.unlock != nil {
+			gate.unlock()
+		}
+	})
+	q.registry = gate
+
+	start := time.Now()
+	err := q.Restore(t.Context(), id)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("Restore() = nil, want the failure of the marking")
+	}
+	if errors.Is(err, ErrRestoreRollbackFailed) {
+		t.Errorf("Restore() = %v, a marking that wrote nothing has nothing to roll back", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Restore() = %v, want the deadline", err)
+	}
+	if elapsed >= 2*registryTimeout-registryTimeout/4 {
+		t.Errorf("Restore() took %v, want about one timeout (%v): the undo waited again", elapsed, registryTimeout)
+	}
+	if _, statErr := os.Stat(path); statErr == nil {
+		t.Error("a file was published although the registry could not be marked")
+	}
+}
+
+// cutRegistry makes its first write, then says that it was cut (the deadline ended
+// while it was being made); the next write is the undo, which fails when failUndo.
+type cutRegistry struct {
+	quarantineRegistry
+	mu       sync.Mutex
+	calls    int
+	failUndo bool
+}
+
+func (r *cutRegistry) Set(ctx context.Context, e *Entry) error {
+	r.mu.Lock()
+	r.calls++
+	call := r.calls
+	r.mu.Unlock()
+	switch {
+	case call == 1:
+		if err := r.quarantineRegistry.Set(ctx, e); err != nil {
+			return err
+		}
+		return context.DeadlineExceeded
+	case call == 2 && r.failUndo:
+		return errors.New("the undo fails too")
+	}
+	return r.quarantineRegistry.Set(ctx, e)
+}
+
+// A container that cannot be removed after a restoration is said: the file is
+// restored all the same, and restoring it again would fail.
+func TestRestore_aContainerThatCannotBeRemovedIsSaid(t *testing.T) {
+	t.Run("registered", func(t *testing.T) {
+		q, _ := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		containerNotRemovable(t)
+		err := q.Restore(t.Context(), id)
+		if !errors.Is(err, ErrRestoredLockKept) {
+			t.Fatalf("Restore() = %v, want ErrRestoredLockKept", err)
+		}
+		assertContent(t, path, "content")
+	})
+	t.Run("without entry", func(t *testing.T) {
+		q, dir := newE2EHandler(t, FormatTar)
+		path, id := quarantined(t, q, "f.bin", "content")
+		other := unregisteredHandler(t, dir, Config{WatchedPaths: []string{filepath.Dir(path)}})
+		var hookCalls atomic.Int32
+		other.SetUnregisteredRestoreHook(func(context.Context, string, string, string) { hookCalls.Add(1) })
+		containerNotRemovable(t)
+		err := other.Restore(t.Context(), id)
+		if !errors.Is(err, ErrRestoredLockKept) || errors.Is(err, ErrRestoredNotRegistered) {
+			t.Fatalf("Restore() = %v, want ErrRestoredLockKept alone: the entry was written", err)
+		}
+		assertContent(t, path, "content")
+		if _, getErr := other.registry.Get(t.Context(), id); getErr != nil {
+			t.Errorf("Get() = %v, want the entry", getErr)
+		}
+		deadline := time.Now().Add(testDeadline)
+		for hookCalls.Load() != 1 && time.Now().Before(deadline) {
+			time.Sleep(10 * time.Millisecond)
+		}
+		if hookCalls.Load() != 1 {
+			t.Error("the hook was not called for a file that was restored and registered")
+		}
+	})
+}
+
+// containerNotRemovable makes the removal of a container fail for the rest of the
+// test (a test that does so must not run in parallel with another).
+func containerNotRemovable(t *testing.T) {
+	t.Helper()
+	prev := osRemove
+	osRemove = func(name string) error {
+		if strings.HasSuffix(name, ".lock") {
+			return &os.PathError{Op: "remove", Path: name, Err: syscall.EACCES}
+		}
+		return prev(name)
+	}
+	t.Cleanup(func() { osRemove = prev })
+}
+
+// A hook that panics does not take the process down nor change the reply.
+func TestRestore_aHookThatPanicsDoesNotChangeTheReply(t *testing.T) {
+	q, dir := newE2EHandler(t, FormatTar)
+	path, id := quarantined(t, q, "f.bin", "content")
+	other := unregisteredHandler(t, dir, Config{WatchedPaths: []string{filepath.Dir(path)}})
+	called := make(chan struct{})
+	other.SetUnregisteredRestoreHook(func(context.Context, string, string, string) {
+		close(called)
+		panic("a hook that fails")
+	})
+	if err := other.Restore(t.Context(), id); err != nil {
+		t.Fatalf("Restore() = %v", err)
+	}
+	select {
+	case <-called:
+	case <-time.After(testDeadline):
+		t.Fatal("the hook was never called")
+	}
+	assertContent(t, path, "content")
+}
+
+// A retry after a restoration that left its container behind fails with a
+// destination that exists, and changes nothing: the file is the one restored.
+func TestRestore_aRetryAfterAContainerLeftBehindChangesNothing(t *testing.T) {
+	q, dir := newE2EHandler(t, FormatTar)
+	path, id := quarantined(t, q, "f.bin", "content")
+	containerNotRemovable(t)
+	if err := q.Restore(t.Context(), id); !errors.Is(err, ErrRestoredLockKept) {
+		t.Fatalf("Restore() = %v, want ErrRestoredLockKept", err)
+	}
+	if err := q.Restore(t.Context(), id); !errors.Is(err, ErrDestinationExists) {
+		t.Fatalf("the retry = %v, want ErrDestinationExists", err)
+	}
+	assertContent(t, path, "content")
+	if _, err := os.Stat(filepath.Join(dir, id+".lock")); err != nil {
+		t.Errorf("the container is gone: %v", err)
+	}
+}
+
+// A container that vanished by itself is a container removed.
+func TestRestore_aContainerThatVanishedCountsAsRemoved(t *testing.T) {
+	q, _ := newE2EHandler(t, FormatTar)
+	path, id := quarantined(t, q, "f.bin", "content")
+	prev := osRemove
+	osRemove = func(name string) error {
+		if strings.HasSuffix(name, ".lock") {
+			return &os.PathError{Op: "remove", Path: name, Err: fs.ErrNotExist}
+		}
+		return prev(name)
+	}
+	t.Cleanup(func() { osRemove = prev })
+	if err := q.Restore(t.Context(), id); err != nil {
+		t.Fatalf("Restore() = %v, want it restored", err)
+	}
+	assertContent(t, path, "content")
+}
+
+// A call that waits for the registry gives up with its own deadline, and what it
+// wanted to write is not written.
+func TestSQLiteRegistry_aCallThatWaitsGivesUpWithItsDeadline(t *testing.T) {
+	reg, err := newSQLiteRegistry(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := reg.Close(); e != nil {
+			t.Errorf("Close() = %v", e)
+		}
+	})
+	unlock, err := reg.lock(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			unlock()
+		}
+	}
+	defer release()
+	calls := map[string]func(ctx context.Context) error{
+		"Get":         func(ctx context.Context) error { _, e := reg.Get(ctx, "id"); return e },
+		"HasRestored": func(ctx context.Context) error { _, e := reg.HasRestored(ctx, "sha"); return e },
+		"Set": func(ctx context.Context) error {
+			return reg.Set(ctx, &Entry{ID: "id", SHA256: "sha", RestoredAt: time.Now()})
+		},
+		"Clone": func(ctx context.Context) error { _, e := reg.Clone(ctx, "", false); return e },
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			start := time.Now()
+			result := make(chan error, 1)
+			go func() { result <- call(ctx) }()
+			var err error
+			select {
+			case err = <-result:
+			case <-time.After(testDeadline):
+				release() // frees the call that ignores its deadline
+				t.Fatalf("%s() did not end with its deadline: it waits for the lock without its context", name)
+			}
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s() = %v, want DeadlineExceeded", name, err)
+			}
+			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+				t.Errorf("%s() took %v, want about its deadline", name, elapsed)
+			}
+		})
+	}
+	release()
+	if _, err = reg.Get(t.Context(), "id"); !errors.Is(err, errEntryNotFound) {
+		t.Errorf("Get() = %v, want no entry: nothing was written", err)
+	}
+	if restored, e := reg.HasRestored(t.Context(), "sha"); e != nil || restored {
+		t.Errorf("HasRestored() = %v, %v, want false", restored, e)
 	}
 }

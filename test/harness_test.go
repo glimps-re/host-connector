@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/alecthomas/units"
 )
 
 // builds holds the binary and the plugins, built once with the same toolchain:
@@ -231,6 +233,26 @@ func writeJSON(t *testing.T, path string, v any) {
 	write(t, path, raw)
 }
 
+// Limits the connector puts on max_file_size when it does not use syndetect.
+const (
+	defaultMaxFileSize = 100 << 20
+)
+
+// effectiveMaxFileSize is the size above which the connector does not analyze a
+// file, for the configuration given: the value of max_file_size read with the
+// units of the product, brought to 100 MiB when it is above or not positive.
+func effectiveMaxFileSize(conf map[string]any) (int64, error) {
+	raw, _ := conf["max_file_size"].(string)
+	size, err := units.ParseStrictBytes(raw)
+	if err != nil {
+		return 0, fmt.Errorf("max_file_size %q: %w", raw, err)
+	}
+	if size <= 0 || size > defaultMaxFileSize {
+		return defaultMaxFileSize, nil
+	}
+	return size, nil
+}
+
 const testToken = "00000000-00000000-00000000-00000000-00000000"
 
 func startInstance(t *testing.T, g *gmalware, opt options) *instance {
@@ -240,7 +262,6 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 	in := &instance{
 		root: root, input: filepath.Join(root, "input"), work: filepath.Join(root, "work"), output: filepath.Join(root, "output"),
 		export: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"), stderr: &syncBuffer{}, gm: g,
-		expect: expectations{maxFileSize: 100 << 20},
 	}
 	for _, d := range []string{filepath.Join(in.input, "tom"), in.work, in.output, in.export} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -263,6 +284,11 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 		"monitoring": map[string]any{"prescan": true, "modification_delay": "1s"},
 		"quarantine": map[string]any{"password": "infected", "location": in.quarantine},
 	}, opt.config)
+	maxSize, err := effectiveMaxFileSize(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.expect.maxFileSize = maxSize
 	confFile := filepath.Join(root, "config.yml")
 	writeJSON(t, pluginsFile, plugins)
 	writeJSON(t, confFile, conf)
@@ -330,6 +356,9 @@ func (in *instance) finish(t *testing.T) {
 	}
 	for _, v := range outputViolations(in.checkSpec(), in.gm) {
 		t.Errorf("OUTPUT invariant: %s", v)
+	}
+	for _, e := range in.gm.Errors() {
+		t.Errorf("fake GMalware: %s", e)
 	}
 	if in.console != nil {
 		for _, e := range in.console.ProtocolErrors() {

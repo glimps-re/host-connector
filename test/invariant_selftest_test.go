@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -165,6 +167,11 @@ func TestOutputViolations(t *testing.T) {
 			f.report(entry(big, reason(datamodel.NotAnalyzedTooBig)))
 		}},
 		{name: "small file with the too-big reason", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedTooBig)))
+		}, want: "nothing justifies"},
+		{name: "too-big reason with no known limit", setup: func(f *fixture) {
+			f.spec.maxFileSize = 0
 			f.deliver("a.txt", content)
 			f.report(entry(content, reason(datamodel.NotAnalyzedTooBig)))
 		}, want: "nothing justifies"},
@@ -436,5 +443,78 @@ func TestFakeConsole_protocol(t *testing.T) {
 	id := c.Push(t, "stop", nil)
 	if _, acked := c.Ack(id); acked {
 		t.Error("a task nobody acknowledged is reported acknowledged")
+	}
+}
+
+// A lock report padded past the bound cannot hide data behind the cap of the
+// read, and a lock report that is itself a programmed malware is flagged.
+func TestOutputViolations_lockReportTraps(t *testing.T) {
+	t.Run("padding past the bound", func(t *testing.T) {
+		f := newFixture(t)
+		path := filepath.Join(f.spec.output, "bad.txt-lockreport211126_0818.json")
+		write(t, path, []byte(detectionOf("x", "y")))
+		if err := os.Truncate(path, maxReportSize+1); err != nil {
+			t.Fatal(err)
+		}
+		if got := f.violations(); !strings.Contains(got, "larger than a report can be") {
+			t.Errorf("violations = %q", got)
+		}
+	})
+	t.Run("a programmed malware under the name", func(t *testing.T) {
+		f := newFixture(t)
+		payload := []byte("MZ malware named like a lock report")
+		f.gm.MarkMalicious(payload)
+		f.deliver("x-lockreport211126_0818.json", payload)
+		if got := f.violations(); !strings.Contains(got, "programmed as malware") {
+			t.Errorf("violations = %q", got)
+		}
+	})
+}
+
+func TestEffectiveMaxFileSize(t *testing.T) {
+	tests := []struct {
+		raw     string
+		want    int64
+		wantErr bool
+	}{
+		{raw: "100MiB", want: 100 << 20},
+		{raw: "1MiB", want: 1 << 20},
+		{raw: "10KB", want: 10000},
+		{raw: "5GB", want: 100 << 20},
+		{raw: "0", want: 100 << 20},
+		{raw: "plenty", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			got, err := effectiveMaxFileSize(map[string]any{"max_file_size": tt.raw})
+			if (err != nil) != tt.wantErr || got != tt.want {
+				t.Errorf("effectiveMaxFileSize(%q) = %d, %v; want %d, error %v", tt.raw, got, err, tt.want, tt.wantErr)
+			}
+		})
+	}
+}
+
+type failingWriter struct {
+	header http.Header
+	err    error
+}
+
+func (w *failingWriter) Header() http.Header       { return w.header }
+func (w *failingWriter) WriteHeader(int)           {}
+func (w *failingWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// A fake that cannot answer says so, except when the connector closed the
+// connection, which is only noted.
+func TestErrLog(t *testing.T) {
+	var l errLog
+	l.json(&failingWriter{header: http.Header{}, err: syscall.EPIPE}, map[string]any{})
+	l.text(&failingWriter{header: http.Header{}, err: syscall.ECONNRESET}, "x")
+	if got := l.Errors(); len(got) != 0 {
+		t.Fatalf("errors = %v, want none for a closed connection", got)
+	}
+	l.text(&failingWriter{header: http.Header{}, err: io.ErrShortWrite}, "x")
+	l.drain(iotest.ErrReader(io.ErrUnexpectedEOF), 10)
+	if got := l.Errors(); len(got) != 2 {
+		t.Errorf("errors = %v, want two", got)
 	}
 }

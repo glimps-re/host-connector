@@ -3,17 +3,21 @@
 package test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -24,6 +28,53 @@ const (
 	maxFakeSubmission = 1 << 32
 	maxFakeEvent      = 1 << 20
 )
+
+// errLog records what a fake failed to read or write while answering. A
+// connection that the connector closed or reset (it does at shutdown) is only a
+// note; anything else is an error the run asserts at its end.
+type errLog struct {
+	mu    sync.Mutex
+	errs  []string
+	notes []string
+}
+
+func (l *errLog) record(what string, err error) {
+	if err == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	line := what + ": " + err.Error()
+	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) || errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+		l.notes = append(l.notes, line)
+		return
+	}
+	l.errs = append(l.errs, line)
+}
+
+// Errors returns the failures to read or write recorded so far.
+func (l *errLog) Errors() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.errs...)
+}
+
+// json answers with v as JSON.
+func (l *errLog) json(w http.ResponseWriter, v any) {
+	l.record("writing a JSON answer", json.NewEncoder(w).Encode(v))
+}
+
+// text answers with s.
+func (l *errLog) text(w http.ResponseWriter, s string) {
+	_, err := io.WriteString(w, s)
+	l.record("writing an answer", err)
+}
+
+// drain reads and drops a body, up to max bytes.
+func (l *errLog) drain(r io.Reader, limit int64) {
+	_, err := io.Copy(io.Discard, io.LimitReader(r, limit))
+	l.record("reading a body", err)
+}
 
 // verdict is what the fake GLIMPS Malware Detect answers for a content.
 type verdict struct {
@@ -36,6 +87,7 @@ type verdict struct {
 // submissions, or no answer at all (hang). It remembers what it was asked.
 type gmalware struct {
 	*httptest.Server
+	errLog
 	hang bool
 
 	mu       sync.Mutex
@@ -55,13 +107,13 @@ func newGMalware(t *testing.T, hang bool) *gmalware {
 	g := &gmalware{hang: hang, uuids: map[string]string{}, verdicts: map[string]verdict{}, given: map[string]verdict{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/versions", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"/api/lite/v2":"2.0"}`)
+		g.text(w, `{"/api/lite/v2":"2.0"}`)
 	})
 	// The client of go-gdetect v1.6.6 deadlocks in Reconfigure when the server
 	// has no profile status (a 404 makes it ask the API version while it holds
 	// its write lock): the fake serves it so that Stop then Start works.
 	mux.HandleFunc("/api/lite/v2/status", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{"cache":false,"malware_threshold":100}`)
+		g.text(w, `{"cache":false,"malware_threshold":100}`)
 	})
 	mux.HandleFunc("/api/lite/v2/submit", g.submit)
 	mux.HandleFunc("/api/lite/v2/results/", g.results)
@@ -85,7 +137,7 @@ func (g *gmalware) injected(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 	g.failed.Add(1)
-	_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxFakeSubmission))
+	g.drain(r.Body, maxFakeSubmission)
 	http.Error(w, `{"status":false,"error":"injected failure"}`, status)
 	return true
 }
@@ -95,7 +147,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 	if g.hang {
 		// The body is read first: the server notices a closed connection only
 		// after that.
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxFakeSubmission))
+		g.drain(r.Body, maxFakeSubmission)
 		<-r.Context().Done()
 		return
 	}
@@ -132,7 +184,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	g.uuids[uuid] = sum
 	g.mu.Unlock()
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": true, "uuid": uuid})
+	g.json(w, map[string]any{"status": true, "uuid": uuid})
 }
 
 func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +209,7 @@ func (g *gmalware) results(w http.ResponseWriter, r *http.Request) {
 		res["score"] = 1000
 		res["malwares"] = v.malwares
 	}
-	_ = json.NewEncoder(w).Encode(res)
+	g.json(w, res)
 }
 
 func sha256Hex(content []byte) string {
@@ -217,6 +269,7 @@ const consoleAPIKey = "key"
 // recorded: ProtocolErrors says them.
 type fakeConsole struct {
 	*httptest.Server
+	errLog
 
 	mu     sync.Mutex
 	config map[string]any
@@ -262,9 +315,9 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch route {
 	case "register":
-		_ = json.NewEncoder(w).Encode(map[string]any{"stopped": false, "config": c.currentConfig(), "unresolved_errors": map[string]string{}})
+		c.json(w, map[string]any{"stopped": false, "config": c.currentConfig(), "unresolved_errors": map[string]string{}})
 	case "config":
-		_ = json.NewEncoder(w).Encode(map[string]any{"config": c.currentConfig()})
+		c.json(w, map[string]any{"config": c.currentConfig()})
 	case "tasks":
 		select {
 		case <-time.After(300 * time.Millisecond):
@@ -278,7 +331,7 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 		if pending == nil {
 			pending = []map[string]any{}
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"tasks": pending})
+		c.json(w, map[string]any{"tasks": pending})
 	case "events":
 		var ev consoleEvent
 		if err := json.NewDecoder(io.LimitReader(r.Body, maxFakeEvent)).Decode(&ev); err != nil {
@@ -288,10 +341,10 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.events = append(c.events, ev)
 		c.mu.Unlock()
-		_, _ = io.WriteString(w, `{}`)
+		c.text(w, `{}`)
 	default:
-		_, _ = io.Copy(io.Discard, io.LimitReader(r.Body, maxFakeEvent))
-		_, _ = io.WriteString(w, `{}`)
+		c.drain(r.Body, maxFakeEvent)
+		c.text(w, `{}`)
 	}
 }
 
@@ -341,8 +394,9 @@ func (c *fakeConsole) Events() []consoleEvent {
 // protocol.
 func (c *fakeConsole) ProtocolErrors() []string {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]string(nil), c.errs...)
+	out := append([]string(nil), c.errs...)
+	c.mu.Unlock()
+	return append(out, c.Errors()...)
 }
 
 // Ack returns the error text the connector gave for the task, and whether the

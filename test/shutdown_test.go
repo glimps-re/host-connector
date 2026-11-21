@@ -50,7 +50,7 @@ func TestShutdown_sigtermDuringTheAnalysisOfAnArchive(t *testing.T) {
 // by the same path as the order of the console.
 func TestShutdown_sigtermWritesTheReportOfAnOpenSession(t *testing.T) {
 	g := newGMalware(t, false)
-	in := startInstance(t, g, options{})
+	in := startInstance(t, g, options{session: map[string]any{"delay": "1h"}})
 	in.drop(t, "a.txt", []byte("some content to analyze"))
 	waitFor(t, "the file to be delivered", func() bool { return in.inOutput("a.txt") })
 	in.signal(t, syscall.SIGTERM)

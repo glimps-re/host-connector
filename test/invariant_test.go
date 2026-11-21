@@ -18,13 +18,15 @@ import (
 	hcquarantine "github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
-// maxReportSize bounds the report the checker reads.
+// maxReportSize bounds the report the checker reads; a larger one is a
+// violation, not a truncated read that hides what follows.
 const maxReportSize = 64 << 20
 
 // expectations are what a scenario declares to the checker: the not-analyzed
 // reasons it expects (empty and too-big need no declaration, they are checked
 // against the file), the largest file the analysis accepts, and the members of
-// the archives it delivers.
+// the archives it delivers. The sizes the checker holds a member to are the ones
+// the report declares for it.
 type expectations struct {
 	maxFileSize int64
 	reasons     map[datamodel.NotAnalyzedReason]bool
@@ -75,13 +77,16 @@ func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
 		if relErr != nil {
 			rel = path
 		}
-		if isLockReport(filepath.Base(path)) {
-			violations = append(violations, lockReportViolations(rel, path, spec.quarantine, gm)...)
-			continue
-		}
 		sum, size, err := fileDigest(path)
 		if err != nil {
 			violations = append(violations, rel+": "+err.Error())
+			continue
+		}
+		if isLockReport(filepath.Base(path)) {
+			if gm.Programmed(sum) {
+				violations = append(violations, rel+": programmed as malware")
+			}
+			violations = append(violations, lockReportViolations(rel, path, size, spec.quarantine, gm)...)
 			continue
 		}
 		violations = append(violations, fileViolations(rel, sum, size, reports[sum], spec, gm)...)
@@ -128,7 +133,10 @@ func isLockReport(name string) bool {
 // lockReportViolations checks that a lock report is exactly the report of a
 // detection of a file the test programmed as malware, whose copy is in the
 // quarantine; a file that hides behind that name is a violation.
-func lockReportViolations(rel, path, quarantineDir string, gm *gmalware) []string {
+func lockReportViolations(rel, path string, size int64, quarantineDir string, gm *gmalware) []string {
+	if size > maxReportSize {
+		return []string{rel + ": lock report larger than a report can be"}
+	}
 	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return []string{rel + ": " + err.Error()}
@@ -176,7 +184,7 @@ func (e *expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size in
 	case datamodel.NotAnalyzedEmpty:
 		return size == 0
 	case datamodel.NotAnalyzedTooBig:
-		return size > e.maxFileSize
+		return e.maxFileSize > 0 && size > e.maxFileSize
 	case datamodel.NotAnalyzedEncrypted, datamodel.NotAnalyzedExtractLimit, datamodel.NotAnalyzedExtractError,
 		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored:
 		return e.reasons[reason]

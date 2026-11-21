@@ -227,7 +227,7 @@ func (v *ValidationContext) Declarations() Declarations {
 func validatePlugin(pc PluginConfig, p plugins.Plugin, vc *ValidationContext) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("plugin %s: validation panicked: %v", pc.Name, r)
+			err = fmt.Errorf("plugin %q: validation panicked: %v", pc.Name, r)
 		}
 	}()
 	config := p.GetDefaultConfig()
@@ -236,14 +236,14 @@ func validatePlugin(pc PluginConfig, p plugins.Plugin, vc *ValidationContext) (e
 			return err
 		}
 	} else if len(pc.Config) > 0 {
-		return fmt.Errorf("plugin %s: %w: it takes no configuration", pc.Name, errInvalidPlugin)
+		return fmt.Errorf("plugin %q: %w: it takes no configuration", pc.Name, errInvalidPlugin)
 	}
 	v, ok := p.(plugins.Validator)
 	if !ok {
 		return nil
 	}
 	if err = v.Validate(config, vc); err != nil {
-		return fmt.Errorf("plugin %s: %w", pc.Name, err)
+		return fmt.Errorf("plugin %q: %w", pc.Name, err)
 	}
 	return nil
 }
@@ -257,12 +257,12 @@ func validatePlugins(pluginsConfig []PluginConfig, vc *ValidationContext, open f
 	var errs []error
 	for _, pc := range pluginsConfig {
 		if pc.File == "" {
-			errs = append(errs, fmt.Errorf("plugin %s: %w: missing %q", pc.Name, errInvalidPlugin, "file"))
+			errs = append(errs, fmt.Errorf("plugin %q: %w: missing %q", pc.Name, errInvalidPlugin, "file"))
 			continue
 		}
 		p, err := open(pc.File)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("plugin %s: %w", pc.Name, err))
+			errs = append(errs, fmt.Errorf("plugin %q: %w", pc.Name, err))
 			continue
 		}
 		if err = validatePlugin(pc, p, vc); err != nil {

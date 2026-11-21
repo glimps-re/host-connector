@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -76,13 +77,13 @@ func TestValidatePlugins(t *testing.T) {
 	}{
 		{name: "none"},
 		{name: "valid", config: []PluginConfig{{Name: "a", File: "good.so"}, {Name: "p", File: "plain.so"}}},
-		{name: "Validate error names the plugin", config: []PluginConfig{{Name: "f", File: "failing.so"}}, wantErr: []string{"plugin f", "7z not found"}},
-		{name: "panic is an error", config: []PluginConfig{{Name: "x", File: "panic.so"}}, wantErr: []string{"plugin x", "panicked"}},
+		{name: "Validate error names the plugin", config: []PluginConfig{{Name: "f", File: "failing.so"}}, wantErr: []string{`plugin "f"`, "7z not found"}},
+		{name: "panic is an error", config: []PluginConfig{{Name: "x", File: "panic.so"}}, wantErr: []string{`plugin "x"`, "panicked"}},
 		{name: "unknown config key", config: []PluginConfig{{Name: "a", File: "good.so", Config: map[string]any{"valu": "x"}}}, wantErr: []string{"unknown config key", "valu"}},
 		{name: "plugin taking no config", config: []PluginConfig{{Name: "p", File: "plain.so", Config: map[string]any{"k": 1}}}, wantErr: []string{"takes no configuration"}},
 		{name: "missing file key", config: []PluginConfig{{Name: "a"}}, wantErr: []string{"missing"}},
-		{name: "unopenable file", config: []PluginConfig{{Name: "a", File: "nope.so"}}, wantErr: []string{"plugin a", "no such plugin file"}},
-		{name: "every failure is reported", config: []PluginConfig{{Name: "f", File: "failing.so"}, {Name: "a", File: "nope.so"}}, wantErr: []string{"plugin f", "plugin a"}},
+		{name: "unopenable file", config: []PluginConfig{{Name: "a", File: "nope.so"}}, wantErr: []string{`plugin "a"`, "no such plugin file"}},
+		{name: "every failure is reported", config: []PluginConfig{{Name: "f", File: "failing.so"}, {Name: "a", File: "nope.so"}}, wantErr: []string{`plugin "f"`, `plugin "a"`}},
 		{name: "duplicate name", config: []PluginConfig{{Name: "a", File: "good.so"}, {Name: "a", File: "good.so"}}, wantErr: []string{"duplicate"}},
 	}
 	for _, tt := range tests {
@@ -110,6 +111,47 @@ func TestValidatePlugins(t *testing.T) {
 	}
 	if good.inited.Load() != 0 || failing.inited.Load() != 0 || plain.inited.Load() != 0 {
 		t.Error("validation must never call Init")
+	}
+}
+
+// The name of a plugin is written by whoever writes the plugins file: it is
+// quoted in every error, so that it cannot forge a line of a log.
+func TestValidatePlugins_aHostileNameIsQuoted(t *testing.T) {
+	const hostile = "x\nERROR forged\x1b[31m\u202e"
+	files := map[string]plugins.Plugin{
+		"failing.so": &validatingPlugin{validateErr: errors.New("7z not found")},
+		"panic.so":   &validatingPlugin{panics: true},
+		"plain.so":   &plainPlugin{},
+	}
+	tests := []struct {
+		name   string
+		config PluginConfig
+	}{
+		{"Validate error", PluginConfig{Name: hostile, File: "failing.so"}},
+		{"panic", PluginConfig{Name: hostile, File: "panic.so"}},
+		{"no configuration taken", PluginConfig{Name: hostile, File: "plain.so", Config: map[string]any{"k": 1}}},
+		{"missing file key", PluginConfig{Name: hostile}},
+		{"unopenable file", PluginConfig{Name: hostile, File: "nope.so"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vc, err := NewValidationContext(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = validatePlugins([]PluginConfig{tt.config}, vc, opener(files))
+			if err == nil {
+				t.Fatal("validatePlugins() error = nil")
+			}
+			for _, raw := range []string{"\n", "\x1b", "\u202e"} {
+				if strings.Contains(err.Error(), raw) {
+					t.Errorf("error holds the raw %q: %q", raw, err)
+				}
+			}
+			if !strings.Contains(err.Error(), strconv.Quote(hostile)) {
+				t.Errorf("error %q lacks the quoted name", err)
+			}
+		})
 	}
 }
 

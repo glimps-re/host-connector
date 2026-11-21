@@ -22,10 +22,12 @@ const (
 const truncationMark = "..."
 
 // quoteBounded quotes s as %q does, rune by rune, and stops, with a mark, before
-// the quoted text goes over budget bytes. What it returns is valid UTF-8 and
+// the quoted text goes over budget bytes (at least the quotes and the mark, which
+// is what a smaller budget gets). What it returns is valid UTF-8 and
 // holds no raw control, invisible or bidirectional character; a byte that is not
 // valid UTF-8 is written as \xNN.
 func quoteBounded(s string, budget int) string {
+	budget = max(budget, 2+len(truncationMark)) // the quotes and the mark: nothing shorter says anything
 	escapes := make([]string, 0, min(len(s), budget))
 	total := 2 // the quotes
 	for i := 0; i < len(s); {
@@ -67,17 +69,25 @@ func quoteBounded(s string, budget int) string {
 
 // boundedList joins at most maxReportedKeys items and says how many more there are.
 func boundedList(items []string) string {
-	if len(items) <= maxReportedKeys {
-		return strings.Join(items, ", ")
-	}
-	return strings.Join(items[:maxReportedKeys], ", ") + fmt.Sprintf(", ... and %d more", len(items)-maxReportedKeys)
+	return joinCounted(items[:min(len(items), maxReportedKeys)], len(items))
 }
 
-// quoteKeys quotes each key, within maxReportedKeyLen bytes.
-func quoteKeys(keys []string) []string {
-	out := make([]string, len(keys))
-	for i, k := range keys {
-		out[i] = quoteBounded(k, maxReportedKeyLen)
+// boundedKeys quotes, within maxReportedKeyLen bytes each, the first
+// maxReportedKeys keys only, and says how many more there are: the keys come from
+// the network, and a document of many of them must cost no more than its first 50.
+func boundedKeys(keys []string) string {
+	shown := make([]string, min(len(keys), maxReportedKeys))
+	for i := range shown {
+		shown[i] = quoteBounded(keys[i], maxReportedKeyLen)
 	}
-	return out
+	return joinCounted(shown, len(keys))
+}
+
+// joinCounted joins the items shown, of total, and says how many were left out.
+func joinCounted(shown []string, total int) string {
+	list := strings.Join(shown, ", ")
+	if total > len(shown) {
+		list += fmt.Sprintf(", ... and %d more", total-len(shown))
+	}
+	return list
 }

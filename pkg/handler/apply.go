@@ -620,7 +620,7 @@ func (h *Handler) reportUnknownKeys(ctx context.Context, keys []string) {
 		}
 		return
 	}
-	msg := fmt.Sprintf("unknown configuration keys: %s; %s", boundedList(quoteKeys(keys)), unknownKeysNoEffect)
+	msg := fmt.Sprintf("unknown configuration keys: %s; %s", boundedKeys(keys), unknownKeysNoEffect)
 	logger.Warn(msg)
 	if e := eventHandler.NotifyError(ctx, HostConfigUnknownKeys, errors.New(msg)); e != nil {
 		logger.Warn("could not push console error", slog.String("error", e.Error()))

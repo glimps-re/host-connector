@@ -328,22 +328,29 @@ func TestQuoteBounded(t *testing.T) {
 		in     string
 		budget int
 		whole  bool
+		cut    string // the exact text when it is cut, if the case says
 	}{
-		{"short", "abc", 20, true},
-		{"fits exactly", "abcd", 6, true},
-		{"an invalid byte", "a\xffb", 20, true},
-		{"a bidi mark", "a\u202eb", 20, true},
-		{"control bytes", strings.Repeat("\x01", 100), 40, false},
-		{"invalid bytes", strings.Repeat("\xfe", 100), 40, false},
-		{"two byte runes", strings.Repeat("é", 100), 40, false},
-		{"four byte runes", strings.Repeat("😀", 100), 40, false},
-		{"bidi", strings.Repeat("\u202e", 100), 40, false},
-		{"a budget below the mark", "abcdef", 3, false},
-		{"a budget of zero", "abcdef", 0, false},
+		{"short", "abc", 20, true, ""},
+		{"fits exactly", "abcd", 6, true, ""},
+		{"an invalid byte", "a\xffb", 20, true, ""},
+		{"a bidi mark", "a\u202eb", 20, true, ""},
+		{"control bytes", strings.Repeat("\x01", 100), 40, false, ""},
+		{"invalid bytes", strings.Repeat("\xfe", 100), 40, false, ""},
+		{"two byte runes", strings.Repeat("é", 100), 40, false, ""},
+		{"four byte runes", strings.Repeat("😀", 100), 40, false, ""},
+		{"bidi", strings.Repeat("\u202e", 100), 40, false, ""},
+		{"a budget below the mark", "abcdef", 3, false, ""},
+		{"a budget of zero", "abcdef", 0, false, ""},
+		{"a negative budget", "abcdef", -10, false, ""},
+		{"one over", "abcdef", 7, false, `"ab..."`},
+		{"two over", "abcdefgh", 8, false, `"abc..."`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := quoteBounded(tt.in, tt.budget)
+			if tt.budget >= 2+len(truncationMark) && len(got) > tt.budget {
+				t.Errorf("quoteBounded() is %d bytes, budget %d: %q", len(got), tt.budget, got)
+			}
 			if !utf8.ValidString(got) {
 				t.Errorf("not valid UTF-8: %q", got)
 			}
@@ -356,11 +363,77 @@ func TestQuoteBounded(t *testing.T) {
 				}
 				return
 			}
+			if tt.cut != "" && got != tt.cut {
+				t.Errorf("quoteBounded() = %q, want %q", got, tt.cut)
+			}
 			if !strings.HasSuffix(got, truncationMark+`"`) {
 				t.Errorf("a cut text lacks the mark: %q", got)
 			}
 			if len(got) > max(tt.budget, len(truncationMark)+2) {
 				t.Errorf("quoteBounded() is %d bytes, budget %d: %q", len(got), tt.budget, got)
+			}
+		})
+	}
+}
+
+// Whatever the text and the budget, a quoted text stays within the budget (at
+// least the quotes and the mark) and is valid UTF-8.
+func TestQuoteBounded_neverGoesOverTheBudget(t *testing.T) {
+	texts := []string{"", "a", "abcdef", strings.Repeat("é", 20), strings.Repeat("😀", 20), strings.Repeat("\x01", 20), strings.Repeat("\xfe", 20), "a\u202eb\x00\"\\"}
+	for _, in := range texts {
+		for budget := -3; budget <= 90; budget++ {
+			got := quoteBounded(in, budget)
+			if limit := max(budget, 2+len(truncationMark)); len(got) > limit {
+				t.Fatalf("quoteBounded(%q, %d) is %d bytes: %q", in, budget, len(got), got)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatalf("quoteBounded(%q, %d) is not valid UTF-8: %q", in, budget, got)
+			}
+		}
+	}
+}
+
+// What the keys cost does not depend on how many there are: only the ones
+// shown are quoted.
+func TestBoundedKeys_costsNothingForTheKeysLeftOut(t *testing.T) {
+	keys := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			out[i] = "key\x01" + strconv.Itoa(i)
+		}
+		return out
+	}
+	few, many := keys(maxReportedKeys+10), keys(20000)
+	allocsFew := testing.AllocsPerRun(5, func() { _ = boundedKeys(few) })
+	allocsMany := testing.AllocsPerRun(5, func() { _ = boundedKeys(many) })
+	if allocsMany > allocsFew+5 {
+		t.Errorf("%v allocations for 20000 keys, %v for %d: the keys left out are quoted", allocsMany, allocsFew, len(few))
+	}
+}
+
+func TestBoundedKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		n    int
+		want string
+	}{
+		{"none", 0, ""},
+		{"all shown", maxReportedKeys, ""},
+		{"one more", maxReportedKeys + 1, ", ... and 1 more"},
+		{"many more", 5000, ", ... and 4950 more"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keys := make([]string, tt.n)
+			for i := range keys {
+				keys[i] = "k" + strconv.Itoa(i)
+			}
+			got := boundedKeys(keys)
+			if !strings.HasSuffix(got, tt.want) || (tt.want == "" && strings.Contains(got, "more")) {
+				t.Errorf("boundedKeys() = %.80q... want suffix %q", got, tt.want)
+			}
+			if shown := strings.Count(got, `"k`); shown != min(tt.n, maxReportedKeys) {
+				t.Errorf("%d keys shown, want %d", shown, min(tt.n, maxReportedKeys))
 			}
 		})
 	}

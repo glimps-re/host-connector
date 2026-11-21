@@ -619,7 +619,7 @@ func TestUnknownKeys_caseInsensitiveAndCapped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reported := boundedList(quoteKeys(unknownKeys(raw)))
+	reported := boundedKeys(unknownKeys(raw))
 	if !strings.HasSuffix(reported, ", ... and 950 more") || strings.Count(reported, `"`) != 2*maxReportedKeys {
 		t.Errorf("reported %.120q", reported)
 	}

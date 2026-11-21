@@ -890,6 +890,9 @@ func TestE2E_restoreNeverReplacesAFile(t *testing.T) {
 	in.waitFor(t, "the restored file to be delivered", func() bool { return in.outputHas(t, bad) })
 }
 
+// monitoringStarted is the log line of a connector that is watching.
+const monitoringStarted = "monitoring successfully completed"
+
 // restart stops the connector with SIGTERM and starts it again on the same
 // folders and quarantine, with change merged over its configuration. The
 // registry of the quarantine is in memory, so the new run does not know what
@@ -900,9 +903,15 @@ func (in *instance) restart(t *testing.T, change map[string]any) {
 	if _, err := in.wait(t, 20*time.Second); err != nil {
 		t.Fatalf("the connector did not stop cleanly: %v", err)
 	}
+	if err := syscall.Kill(-in.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		t.Fatalf("the processes of the stopped connector: %v", err)
+	}
 	// The request for tasks of the dead process is still waiting in the fake
-	// console, and answers a poll later: it must be over before a task is pushed.
-	time.Sleep(2 * consolePollWait)
+	// console, and would answer a poll later: it must be over before a task is
+	// pushed.
+	if in.console != nil {
+		waitFor(t, "the polls of the stopped process to end", func() bool { return in.console.PollsInFlight() == 0 })
+	}
 	conf := in.withConf(t, change)
 	in.conf = conf
 	writeJSON(t, filepath.Join(in.root, "config.yml"), conf)
@@ -927,8 +936,9 @@ func quarantineThenRestart(t *testing.T, change func(in *instance) map[string]an
 	in.waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
 	in.waitFor(t, "the malware to leave INPUT", func() bool { return in.gone(path) })
 	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	started := strings.Count(in.stderr.String(), monitoringStarted)
 	in.restart(t, change(in))
-	in.waitFor(t, "the connector to be back", func() bool { return strings.Count(in.stderr.String(), "monitoring successfully completed") >= 2 })
+	in.waitFor(t, "the connector to be back", func() bool { return strings.Count(in.stderr.String(), monitoringStarted) > started })
 	return in, bad, path, id
 }
 
@@ -943,8 +953,9 @@ func TestE2E_restoreWithoutRegistryEntryOutsideWatchedFolders(t *testing.T) {
 		}
 		return map[string]any{"paths": []string{other}}
 	})
-	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg == "" {
-		t.Fatal("a restore outside the watched folders was acknowledged without error")
+	msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id}))
+	if !strings.Contains(msg, "below a watched path") {
+		t.Fatalf("refusal = %q, want it to say the container is restored only below a watched path", msg)
 	}
 	if in.gone(filepath.Join(in.quarantine, id+".lock")) {
 		t.Error("the container is gone although nothing was restored")
@@ -969,4 +980,65 @@ func TestE2E_restoreWithoutRegistryEntryUnderAWatchedFolder(t *testing.T) {
 	in.waitFor(t, "the console to be told", func() bool {
 		return slices.Contains(in.console.errorTypes(), "quarantine-restore-unregistered")
 	})
+}
+
+// notDeliveredWindow is how long a file that must stay in INPUT is watched.
+const notDeliveredWindow = 12 * time.Second
+
+// fixtureOf reads a fixture of the extract plugin's tests.
+func fixtureOf(t *testing.T, name string) []byte {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Clean(filepath.Join(repoRoot(t), "cmd", "plugins", "extract", "testdata", "t17a", name)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// T17b: a damaged archive that may hide an encryption, or a member path the
+// extraction cannot handle, is never delivered as a plain file, whatever
+// extract_error says: it stays in INPUT in error.
+func TestE2E_extractErrorAsFile(t *testing.T) {
+	plain := zipOf(t, map[string]string{"a.txt": strings.Repeat("a plain member ", 100)})
+	enc := fixtureOf(t, "enc_zipcrypto.zip")
+	longName := strings.Repeat("a", 300)
+	deep := strings.Repeat("d/", 70) + "x.txt"
+	huge := strings.Repeat("h", 4100)
+	tests := []struct {
+		name    string
+		policy  string
+		content []byte
+	}{
+		{name: "a cut plain archive stays under error", policy: "error", content: plain[:len(plain)*66/100]},
+		{name: "a cut encrypted archive stays under as_file", policy: "as_file", content: enc[:len(enc)*66/100]},
+		{name: "a cut encrypted archive stays under error", policy: "error", content: enc[:len(enc)*66/100]},
+		{name: "a plain archive followed by an encrypted one stays under as_file", policy: "as_file", content: append(append([]byte(nil), plain...), enc...)},
+		{name: "a member with a path component over 255 bytes stays under as_file", policy: "as_file", content: zipOf(t, map[string]string{"d/" + longName + "/x.txt": "member"})},
+		{name: "a member with a path over 4096 bytes stays under as_file", policy: "as_file", content: zipOf(t, map[string]string{huge + "/x.txt": "member"})},
+		{name: "a member 70 folders deep stays under as_file", policy: "as_file", content: zipOf(t, map[string]string{deep: "member"})},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{extract: true, config: map[string]any{
+				"unanalyzable_policy": map[string]any{"extract_error": tt.policy},
+			}})
+			in.expect.allow(datamodel.NotAnalyzedExtractError)
+			path := in.drop(t, "a.zip", tt.content)
+			// The log names the archive once the connector has looked at it: only then
+			// does absence from OUTPUT mean something.
+			in.waitFor(t, "the connector to look at the archive", func() bool { return in.logHas(path) })
+			// Absence is judged over a window: the archive must never be delivered.
+			deadline := time.Now().Add(notDeliveredWindow)
+			for time.Now().Before(deadline) {
+				if in.outputHas(t, tt.content) {
+					t.Fatal("the archive was delivered")
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if in.gone(path) {
+				t.Error("the archive left INPUT")
+			}
+		})
+	}
 }

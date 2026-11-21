@@ -396,6 +396,9 @@ type fakeConsole struct {
 	*httptest.Server
 	errLog
 
+	// polls counts the requests for tasks being answered.
+	polls atomic.Int32
+
 	mu     sync.Mutex
 	config map[string]any
 	tasks  []map[string]any
@@ -441,14 +444,18 @@ func (c *fakeConsole) serve(w http.ResponseWriter, r *http.Request) {
 	case "config":
 		c.json(w, r, map[string]any{"config": c.currentConfig()})
 	case "tasks":
+		c.polls.Add(1)
+		defer c.polls.Add(-1)
 		select {
 		case <-time.After(consolePollWait):
 		case <-r.Context().Done():
 			return
 		}
-		// A task leaves the queue only once its answer was delivered: the request
-		// of a connector that is gone (a process just restarted) wakes up after
-		// its client died, and must not take the tasks of the next one.
+		// A task leaves the queue only once its answer was delivered: the request of
+		// a connector that is gone (a process just restarted) wakes up after its
+		// client died, and must not take the tasks of the next one. The real manager
+		// is stricter about what it hands out; this fake re-delivers rather than
+		// lose a task.
 		c.mu.Lock()
 		pending := slices.Clone(c.tasks)
 		c.mu.Unlock()
@@ -513,6 +520,9 @@ func (c *fakeConsole) Push(t *testing.T, action string, content any) string {
 	c.tasks = append(c.tasks, task)
 	return id
 }
+
+// PollsInFlight counts the requests for tasks the console is still answering.
+func (c *fakeConsole) PollsInFlight() int { return int(c.polls.Load()) }
 
 // Events returns a copy of the events received so far, in order.
 func (c *fakeConsole) Events() []consoleEvent {

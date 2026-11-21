@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -339,4 +340,54 @@ func TestExtractFile_aWarningIsEligibleOnlyWithoutDataBeforeOrAfter(t *testing.T
 			}
 		})
 	}
+}
+
+// The listing of a document is held to the budget of the extraction before
+// anything is read: more members or bytes than it allows, or a ratio that is a
+// bomb, is an anomaly with the encryption possible, never tested.
+func TestCheckOnly_aListingOverTheBudgetIsAnAnomalyAndIsNotTested(t *testing.T) {
+	bomb := fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "....A", int64(4<<30), 4096, "bomb.bin")
+	tests := []struct {
+		name   string
+		table  string
+		limits plugins.ExtractLimits
+	}{
+		{"too many bytes", listing(nil, listingLine("a.bin", 2<<20)), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 20}},
+		{"too many members", listing(nil, listingLine("a", 1), listingLine("b", 1), listingLine("c", 1)), plugins.ExtractLimits{MaxFiles: 2, MaxTotalSize: 1 << 30}},
+		{"a ratio that is a bomb", listing(nil, bomb), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 40}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			calls := filepath.Join(t.TempDir(), "calls")
+			sze := fakeWithListings(t, tt.table, techListing(""))
+			sze.sevenZipPath = recordingWrapper(t, sze.sevenZipPath, calls)
+			tt.limits.CheckOnly = true
+			plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}
+			_, err := plugin.ExtractFile("/some/dir/a.zip", t.TempDir(), tt.limits)
+			if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) {
+				t.Fatalf("ExtractFile() error = %v, want an anomaly with the encryption possible", err)
+			}
+			b, readErr := os.ReadFile(filepath.Clean(calls))
+			if readErr != nil || !strings.Contains(string(b), " l ") {
+				t.Fatalf("the wrapper did not record the listing (%v): %q", readErr, b)
+			}
+			if strings.Contains(string(b), " t ") {
+				t.Errorf("the members were tested although the listing is over the budget: %s", b)
+			}
+		})
+	}
+}
+
+// recordingWrapper is a 7z that records its arguments, then runs the real one.
+func recordingWrapper(t *testing.T, target, record string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "7zwrap")
+	body := "#!/bin/sh\necho \" $* \" >> " + record + "\nexec " + target + " \"$@\"\n"
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, modeScript); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }

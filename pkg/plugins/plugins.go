@@ -73,6 +73,17 @@ type ExtractLimits struct {
 	MaxFiles int
 	// MaxTotalSize is the remaining budget of bytes.
 	MaxTotalSize int64
+
+	// CheckOnly asks the extractor to check the archive without writing anything:
+	// its technical listing, held to MaxFiles, MaxTotalSize and a ratio that is not a
+	// bomb (MaxFileSize does not apply), and an integrity test of every member with a
+	// password that nobody knows. A member that needs one, a password the extractor
+	// knows included, makes the archive encrypted, since nothing is extracted and
+	// nothing would be analyzed. The Extraction is empty; the error says what was
+	// found, with the same sentinels as an extraction (nil: readable and not
+	// encrypted); ErrUnsupportedFormat means the file is damaged. An extractor that
+	// ignores the field extracts into outputDir, which the caller removes.
+	CheckOnly bool
 }
 
 var (

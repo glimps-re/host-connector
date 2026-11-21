@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gabriel-vasile/mimetype"
+
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
@@ -1709,7 +1711,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 				location = testFile.Name()
 			}
 
-			err := c.checkBeforeExtract(location, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
+			mtype, typeErr := mimetype.DetectFile(location)
+			err := c.checkBeforeExtract(location, mtype, typeErr != nil, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("checkBeforeExtract() error = %v, wantErr %v", err, tt.wantErr)
@@ -2655,7 +2658,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "logicalPath", "archiveLogicalPath", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "logicalPath", "archiveLogicalPath", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize", "mtype", "typeErr", "typeRead"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}

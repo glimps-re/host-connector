@@ -400,11 +400,12 @@ func TestExtract_wrongPasswordKeepsWhatTheListingDecided(t *testing.T) {
 	if err := os.WriteFile(list, []byte(text), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// Wrong password with the empty one, success with "infected".
+	// Wrong password with the one nobody knows, success with "infected".
 	sze := fakeSevenZip(t, `
 for a in "$@"; do case "$a" in -o*) out="${a#-o}";; esac; done
 for a in "$@"; do [ "$a" = l ] && { cat `+list+`; exit 0; }; done
-for a in "$@"; do [ "$a" = "-p-" ] && { echo "ERROR: Wrong password : small.txt" >&2; exit 2; }; done
+ok=no; for a in "$@"; do [ "$a" = "-Pinfected" ] && ok=yes; done
+[ $ok = no ] && { echo "ERROR: Wrong password : small.txt" >&2; exit 2; }
 printf x > "$out/small.txt"
 exit 0`)
 	sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}

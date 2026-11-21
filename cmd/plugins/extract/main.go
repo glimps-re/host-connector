@@ -126,6 +126,9 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	}
 	ctx, cancel := context.WithTimeout(parent, szExtractTimeout)
 	defer cancel()
+	if limits.CheckOnly {
+		return p.checkOnly(ctx, archiveLocation, limits)
+	}
 	result, err := p.sze.extract(ctx, archiveLocation, outputDir, nil, limits)
 	if err != nil {
 		return plugins.Extraction{}, classifyFailure(err)
@@ -140,17 +143,7 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	extraction.Skipped = result.skipped.entries
 	extraction.SkippedCount = result.skipped.count
 	if len(result.anomalies) > 0 {
-		p.logger.Error("extraction anomaly", slog.String("archive", sanitizeOutput(archiveLocation)), slog.String("anomalies", sanitizeOutput(strings.Join(result.anomalies, "; "))), slog.Bool("encryption_excluded", result.encryptionExcluded))
-		extraction.Skipped = append([]datamodel.NotAnalyzedFile{{FileName: truncateName(filepath.Base(archiveLocation)), Reason: datamodel.NotAnalyzedExtractError}}, extraction.Skipped...)
-		if len(extraction.Skipped) > datamodel.MaxListedSubfiles {
-			extraction.Skipped = extraction.Skipped[:datamodel.MaxListedSubfiles]
-		}
-		extraction.SkippedCount++
-		err = fmt.Errorf("%w: %s", plugins.ErrArchiveAnomaly, sanitizeOutput(strings.Join(result.anomalies, "; ")))
-		if !result.encryptionExcluded {
-			err = errors.Join(err, plugins.ErrEncryptionPossible)
-		}
-		return extraction, err
+		return p.anomalyOf(archiveLocation, result, extraction)
 	}
 	return extraction, nil
 }
@@ -194,4 +187,35 @@ func classifyFailure(err error) error {
 		return fmt.Errorf("%w: %w: %w", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible, err)
 	}
 	return err
+}
+
+// anomalyOf is the failure of an archive that 7z found damaged or inconsistent: an
+// error wrapping plugins.ErrArchiveAnomaly, with plugins.ErrEncryptionPossible
+// unless it was proven that no encrypted content is hidden, and an extract-error
+// entry for the report.
+func (p *SevenZipExtractPlugin) anomalyOf(archiveLocation string, result extractResult, extraction plugins.Extraction) (plugins.Extraction, error) {
+	p.logger.Error("extraction anomaly", slog.String("archive", sanitizeOutput(archiveLocation)), slog.String("anomalies", sanitizeOutput(strings.Join(result.anomalies, "; "))), slog.Bool("encryption_excluded", result.encryptionExcluded))
+	extraction.Skipped = append([]datamodel.NotAnalyzedFile{{FileName: truncateName(filepath.Base(archiveLocation)), Reason: datamodel.NotAnalyzedExtractError}}, extraction.Skipped...)
+	if len(extraction.Skipped) > datamodel.MaxListedSubfiles {
+		extraction.Skipped = extraction.Skipped[:datamodel.MaxListedSubfiles]
+	}
+	extraction.SkippedCount++
+	err := fmt.Errorf("%w: %s", plugins.ErrArchiveAnomaly, sanitizeOutput(strings.Join(result.anomalies, "; ")))
+	if !result.encryptionExcluded {
+		err = errors.Join(err, plugins.ErrEncryptionPossible)
+	}
+	return extraction, err
+}
+
+// checkOnly checks the archive without extracting anything: what 7z lists and
+// what it finds testing every member.
+func (p *SevenZipExtractPlugin) checkOnly(ctx context.Context, archiveLocation string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+	result, err := p.sze.checkOnly(ctx, archiveLocation, limits)
+	if err != nil {
+		return plugins.Extraction{}, classifyFailure(err)
+	}
+	if len(result.anomalies) > 0 {
+		return p.anomalyOf(archiveLocation, result, plugins.Extraction{})
+	}
+	return plugins.Extraction{}, nil
 }

@@ -197,6 +197,15 @@ type fileToAnalyze struct {
 	// extractError is set for an archive the extractor found damaged or
 	// inconsistent, under the policy PolicyAsFile: it is analyzed as a plain file.
 	extractError bool
+	// zipFamily is set for a file typed as a zip-family document or package (docx,
+	// jar, apk...): it is checked by the extractor, not extracted. Read once, at
+	// the dispatch, from the verified descriptor.
+	zipFamily bool
+	// mtype is the type of the content, read once at the dispatch (nil when it was
+	// not read or the file has none); typeErr tells that it could not be read.
+	mtype    *mimetype.MIME
+	typeErr  bool
+	typeRead bool
 	// undetermined is set with encrypted for an archive that is damaged, when
 	// nothing proves that it holds no encrypted content: it is not told from an
 	// encrypted one.
@@ -265,12 +274,16 @@ func memberLogicalPath(parent, rel string, inside bool, location string) string 
 }
 
 type archiveToAnalyze struct {
-	sha256   string
-	location string
-	identity FileIdentity
-	input    *inputFD
-	run      *ongoing
-	size     int64
+	sha256    string
+	location  string
+	identity  FileIdentity
+	input     *inputFD
+	run       *ongoing
+	size      int64
+	zipFamily bool
+	mtype     *mimetype.MIME
+	typeErr   bool
+	typeRead  bool
 }
 
 // submission is one file queued by SubmitFile.
@@ -460,8 +473,15 @@ func (c *Connector) Start() (err error) {
 //
 // The default extractor applies no limit of its own. Only a file whose type it
 // does not know is reported as plugins.ErrUnsupportedFormat (and handled as a plain
-// file); any other failure is an extraction error.
-var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+// file); any other failure is an extraction error. With CheckOnly it checks
+// nothing: it reports nothing and writes nothing, so that the documents and
+// packages are submitted unchecked.
+var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+	if limits.CheckOnly {
+		// This extractor tells nothing of encryption: nothing to report, and nothing
+		// is written.
+		return plugins.Extraction{}, nil
+	}
 	xFile := &xtractr.XFile{
 		FilePath:  archiveLocation,
 		OutputDir: outputDir,
@@ -984,9 +1004,19 @@ func (c *Connector) dispatchFile(sub submission) {
 		sub.run.setInput(input.input)
 	}
 
-	// Route to extraction if applicable
-	if c.config.Extract && (input.size > c.config.ExtractMinThreshold || c.isTypedArchive(input)) {
-		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, run: input.run, size: input.size}
+	// Route to extraction if applicable. The type is read here, once, and only when
+	// the extraction is on; a file whose type cannot be read is sent to the
+	// extractor, which is what tells.
+	var mtype *mimetype.MIME
+	var typeErr error
+	var typed, family bool
+	if c.config.Extract {
+		mtype, typeErr = c.detectType(input)
+		typed = mtype != nil && c.isKnownArchiveType(mtype.String())
+		family = c.zipFamily(mtype)
+	}
+	if c.config.Extract && (input.size > c.config.ExtractMinThreshold || typed || family || typeErr != nil) {
+		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, run: input.run, size: input.size, zipFamily: family, mtype: mtype, typeErr: typeErr != nil, typeRead: true}
 		select {
 		case <-c.stopWorker:
 			c.finishRun(location, sub.run)
@@ -1113,6 +1143,34 @@ func (undeterminedEncryption) Error() string {
 
 func (undeterminedEncryption) Is(target error) bool { return target == errEncrypted }
 
+// handleExtractFailure decides what becomes of an archive that could not be
+// extracted, other than by a password nobody knows or a format that is not one: an
+// error that is retried, unless the extractor said that the archive itself is
+// damaged. A damaged archive is never a plain file, except under PolicyAsFile and
+// only when nothing can hide an encryption in it: otherwise the failure is
+// definitive, or the policy of the encrypted files decides.
+func (c *Connector) handleExtractFailure(archive fileToAnalyze, extractErr error, archiveLogger *slog.Logger) error {
+	if !isArchiveAnomaly(extractErr) || c.config.Unanalyzable.ExtractError != PolicyAsFile {
+		archiveLogger.Error("archive extraction failed", slog.String("error", extractErr.Error()))
+	}
+	switch {
+	case !isArchiveAnomaly(extractErr):
+		return fmt.Errorf("extract-error: %w", extractErr)
+	case c.config.Unanalyzable.ExtractError != PolicyAsFile:
+		return errExtractAnomaly
+	}
+	file := archive.named()
+	if errors.Is(extractErr, plugins.ErrEncryptionPossible) {
+		// Nothing proves that the damage hides no encryption: the policy of the
+		// encrypted files decides.
+		file.encrypted, file.undetermined = true, true
+	} else {
+		file.extractError = true
+	}
+	archiveLogger.Warn("damaged archive handled as a file", slog.String(logReasonKey, extractErr.Error()), slog.Bool("possibly_encrypted", file.encrypted))
+	return c.sendForAnalyze(file, archiveLogger)
+}
+
 // extractionAnomaly turns an extract-error entry reported by the extractor
 // (an anomaly of the archive: data after its end, a mismatch between what was
 // listed and what was extracted) into an error.
@@ -1150,6 +1208,11 @@ func (c *Connector) tryExtract(archive archiveToAnalyze) (err error) {
 		input:    archive.input,
 		run:      archive.run,
 		size:     archive.size,
+
+		zipFamily: archive.zipFamily,
+		mtype:     archive.mtype,
+		typeErr:   archive.typeErr,
+		typeRead:  archive.typeRead,
 	}
 	var totalExtractedSize int64
 	var totalExtractedFiles int
@@ -1174,13 +1237,21 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		err = fmt.Errorf("extract-error: %w", pathErr)
 		return
 	}
-	checkErr := c.checkBeforeExtract(archivePath, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
+	archive = c.typedOnce(archive)
+	if archive.zipFamily {
+		// A package or an office document is a zip that is submitted whole, never
+		// listed: it is only checked, for what its entries hide. Nothing is
+		// extracted, so no depth or budget is used.
+		err = c.checkZipFamily(archive, archiveLogger)
+		return
+	}
+	checkErr := c.checkBeforeExtract(archivePath, archive.mtype, archive.typeErr, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
 	if checkErr != nil {
 		archiveLogger.Debug("file cannot be extracted", slog.String(logReasonKey, checkErr.Error()))
 		file := archive.named()
 		// An archive the limits do not let us open is left out, not analyzed as a
 		// plain file: submitting it whole would let its members through unseen.
-		file.limitSkipped = errors.Is(checkErr, errExtractLimit) && c.isArchiveType(archivePath)
+		file.limitSkipped = errors.Is(checkErr, errExtractLimit) && archive.mtype != nil && c.isKnownArchiveType(archive.mtype.String())
 		err = c.sendForAnalyze(file, archiveLogger)
 		return
 	}
@@ -1209,60 +1280,22 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	// Typed once, before the extractor reads the file, from the verified descriptor:
 	// typing it again after a refusal would let bytes rewritten in between make it
 	// a plain file.
-	typed, typeErr := c.archiveTyping(archive)
-	source, cleanupSource, sourceErr := c.extractSource(archive)
-	if sourceErr != nil {
-		err = fmt.Errorf("extract-error: %w", sourceErr)
+	typed := archive.mtype != nil && c.isKnownArchiveType(archive.mtype.String())
+	extraction, extractErr, stopped := c.runExtractor(archive, outputDir, limits, archiveLogger)
+	if stopped {
+		err = extractErr
 		return
 	}
-	defer cleanupSource()
-	extraction, extractErr := ExtractFile(source, outputDir, limits)
-	cleanupSource()
 	extractedSize, extractedFiles := extraction.Size, extraction.Files
-	if extractErr == nil {
-		extractErr = extractionAnomaly(extraction)
-	}
-	if errors.Is(extractErr, plugins.ErrExtractorUnavailable) {
-		// Says nothing about the archive: it is neither submitted nor in
-		// definitive error, and the operator is told.
-		archiveLogger.Error("the extractor is unavailable", slog.String("error", extractErr.Error()))
-		c.extractorUnavailable(extractErr)
-		err = fmt.Errorf("extractor-unavailable: %w", extractErr)
-		return
-	}
-	// 7z ran, whatever it concluded: an alert about the extractor is over.
-	c.extractorAvailable()
-	if errors.Is(extractErr, plugins.ErrUnsupportedFormat) && (typed || typeErr != nil) {
+	if errors.Is(extractErr, plugins.ErrUnsupportedFormat) && (typed || archive.typeErr) {
 		// Typed as an archive by its content (or not told, which counts as typed)
 		// but refused by the extractor: a file cut before its end keeps the
 		// signature, and what it still holds (an encrypted entry included) is
 		// recoverable. It is not a plain file.
-		extractErr = fmt.Errorf("%w: %w: typed as an archive but the extractor cannot open it", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible)
+		extractErr = refusedAsDamaged("an archive")
 	}
 	if extractErr != nil && !errors.Is(extractErr, plugins.ErrUnsupportedFormat) && !errors.Is(extractErr, plugins.ErrEncrypted) {
-		// A recognized archive that could not be extracted is an error, never
-		// a plain file unless the policy says so for an anomaly of the archive:
-		// submitting it as is would let its content through.
-		if !isArchiveAnomaly(extractErr) || c.config.Unanalyzable.ExtractError != PolicyAsFile {
-			archiveLogger.Error("archive extraction failed", slog.String("error", extractErr.Error()))
-		}
-		switch {
-		case !isArchiveAnomaly(extractErr):
-			err = fmt.Errorf("extract-error: %w", extractErr)
-		case c.config.Unanalyzable.ExtractError != PolicyAsFile:
-			err = errExtractAnomaly
-		default:
-			file := archive.named()
-			if errors.Is(extractErr, plugins.ErrEncryptionPossible) {
-				// Nothing proves that the damage hides no encryption: the policy of
-				// the encrypted files decides.
-				file.encrypted, file.undetermined = true, true
-			} else {
-				file.extractError = true
-			}
-			archiveLogger.Warn("damaged archive handled as a file", slog.String(logReasonKey, extractErr.Error()), slog.Bool("possibly_encrypted", file.encrypted))
-			err = c.sendForAnalyze(file, archiveLogger)
-		}
+		err = c.handleExtractFailure(archive, extractErr, archiveLogger)
 		return
 	}
 	if extractErr != nil {
@@ -1382,6 +1415,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		if relErr != nil {
 			relPath = fileLocation
 		}
+		memberType, memberTypeErr := mimetype.DetectFile(fileLocation)
 		subFile := fileToAnalyze{
 			location:           fileLocation,
 			archiveID:          archiveID,
@@ -1395,6 +1429,10 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			archiveSize:        archive.size,
 			archiveTopLocation: archive.archiveTopLocation,
 			run:                archive.run,
+			zipFamily:          c.zipFamily(memberType),
+			mtype:              memberType,
+			typeErr:            memberTypeErr != nil,
+			typeRead:           true,
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
@@ -1477,7 +1515,8 @@ func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err
 	return
 }
 
-// checkBeforeExtract checks following conditions for file at location:
+// checkBeforeExtract checks following conditions for file at location, whose type
+// (read once) is mtype:
 //   - depth is < to max depth
 //   - total extracted size/files are below limits
 //   - type is an accepted extractable type
@@ -1485,7 +1524,7 @@ func (c *Connector) sendForAnalyze(file fileToAnalyze, logger *slog.Logger) (err
 // returns an error if any of the conditions are not met; one that is a limit
 // wraps errExtractLimit. The size of the file does not matter: an archive is
 // extracted, or listed to find out it is encrypted, whatever extract_min_size.
-func (c *Connector) checkBeforeExtract(location string, totalExtractedSize *int64, totalExtractedFiles *int, depth int, logger *slog.Logger) (err error) {
+func (c *Connector) checkBeforeExtract(location string, mtype *mimetype.MIME, typeErr bool, totalExtractedSize *int64, totalExtractedFiles *int, depth int, logger *slog.Logger) (err error) {
 	if depth >= c.config.RecursiveExtractMaxDepth {
 		err = fmt.Errorf("%w: max depth reached: %d", errExtractLimit, depth)
 		return
@@ -1516,12 +1555,11 @@ func (c *Connector) checkBeforeExtract(location string, totalExtractedSize *int6
 		return
 	}
 
-	mtype, err := mimetype.DetectFile(location) // cannot use libmagic, to remain compatible with Windows
+	// The type was read once, by the caller. If it could not be read, extraction
+	// is still tried (to not miss potential extractable files).
 	switch {
-	// if cannot detect type, return no error to still try extraction (to not miss potential extractable files)
-	case err != nil:
-		logger.Warn("error detecting file type", slog.String(logReasonKey, err.Error()))
-		err = nil
+	case typeErr:
+		logger.Warn("error detecting file type")
 		return
 	case mtype == nil:
 		logger.Warn("error detecting file type", slog.String(logReasonKey, "result *mimetype.MIME is nil"))
@@ -1550,6 +1588,103 @@ func (c *Connector) isKnownArchiveType(mime string) bool {
 	return ok
 }
 
+// zipFamily tells whether a type is a descendant of zip (docx, xlsx, pptx, jar,
+// apk, odt, epub...) that is not one of the types to extract: typed from the names
+// of the first entries, which an archive that is nothing of the kind can choose.
+func (c *Connector) zipFamily(mtype *mimetype.MIME) bool {
+	if mtype == nil {
+		return false
+	}
+	if _, extracted := c.typesToExtract[mtype.String()]; extracted {
+		return false
+	}
+	for m := mtype; m != nil; m = m.Parent() {
+		if m.Is("application/zip") {
+			return true
+		}
+	}
+	return false
+}
+
+// checkZipFamily has the extractor check a zip-family file, without extracting
+// anything, before it is submitted whole: what 7-Zip lists and finds testing every
+// member, with no password: a member that needs one, a known one included, is an
+// encrypted member, since nothing is extracted and nothing would be analyzed.
+// Nothing wrong: the file goes on as it is. An encryption, or damage, is treated as
+// for an archive; a file typed as a zip that 7-Zip refuses is damaged with an
+// encryption possible. Nothing is extracted, so no depth or budget is used.
+func (c *Connector) checkZipFamily(file fileToAnalyze, fileLogger *slog.Logger) error {
+	outputDir, err := os.MkdirTemp(c.work.extractDir(), "x-")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if e := os.RemoveAll(outputDir); e != nil {
+			fileLogger.Error("could not remove temp folder after a check", slog.String("folder", outputDir), slog.String(logErrorKey, e.Error()))
+		}
+	}()
+	_, extractErr, stopped := c.runExtractor(file, outputDir, plugins.ExtractLimits{
+		MaxFileSize: c.config.MaxFileSize, MaxFiles: c.config.RecursiveExtractMaxFiles, MaxTotalSize: c.config.RecursiveExtractMaxSize, CheckOnly: true,
+	}, fileLogger)
+	if stopped {
+		return extractErr
+	}
+	switch {
+	case extractErr == nil:
+		return c.sendForAnalyze(file.named(), fileLogger)
+	case errors.Is(extractErr, plugins.ErrEncrypted):
+		encrypted := file.named()
+		encrypted.encrypted = true
+		return c.sendForAnalyze(encrypted, fileLogger)
+	case errors.Is(extractErr, plugins.ErrUnsupportedFormat):
+		extractErr = refusedAsDamaged("a zip")
+	}
+	return c.handleExtractFailure(file, extractErr, fileLogger)
+}
+
+// runExtractor has the extractor work on the file through its verified descriptor
+// and gives its answer back once the link to the descriptor is gone, so that the
+// answer is never used while that link can still be followed. An extraction that
+// reports an extract-error entry without an error is damage. stopped says that the
+// extractor could not be asked or is down: the returned error is then the one to
+// return, and nothing is decided of the file.
+func (c *Connector) runExtractor(file fileToAnalyze, outputDir string, limits plugins.ExtractLimits, fileLogger *slog.Logger) (extraction plugins.Extraction, extractErr error, stopped bool) {
+	source, cleanup, err := c.extractSource(file)
+	if err != nil {
+		return plugins.Extraction{}, fmt.Errorf("extract-error: %w", err), true
+	}
+	defer cleanup()
+	extraction, extractErr = ExtractFile(source, outputDir, limits)
+	cleanup()
+	if extractErr == nil {
+		extractErr = extractionAnomaly(extraction)
+	}
+	if err = c.extractorState(extractErr, fileLogger); err != nil {
+		return extraction, err, true
+	}
+	return extraction, extractErr, false
+}
+
+// extractorState tells the operator that the extractor is down, and then that it
+// works again: an extractor that is down says nothing of the file, which is
+// retried.
+func (c *Connector) extractorState(extractErr error, fileLogger *slog.Logger) error {
+	if errors.Is(extractErr, plugins.ErrExtractorUnavailable) {
+		fileLogger.Error("the extractor is unavailable", slog.String("error", extractErr.Error()))
+		c.extractorUnavailable(extractErr)
+		return fmt.Errorf("extractor-unavailable: %w", extractErr)
+	}
+	c.extractorAvailable()
+	return nil
+}
+
+// refusedAsDamaged is what an extractor that refuses a file typed as an archive
+// of kind (what its content says) means: the file is damaged and may hold
+// encrypted content, it is not a plain file.
+func refusedAsDamaged(kind string) error {
+	return fmt.Errorf("%w: %w: typed as %s but the extractor cannot open it", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible, kind)
+}
+
 // mimeOctetStream is the type of a binary file nothing more precise is known of.
 const mimeOctetStream = "application/octet-stream"
 
@@ -1562,43 +1697,53 @@ func (c *Connector) isArchiveType(path string) bool {
 	return c.isKnownArchiveType(mtype.String())
 }
 
-// isTypedArchive tells whether a file is typed as an archive of a known format, at
-// any size: it must reach the extractor, which is what tells that its password is
-// unknown, instead of being submitted as a plain file. A file that cannot be typed
-// goes to the extractor too.
-func (c *Connector) isTypedArchive(input fileToAnalyze) bool {
-	typed, err := c.archiveTyping(input)
-	return typed || err != nil
-}
-
 // readProbe reads the first bytes of a file; tests replace it.
 var readProbe = func(f io.ReaderAt, p []byte) (int, error) { return f.ReadAt(p, 0) }
 
-// archiveTyping tells whether the content of the file is typed as an archive of a
-// known format, read from the verified descriptor when there is one (no second
-// open, and no other file). An error says the type could not be read.
-func (c *Connector) archiveTyping(input fileToAnalyze) (typed bool, err error) {
+// typedOnce gives a file that nobody typed its type, read once: the dispatch and
+// the members already carry theirs, which is never read again.
+func (c *Connector) typedOnce(f fileToAnalyze) fileToAnalyze {
+	if f.typeRead {
+		return f
+	}
+	mtype, err := c.detectType(f)
+	f.mtype, f.typeErr, f.typeRead = mtype, err != nil, true
+	f.zipFamily = f.zipFamily || c.zipFamily(mtype)
+	return f
+}
+
+// detectType reads the type of the content of the file, from the verified
+// descriptor when there is one (no second open, and no other file). A file with
+// nothing to be typed has no type. An error says the type could not be read.
+func (c *Connector) detectType(input fileToAnalyze) (*mimetype.MIME, error) {
 	if input.input != nil {
 		buf, ok := probeBuffers.Get().(*[]byte)
 		if !ok {
-			return false, errors.New("no probe buffer")
+			return nil, errors.New("no probe buffer")
 		}
 		defer probeBuffers.Put(buf)
-		n, readErr := readProbe(input.input.f, *buf)
-		if n == 0 && readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				return false, nil // nothing to be typed
-			}
-			return false, readErr
+		n, err := readProbe(input.input.f, *buf)
+		if err != nil && !errors.Is(err, io.EOF) {
+			// Never typed from bytes that were read before a failure.
+			return nil, err
 		}
-		return c.isKnownArchiveType(mimetype.Detect((*buf)[:n]).String()), nil
+		if n == 0 {
+			return nil, nil
+		}
+		return mimetype.Detect((*buf)[:n]), nil
 	}
 	path, err := c.readPath(input)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
-	mtype, err := mimetype.DetectFile(path)
-	if err != nil {
+	return mimetype.DetectFile(path)
+}
+
+// archiveTyping tells whether the content of the file is typed as an archive of a
+// known format.
+func (c *Connector) archiveTyping(input fileToAnalyze) (typed bool, err error) {
+	mtype, err := c.detectType(input)
+	if err != nil || mtype == nil {
 		return false, err
 	}
 	return c.isKnownArchiveType(mtype.String()), nil

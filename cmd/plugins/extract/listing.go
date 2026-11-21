@@ -347,3 +347,9 @@ func batchNames(names []string, maxCount, maxBytes int) [][]string {
 	}
 	return batches
 }
+
+// isBomb tells whether the sizes of the members are far above what the archive
+// holds: more than zipBombThreshold bytes, at a ratio over zipBombRatio.
+func (t *tableState) isBomb() bool {
+	return t.totalSize > zipBombThreshold && t.totalCompressed > 0 && t.totalSize/t.totalCompressed > zipBombRatio
+}

@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"context"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/gabriel-vasile/mimetype"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -579,5 +582,351 @@ func TestExtractError_theBuiltInExtractorRefusingATypedArchiveIsAnAnomaly(t *tes
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Errorf("the file must stay in INPUT: %v", err)
+	}
+}
+
+// docxBytes is a zip typed as a word document by its first entries.
+func docxBytes(t *testing.T) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for _, name := range []string{"[Content_Types].xml", "_rels/.rels", "word/document.xml"} {
+		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Store})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = w.Write([]byte("<x/>")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mimetype.Detect(buf.Bytes()).String(); got != "application/vnd.openxmlformats-officedocument.wordprocessingml.document" {
+		t.Fatalf("the sample is typed %s, not as a document", got)
+	}
+	return buf.Bytes()
+}
+
+type familyRun struct {
+	*anomalyRun
+	checks, extractions atomic.Int32
+}
+
+// scanDocument deposits a document and returns once its processing ended; check
+// is what the extractor answers to the check of the file.
+func scanDocument(t *testing.T, policy Unanalyzable, check func() error) (*familyRun, string) {
+	t.Helper()
+	noOpenInputs(t)
+	run := &familyRun{anomalyRun: &anomalyRun{done: &outcomes{}}}
+	run.extractorFixture = newExtractorFixture(t, func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		return plugins.Extraction{}, errors.New("unexpected extraction")
+	}, func(c *Config) {
+		c.Unanalyzable = policy
+		c.OnFileDone = run.done.add
+	})
+	ExtractFile = func(_, _ string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+		if !limits.CheckOnly {
+			run.extractions.Add(1)
+			return plugins.Extraction{}, errors.New("a document must never be extracted")
+		}
+		run.checks.Add(1)
+		return plugins.Extraction{}, check()
+	}
+	run.conn.RegisterOnReport(func(r *datamodel.Report) {
+		run.mu.Lock()
+		run.reports = append(run.reports, r)
+		run.mu.Unlock()
+	})
+	path := filepath.Join(run.src, "report.docx")
+	if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.conn.ScanFile(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+	waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+	return run, path
+}
+
+func TestZipFamily_aDocumentIsCheckedOnceAndSubmittedWholeWhenNothingIsWrong(t *testing.T) {
+	run, _ := scanDocument(t, Unanalyzable{}, func() error { return nil })
+	if run.checks.Load() != 1 || run.extractions.Load() != 0 {
+		t.Errorf("checks %d, extractions %d, want one check and no extraction", run.checks.Load(), run.extractions.Load())
+	}
+	if run.submitted.Load() != 1 {
+		t.Errorf("submissions = %d, want the file once, whole", run.submitted.Load())
+	}
+	if _, err := os.Stat(filepath.Join(run.dst, "report.docx")); err != nil {
+		t.Errorf("the document is not in OUTPUT: %v", err)
+	}
+	if reports := run.reportList(); len(reports) != 1 || reports[0].NotAnalyzedReason != "" || reports[0].Error != "" {
+		t.Errorf("reports = %+v, want an ordinary one", reports)
+	}
+}
+
+func TestZipFamily_whatTheCheckFindsFollowsThePolicies(t *testing.T) {
+	encrypted := func() error { return fmt.Errorf("7z: %w", plugins.ErrEncrypted) }
+	damaged := func() error {
+		return fmt.Errorf("7z: %w: %w", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible)
+	}
+	structural := func() error { return fmt.Errorf("7z: %w", plugins.ErrArchiveAnomaly) }
+	notAnArchive := func() error { return plugins.ErrUnsupportedFormat }
+	tests := []struct {
+		name   string
+		policy Unanalyzable
+		check  func() error
+		want   string // "kept", "encrypted", "extract-error" or "mitigated"
+	}{
+		{"encrypted, default", Unanalyzable{}, encrypted, "kept"},
+		{"encrypted, pass", Unanalyzable{Encrypted: PolicyPass}, encrypted, "encrypted"},
+		{"encrypted, mitigate", Unanalyzable{Encrypted: PolicyMitigate}, encrypted, "mitigated"},
+		{"damaged, default", Unanalyzable{Encrypted: PolicyPass}, damaged, "kept"},
+		{"damaged, as_file and encrypted pass", Unanalyzable{Encrypted: PolicyPass, ExtractError: PolicyAsFile}, damaged, "encrypted"},
+		{"damaged, as_file and encrypted error", Unanalyzable{ExtractError: PolicyAsFile}, damaged, "kept"},
+		{"structural, default", Unanalyzable{}, structural, "kept"},
+		{"structural, as_file", Unanalyzable{ExtractError: PolicyAsFile}, structural, "extract-error"},
+		{"not an archive although typed as a zip, default", Unanalyzable{Encrypted: PolicyPass}, notAnArchive, "kept"},
+		{"not an archive although typed as a zip, as_file and encrypted pass", Unanalyzable{Encrypted: PolicyPass, ExtractError: PolicyAsFile}, notAnArchive, "encrypted"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run, path := scanDocument(t, tt.policy, tt.check)
+			reports := run.reportList()
+			if len(reports) != 1 {
+				t.Fatalf("reports = %+v, want one", reports)
+			}
+			r := reports[0]
+			_, delivered := os.Stat(filepath.Join(run.dst, "report.docx"))
+			switch tt.want {
+			case "kept":
+				if r.Error == "" || delivered == nil {
+					t.Errorf("report %+v, delivered %v, want the failure and nothing delivered", r, delivered == nil)
+				}
+				if _, err := os.Stat(path); err != nil {
+					t.Errorf("the document must stay in INPUT: %v", err)
+				}
+			case "encrypted", "extract-error":
+				want := datamodel.NotAnalyzedEncrypted
+				if tt.want == "extract-error" {
+					want = datamodel.NotAnalyzedExtractError
+				}
+				if r.NotAnalyzedReason != want || delivered != nil {
+					t.Errorf("report %+v, delivered %v, want the document delivered marked %s", r, delivered == nil, want)
+				}
+			case "mitigated":
+				if !r.Malicious || r.MalwareReason != datamodel.Encrypted || delivered == nil {
+					t.Errorf("report %+v, want malware encrypted and nothing delivered", r)
+				}
+			}
+			if run.extractions.Load() != 0 {
+				t.Error("a document was extracted")
+			}
+		})
+	}
+}
+
+// An extractor that is down, a host failure or a timeout is a retry: the document
+// is never submitted unchecked.
+func TestZipFamily_aCheckThatCouldNotRunIsRetriedAndTheDocumentIsNeverSubmittedUnchecked(t *testing.T) {
+	for name, cause := range map[string]error{
+		"extractor unavailable": fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable),
+		"timeout":               fmt.Errorf("7z: %w", context.DeadlineExceeded),
+		"host failure":          errors.New("the output folder cannot be used"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			run, path := scanDocument(t, Unanalyzable{Encrypted: PolicyPass, ExtractError: PolicyAsFile}, func() error { return cause })
+			if run.submitted.Load() != 0 {
+				t.Error("the document was submitted although it could not be checked")
+			}
+			if out := run.done.get(); out[0].Kind == OutcomeFinal {
+				t.Errorf("outcome = %v, want a retry", out[0].Kind)
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("the document must stay in INPUT: %v", err)
+			}
+		})
+	}
+}
+
+// The default extractor reports nothing of a check and writes nothing.
+func TestDefaultExtractor_aCheckOnlyReportsNothing(t *testing.T) {
+	out := t.TempDir()
+	ex, err := ExtractFile(filepath.Join(t.TempDir(), "absent.docx"), out, plugins.ExtractLimits{CheckOnly: true})
+	if err != nil || ex.Size != 0 || len(ex.Files) != 0 || len(ex.Skipped) != 0 {
+		t.Errorf("ExtractFile(CheckOnly) = %+v, %v, want an empty extraction", ex, err)
+	}
+	if entries, readErr := os.ReadDir(out); readErr != nil || len(entries) != 0 {
+		t.Errorf("the output folder holds %v (%v), want nothing", entries, readErr)
+	}
+}
+
+// A file whose type cannot be read is sent to the extractor, which tells what it is,
+// and handled by what it says: it is never taken for a plain file on the strength of a failed
+// read.
+func TestZipFamily_aTypeThatCannotBeReadIsCheckedByTheExtractor(t *testing.T) {
+	prev := readProbe
+	readProbe = func(io.ReaderAt, []byte) (int, error) { return 0, errors.New("injected read error") }
+	t.Cleanup(func() { readProbe = prev })
+	run, path := scanDocument(t, Unanalyzable{}, func() error { return fmt.Errorf("7z: %w", plugins.ErrEncrypted) })
+	if got := run.checks.Load() + run.extractions.Load(); got != 1 {
+		t.Errorf("the extractor was asked %d times, want once: a type that cannot be read is not a reason to skip it", got)
+	}
+	if _, err := os.Stat(filepath.Join(run.dst, "report.docx")); err == nil {
+		t.Error("the file was delivered although the check found it encrypted")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the file must stay in INPUT: %v", err)
+	}
+}
+
+// detectType types a file from what it read, and never from bytes read before a
+// failure.
+func TestDetectType_readResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "doc.docx")
+	if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if e := file.Close(); e != nil {
+			t.Error(e)
+		}
+	})
+	boom := errors.New("input/output error")
+	tests := []struct {
+		name     string
+		n        int
+		err      error
+		wantType bool
+		wantErr  bool
+	}{
+		{"bytes and the end of the file", 100, io.EOF, true, false},
+		{"bytes and an error", 100, boom, false, true},
+		{"nothing and the end of the file", 0, io.EOF, false, false},
+		{"nothing and an error", 0, boom, false, true},
+	}
+	c := policyConnector(t, Unanalyzable{}, 100, cleanSubmitter())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			prev := readProbe
+			readProbe = func(r io.ReaderAt, p []byte) (int, error) {
+				if tt.n > 0 {
+					n, _ := r.ReadAt(p, 0)
+					return min(n, tt.n), tt.err
+				}
+				return 0, tt.err
+			}
+			t.Cleanup(func() { readProbe = prev })
+			mtype, typeErr := c.detectType(fileToAnalyze{input: &inputFD{f: file}})
+			if (mtype != nil) != tt.wantType || (typeErr != nil) != tt.wantErr {
+				t.Errorf("detectType() = %v, %v, want type %t, error %t", mtype, typeErr, tt.wantType, tt.wantErr)
+			}
+		})
+	}
+}
+
+// What a file is typed as at the dispatch is what it is handled as: bytes rewritten
+// through the descriptor afterwards, before the extractor is asked, change nothing.
+func TestTyping_bytesRewrittenAfterTheDispatchDoNotMakeAPlainFile(t *testing.T) {
+	rewriteAfterFirstProbe := func(path string) func(io.ReaderAt, []byte) (int, error) {
+		reads := 0
+		return func(r io.ReaderAt, p []byte) (int, error) {
+			n, err := r.ReadAt(p, 0)
+			reads++
+			if reads == 1 {
+				if e := os.WriteFile(path, []byte("now plain text with no signature at all"), 0o600); e != nil {
+					panic(e)
+				}
+			}
+			return n, err
+		}
+	}
+	t.Run("a document is still checked", func(t *testing.T) {
+		prev := readProbe
+		t.Cleanup(func() { readProbe = prev })
+		noOpenInputs(t)
+		run := &familyRun{anomalyRun: &anomalyRun{done: &outcomes{}}}
+		run.extractorFixture = newExtractorFixture(t, func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return plugins.Extraction{}, errors.New("unexpected")
+		}, func(c *Config) { c.OnFileDone = run.done.add })
+		ExtractFile = func(_, _ string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+			if limits.CheckOnly {
+				run.checks.Add(1)
+				return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrEncrypted)
+			}
+			run.extractions.Add(1)
+			return plugins.Extraction{}, errors.New("a document must never be extracted")
+		}
+		path := filepath.Join(run.src, "report.docx")
+		if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		readProbe = rewriteAfterFirstProbe(path)
+		if err := run.conn.ScanFile(t.Context(), path); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+		waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+		if run.checks.Load() != 1 {
+			t.Errorf("checks = %d, want the document checked once although its bytes changed", run.checks.Load())
+		}
+		if _, err := os.Stat(filepath.Join(run.dst, "report.docx")); err == nil {
+			t.Error("the document was delivered")
+		}
+	})
+	t.Run("an archive refused by the extractor is still damaged", func(t *testing.T) {
+		prev := readProbe
+		t.Cleanup(func() { readProbe = prev })
+		noOpenInputs(t)
+		run := &anomalyRun{done: &outcomes{}}
+		run.extractorFixture = newExtractorFixture(t, refusedAsNotAnArchive, func(c *Config) { c.OnFileDone = run.done.add })
+		run.conn.RegisterOnReport(func(r *datamodel.Report) {
+			run.mu.Lock()
+			run.reports = append(run.reports, r)
+			run.mu.Unlock()
+		})
+		path := run.deposit(t, "a.zip")
+		readProbe = rewriteAfterFirstProbe(path)
+		if err := run.conn.ScanFile(t.Context(), path); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+		waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+		if run.submitted.Load() != 0 {
+			t.Error("the archive was submitted as a plain file")
+		}
+		run.assertLeftInPlace(t, path)
+	})
+}
+
+// With the extraction off nothing reads the type of a file: it would be a read
+// for nothing.
+func TestDispatch_theTypeIsNotReadWhenTheExtractionIsOff(t *testing.T) {
+	noOpenInputs(t)
+	var probes atomic.Int32
+	prev := readProbe
+	readProbe = func(r io.ReaderAt, p []byte) (int, error) {
+		probes.Add(1)
+		return r.ReadAt(p, 0)
+	}
+	t.Cleanup(func() { readProbe = prev })
+	run := &anomalyRun{done: &outcomes{}}
+	run.extractorFixture = newExtractorFixture(t, refusedAsNotAnArchive, func(c *Config) {
+		c.Extract = false
+		c.OnFileDone = run.done.add
+	})
+	t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+	path := run.deposit(t, "a.zip")
+	if err := run.conn.ScanFile(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+	if probes.Load() != 0 {
+		t.Errorf("the type was read %d times with the extraction off", probes.Load())
 	}
 }

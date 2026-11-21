@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -346,6 +348,65 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 	return info, nil
 }
 
+// checkOnly lists the archive and tests every member, with the password of no one
+// (noPassword), without writing anything. A member that needs a password, a known
+// one included, is encrypted: nothing is extracted and nothing would be analyzed.
+// What the test finds is told apart by decideEncryption, as for an extraction; the
+// integrity test is what catches an encryption that the listing hides. The listing
+// is held to the budget of the extraction (members, total size, ratio) before
+// anything is read.
+func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, limits plugins.ExtractLimits) (res extractResult, err error) {
+	ctx, cancel := context.WithTimeout(ctx, archiveTimeout(archivePath, 0))
+	defer cancel()
+	nopw := *sze
+	nopw.config = extractorConfig{}
+	// No cap per member: the budget of the extraction (members, total size, ratio) is
+	// what the check holds the listing to, as a document may hold a large medium.
+	const unlimited = 1 << 62
+	sink := newListSink(unlimited, max(limits.MaxFiles, 0), max(limits.MaxTotalSize, 0))
+	res.logger = sze.logger
+	if err = nopw.list(ctx, archivePath, nil, sink); err != nil {
+		return res, err
+	}
+	res.anomalies = slices.Clone(sink.anomalies)
+	res.dataFailure, res.listComplete, res.listedEntries = sink.dataFailure, sink.complete, sink.table.entries
+	res.skipped = sink.table.skipped
+	defer func() {
+		if err == nil && len(res.anomalies) > 0 {
+			res.encryptionExcluded = nopw.excludesEncryption(ctx, archivePath, &res)
+		}
+	}()
+	t := &sink.table
+	switch {
+	case t.skipped.count > 0:
+		res.anomalies = noteAnomaly(res.anomalies, "the listing announces more members or bytes than the extraction budget allows")
+		return res, nil
+	case t.isBomb():
+		res.anomalies = noteAnomaly(res.anomalies, "the sizes of the members are high compared to the archive, potential ZipBomb")
+		res.dataFailure = true
+		return res, nil
+	}
+	_, runErr := nopw.runStream(ctx, "", []string{"-spd", "--", "t", archivePath}, discard, archivePath)
+	var trace encTrace
+	switch {
+	case runErr == nil:
+		return res, nil
+	case errors.Is(runErr, ErrInvalidPassword):
+		trace.wrong++
+		res.dataFailure = true
+	case errors.Is(runErr, errEncryptionHint):
+		trace.hintRuns++
+		res.dataFailure = true
+	case errors.Is(runErr, errSevenZipRecoverable):
+		nopw.recoverableAnomaly(&res.anomalies, "test", runErr)
+		res.dataFailure = true
+		return res, nil
+	default:
+		return res, runErr
+	}
+	return res, nopw.decideEncryption(ctx, archivePath, trace, res.listedEntries, runErr)
+}
+
 // excludesEncryption is the one proof that an archive with anomalies holds no
 // encrypted content, which the archive controls the flags of (7z's own
 // Encrypted flag can be cleared, and a check byte can collide). It holds only
@@ -399,7 +460,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	t := &sink.table
 
 	// zip bomb detection (only count files that would pass MaxFileSize filter)
-	if t.totalSize > zipBombThreshold && t.totalCompressed > 0 && t.totalSize/t.totalCompressed > zipBombRatio {
+	if t.isBomb() {
 		err = fmt.Errorf("size of files within archive is high compared to archive size, potential ZipBomb (total: %d, compressed: %d, ratio: %d)", t.totalSize, t.totalCompressed, t.totalSize/t.totalCompressed)
 		return
 	}
@@ -768,14 +829,28 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 	return sze.run(ctx, runSpec{password: password, args: args, consume: consume, paths: paths})
 }
 
+// noPassword is the password of every run that is meant to run without one: a
+// random one, drawn once per process and known to no archive. 7-Zip takes "-p-" for
+// the literal password "-", which an archive can be encrypted with, so it is never
+// used to mean "no password": the listing, the first attempt of an extraction and
+// the check all run with this one, and a member that it does not open needs a
+// password.
+var noPassword = sync.OnceValue(func() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("no random source: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+})
+
 // run is runStream with the limits on what 7z writes: the kernel's limit on
 // each file, and the watch of the output folder. A run stopped by them returns
 // a *limitHit.
 func (sze *sevenZipExtract) run(ctx context.Context, spec runSpec) (symLinkFiles []string, err error) {
-	passwordArg := "-P" + spec.password
 	if spec.password == "" {
-		passwordArg = "-p-"
+		spec.password = noPassword()
 	}
+	passwordArg := "-P" + spec.password
 	runCtx, runCancel := context.WithTimeout(ctx, szRunTimeout)
 	defer runCancel()
 	stderr := &cappedBuffer{limit: maxSevenZipStderr, cancel: runCancel}

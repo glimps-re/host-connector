@@ -705,8 +705,8 @@ func TestIsSmallArchive_onlyAKnownArchiveFormatStartsTheExtractor(t *testing.T) 
 		want bool
 	}{"a zip": {zipPath, true}, "an unknown binary": {binary, false}, "a text": {text, false}} {
 		t.Run(name, func(t *testing.T) {
-			if got := c.isTypedArchive(fileToAnalyze{location: tt.path}); got != tt.want {
-				t.Errorf("isTypedArchive() = %v, want %v", got, tt.want)
+			if got, _ := c.archiveTyping(fileToAnalyze{location: tt.path}); got != tt.want {
+				t.Errorf("archiveTyping() = %v, want %v", got, tt.want)
 			}
 			if got := c.isArchiveType(tt.path); got != tt.want {
 				t.Errorf("isArchiveType() = %v, want %v", got, tt.want)

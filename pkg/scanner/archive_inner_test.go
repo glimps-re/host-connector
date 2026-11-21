@@ -2,9 +2,11 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -155,37 +157,27 @@ func TestArchive_errorSubfilesAreBounded(t *testing.T) {
 		h.addInnerFileResult(id, huge+strconv.Itoa(i), datamodel.Result{Error: errors.New(huge)})
 	}
 	st, _ := h.getStatus(id)
-	if got := len(st.result.ErrorSubfiles); got > maxErrorSubfiles+1 {
-		t.Errorf("ErrorSubfiles has %d entries, want at most %d plus the \"more\" entry", got, maxErrorSubfiles)
+	if got := len(st.result.ErrorSubfiles); got > datamodel.MaxListedSubfiles+1 {
+		t.Errorf("ErrorSubfiles has %d entries, want at most %d plus the \"more\" entry", got, datamodel.MaxListedSubfiles)
 	}
-	if more := st.result.ErrorSubfiles[moreErrorsKey]; more != "4000 more failed file(s) not listed" {
+	if more := st.result.ErrorSubfiles[datamodel.MoreErrorsKey]; more != "4000 more failed file(s) not listed" {
 		t.Errorf("more entry = %q, want the 4000 unlisted files counted", more)
 	}
 	total := 0
 	for k, v := range st.result.ErrorSubfiles {
 		total += len(k) + len(v)
-		if len(k) > maxErrorTextLen+len(truncatedMark)+9 || len(v) > maxErrorTextLen+len(truncatedMark) {
+		if len(k) > datamodel.MaxListedNameLen || len(v) > datamodel.MaxListedNameLen {
 			t.Fatalf("an entry is not bounded: key %d bytes, value %d bytes", len(k), len(v))
 		}
 	}
-	if total > (maxErrorSubfiles+1)*2*(maxErrorTextLen+len(truncatedMark)+9) {
+	if total > (datamodel.MaxListedSubfiles+1)*2*datamodel.MaxListedNameLen {
 		t.Errorf("ErrorSubfiles takes %d bytes", total)
 	}
 	if st.inner.count != members || !strings.Contains(st.result.Error.Error(), "5000 extracted file(s)") {
 		t.Errorf("count = %d, Error = %.80v, want every failure counted", st.inner.count, st.result.Error)
 	}
-	if len(st.result.Error.Error()) > 2*(maxErrorTextLen+len(truncatedMark)) {
+	if len(st.result.Error.Error()) > 2*datamodel.MaxListedNameLen {
 		t.Errorf("archive Error is %d bytes long", len(st.result.Error.Error()))
-	}
-}
-
-func TestTruncateText(t *testing.T) {
-	if got := truncateText("short", 10); got != "short" {
-		t.Errorf("truncateText(short) = %q", got)
-	}
-	got := truncateText(strings.Repeat("é", 10), 5)
-	if !strings.HasSuffix(got, truncatedMark) || strings.ContainsRune(got, '�') {
-		t.Errorf("truncateText cut inside a character: %q", got)
 	}
 }
 
@@ -546,12 +538,145 @@ func TestFinishArchiveAnalysis_subArchiveErrorReachesTopLevelArchive(t *testing.
 func TestArchive_longNamesWithSamePrefixStayDistinct(t *testing.T) {
 	h := newArchiveStatusHandler()
 	id := newArchiveForTest(t, h, 2)
-	prefix := strings.Repeat("p", 2*maxErrorTextLen)
+	prefix := strings.Repeat("p", 2*datamodel.MaxListedNameLen)
 	h.addInnerFileResult(id, prefix+"one", datamodel.Result{Error: errors.New("e1")})
 	h.addInnerFileResult(id, prefix+"two", datamodel.Result{Error: errors.New("e2")})
 	st, _ := h.getStatus(id)
 	if len(st.result.ErrorSubfiles) != 2 {
 		t.Errorf("ErrorSubfiles = %d entries, want 2: truncated names must not collide", len(st.result.ErrorSubfiles))
+	}
+}
+
+// The same path twice (two members of an archive with one name) is two failed
+// files, both listed: the second no longer overwrites the first.
+func TestArchive_theSamePathTwiceIsListedTwice(t *testing.T) {
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, 2)
+	h.addInnerFileResult(id, "dup.bin", datamodel.Result{Error: errors.New("first")})
+	h.addInnerFileResult(id, "dup.bin", datamodel.Result{Error: errors.New("second")})
+	st, _ := h.getStatus(id)
+	if len(st.result.ErrorSubfiles) != 2 {
+		t.Fatalf("ErrorSubfiles = %v, want both members listed", st.result.ErrorSubfiles)
+	}
+	if _, ok := st.result.ErrorSubfiles["dup.bin"]; !ok {
+		t.Error("the first member lost its own name")
+	}
+	second := false
+	for k, v := range st.result.ErrorSubfiles {
+		if strings.HasPrefix(k, "dup.bin-") && v == "second" {
+			second = true
+		}
+	}
+	if !second {
+		t.Errorf("the second member is not listed under its hashed name: %v", st.result.ErrorSubfiles)
+	}
+}
+
+// A member named like the key of the count of the files not listed does not take
+// it: it is listed under another key.
+func TestArchive_aMemberNamedLikeTheCountKeyIsRenamed(t *testing.T) {
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, 1)
+	h.addInnerFileResult(id, datamodel.MoreErrorsKey, datamodel.Result{Error: errors.New("sneaky")})
+	st, _ := h.getStatus(id)
+	if _, taken := st.result.ErrorSubfiles[datamodel.MoreErrorsKey]; taken {
+		t.Errorf("a member took the key of the count: %v", st.result.ErrorSubfiles)
+	}
+	if len(st.result.ErrorSubfiles) != 1 {
+		t.Errorf("ErrorSubfiles = %v, want the member listed", st.result.ErrorSubfiles)
+	}
+}
+
+// The same name failing through both ways in (a result and an error) is listed as
+// many times as it failed: the archive keeps the state of the keys between the
+// two, so none takes the key of another.
+func TestArchive_aNameFailingThroughBothWaysInIsListedEachTime(t *testing.T) {
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, 4)
+	h.addInnerFileResult(id, "dup.bin", datamodel.Result{Error: errors.New("one")})
+	h.addInnerError(id, "dup.bin", errors.New("two"))
+	h.addInnerFileResult(id, "dup.bin", datamodel.Result{Error: errors.New("three")})
+	h.addInnerError(id, "dup.bin", errors.New("four"))
+	st, _ := h.getStatus(id)
+	if len(st.result.ErrorSubfiles) != 4 {
+		t.Fatalf("ErrorSubfiles = %v, want the four failures listed", st.result.ErrorSubfiles)
+	}
+	values := map[string]bool{}
+	counters := 0
+	for k, v := range st.result.ErrorSubfiles {
+		values[v] = true
+		if strings.Contains(k, "~") {
+			counters++
+		}
+	}
+	if len(values) != 4 || counters != 2 {
+		t.Errorf("values %v, %d keys with a counter: want the four errors, and a counter for the third and fourth", values, counters)
+	}
+}
+
+// An archive with more failed members than can be listed still adds up once the
+// report is bounded: what the scanner lists, plus what it counts, plus what the
+// bound itself leaves out, is the number of failures.
+func TestArchive_theFailuresAddUpAfterTheReportIsBounded(t *testing.T) {
+	const failed = 1500
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, failed)
+	for i := range failed {
+		h.addInnerFileResult(id, fmt.Sprintf("member%05d", i), datamodel.Result{Error: errors.New("e")})
+	}
+	st, _ := h.getStatus(id)
+	r := datamodel.Report{ErrorExtractedFiles: maps.Clone(st.result.ErrorSubfiles)}
+	r.Bound()
+	got := datamodel.ListedErrors(r.ErrorExtractedFiles) + datamodel.ParseMoreErrors(r.ErrorExtractedFiles[datamodel.MoreErrorsKey])
+	if got != failed {
+		t.Errorf("listed plus not listed = %d, want %d", got, failed)
+	}
+}
+
+// The keys the scanner makes are kept as they are by Report.Bound, which would
+// otherwise cut them again and merge entries.
+func TestArchive_errorKeysSurviveBound(t *testing.T) {
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, 50)
+	prefix := strings.Repeat("p", 2*datamodel.MaxListedNameLen)
+	for i := range 50 {
+		h.addInnerFileResult(id, fmt.Sprintf("%s%03d", prefix, i), datamodel.Result{Error: errors.New("e")})
+	}
+	st, _ := h.getStatus(id)
+	made := maps.Clone(st.result.ErrorSubfiles)
+	if len(made) != 50 {
+		t.Fatalf("%d keys, want 50", len(made))
+	}
+	r := datamodel.Report{ErrorExtractedFiles: maps.Clone(made)}
+	r.Bound()
+	if len(r.ErrorExtractedFiles) != 50 {
+		t.Errorf("Bound left %d keys of 50", len(r.ErrorExtractedFiles))
+	}
+	for k := range made {
+		if _, ok := r.ErrorExtractedFiles[k]; !ok {
+			t.Fatal("Bound renamed a key of the scanner")
+		}
+	}
+}
+
+// Names that differ only in bytes that are not UTF-8 stay two entries once the
+// result is written as JSON.
+func TestArchive_errorKeysThatAreNotUTF8StayDistinctInJSON(t *testing.T) {
+	h := newArchiveStatusHandler()
+	id := newArchiveForTest(t, h, 2)
+	h.addInnerFileResult(id, "a\xffb", datamodel.Result{Error: errors.New("one")})
+	h.addInnerFileResult(id, "a\xfeb", datamodel.Result{Error: errors.New("two")})
+	st, _ := h.getStatus(id)
+	raw, err := json.Marshal(st.result.ErrorSubfiles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back map[string]string
+	if err = json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 2 {
+		t.Errorf("%d entries after the JSON round trip, want 2: %s", len(back), raw)
 	}
 }
 

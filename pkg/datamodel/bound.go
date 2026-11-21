@@ -1,9 +1,14 @@
 package datamodel
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"sort"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -19,6 +24,7 @@ const (
 	// files, all of them together.
 	MaxReportNodeMalwares = 4 * MaxReportMalwares
 
+	// truncationMark ends a text that was cut.
 	truncationMark = "…[truncated]"
 	// shrinkRounds bounds the measurements made to fit a report.
 	shrinkRounds = 24
@@ -34,15 +40,15 @@ const (
 // malwares, the files in error, the malicious files, and last the files not
 // analyzed, which attest what passed without analysis.
 func (r *Report) Bound() {
-	r.Filename = cutText(r.Filename, MaxListedNameLen)
-	r.SHA256 = cutText(r.SHA256, MaxListedNameLen)
-	r.QuarantineLocation = cutText(r.QuarantineLocation, MaxListedNameLen)
-	r.MitigationID = cutText(r.MitigationID, MaxListedNameLen)
-	r.GMalwareURL = cutText(r.GMalwareURL, MaxListedNameLen)
-	r.MovedTo = cutText(r.MovedTo, MaxListedNameLen)
-	r.MoveConflictOf = cutText(r.MoveConflictOf, MaxListedNameLen)
-	r.FileType = cutText(r.FileType, MaxListedNameLen)
-	r.Error = cutText(r.Error, MaxListedNameLen)
+	r.Filename = CutText(r.Filename, MaxListedNameLen)
+	r.SHA256 = CutText(r.SHA256, MaxListedNameLen)
+	r.QuarantineLocation = CutText(r.QuarantineLocation, MaxListedNameLen)
+	r.MitigationID = CutText(r.MitigationID, MaxListedNameLen)
+	r.GMalwareURL = CutText(r.GMalwareURL, MaxListedNameLen)
+	r.MovedTo = CutText(r.MovedTo, MaxListedNameLen)
+	r.MoveConflictOf = CutText(r.MoveConflictOf, MaxListedNameLen)
+	r.FileType = CutText(r.FileType, MaxListedNameLen)
+	r.Error = CutText(r.Error, MaxListedNameLen)
 	r.Malwares = boundNames(r.Malwares, MaxReportMalwares)
 
 	r.NotAnalyzedExtractedCount = max(r.NotAnalyzedExtractedCount, len(r.NotAnalyzedExtractedFiles))
@@ -64,7 +70,7 @@ func boundNames(names []string, limit int) []string {
 	}
 	out := make([]string, min(len(names), limit))
 	for i := range out {
-		out[i] = cutText(names[i], MaxListedNameLen)
+		out[i] = CutText(names[i], MaxListedNameLen)
 	}
 	return out
 }
@@ -76,27 +82,185 @@ func boundNotAnalyzed(list []NotAnalyzedFile) []NotAnalyzedFile {
 	out := make([]NotAnalyzedFile, min(len(list), MaxListedSubfiles))
 	copy(out, list)
 	for i := range out {
-		out[i].FileName = cutText(out[i].FileName, MaxListedNameLen)
+		out[i].FileName = CutText(out[i].FileName, MaxListedNameLen)
 	}
 	return out
 }
 
-// boundErrors returns the first MaxListedSubfiles entries by name, cut, in a new
-// map.
+// maxMoreErrors bounds the count of the failed files not listed, whoever wrote
+// it: a plugin can set the value of MoreErrorsKey. It fits an int of 32 bits, and
+// a count is exact only below it.
+const maxMoreErrors = 1 << 30
+
+// MoreErrorsText is the value of MoreErrorsKey for n failed files not listed: n,
+// in decimal digits (n is kept between 0 and maxMoreErrors), then a text.
+// ParseMoreErrors reads it back.
+func MoreErrorsText(n int) string {
+	return strconv.Itoa(min(max(n, 0), maxMoreErrors)) + " more failed file(s) not listed"
+}
+
+// ParseMoreErrors is the count in a value made by MoreErrorsText: decimal digits
+// (ASCII only, leading zeros allowed) then a space and anything. A value that does
+// not have that shape has no count (0), and a count over maxMoreErrors, however
+// many digits it has, is read as maxMoreErrors. ParseMoreErrors(MoreErrorsText(n))
+// is n for n up to maxMoreErrors. It does not depend on the size of an int: the
+// digits are read as 64 bits.
+func ParseMoreErrors(value string) int {
+	digits, _, found := strings.Cut(value, " ")
+	if !found || digits == "" {
+		return 0
+	}
+	for _, c := range digits {
+		if c < '0' || c > '9' {
+			return 0
+		}
+	}
+	n, err := strconv.ParseUint(digits, 10, 64)
+	if errors.Is(err, strconv.ErrRange) || n > maxMoreErrors {
+		return maxMoreErrors
+	}
+	if err != nil {
+		return 0
+	}
+	return int(n)
+}
+
+// orderedErrorKeys is the keys of errs but MoreErrorsKey, sorted.
+func orderedErrorKeys(errs map[string]string) []string {
+	keys := make([]string, 0, len(errs))
+	for k := range errs {
+		if k != MoreErrorsKey {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// addMoreErrors sets in out, which it changes, the sentinel of the failed files
+// not listed: the count src holds plus dropped, the number of entries the caller
+// left out, whether src had the sentinel or not; and nothing when there is
+// neither. The entries listed and the count are then the number of failed files,
+// whatever the cuts.
+func addMoreErrors(out, src map[string]string, dropped int) {
+	more, had := src[MoreErrorsKey]
+	if !had && dropped == 0 {
+		return
+	}
+	out[MoreErrorsKey] = MoreErrorsText(ParseMoreErrors(more) + dropped)
+}
+
+// failureCount is the number of failed files a map of errors stands for: the
+// entries listed and the count of those not listed.
+func failureCount(errs map[string]string) int {
+	return ListedErrors(errs) + ParseMoreErrors(errs[MoreErrorsKey])
+}
+
+// boundErrors returns the first MaxListedSubfiles entries by name, in a new map,
+// and the sentinel MoreErrorsKey, one more, when there is one or when entries are
+// left out: what is left out is added to its count. A map made by the scanner,
+// which caps the entries the same way, goes through unchanged. The names are cut
+// to MaxListedNameLen bytes, and stay distinct once cut: two names that share
+// their first bytes would otherwise be one entry, and an error line and a failed
+// file of the count would be lost.
 func boundErrors(errs map[string]string) map[string]string {
 	if len(errs) == 0 {
 		return nil
 	}
-	keys := make([]string, 0, len(errs))
-	for k := range errs {
-		keys = append(keys, k)
+	keys := orderedErrorKeys(errs)
+	kept := min(len(keys), MaxListedSubfiles)
+	out := make(map[string]string, kept+1)
+	resume := map[string]int{}
+	for _, k := range keys[:kept] {
+		out[UniqueKey(k, out, resume)] = CutText(errs[k], MaxListedNameLen)
 	}
-	sort.Strings(keys)
-	out := make(map[string]string, min(len(keys), MaxListedSubfiles))
-	for _, k := range keys[:min(len(keys), MaxListedSubfiles)] {
-		out[cutText(k, MaxListedNameLen)] = cutText(errs[k], MaxListedNameLen)
-	}
+	addMoreErrors(out, errs, len(keys)-kept)
 	return out
+}
+
+// MoreErrorsKey is the key, in a map of failed files, of the count of those that
+// are not listed.
+const MoreErrorsKey = "…[more failed files]"
+
+const (
+	// keyHashBytes is the length of the hash of a cut key, which tells apart two
+	// names that share their beginning; 64 bits make a collision on purpose a
+	// matter of 2^32 attempts, and the counter below covers it anyway.
+	keyHashBytes = 8
+	// keyHashLen is what the hash adds to a key: "-" and its hex digits.
+	keyHashLen = 1 + 2*keyHashBytes
+	// counterMark introduces the counter that tells apart keys that are still
+	// the same.
+	counterMark = "~"
+)
+
+// countDigits is the room kept for the counter of a key: a counter goes up to the
+// number of keys of a map, which is at most MaxListedSubfiles + 1 (the keys and
+// the sentinel), so it has len("1001") digits.
+const countDigits = 4
+
+// maxCounter is the largest counter that fits the room kept for it.
+const maxCounter = 9999
+
+// maxCounterTries bounds the counters tried for one name. A map holds at most
+// MaxListedSubfiles + 1 keys, so among that many counters, plus one, one is free.
+const maxCounterTries = MaxListedSubfiles + 2
+
+// uniqueKey is UniqueKey with the keys already taken given as a test.
+func uniqueKey(name string, taken func(string) bool, resume map[string]int) string {
+	valid := utf8.ValidString(name)
+	if valid && len(name) <= MaxListedNameLen && name != MoreErrorsKey && !taken(name) {
+		return name
+	}
+	// A name that is not UTF-8 is written by encoding/json with U+FFFD in place of
+	// its invalid bytes: two names that differ only there would become the same
+	// key of a JSON object. It is kept readable, with the replacement made here,
+	// and told apart by the hash of its raw bytes.
+	readable := name
+	if !valid {
+		readable = strings.ToValidUTF8(name, string(utf8.RuneError))
+	}
+	sum := sha256.Sum256([]byte(name))
+	base := CutText(readable, MaxListedNameLen-keyHashLen-len(counterMark)-countDigits) + "-" + hex.EncodeToString(sum[:keyHashBytes])
+	if !taken(base) {
+		return base
+	}
+	n := 2
+	if resume != nil {
+		n = max(resume[base], 2)
+	}
+	for range maxCounterTries {
+		key := base + counterMark + strconv.Itoa(n)
+		if !taken(key) {
+			if resume != nil {
+				resume[base] = n + 1
+			}
+			return key
+		}
+		n++
+	}
+	n = min(n, maxCounter)
+	if resume != nil {
+		resume[base] = n
+	}
+	return base + counterMark + strconv.Itoa(n)
+}
+
+// UniqueKey is the key under which a failed file is listed, so that no two share
+// one. It is the name itself when that is valid UTF-8, at most MaxListedNameLen
+// bytes, not MoreErrorsKey and not in taken. Otherwise it is the readable
+// beginning of the name (invalid bytes become U+FFFD), "-", a hash of the whole
+// name, and, if that is taken too (a collision someone searched for), "~" and a
+// counter: it always is valid UTF-8 and at most MaxListedNameLen bytes. taken is
+// the map of the keys given so far, at most MaxListedSubfiles + 1 of them; the
+// key is not added to it. resume, if not nil, remembers the next counter of each
+// base, so that many names forced onto one key cost one step each and not one
+// pass over the ones before. The search for a free counter stops after
+// maxCounterTries steps: past it, which only happens if taken holds more keys
+// than allowed, the next counter is returned without being checked, so the key is
+// valid and within the limit but not guaranteed unique.
+func UniqueKey(name string, taken map[string]string, resume map[string]int) string {
+	return uniqueKey(name, func(key string) bool { _, used := taken[key]; return used }, resume)
 }
 
 // boundExtracted returns the malicious files sorted by name and cut to the
@@ -113,9 +277,9 @@ func boundExtracted(files []ExtractedFile, fileBudget, nameBudget *int) []Extrac
 	*fileBudget -= len(sorted)
 	for i := range sorted {
 		f := &sorted[i]
-		f.FileName = cutText(f.FileName, MaxListedNameLen)
-		f.SHA256 = cutText(f.SHA256, MaxListedNameLen)
-		f.GMalwareURL = cutText(f.GMalwareURL, MaxListedNameLen)
+		f.FileName = CutText(f.FileName, MaxListedNameLen)
+		f.SHA256 = CutText(f.SHA256, MaxListedNameLen)
+		f.GMalwareURL = CutText(f.GMalwareURL, MaxListedNameLen)
 		f.Malwares = boundNames(f.Malwares, min(MaxReportMalwares, max(*nameBudget, 0)))
 		*nameBudget -= len(f.Malwares)
 		f.ExtractedFiles = boundExtracted(f.ExtractedFiles, fileBudget, nameBudget)
@@ -154,9 +318,9 @@ func (r *Report) shrinkToFit() {
 			return len(r.Malwares) < n
 		},
 		func(keep float64) bool {
-			n := len(r.ErrorExtractedFiles)
+			n := ListedErrors(r.ErrorExtractedFiles)
 			r.ErrorExtractedFiles = shrinkErrors(r.ErrorExtractedFiles, keep)
-			return len(r.ErrorExtractedFiles) < n
+			return ListedErrors(r.ErrorExtractedFiles) < n
 		},
 		func(keep float64) bool {
 			n := len(r.MaliciousExtractedFiles)
@@ -182,7 +346,11 @@ func (r *Report) shrinkToFit() {
 		}
 	}
 	if r.encodedSize() > MaxReportSize {
+		total := failureCount(r.ErrorExtractedFiles)
 		r.Malwares, r.ErrorExtractedFiles, r.MaliciousExtractedFiles, r.NotAnalyzedExtractedFiles = nil, nil, nil, nil
+		if total > 0 {
+			r.ErrorExtractedFiles = map[string]string{MoreErrorsKey: MoreErrorsText(total)}
+		}
 	}
 }
 
@@ -206,21 +374,31 @@ func shrinkErrors(errs map[string]string, keep float64) map[string]string {
 	if len(errs) == 0 {
 		return errs
 	}
-	keys := make([]string, 0, len(errs))
-	for k := range errs {
-		keys = append(keys, k)
+	keys := orderedErrorKeys(errs)
+	kept := min(len(keys), int(float64(len(keys))*keep))
+	out := make(map[string]string, kept+1)
+	for _, k := range keys[:kept] {
+		out[k] = errs[k]
 	}
-	sort.Strings(keys)
-	kept := make(map[string]string, len(keys))
-	for _, k := range keys[:min(len(keys), int(float64(len(keys))*keep))] {
-		kept[k] = errs[k]
-	}
-	return kept
+	addMoreErrors(out, errs, len(keys)-kept)
+	return out
 }
 
-func cutText(s string, n int) string {
+// ListedErrors is the number of entries of errs that are failed files: all but
+// the sentinel MoreErrorsKey.
+func ListedErrors(errs map[string]string) int {
+	if _, ok := errs[MoreErrorsKey]; ok {
+		return len(errs) - 1
+	}
+	return len(errs)
+}
+
+// CutText shortens s to at most n bytes, except that the result is never shorter
+// than the mark that tells it was cut, and without splitting a character. A text
+// that fits is returned as it is.
+func CutText(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
-	return strings.ToValidUTF8(s[:n-len(truncationMark)], "") + truncationMark
+	return strings.ToValidUTF8(s[:max(n-len(truncationMark), 0)], "") + truncationMark
 }

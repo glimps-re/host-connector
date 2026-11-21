@@ -20,10 +20,12 @@ const (
 )
 
 const (
-	// MaxListedSubfiles bounds the not analyzed files listed in a result.
+	// MaxListedSubfiles bounds the files listed in a result: not analyzed files,
+	// failed files (and the one more entry that counts the failed files not
+	// listed).
 	MaxListedSubfiles = 1000
-	// MaxListedNameLen bounds a listed name, in bytes; a longer one is
-	// truncated with a marker.
+	// MaxListedNameLen bounds a listed name or message, in bytes; a longer one
+	// is cut with a marker.
 	MaxListedNameLen = 1024
 )
 

@@ -1,12 +1,9 @@
 package scanner
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -18,18 +15,13 @@ type parentArchive struct {
 	relPath  string // relative path within parent archive
 }
 
-const (
-	maxErrorSubfiles = 1000
-	maxErrorTextLen  = 1 << 10
-	truncatedMark    = "…[truncated]"
-	// moreErrorsKey stands in ErrorSubfiles for the failed files beyond
-	// maxErrorSubfiles; its value says how many.
-	moreErrorsKey = "…[more failed files]"
-)
-
 // innerErrors summarizes the extracted files that failed, for the archive
 // result: ErrorSubfiles is bounded, the count here is not.
 type innerErrors struct {
+	// resume is the state of datamodel.UniqueKey for the keys of ErrorSubfiles,
+	// kept for the life of the archive: names forced onto one key then cost one
+	// step each, under the lock of the handler.
+	resume        map[string]int
 	count         int
 	first         string
 	permanent     bool
@@ -131,7 +123,7 @@ func (a *archiveStatusHandler) addInnerError(id string, filename string, err err
 		return finished, false
 	}
 	r := datamodel.Result{Error: err}
-	status.result.ErrorSubfiles = addErrorSubfile(status.result.ErrorSubfiles, filename, err.Error())
+	status.result.ErrorSubfiles = addErrorSubfile(status.result.ErrorSubfiles, status.keyResume(), filename, err.Error())
 	status.noteInner(filename, r)
 	status.total--
 	if status.total == status.analyzed {
@@ -204,7 +196,7 @@ func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, re
 		return finished, false
 	}
 	status.analyzed++
-	status.result = mergeResult(status.result, result, filename)
+	status.result = mergeResult(status.result, result, filename, status.keyResume())
 	status.noteInner(filename, result)
 	if status.total == status.analyzed {
 		status.finished = true
@@ -231,6 +223,15 @@ func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Resu
 	return
 }
 
+// keyResume is the state that datamodel.UniqueKey keeps across the failed files
+// of the archive.
+func (s *archiveStatus) keyResume() map[string]int {
+	if s.inner.resume == nil {
+		s.inner.resume = make(map[string]int)
+	}
+	return s.inner.resume
+}
+
 // noteInner counts a failed extracted file and refreshes the archive Error and
 // AnalysisError. Any failure keeps the archive from being treated as clean
 // (a member too big or encrypted under the "error" policy included, and for
@@ -240,7 +241,7 @@ func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
 	if r.Error != nil {
 		s.inner.count++
 		if s.inner.first == "" {
-			s.inner.first = truncateText(filename+": "+r.Error.Error(), maxErrorTextLen)
+			s.inner.first = datamodel.CutText(filename+": "+r.Error.Error(), datamodel.MaxListedNameLen)
 		}
 		if errors.Is(r.Error, errInnerPermanent) || errors.Is(r.Error, errInconsistentPluginResult) || errors.Is(r.Error, errFileTooBig) || errors.Is(r.Error, errEncrypted) {
 			s.inner.permanent = true
@@ -250,14 +251,14 @@ func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
 			sentinel = errInnerPermanent
 		}
 		s.result.Error = fmt.Errorf("%w: %s", sentinel, datamodel.ExtractedErrorsSummary(s.inner.count, s.inner.first))
-		if listed := listedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= maxErrorSubfiles {
-			s.result.ErrorSubfiles[moreErrorsKey] = fmt.Sprintf("%d more failed file(s) not listed", s.inner.count-listed)
+		if listed := datamodel.ListedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= datamodel.MaxListedSubfiles {
+			s.result.ErrorSubfiles[datamodel.MoreErrorsKey] = datamodel.MoreErrorsText(s.inner.count - listed)
 		}
 	}
 	if r.AnalysisError != "" {
 		s.inner.analysisCount++
 		if s.inner.firstAnalysis == "" {
-			s.inner.firstAnalysis = truncateText(filename+": "+r.AnalysisError, maxErrorTextLen)
+			s.inner.firstAnalysis = datamodel.CutText(filename+": "+r.AnalysisError, datamodel.MaxListedNameLen)
 		}
 		s.result.AnalysisError = s.inner.firstAnalysis
 		if s.inner.analysisCount > 1 {
@@ -266,46 +267,23 @@ func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
 	}
 }
 
-// truncateText cuts s to n bytes (on a character boundary) and marks the cut.
-func truncateText(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return strings.ToValidUTF8(s[:n], "") + truncatedMark
-}
-
-// truncateKey is truncateText for a name: a cut name gets a short hash of the
-// whole name, so two long names with the same beginning stay distinct.
-func truncateKey(name string) string {
-	if len(name) <= maxErrorTextLen {
-		return name
-	}
-	sum := sha256.Sum256([]byte(name))
-	return truncateText(name, maxErrorTextLen) + "-" + hex.EncodeToString(sum[:4])
-}
-
 // addErrorSubfile records a failed extracted file, bounded in count and in
-// text length: an archive can hold thousands of members with huge names.
-func addErrorSubfile(m map[string]string, filename, msg string) map[string]string {
+// text length: an archive can hold thousands of members with huge names. The key
+// is unique and within the limit (datamodel.UniqueKey, which keeps resume for the
+// archive): two members whose names share their beginning, or the same path
+// twice, are both listed, and none takes the key of the count of those not listed.
+func addErrorSubfile(m map[string]string, resume map[string]int, filename, msg string) map[string]string {
 	if m == nil {
 		m = make(map[string]string)
 	}
-	key := truncateKey(filename)
-	if _, exists := m[key]; !exists && listedErrors(m) >= maxErrorSubfiles {
+	if datamodel.ListedErrors(m) >= datamodel.MaxListedSubfiles {
 		return m
 	}
-	m[key] = truncateText(msg, maxErrorTextLen)
+	m[datamodel.UniqueKey(filename, m, resume)] = datamodel.CutText(msg, datamodel.MaxListedNameLen)
 	return m
 }
 
-func listedErrors(m map[string]string) int {
-	if _, ok := m[moreErrorsKey]; ok {
-		return len(m) - 1
-	}
-	return len(m)
-}
-
-func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (result datamodel.Result) {
+func mergeResult(baseResult, resultToMerge datamodel.Result, filename string, keyResume map[string]int) (result datamodel.Result) {
 	result = baseResult
 	for _, m := range resultToMerge.Malwares {
 		if !slices.Contains(result.Malwares, m) {
@@ -324,10 +302,10 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string) (r
 		result.MaliciousSubfiles[filename] = resultToMerge
 	}
 	if resultToMerge.Error != nil {
-		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, filename, resultToMerge.Error.Error())
+		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, keyResume, filename, resultToMerge.Error.Error())
 	}
 	if resultToMerge.AnalysisError != "" {
-		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, filename, resultToMerge.AnalysisError)
+		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, keyResume, filename, resultToMerge.AnalysisError)
 	}
 	result = mergeNotAnalyzed(result, resultToMerge, filename)
 	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
@@ -376,7 +354,7 @@ func mergeNotAnalyzed(base, merged datamodel.Result, filename string) datamodel.
 func appendNotAnalyzed(r datamodel.Result, f datamodel.NotAnalyzedFile) datamodel.Result {
 	r.NotAnalyzedSubfilesCount++
 	if len(r.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
-		f.FileName = truncateText(f.FileName, datamodel.MaxListedNameLen)
+		f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
 		r.NotAnalyzedSubfiles = append(r.NotAnalyzedSubfiles, f)
 	}
 	return r

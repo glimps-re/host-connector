@@ -101,12 +101,12 @@ func TestArchiveContract_notAnalyzedListIsBoundedAndCountIsExact(t *testing.T) {
 func BenchmarkMergeResult_fullNotAnalyzedLists(b *testing.B) {
 	base := datamodel.Result{}
 	for i := range datamodel.MaxListedSubfiles {
-		base = mergeResult(base, datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedTooBig}, fmt.Sprintf("m%d", i))
+		base = mergeResult(base, datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedTooBig}, fmt.Sprintf("m%d", i), nil)
 	}
 	member := datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedTooBig}
 	b.ReportAllocs()
 	for b.Loop() {
-		_ = mergeResult(base, member, "one-more")
+		_ = mergeResult(base, member, "one-more", nil)
 	}
 }
 

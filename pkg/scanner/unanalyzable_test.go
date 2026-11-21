@@ -423,14 +423,14 @@ func TestAnalyzeArchiveFile_aSubArchiveLetThroughByAPluginIsListedByItsParent(t 
 func TestMergeResult_keepsTheReasonOfAMemberMitigatedWithoutAnalysis(t *testing.T) {
 	for _, reason := range []datamodel.MalwareReason{datamodel.Encrypted, datamodel.Empty, datamodel.TooBig} {
 		t.Run(string(reason), func(t *testing.T) {
-			got := mergeResult(datamodel.Result{}, datamodel.Result{Malware: true, MalwareReason: reason}, "m")
+			got := mergeResult(datamodel.Result{}, datamodel.Result{Malware: true, MalwareReason: reason}, "m", nil)
 			if !got.Malware || got.MalwareReason != reason {
 				t.Errorf("mergeResult() = %+v, want malware with reason %q", got, reason)
 			}
 		})
 	}
 	// A detection still wins over the reasons of the files not analyzed.
-	got := mergeResult(datamodel.Result{Malware: true, MalwareReason: datamodel.Encrypted}, datamodel.Result{Malware: true, MalwareReason: datamodel.MalwareDetected}, "m")
+	got := mergeResult(datamodel.Result{Malware: true, MalwareReason: datamodel.Encrypted}, datamodel.Result{Malware: true, MalwareReason: datamodel.MalwareDetected}, "m", nil)
 	if got.MalwareReason != datamodel.MalwareDetected {
 		t.Errorf("reason = %q, want a detection to win", got.MalwareReason)
 	}

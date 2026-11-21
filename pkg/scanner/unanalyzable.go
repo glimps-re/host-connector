@@ -179,7 +179,7 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 			result.FilteredVolume += f.Size
 		}
 		if len(result.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
-			f.FileName = truncateText(f.FileName, datamodel.MaxListedNameLen)
+			f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
 			result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
 		}
 	}

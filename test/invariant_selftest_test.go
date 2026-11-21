@@ -115,6 +115,31 @@ func TestOutputViolations(t *testing.T) {
 			f.deliver("a.txt", content)
 			f.report(entry(content, nil))
 		}, want: "never analyzed"},
+		{name: "no report, lost by a declared crash, analyzed clean", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.spec.crashLost(content)
+		}},
+		{name: "no report, lost by a declared crash, never analyzed", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.spec.crashLost(content)
+		}, want: "in no session report"},
+		{name: "no report, lost by a declared crash, but the service reported an analysis error", setup: func(f *fixture) {
+			f.gm.MarkAnalysisError(content, "the analysis failed")
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.spec.crashLost(content)
+		}, want: "in no session report"},
+		{name: "no report, no crash declared", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+		}, want: "in no session report"},
+		{name: "no report, lost by a declared crash, but programmed malware", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.spec.crashLost(content)
+		}, want: "programmed as malware"},
 		{name: "reported malicious", setup: func(f *fixture) {
 			f.deliver("a.txt", content)
 			f.gm.see(content)

@@ -34,6 +34,7 @@ type expectations struct {
 	archives    map[string][][]byte
 	released    map[string]bool
 	flagged     map[string]bool
+	lostByCrash map[string]bool
 }
 
 // allow declares that files may be delivered with these not-analyzed reasons.
@@ -55,6 +56,19 @@ func (e *expectations) flag(contents ...[]byte) {
 	}
 	for _, c := range contents {
 		e.flagged[sha256Hex(c)] = true
+	}
+}
+
+// crashLost declares contents whose session report a crash of the connector
+// lost, which the connector documents (the spool of a crashed run is not
+// recovered): they may be in OUTPUT with no report, but only if the service
+// analyzed them clean, with no analysis error.
+func (e *expectations) crashLost(contents ...[]byte) {
+	if e.lostByCrash == nil {
+		e.lostByCrash = map[string]bool{}
+	}
+	for _, c := range contents {
+		e.lostByCrash[sha256Hex(c)] = true
 	}
 }
 
@@ -270,6 +284,9 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 		violations = append(violations, rel+": programmed as malware")
 	}
 	if len(entries) == 0 {
+		if v, analyzed := gm.Given(sum); spec.lostByCrash[sum] && analyzed && !v.malware && v.analysisError == "" && len(violations) == 0 {
+			return nil
+		}
 		return append(violations, rel+": in no session report")
 	}
 	var problems []string

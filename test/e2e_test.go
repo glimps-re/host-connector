@@ -1164,3 +1164,107 @@ func TestE2E_aForbiddenTypeInsideAZipIsRefused(t *testing.T) {
 		t.Error("the archive with a forbidden type reached OUTPUT")
 	}
 }
+
+// spoolFiles lists the spool files of the open sessions.
+func (in *instance) spoolFiles(t *testing.T) []string {
+	t.Helper()
+	return globOne(t, filepath.Join(in.work, "gmhost-*", datamodel.SessionSpoolDir, "*"+datamodel.SessionSpoolExt))
+}
+
+// T20b: the reports of an open session wait on disk, in a private file; a
+// session that has been open for max_duration is closed at once whatever its
+// activity, with its report, and the next deposit opens a new session.
+func TestE2E_aSessionIsClosedAtMaxDuration(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{session: map[string]any{"delay": "1h", "max_duration": "5s"}})
+	first, second := []byte("deposited in the first session"), []byte("deposited in the second session")
+	in.drop(t, "one.txt", first)
+	var spool string
+	in.waitFor(t, "the spool of the open session", func() bool {
+		files := in.spoolFiles(t)
+		if len(files) != 1 {
+			return false
+		}
+		spool = files[0]
+		return true
+	})
+	info, err := os.Stat(spool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode := info.Mode().Perm(); mode != 0o600 {
+		t.Errorf("the spool has the mode %o, want 600", mode)
+	}
+	if in.reportCount() != 0 {
+		t.Error("a session report was written before the session closed")
+	}
+	in.waitFor(t, "the first session to be closed by max_duration", func() bool { return in.reportCount() == 1 })
+	if left := in.spoolFiles(t); len(left) != 0 {
+		t.Errorf("spools left after the report: %v", left)
+	}
+	in.drop(t, "two.txt", second)
+	in.waitFor(t, "the second session report", func() bool { return in.reportCount() == 2 })
+	if got := in.reportsOf(t, first); len(got) != 1 {
+		t.Errorf("entries for the first file = %d, want 1", len(got))
+	}
+	if got := in.reportsOf(t, second); len(got) != 1 {
+		t.Errorf("entries for the second file = %d, want 1", len(got))
+	}
+}
+
+// T20b: a session whose reports reach max_spool_size (at least 1 MiB) is closed
+// at once (that is the minimum the key accepts) and the next deposits open another: many reports in one run make
+// several session reports, and not one report is lost.
+func TestE2E_aSessionIsClosedAtMaxSpoolSize(t *testing.T) {
+	const files = 3000
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{config: map[string]any{"workers": 8}, session: map[string]any{"delay": "1h", "max_spool_size": "1MiB"}})
+	long := strings.Repeat("n", 180)
+	for i := range files {
+		in.drop(t, fmt.Sprintf("d%d/%s%05d.txt", i%20, long, i), []byte(fmt.Sprintf("file number %d", i)))
+	}
+	in.waitFor(t, "every file to be delivered", func() bool { return deliveredBelow(in, 20) == files })
+	in.waitFor(t, "the session to be closed by its size", func() bool { return in.reportCount() >= 1 })
+	if !in.logHas("max_spool_size reached") {
+		t.Error("the log does not say that max_spool_size closed a session")
+	}
+}
+
+// crashAndRestart kills the connector without warning, as a crash does, and
+// starts it again on the same folders.
+func (in *instance) crashAndRestart(t *testing.T) {
+	t.Helper()
+	if err := syscall.Kill(-in.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+		t.Fatal(err)
+	}
+	<-in.exited
+	in.launch(t, in.bin, in.dir, in.args)
+}
+
+// T20b: the spool of a session open when the connector crashed is not
+// recovered: the next start removes it, with a warning that counts the session
+// reports lost, and the work directory of the dead run goes with it.
+func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{session: map[string]any{"delay": "1h"}})
+	content := []byte("deposited before the crash")
+	in.expect.crashLost(content)
+	in.drop(t, "a.txt", content)
+	in.waitFor(t, "the delivery", func() bool { return in.inOutput("a.txt") })
+	in.waitFor(t, "the spool of the open session", func() bool { return len(in.spoolFiles(t)) == 1 })
+	oldDirs := globOne(t, filepath.Join(in.work, "gmhost-*"))
+	before := strings.Count(in.stderr.String(), monitoringStarted)
+	in.crashAndRestart(t)
+	in.waitFor(t, "the connector to be back", func() bool { return strings.Count(in.stderr.String(), monitoringStarted) > before })
+	if !in.logHas("1 session report(s) of a previous run were lost (crash)") {
+		t.Error("the log does not warn that one session report was lost")
+	}
+	for _, dir := range oldDirs {
+		if !in.gone(dir) {
+			t.Errorf("the work directory of the crashed run is still there: %s", dir)
+		}
+	}
+	if left := in.spoolFiles(t); len(left) != 0 {
+		t.Errorf("spools left: %v", left)
+	}
+}

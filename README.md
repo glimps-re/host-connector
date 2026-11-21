@@ -240,6 +240,8 @@ extract:
 - Plain single-stream archives (gzip, xz, bzip2) with data after their end never complete: they stay in INPUT as errors (fail safe).
 - An entry flagged as a folder that holds data is an anomaly in every format except the file systems and disk images (APFS, APM, CramFS, Dmg, Ext, FAT, GPT, HFS, Iso, LP, MBR, NTFS, QCOW, Sparse, SquashFS, Udf, VDI, VHD, VHDX, VMDK, WIM), whose folders may have the size of their own records: a folder with hidden data in one of those is not seen (known limit).
 - A member whose path has a component longer than 255 bytes (what a file system takes), a name over 4096 bytes or a path of 64 folders is an anomaly, and so is a member that the file system refuses to create at extraction (two members of 255 bytes with the same name, one of them renamed on the clash; a total path over `PATH_MAX`): the archive is handled as damaged, with an encryption possible, and is not retried, since the extraction could never create it. A member left out this way is never extracted nor tested, so the archive is never proven free of encryption.
+- A hard link in a tar toward a member that the extraction leaves out because it is over `max_file_size` cannot be created, and 7-Zip then reports the same error as for a missing target: the archive is an anomaly (no retry), whatever else it holds, although it is sound (fail safe; it follows `extract_error`).
+- When 7-Zip refuses a link of an archive, any other error it prints in the same run counts as damage of the archive, even a failure of the host that a retry would have cured: the archive is a definitive anomaly instead of being retried (fail safe).
 
 **Important note:**
 - Files exceeding following limits will be skipped (not extracted):

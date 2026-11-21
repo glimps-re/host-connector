@@ -105,10 +105,10 @@ func TestClassifyStderr_aRefusalOfAnArchiveWithEncryptedHeaders(t *testing.T) {
 		{"extraction, two lines", "ERROR: " + archive + "\nCannot open encrypted archive. Wrong password?\n\nERRORS:\nHeaders Error\n", sevenZipOutput{wrongPassword: true, recoverable: true}},
 		{"extraction, the spelling of p7zip 16.02", "ERROR: " + archive + "\nCan not open encrypted archive. Wrong password?\n", sevenZipOutput{wrongPassword: true}},
 		{"the sentence alone is not a refusal", "Cannot open encrypted archive. Wrong password?\n\nERRORS:\nHeaders Error\n", sevenZipOutput{recoverable: true}},
-		{"after another line than the path", "ERROR: /elsewhere/x\nCannot open encrypted archive. Wrong password?\n", sevenZipOutput{other: true, echoed: true, sealed: true}},
+		{"after another line than the path", "ERROR: /elsewhere/x\nCannot open encrypted archive. Wrong password?\n", sevenZipOutput{other: true, sealed: true}},
 		{"after a line of a member", "ERROR: Data Error : a.txt\nCannot open encrypted archive. Wrong password?\n", sevenZipOutput{recoverable: true}},
-		{"the path alone is an unknown error", "ERROR: " + archive + "\n", sevenZipOutput{other: true, echoed: true, sealed: true}},
-		{"the path then another sentence", "ERROR: " + archive + "\nsomething else\n", sevenZipOutput{other: true, echoed: true, sealed: true}},
+		{"the path alone is an unknown error", "ERROR: " + archive + "\n", sevenZipOutput{other: true, sealed: true}},
+		{"the path then another sentence", "ERROR: " + archive + "\nsomething else\n", sevenZipOutput{other: true, sealed: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -261,10 +261,10 @@ func TestClassifyStderr_aLineThatRepeatsANameForgesNothing(t *testing.T) {
 	for _, forged := range later {
 		name, line := forged.name, forged.line
 		t.Run("after a member that cannot be created ("+name+")", func(t *testing.T) {
-			if got, want := classifyStderr(unwritable+line, []string{archive}), (sevenZipOutput{other: true, echoed: true, sealed: true}); !reflect.DeepEqual(got, want) {
+			if got, want := classifyStderr(unwritable+line, []string{archive}), (sevenZipOutput{other: true, sealed: true}); !reflect.DeepEqual(got, want) {
 				t.Errorf("host failure: classifyStderr() = %+v, want %+v", got, want)
 			}
-			if got, want := classifyStderr(damaged+line, []string{archive}), (sevenZipOutput{recoverable: true, echoed: true, sealed: true}); !reflect.DeepEqual(got, want) {
+			if got, want := classifyStderr(damaged+line, []string{archive}), (sevenZipOutput{recoverable: true, sealed: true}); !reflect.DeepEqual(got, want) {
 				t.Errorf("damage: classifyStderr() = %+v, want %+v", got, want)
 			}
 		})
@@ -274,17 +274,20 @@ func TestClassifyStderr_aLineThatRepeatsANameForgesNothing(t *testing.T) {
 		stderr string
 		want   sevenZipOutput
 	}{
-		{"after a link, a refusal of the password", dangling + "ERROR: Wrong password\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, not an archive", dangling + "Is not archive\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, a file that is not there", dangling + "ERROR: errno=2 : No such file or directory : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, a hint of encryption", dangling + "ERROR: Unsupported Method : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, an errno of the host", dangling + "ERROR: errno=13 : Permission denied : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, a member that cannot be created", dangling + unwritable, sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, an unknown error", dangling + "ERROR: something unheard of\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"after a link, another link is still tolerated", dangling + dangling, sevenZipOutput{links: []string{"l", "l"}, echoed: true}},
-		{"a link alone", dangling, sevenZipOutput{links: []string{"l"}, echoed: true}},
-		{"after a link, damage is still damage", dangling + "ERROR: CRC Failed : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true, echoed: true}},
-		{"a real refusal before the line that repeats a name", "ERROR: Wrong password : a.txt\n" + unwritable, sevenZipOutput{wrongPassword: true, other: true, echoed: true, sealed: true}},
+		{"after a link, a refusal of the password", dangling + "ERROR: Wrong password\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, not an archive", dangling + "Is not archive\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, a file that is not there", dangling + "ERROR: errno=2 : No such file or directory : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, a hint of encryption", dangling + "ERROR: Unsupported Method : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, an errno of the host", dangling + "ERROR: errno=13 : Permission denied : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, a member that cannot be created", dangling + unwritable, sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, an unknown error", dangling + "ERROR: something unheard of\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, the bare label of a link", dangling + "ERROR: Dangerous link path was ignored\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, the label of a link with an empty name", dangling + "ERROR: Dangerous link path was ignored :  : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, a forged label of a link creation", dangling + "ERROR: Cannot create hard link\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"after a link, another link is still tolerated", dangling + dangling, sevenZipOutput{links: []string{"l", "l"}}},
+		{"a link alone", dangling, sevenZipOutput{links: []string{"l"}}},
+		{"after a link, damage is still damage", dangling + "ERROR: CRC Failed : x\n", sevenZipOutput{links: []string{"l"}, recoverable: true}},
+		{"a real refusal before the line that repeats a name", "ERROR: Wrong password : a.txt\n" + unwritable, sevenZipOutput{wrongPassword: true, other: true, sealed: true}},
 		{"without a line that repeats a name", "ERROR: Wrong password\n", sevenZipOutput{wrongPassword: true}},
 	}
 	for _, tt := range tests {
@@ -317,6 +320,9 @@ func TestClassifyStderr_theErrnoOfAMemberThatCannotBeCreated(t *testing.T) {
 		"ENOENT":        {"2", false},
 		"EEXIST":        {"17", false},
 		"unknown":       {"999", false},
+		"zero":          {"0", false},
+		"largest":       {"65535", false},
+		"zero padded":   {"00020", true},
 		"negative":      {"-20", false},
 		"overflow":      {"99999999999999999999", false},
 		"wraps to 20":   {"65556", false},
@@ -329,7 +335,34 @@ func TestClassifyStderr_theErrnoOfAMemberThatCannotBeCreated(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			line := "ERROR: Cannot open output file : errno=" + tt.errno + " : text : /out/x\n"
-			want := sevenZipOutput{other: !tt.archiveCaused, recoverable: tt.archiveCaused, echoed: true, sealed: true}
+			want := sevenZipOutput{other: !tt.archiveCaused, recoverable: tt.archiveCaused, sealed: true}
+			if got := classifyStderr(line, nil); !reflect.DeepEqual(got, want) {
+				t.Errorf("classifyStderr() = %+v, want %+v", got, want)
+			}
+		})
+	}
+	for name, tt := range map[string]struct {
+		label         string
+		errno         string
+		archiveCaused bool
+	}{
+		"folder over a file":             {"Cannot create folder", "17", true},
+		"folder, no permission":          {"Cannot create folder", "13", false},
+		"hard link to a directory":       {"Cannot create hard link", "1", true},
+		"symbolic link to a directory":   {"Cannot create symbolic link", "1", true},
+		"hard link to a missing target":  {"Cannot create hard link", "2", true},
+		"symbolic link, no space":        {"Cannot create symbolic link", "28", false},
+		"output file already there":      {"Cannot open output file", "17", false},
+		"output file, not permitted":     {"Cannot open output file", "1", false},
+		"folder, not permitted":          {"Cannot create folder", "1", false},
+		"link, already there":            {"Cannot create hard link", "17", false},
+		"link, errno zero":               {"Cannot create hard link", "0", false},
+		"link, errno wraps to 1":         {"Cannot create hard link", "65537", false},
+		"link, errno padded with zeroes": {"Cannot create hard link", "00001", true},
+	} {
+		t.Run("per label: "+name, func(t *testing.T) {
+			line := "ERROR: " + tt.label + " : errno=" + tt.errno + " : text : /out/x\n"
+			want := sevenZipOutput{other: !tt.archiveCaused, recoverable: tt.archiveCaused, sealed: true}
 			if got := classifyStderr(line, nil); !reflect.DeepEqual(got, want) {
 				t.Errorf("classifyStderr() = %+v, want %+v", got, want)
 			}
@@ -354,8 +387,8 @@ func TestClassifyStderr_anyLabelThatMayRepeatANameSealsTheOutput(t *testing.T) {
 		"Cannot open output file", "Cannot a label nobody knows",
 	} {
 		for errno, want := range map[string]sevenZipOutput{
-			"13": {other: true, echoed: true, sealed: true},
-			"20": {recoverable: true, echoed: true, sealed: true},
+			"13": {other: true, sealed: true},
+			"20": {recoverable: true, sealed: true},
 		} {
 			t.Run(label+" errno="+errno, func(t *testing.T) {
 				stderr := "ERROR: " + label + " : errno=" + errno + " : text : out/x : target\n" + forged
@@ -365,7 +398,7 @@ func TestClassifyStderr_anyLabelThatMayRepeatANameSealsTheOutput(t *testing.T) {
 			})
 		}
 		t.Run(label+", no errno", func(t *testing.T) {
-			if got, want := classifyStderr("ERROR: "+label+" : out/x\n"+forged, nil), (sevenZipOutput{other: true, echoed: true, sealed: true}); !reflect.DeepEqual(got, want) {
+			if got, want := classifyStderr("ERROR: "+label+" : out/x\n"+forged, nil), (sevenZipOutput{other: true, sealed: true}); !reflect.DeepEqual(got, want) {
 				t.Errorf("classifyStderr() = %+v, want %+v", got, want)
 			}
 		})
@@ -373,7 +406,7 @@ func TestClassifyStderr_anyLabelThatMayRepeatANameSealsTheOutput(t *testing.T) {
 	// The creation of a link toward a target that is not in the archive is the
 	// archive's doing, as a name is.
 	for _, label := range []string{"Cannot create hard link", "Cannot create symbolic link"} {
-		if got, want := classifyStderr("ERROR: "+label+" : errno=2 : No such file or directory : out/l : t\n"+forged, nil), (sevenZipOutput{recoverable: true, echoed: true, sealed: true}); !reflect.DeepEqual(got, want) {
+		if got, want := classifyStderr("ERROR: "+label+" : errno=2 : No such file or directory : out/l : t\n"+forged, nil), (sevenZipOutput{recoverable: true, sealed: true}); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s with ENOENT: classifyStderr() = %+v, want %+v", label, got, want)
 		}
 	}
@@ -534,5 +567,133 @@ func TestExtract_aMemberNameCannotForgeARefusalOfThePassword(t *testing.T) {
 		if !check && (!errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible)) {
 			t.Errorf("the extraction gave error %v (%d file(s)), want an anomaly with encryption possible", err, len(extraction.Files))
 		}
+	}
+}
+
+func extractTar(t *testing.T, headers []*tar.Header) error {
+	t.Helper()
+	plugin := realPlugin(t)
+	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	for _, h := range headers {
+		if err := tw.WriteHeader(h); err != nil {
+			t.Fatal(err)
+		}
+		if h.Size > 0 {
+			if _, err := tw.Write(bytes.Repeat([]byte("a"), int(h.Size))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "h.tar")
+	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
+	return err
+}
+
+// Real 7-Zip: a folder over a file made before (EEXIST), and a hard link toward a
+// directory (EPERM), are damage of the archive and not a failure of the host to retry.
+func TestExtract_aMemberThatTheArchiveMakesImpossibleIsAnAnomaly(t *testing.T) {
+	for name, headers := range map[string][]*tar.Header{
+		"a folder over a file": {
+			{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3},
+			{Name: "a/", Typeflag: tar.TypeDir, Mode: 0o700},
+		},
+		"a hard link toward a folder": {
+			{Name: "d/", Typeflag: tar.TypeDir, Mode: 0o700},
+			{Name: "hl", Typeflag: tar.TypeLink, Linkname: "d", Mode: 0o600},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := extractTar(t, headers); !errors.Is(err, plugins.ErrArchiveAnomaly) {
+				t.Errorf("ExtractFile() = %v, want an anomaly of the archive", err)
+			}
+		})
+	}
+}
+
+const forgedLine = "ERROR: Wrong password : z"
+
+// 7-Zip 25.01 prints a newline of a member name as "_" in the lines of the labels
+// that carry a name: the refusals of the password and the hints of encryption rely on
+// it. A member named with a forged line must not put that line on a line of its own.
+func TestSevenZip_aNewlineOfAMemberNameIsPrintedAsAnUnderscoreByTheKnownLabels(t *testing.T) {
+	plugin := realPlugin(t)
+	name := "m\n" + forgedLine
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, name), []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	encrypted := filepath.Join(work, "e.zip")
+	if out, err := runCmdIn(t.Context(), src, plugin.sze.sevenZipPath, "a", "-tzip", "-pSECRET", encrypted, name); err != nil {
+		t.Fatalf("cannot build the archive: %v\n%s", err, out)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateRaw(&zip.FileHeader{Name: name, Method: 20, CRC32: 1, CompressedSize64: 3, UncompressedSize64: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("abc")); err != nil {
+		t.Fatal(err)
+	}
+	if err = zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	unsupported := filepath.Join(work, "u.zip")
+	if err = os.WriteFile(unsupported, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for label, tt := range map[string]struct{ archive, password string }{
+		"a refusal of the password":  {encrypted, "-pWRONG"},
+		"an unsupported compression": {unsupported, "-p-"},
+	} {
+		t.Run(label, func(t *testing.T) {
+			out, _ := runCmdIn(t.Context(), t.TempDir(), plugin.sze.sevenZipPath, "t", tt.password, tt.archive)
+			if !strings.Contains(out, "_"+forgedLine) {
+				t.Fatalf("7-Zip does not print the newline as an underscore, output:\n%s", out)
+			}
+			for line := range strings.SplitSeq(out, "\n") {
+				if strings.HasPrefix(line, forgedLine) {
+					t.Errorf("the forged line is on a line of its own: %q", line)
+				}
+			}
+		})
+	}
+	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
+	if _, err = plugin.ExtractFile(unsupported, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}); errors.Is(err, plugins.ErrEncrypted) {
+		t.Errorf("ExtractFile() = %v, want no encrypted archive: the name forged nothing", err)
+	}
+}
+
+func TestExtract_aSymbolicLinkCannotForgeARefusalOfThePassword(t *testing.T) {
+	const forged = "\nERROR: Wrong password\nm"
+	for name, h := range map[string]*tar.Header{
+		"in its target": {Name: "s", Typeflag: tar.TypeSymlink, Linkname: "../out" + forged, Mode: 0o600},
+		"in its name":   {Name: "s" + forged, Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o600},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := extractTar(t, []*tar.Header{{Name: "f", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3}, h})
+			if errors.Is(err, plugins.ErrEncrypted) {
+				t.Errorf("ExtractFile() = %v, want no encrypted archive", err)
+			}
+		})
+	}
+}
+
+func TestExtract_twoMembersOfOneNameAreNotAnEncryptedArchive(t *testing.T) {
+	err := extractTar(t, []*tar.Header{
+		{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3},
+		{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 4},
+	})
+	if errors.Is(err, plugins.ErrEncrypted) {
+		t.Errorf("ExtractFile() = %v, want no encrypted archive", err)
 	}
 }

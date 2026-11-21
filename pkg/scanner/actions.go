@@ -159,6 +159,10 @@ func getMitigationReason(malwareReason datamodel.MalwareReason) (mitigationReaso
 		mitigationReason = events.ReasonFilePath
 	case datamodel.Empty, datamodel.Encrypted:
 		mitigationReason = events.ReasonInvalid
+	default:
+		// Only a result that is malware gets here: an unknown reason, or none, is
+		// still a detection, never an empty mitigation reason.
+		mitigationReason = events.ReasonMalware
 	}
 	return
 }

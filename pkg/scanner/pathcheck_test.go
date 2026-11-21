@@ -143,7 +143,7 @@ func TestFinishArchiveAnalysis_refusesPathThroughLink(t *testing.T) {
 	}
 	tmp := t.TempDir()
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: file, tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
+		archiveLocation: file, tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
 		result: datamodel.Result{SHA256: sha},
 	})
 	outside := t.TempDir()

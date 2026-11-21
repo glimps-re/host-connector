@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/glimps-re/host-connector/internal/pathutil"
+
 	"github.com/glimps-re/host-connector/pkg/plugins"
 
 	"github.com/glimps-re/connector-integration/sdk/events"
@@ -38,7 +40,6 @@ func archiveCleanSubmitter() *gdetectMock.MockGDetectSubmitter {
 func newArchiveForTest(t *testing.T, h *archiveStatusHandler, total int) string {
 	t.Helper()
 	return h.addStatus(archiveStatus{
-		started:         true,
 		archiveLocation: "/in/a.zip",
 		result:          datamodel.Result{SHA256: "sha"},
 		total:           total,
@@ -199,7 +200,7 @@ func TestFinishArchiveAnalysis_memberErrorBlocksAction(t *testing.T) {
 	location, sha := createTestFile(t, t.TempDir(), "archive content")
 	tmp := t.TempDir()
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1,
+		archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1,
 		result: datamodel.Result{SHA256: sha},
 	})
 	c.archiveStatus.addInnerFileResult(id, "bad.bin", datamodel.Result{Error: errors.New("submit failed")})
@@ -238,7 +239,7 @@ func TestFinishArchiveAnalysis_changedArchiveNotifiesObserversWithError(t *testi
 	location, _ := createTestFile(t, t.TempDir(), "archive content")
 	tmp := t.TempDir()
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
+		archiveLocation: location, identity: idOf(t, location), tmpFolder: tmp, total: 1, analyzed: 1, finished: true,
 		result: datamodel.Result{SHA256: "stale-sha"},
 	})
 	if err := c.finishArchiveAnalysis(id); err != nil {
@@ -511,11 +512,11 @@ func TestFinishArchiveAnalysis_subArchiveErrorReachesTopLevelArchive(t *testing.
 	}
 	topLocation, topSHA := createTestFile(t, t.TempDir(), "top archive")
 	topID := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: topLocation, identity: idOf(t, topLocation), tmpFolder: t.TempDir(), total: 1,
+		archiveLocation: topLocation, identity: idOf(t, topLocation), tmpFolder: t.TempDir(), total: 1,
 		result: datamodel.Result{SHA256: topSHA},
 	})
 	subID := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: "/tmp/gmhost-x/extract/x-1/inner.zip", tmpFolder: t.TempDir(), total: 1,
+		archiveLocation: "/tmp/gmhost-x/extract/x-1/inner.zip", tmpFolder: t.TempDir(), total: 1,
 		result:        datamodel.Result{SHA256: "sub"},
 		parentArchive: parentArchive{statusID: topID, relPath: "inner.zip"},
 	})
@@ -1142,8 +1143,10 @@ func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testi
 	var size int64
 	var files int
 	err = c.recursiveExtract(fileToAnalyze{sha256: sha, location: location, filename: filepath.Base(location), size: info.Size()}, 0, &size, &files, logger)
-	if !errors.Is(err, plugins.ErrExtractorUnavailable) {
-		t.Fatalf("recursiveExtract() error = %v, want ErrExtractorUnavailable", err)
+	// Depending on whether the plain member is back already, the failure is told as
+	// it is, or as an abandon that waits for that member.
+	if !errors.Is(err, plugins.ErrExtractorUnavailable) && !errors.Is(err, errAbandonedInFlight) {
+		t.Fatalf("recursiveExtract() error = %v, want ErrExtractorUnavailable or errAbandonedInFlight", err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -1174,34 +1177,54 @@ func TestRecursiveExtract_abandonedNestedArchiveLeavesNoFolderNorStatus(t *testi
 	}
 }
 
-func TestAnalyzeArchiveFile_nestedArchiveIsPresentedByItsLogicalPath(t *testing.T) {
+func TestRecursiveExtract_aNestedArchiveIsPresentedByItsLogicalPathAndItsRealLocation(t *testing.T) {
 	c := &Connector{
-		action:          &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error { return nil }},
+		work: newTestWorkDir(t),
+		config: Config{
+			RecursiveExtractMaxDepth: 10, ExtractMinThreshold: 1,
+			RecursiveExtractMaxSize: 1000000, RecursiveExtractMaxFiles: 100,
+		},
+		typesToExtract:  extractableTypes(),
+		stopWorker:      make(chan struct{}),
+		analysisChan:    make(chan fileToAnalyze, 20),
 		archiveStatus:   newArchiveStatusHandler(),
 		ongoingAnalysis: sync.Map{},
+		action:          NewMultiAction(&ReportAction{}),
 	}
+	var mu sync.Mutex
 	var names, locations []string
 	c.RegisterOnScanFile(func(name, location, _ string, isArchive bool) *datamodel.Result {
+		mu.Lock()
+		defer mu.Unlock()
 		if isArchive {
 			names, locations = append(names, name), append(locations, location)
 		}
-		return &datamodel.Result{Filename: "chosen by the plugin", Malware: true, Malwares: []string{"m"}}
+		return nil
 	})
-	temp := filepath.Join(t.TempDir(), "extract-1", "b.zip")
-	id := c.archiveStatus.addStatus(archiveStatus{archiveLocation: temp, tmpFolder: t.TempDir(), total: 1})
-	in := fileToAnalyze{
-		archiveID:          id,
-		archiveLocation:    temp,
-		archiveLogicalPath: "/in/alice/a.zip/b.zip",
-		filename:           "y.exe",
-		logicalPath:        "/in/alice/a.zip/b.zip/y.exe",
-		location:           filepath.Join(filepath.Dir(temp), "y.exe"),
-	}
-	if err := c.analyzeArchiveFile(in); err != nil {
+	innerArchive, _ := createArchive(t, []string{"innermost file content"})
+	innerContent, err := os.ReadFile(filepath.Clean(innerArchive))
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(names) != 1 || names[0] != "/in/alice/a.zip/b.zip" || locations[0] != temp {
-		t.Errorf("plugin saw names %v and locations %v, want the logical path of b.zip and its real location", names, locations)
+	outer, outerSHA := createArchiveWithRawFiles(t, map[string][]byte{"inner.zip": innerContent})
+	info, err := os.Stat(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var size int64
+	var files int
+	const logical = "/in/alice/outer.zip"
+	archive := fileToAnalyze{sha256: outerSHA, location: outer, logicalPath: logical, filename: filepath.Base(outer), size: info.Size()}
+	if err = c.recursiveExtract(archive, 0, &size, &files, logger); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(names) != 2 || names[0] != logical || locations[0] != outer {
+		t.Fatalf("plugin saw names %v and locations %v, want the top-level archive first, by its logical path and its real location", names, locations)
+	}
+	if names[1] != logical+"/inner.zip" || filepath.Base(locations[1]) != "inner.zip" || !pathutil.Under(c.work.extractDir(), locations[1]) {
+		t.Errorf("plugin saw name %q and location %q for the sub-archive, want its logical path and a real location in the extraction folder", names[1], locations[1])
 	}
 }
 

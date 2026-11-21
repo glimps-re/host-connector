@@ -409,7 +409,7 @@ func TestFinishArchiveAnalysis_changedArchiveIsNotActedUpon(t *testing.T) {
 	stale := idOf(t, location)
 	stale.Size++
 	id := c.archiveStatus.addStatus(archiveStatus{
-		started: true, archiveLocation: location, identity: stale, tmpFolder: t.TempDir(), total: 1, analyzed: 1, finished: true,
+		archiveLocation: location, identity: stale, tmpFolder: t.TempDir(), total: 1, analyzed: 1, finished: true,
 		result: datamodel.Result{SHA256: sha},
 	})
 	if err := c.finishArchiveAnalysis(id); err != nil {

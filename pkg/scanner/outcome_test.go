@@ -517,11 +517,12 @@ const (
 	dirOwnerRWX fs.FileMode = 0o700
 )
 
-// The end of a run must never be taken for the end of the next run of the same
-// path: an archive abandoned while one of its members is still being analyzed is
-// submitted again by the monitor, and the member of the first run then comes
-// back. Each run gets its one OnFileDone and its one onFileScanned, in order.
-func TestRuns_aLateMemberOfAnAbandonedArchiveDoesNotEndTheNextRun(t *testing.T) {
+// An archive abandoned while one of its members is still being analyzed waits for
+// it: its run does not end (nothing is concluded, the descriptor stays open) until
+// that member is back, since a detection may come with it. Then the run ends as a
+// retry, the monitor submits the path again, and each run has its one OnFileDone
+// and its one onFileScanned, in order.
+func TestRuns_anAbandonedArchiveWaitsForItsMembersInFlightThenEndsItsRun(t *testing.T) {
 	noOpenInputs(t)
 	c, _, file, _ := newPathCheckFixture(t, false)
 	zipBytes := realZip(t)
@@ -616,7 +617,16 @@ func TestRuns_aLateMemberOfAnAbandonedArchiveDoesNotEndTheNextRun(t *testing.T) 
 			return false
 		}
 	})
-	waitUntil(t, "the first run to end (abandoned)", func() bool { return len(done.get()) == 1 })
+	waitUntil(t, "the extractor to fail on the sub-archive", func() bool { return calls.Load() >= 2 })
+	time.Sleep(200 * time.Millisecond)
+	if n := len(done.get()); n != 0 {
+		t.Fatalf("%d outcomes while a member of the abandoned archive is still in analysis, want none: its detection could still come", n)
+	}
+	if _, running := c.ongoingAnalysis.Load(file); !running {
+		t.Fatal("the run ended while a member was in flight")
+	}
+	close(releaseMember)
+	waitUntil(t, "the first run to end once its member is back", func() bool { return len(done.get()) == 1 })
 	if err := c.ScanFile(t.Context(), file); err != nil { // the monitor submits the path again
 		t.Fatal(err)
 	}
@@ -628,13 +638,8 @@ func TestRuns_aLateMemberOfAnAbandonedArchiveDoesNotEndTheNextRun(t *testing.T) 
 			return false
 		}
 	})
-	close(releaseMember) // the member of the first run comes back, the second run is still in progress
-	time.Sleep(200 * time.Millisecond)
 	if n := len(done.get()); n != 1 {
-		t.Fatalf("%d outcomes while the second run is still in progress, want only the first run's: the late member ended the next run", n)
-	}
-	if _, running := c.ongoingAnalysis.Load(file); !running {
-		t.Fatal("the second run was removed by the first run's late member")
+		t.Fatalf("%d outcomes while the second run is still in progress, want only the first run's", n)
 	}
 	close(releaseRun2)
 	c.Close(t.Context())

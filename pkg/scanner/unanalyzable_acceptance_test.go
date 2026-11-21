@@ -16,6 +16,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -74,8 +75,14 @@ type accSetup struct {
 	submit func(name string) (gdetect.Result, error)
 	// scanned is registered as an OnFileScanned callback.
 	scanned plugins.OnFileScanned
+	// scanFile is registered as an OnScanFile callback.
+	scanFile plugins.OnScanFile
+	// workers is the number of analysis workers, 2 when 0.
+	workers int
 	// maxDepth is the extraction depth, 3 when 0.
 	maxDepth int
+	// after is called with the connector once it is closed.
+	after func(*Connector)
 	// remove deletes the detected files instead of quarantining them.
 	remove bool
 	// rename moves by rename instead of by copy.
@@ -134,7 +141,7 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 	}
 	c, err := NewConnector(Config{
 		MaxFileSize: accMax, Unanalyzable: s.policy, WorkDir: t.TempDir(),
-		Extract: s.extract != nil, ExtractMinThreshold: 1, Workers: 2, ExtractWorkers: 1,
+		Extract: s.extract != nil, ExtractMinThreshold: 1, Workers: cmp.Or(s.workers, 2), ExtractWorkers: 1,
 		RecursiveExtractMaxDepth: cmp.Or(s.maxDepth, 3),
 		Actions:                  Actions{Move: true, Quarantine: !s.remove, Deleted: s.remove, Inform: s.inform != nil, InformDest: s.inform},
 		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: cmp.Or(map[bool]MoveMode{true: MoveModeRename}[s.rename], MoveModeCopy),
@@ -146,6 +153,9 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 	if s.scanned != nil {
 		c.RegisterOnFileScanned(s.scanned)
 	}
+	if s.scanFile != nil {
+		c.RegisterOnScanFile(s.scanFile)
+	}
 	if err = c.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -156,9 +166,25 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		}
 		r.scanErr[name] = c.ScanFile(t.Context(), p)
 	}
-	c.Close(t.Context())
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		c.Close(t.Context())
+	}()
+	select {
+	case <-closed:
+	case <-time.After(accCloseTimeout):
+		t.Fatalf("the connector did not stop within %v", accCloseTimeout)
+	}
+	if s.after != nil {
+		s.after(c)
+	}
 	return r
 }
+
+// accCloseTimeout bounds the wait for a connector to stop: a hang fails the test
+// in seconds and not at the timeout of the package.
+const accCloseTimeout = 60 * time.Second
 
 // zipOf is a real zip (so that the pipeline identifies an archive) of at least
 // size bytes, or the smallest one when size is 0.

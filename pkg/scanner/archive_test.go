@@ -83,7 +83,6 @@ func Test_archiveStatusHandler_addInnerFileResult(t *testing.T) {
 			var archiveID string
 			if !tt.fields.archiveNotFound {
 				archiveID = a.addStatus(archiveStatus{
-					started:         true,
 					finished:        false,
 					archiveLocation: "/path/to/archive.zip",
 					result: datamodel.Result{

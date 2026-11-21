@@ -160,6 +160,7 @@ func (c *Connector) onFileScanned(filepath string, sha256 string, result datamod
 			logger.Warn("plugin tried to soften a result, restored",
 				slog.String("plugin", cb.plugin), slog.String("file", filepath))
 		}
+		ensureMalwareReason(&next)
 		cur = next
 		newResult = &cur
 	}

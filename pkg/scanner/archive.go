@@ -31,13 +31,20 @@ type innerErrors struct {
 
 type archiveStatus struct {
 	inner         innerErrors
-	started       bool
 	finished      bool
 	finishClaimed bool
 	// abandoned archives get no result: the extraction of a sub-archive failed for
 	// a reason that says nothing about the archive. Their folder is removed when
 	// the last member in flight is done.
-	abandoned       bool
+	abandoned bool
+	// dispatching is set once the members start to be sent: from then on the
+	// result of the archive is what its members merge, and nothing replaces it.
+	dispatching bool
+	// unsent holds the first names of the members of an abandoned archive that
+	// were never sent, and unsentCount all of them: if a detection comes in, they
+	// are recorded as inner errors.
+	unsent          []string
+	unsentCount     int
 	archiveLocation string
 	sha256          string       // hash computed by the pipeline, never replaced by a plugin
 	identity        FileIdentity // of the top-level archive, checked before its action
@@ -60,22 +67,6 @@ func newArchiveStatusHandler() (a *archiveStatusHandler) {
 		RWMutex:    new(sync.RWMutex),
 		statusByID: make(map[string]archiveStatus),
 	}
-	return
-}
-
-// claimStart atomically claims the right to start an archive analysis.
-// Only the first caller gets claimed=true with the status. Subsequent callers get claimed=false.
-// found indicates whether the archive exists in the handler.
-func (a *archiveStatusHandler) claimStart(id string) (status archiveStatus, claimed, found bool) {
-	a.Lock()
-	defer a.Unlock()
-	status, found = a.statusByID[id]
-	if !found || status.started {
-		return
-	}
-	status.started = true
-	claimed = true
-	a.statusByID[id] = status
 	return
 }
 
@@ -134,25 +125,127 @@ func (a *archiveStatusHandler) addInnerError(id string, filename string, err err
 	return
 }
 
-// abandon marks the archive as abandoned. unsent is the number of its members
-// that will never be sent. When no member is in flight any more, the status is
-// deleted and removeNow is true: the caller removes the folder; otherwise the
-// last member to come back finishes the archive, which then only cleans up.
-func (a *archiveStatusHandler) abandon(id string, unsent int) (tmpFolder string, removeNow, ok bool) {
+// abandon gives up the extraction of an archive: unsent are the names of its
+// members that will never be sent, and they no longer count in its total. It
+// says what the archive came to (see abandonResult): with a detection it is not
+// abandoned and ends with it; otherwise, with no member in flight the status is
+// deleted (removeNow), and with members in flight the archive and its live
+// ancestors are marked abandoned and the last member to come back ends it. ok is
+// false when the archive is gone or its finish was claimed.
+func (a *archiveStatusHandler) abandon(id string, unsent []string) (res abandonResult, ok bool) {
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
 	if !ok || status.finishClaimed {
-		return "", false, false
+		return abandonResult{}, false
+	}
+	res.folder = status.tmpFolder
+	status.total -= len(unsent)
+	if status.result.Malware {
+		// A detection is never abandoned with the archive: the members that were
+		// not sent are inner errors, and the archive ends with its detection.
+		res.detected = true
+		status.recordUnsent(unsent, len(unsent))
+		if status.total <= status.analyzed {
+			status.finished = true
+			res.finish = true
+		}
+		a.statusByID[id] = status
+		return res, true
 	}
 	status.abandoned = true
-	status.total -= unsent
+	status.unsent = slices.Clone(unsent[:min(len(unsent), datamodel.MaxListedSubfiles)])
+	status.unsentCount = len(unsent)
 	if status.total <= status.analyzed {
 		delete(a.statusByID, id)
-		return status.tmpFolder, true, true
+		res.removeNow = true
+		return res, true
 	}
+	res.inFlight = true
 	a.statusByID[id] = status
-	return status.tmpFolder, false, true
+	a.abandonAncestors(status.parentArchive.statusID)
+	return res, true
+}
+
+// abandonAncestors marks every live ancestor, up to the first one that has
+// claimed its finish, as abandoned. It is done in the critical section of the
+// abandon of the archive below: until its caller reaches the parent, the last
+// member in flight of that archive can end it, and the parent would then count it
+// as a normal member and end as a clean archive. An ancestor that already holds a
+// detection is marked too and still ends with it (finishArchiveAnalysis only
+// cleans up an abandoned archive that holds none). The walk stops at an ancestor
+// whose finish is claimed or that is gone: nothing above it can be reached. The
+// caller holds the lock.
+func (a *archiveStatusHandler) abandonAncestors(id string) {
+	for id != "" {
+		p, found := a.statusByID[id]
+		if !found || p.finishClaimed {
+			return
+		}
+		p.abandoned = true
+		a.statusByID[id] = p
+		id = p.parentArchive.statusID
+	}
+}
+
+// abandonResult is what abandoning an archive came to:
+//   - detected: the archive holds a detection, so it is not abandoned, it ends
+//     with it (finish tells it must be finished now: no member is in flight);
+//   - removeNow: nothing is in flight, the status is gone and the caller removes
+//     the folder;
+//   - inFlight: members are still being analyzed, and the last of them finishes the
+//     archive (cleanup, or its detection).
+type abandonResult struct {
+	folder                                string
+	removeNow, detected, finish, inFlight bool
+}
+
+// errUnsent is why a member of an archive abandoned after a detection has no
+// verdict: transient, since the extractor was only unavailable.
+var errUnsent = fmt.Errorf("%w: the extractor was unavailable, the file was not analyzed", errInnerTransient)
+
+// recordUnsent records members that were never sent as inner errors: the first
+// datamodel.MaxListedSubfiles names are listed and all of them are counted, in one
+// update of the summary.
+func (s *archiveStatus) recordUnsent(names []string, count int) {
+	if count <= 0 {
+		return
+	}
+	for _, name := range names[:min(len(names), datamodel.MaxListedSubfiles)] {
+		s.result.ErrorSubfiles = addErrorSubfile(s.result.ErrorSubfiles, s.keyResume(), name, errUnsent.Error())
+	}
+	first := ""
+	if len(names) > 0 {
+		first = names[0]
+	}
+	s.inner.count += count
+	if s.inner.first == "" {
+		s.inner.first = datamodel.CutText(first+": "+errUnsent.Error(), datamodel.MaxListedNameLen)
+	}
+	s.refreshInnerError()
+}
+
+// refreshInnerError rebuilds the error of the archive from the count of its failed
+// members, and the count of those that are not listed.
+func (s *archiveStatus) refreshInnerError() {
+	sentinel := errInnerTransient
+	if s.inner.permanent {
+		sentinel = errInnerPermanent
+	}
+	s.result.Error = fmt.Errorf("%w: %s", sentinel, datamodel.ExtractedErrorsSummary(s.inner.count, s.inner.first))
+	if listed := datamodel.ListedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= datamodel.MaxListedSubfiles {
+		s.result.ErrorSubfiles[datamodel.MoreErrorsKey] = datamodel.MoreErrorsText(s.inner.count - listed)
+	}
+}
+
+// markDispatching says that the members of the archive are being sent.
+func (a *archiveStatusHandler) markDispatching(id string) {
+	a.Lock()
+	defer a.Unlock()
+	if status, ok := a.statusByID[id]; ok {
+		status.dispatching = true
+		a.statusByID[id] = status
+	}
 }
 
 func (a *archiveStatusHandler) deleteStatus(id string) {
@@ -177,17 +270,6 @@ func (a *archiveStatusHandler) claimFinish(id string) (status archiveStatus, cla
 	return
 }
 
-func (a *archiveStatusHandler) setStarted(id string) {
-	a.Lock()
-	defer a.Unlock()
-	status, ok := a.statusByID[id]
-	if !ok {
-		return
-	}
-	status.started = true
-	a.statusByID[id] = status
-}
-
 func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, result datamodel.Result) (finished bool, ok bool) {
 	a.Lock()
 	defer a.Unlock()
@@ -206,21 +288,35 @@ func (a *archiveStatusHandler) addInnerFileResult(id string, filename string, re
 	return
 }
 
-// setArchiveResult sets the archive result and marks the archive as finished.
-// Any previously merged inner file results are discarded.
-func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Result) (ok bool) {
+// setArchiveResult gives the archive its own result and finishes it. What the
+// archive learned from its members is merged into that result, never replaced
+// by it. It is refused (busy) once members were sent and not all merged: the last
+// of them finishes the archive.
+func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Result) (ok, busy bool) {
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
 	if !ok {
 		return
 	}
+	if status.dispatching && status.analyzed < status.total {
+		return true, true
+	}
+	restoreHardened(status.result, &result)
+	ensureMalwareReason(&result)
 	status.analyzed++
-	status.started = true
 	status.finished = true
 	status.result = result
 	a.statusByID[id] = status
 	return
+}
+
+// ensureMalwareReason gives a detection without reason the reason of a
+// detection: a result that is malware always says why.
+func ensureMalwareReason(r *datamodel.Result) {
+	if r.Malware && r.MalwareReason == "" {
+		r.MalwareReason = datamodel.MalwareDetected
+	}
 }
 
 // keyResume is the state that datamodel.UniqueKey keeps across the failed files
@@ -246,14 +342,7 @@ func (s *archiveStatus) noteInner(filename string, r datamodel.Result) {
 		if errors.Is(r.Error, errInnerPermanent) || errors.Is(r.Error, errInconsistentPluginResult) || errors.Is(r.Error, errFileTooBig) || errors.Is(r.Error, errEncrypted) {
 			s.inner.permanent = true
 		}
-		sentinel := errInnerTransient
-		if s.inner.permanent {
-			sentinel = errInnerPermanent
-		}
-		s.result.Error = fmt.Errorf("%w: %s", sentinel, datamodel.ExtractedErrorsSummary(s.inner.count, s.inner.first))
-		if listed := datamodel.ListedErrors(s.result.ErrorSubfiles); s.inner.count > listed && listed >= datamodel.MaxListedSubfiles {
-			s.result.ErrorSubfiles[datamodel.MoreErrorsKey] = datamodel.MoreErrorsText(s.inner.count - listed)
-		}
+		s.refreshInnerError()
 	}
 	if r.AnalysisError != "" {
 		s.inner.analysisCount++
@@ -337,6 +426,7 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string, ke
 	default:
 		result.MalwareReason = ""
 	}
+	ensureMalwareReason(&result)
 	return
 }
 

@@ -377,15 +377,12 @@ func policySkippedArchiveConnector(t *testing.T, results *[]datamodel.Result, mu
 	return c, location, IdentityOf(info), sha
 }
 
-func TestAnalyzeArchiveFile_aTopLevelArchiveLetThroughByAPluginIsPolicySkipped(t *testing.T) {
+func TestDecideArchive_aTopLevelArchiveLetThroughByAPluginIsPolicySkipped(t *testing.T) {
 	var results []datamodel.Result
 	var mu sync.Mutex
 	c, location, id, sha := policySkippedArchiveConnector(t, &results, &mu)
 	archiveID := c.archiveStatus.addStatus(archiveStatus{archiveLocation: location, sha256: sha, identity: id, tmpFolder: t.TempDir(), total: 1, result: datamodel.Result{SHA256: sha, FileSize: 15}})
-	in := fileToAnalyze{archiveID: archiveID, archiveLocation: location, archiveSHA256: sha, archiveSize: 15, filename: "x.txt", location: location + ".x"}
-	if err := c.analyzeArchiveFile(in); err != nil {
-		t.Fatal(err)
-	}
+	c.decideArchive(archiveID, fileToAnalyze{location: location, sha256: sha, size: 15, archiveTopLocation: location}, location, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(results) != 1 || results[0].NotAnalyzedReason != datamodel.NotAnalyzedPolicySkipped || results[0].Error != nil {
@@ -393,7 +390,7 @@ func TestAnalyzeArchiveFile_aTopLevelArchiveLetThroughByAPluginIsPolicySkipped(t
 	}
 }
 
-func TestAnalyzeArchiveFile_aSubArchiveLetThroughByAPluginIsListedByItsParent(t *testing.T) {
+func TestDecideArchive_aSubArchiveLetThroughByAPluginIsListedByItsParent(t *testing.T) {
 	var results []datamodel.Result
 	var mu sync.Mutex
 	c, location, id, sha := policySkippedArchiveConnector(t, &results, &mu)
@@ -404,10 +401,7 @@ func TestAnalyzeArchiveFile_aSubArchiveLetThroughByAPluginIsListedByItsParent(t 
 	parentID := c.archiveStatus.addStatus(archiveStatus{archiveLocation: location, sha256: sha, identity: id, tmpFolder: t.TempDir(), total: 1, result: datamodel.Result{SHA256: sha, FileSize: 15}})
 	child := filepath.Join(filepath.Dir(location), "b.zip")
 	childID := c.archiveStatus.addStatus(archiveStatus{archiveLocation: child, tmpFolder: t.TempDir(), total: 1, parentArchive: parentArchive{statusID: parentID, relPath: "b.zip"}})
-	in := fileToAnalyze{archiveID: childID, archiveLocation: child, archiveSHA256: "child-sha", archiveSize: 99, filename: "y.txt", location: child + ".y"}
-	if err := c.analyzeArchiveFile(in); err != nil {
-		t.Fatal(err)
-	}
+	c.decideArchive(childID, fileToAnalyze{location: child, sha256: "child-sha", size: 99, archiveTopLocation: location}, child, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(results) != 1 {
@@ -438,7 +432,7 @@ func TestMergeResult_keepsTheReasonOfAMemberMitigatedWithoutAnalysis(t *testing.
 // The size of an archive let through by a plugin is the pipeline's, whatever
 // the plugin says: a wrong one would fail the check before the action and give
 // the action the wrong time limit.
-func TestAnalyzeArchiveFile_thePluginCannotChangeTheSizeOfTheArchive(t *testing.T) {
+func TestDecideArchive_thePluginCannotChangeTheSizeOfTheArchive(t *testing.T) {
 	var results []datamodel.Result
 	var mu sync.Mutex
 	c, location, id, sha := policySkippedArchiveConnector(t, &results, &mu)
@@ -446,10 +440,7 @@ func TestAnalyzeArchiveFile_thePluginCannotChangeTheSizeOfTheArchive(t *testing.
 		return &datamodel.Result{FileSize: 1 << 40, SHA256: "forged"}
 	}}
 	archiveID := c.archiveStatus.addStatus(archiveStatus{archiveLocation: location, sha256: sha, identity: id, tmpFolder: t.TempDir(), total: 1})
-	in := fileToAnalyze{archiveID: archiveID, archiveLocation: location, archiveSHA256: sha, archiveSize: 15, filename: "x.txt", location: location + ".x"}
-	if err := c.analyzeArchiveFile(in); err != nil {
-		t.Fatal(err)
-	}
+	c.decideArchive(archiveID, fileToAnalyze{location: location, sha256: sha, size: 15, archiveTopLocation: location}, location, logger)
 	mu.Lock()
 	defer mu.Unlock()
 	if len(results) != 1 || results[0].Error != nil || results[0].FileSize != 15 || results[0].SHA256 != sha {

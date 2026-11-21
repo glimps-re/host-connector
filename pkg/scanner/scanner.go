@@ -186,9 +186,6 @@ type fileToAnalyze struct {
 	archiveTopLocation string
 	archiveID          string
 	archiveLocation    string
-	archiveLogicalPath string // logical path of archiveLocation, what plugins are told
-	archiveSHA256      string
-	archiveSize        int64
 	// encrypted is set by the extraction for a member whose password is unknown.
 	encrypted bool
 	// limitSkipped is set for an archive the limits of the extraction did not let
@@ -237,14 +234,6 @@ func (f fileToAnalyze) logical() string {
 		return f.logicalPath
 	}
 	return sanitizeControl(f.location)
-}
-
-// archiveLogical is the logical path of the archive the file comes from.
-func (f fileToAnalyze) archiveLogical() string {
-	if f.archiveLogicalPath != "" {
-		return f.archiveLogicalPath
-	}
-	return sanitizeControl(f.archiveLocation)
 }
 
 // sanitizeControl replaces the control characters of a path by "_": a newline
@@ -760,6 +749,11 @@ func (c *Connector) extractWorker() {
 		case archive := <-c.extractChan:
 			archiveLogger := logger.With(slog.String("file", archive.location))
 			if err := c.tryExtract(archive); err != nil {
+				if errors.Is(err, errAbandonedInFlight) {
+					// Members are still in flight: the last of them ends the archive and
+					// the file, with its detection or with the retry.
+					continue
+				}
 				archiveLogger.Error("could not extract file", slog.String(logErrorKey, err.Error()))
 				ConsoleLogger.Error(fmt.Sprintf("could not handle file %s, error: %s", archive.location, err.Error()))
 				c.concludeOutcome(archive.location, archive.run, resultView{err: err}, nil)
@@ -1355,20 +1349,17 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	archiveID := c.archiveStatus.addStatus(eStatus)
 	needCleanUp = false
 
+	// Every archive is decided here, after its extraction and before any of its
+	// members is sent, so that a waiver or a refusal of the plugins finds no member
+	// in flight and nothing merged yet. A top-level archive also starts its scan (the
+	// session plugin follows it even when all its members are sub-archives); a
+	// sub-archive belongs to the scan of its top-level one.
 	if archive.archiveID == "" {
-		// Top-level archive: mark as started and call onStartScanFile/onScanFile immediately.
-		// This ensures session plugin tracking works even when all extracted files are sub-archives
-		// that get processed recursively.
-		// Mark archive as started so that handleArchive won't call onStartScanFile/onScanFile
-		// a second time when extracted files arrive at workers.
-		c.archiveStatus.setStarted(archiveID)
 		c.startScan(archive.location, archive.run, archive.sha256)
-		if archiveResult := c.onScanFile(archive.location, archive.location, archive.sha256, true); archiveResult != nil {
-			// Plugin filtered the archive, skip extraction processing and clean up temp folder.
-			c.endFilteredArchive(archiveID, *archiveResult, archive.location, archive.sha256, archive.size, archive.location, archive.run, archiveLogger)
-			return
-		}
 		archive.archiveTopLocation = archive.location
+	}
+	if c.decideArchive(archiveID, archive, archivePath, archiveLogger) {
+		return
 	}
 
 	if len(extractedFiles) == 0 {
@@ -1378,6 +1369,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		return
 	}
 
+	c.archiveStatus.markDispatching(archiveID)
 	depth += 1
 	// Note: files should be directly streamed to channel and not accumulated in memory
 	for i, fileLocation := range extractedFiles {
@@ -1423,12 +1415,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			archiveID:          archiveID,
 			filename:           relPath,
 			logicalPath:        memberLogicalPath(archive.logical(), relPath, relErr == nil && pathutil.Under(outputDir, fileLocation), fileLocation),
-			archiveLogicalPath: archive.logical(),
 			archiveLocation:    archive.location,
 			sha256:             fileSHA256,
-			archiveSHA256:      archive.sha256,
 			size:               fileSize,
-			archiveSize:        archive.size,
 			archiveTopLocation: archive.archiveTopLocation,
 			run:                archive.run,
 			zipFamily:          c.zipFamily(memberType),
@@ -1438,12 +1427,23 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
-			if errors.Is(err, plugins.ErrExtractorUnavailable) {
+			if errors.Is(err, plugins.ErrExtractorUnavailable) || errors.Is(err, errAbandonedInFlight) {
 				// Not a verdict on this archive: the top archive is left in place
 				// without a final result, like on shutdown, instead of ending in
 				// definitive error for a passing failure of the extractor.
-				fileLogger.Error("recursive extraction abandoned, the extractor is unavailable", slog.String(logErrorKey, err.Error()))
-				c.abandonArchive(archiveID, archive.archiveTopLocation, archive.run, len(extractedFiles)-i, archiveLogger)
+				first := i
+				if errors.Is(err, errAbandonedInFlight) {
+					// This member is a sub-archive that waits for its own members in
+					// flight and reports by itself: it is not one of the unsent.
+					first = i + 1
+				} else {
+					fileLogger.Error("recursive extraction abandoned, the extractor is unavailable", slog.String(logErrorKey, err.Error()))
+				}
+				unsent := make([]string, 0, len(extractedFiles)-first)
+				for _, f := range extractedFiles[first:] {
+					unsent = append(unsent, innerName(outputDir, f))
+				}
+				err = c.abandonArchive(archiveID, unsent, archiveLogger)
 				return
 			}
 			if errors.Is(err, context.Canceled) {
@@ -1471,21 +1471,55 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	return
 }
 
-// abandonArchive gives up an archive whose extraction was cut short: it gets no
-// result, and its folder goes as soon as the members already sent are done. The
-// top-level file at top is over: nothing will ever complete it (a sub-archive
-// that vanishes keeps its parent waiting for a member that never comes), and the
-// plugins that were told it started are told it ended.
-func (c *Connector) abandonArchive(archiveID, top string, run *ongoing, unsent int, archiveLogger *slog.Logger) {
-	c.setResource(top, run)
-	defer c.finishRun(top, run)
-	folder, removeNow, ok := c.archiveStatus.abandon(archiveID, unsent)
-	if !ok || !removeNow {
-		return
+// decideArchive asks the OnScanFile plugins (and the path rules) what becomes of
+// an archive, with its logical path and the path it is read through (the verified
+// descriptor: a path swapped after the core opened the file cannot make a plugin
+// look at another file). A waiver or a refusal ends the archive at once and it
+// tells true: nothing of it is extracted or sent.
+func (c *Connector) decideArchive(archiveID string, archive fileToAnalyze, readLocation string, archiveLogger *slog.Logger) (ended bool) {
+	result := c.onScanFile(archive.logical(), readLocation, archive.sha256, true)
+	if result == nil {
+		return false
 	}
-	if err := os.RemoveAll(folder); err != nil {
-		archiveLogger.Error("could not remove temp folder", slog.String("folder", folder), slog.String(logErrorKey, err.Error()))
+	c.endFilteredArchive(archiveID, *result, archive.location, archive.sha256, archive.size, archive.archiveTopLocation, archive.run, archiveLogger)
+	return true
+}
+
+// errAbandonedInFlight is returned by an extraction that was given up while
+// members of its archive are still being analyzed: nothing is concluded yet, the
+// last of them ends the archive (its detection, or the cleanup and the retry).
+var errAbandonedInFlight = errors.New("extraction abandoned, members still in flight")
+
+// abandonArchive gives up an archive whose extraction was cut short by an
+// extractor that is down. unsent are the members that will never be sent.
+//   - With a detection the archive is not abandoned: it ends with it, the unsent
+//     members are listed as errors, and the caller is not told of the failure.
+//   - Without one and with nothing in flight, the archive gets no result and its
+//     folder goes: the caller returns the error of the extractor.
+//   - Without one and with members in flight, the archive waits for them, so that a
+//     detection among them is not lost: the caller returns errAbandonedInFlight, and
+//     the last member ends the archive.
+func (c *Connector) abandonArchive(archiveID string, unsent []string, archiveLogger *slog.Logger) (err error) {
+	res, ok := c.archiveStatus.abandon(archiveID, unsent)
+	switch {
+	case !ok:
+		// Already ended, and propagated to its parent, by its own last member.
+		archiveLogger.Debug("archive already ended by its last member, nothing to abandon", slog.String("archive-id", archiveID))
+		return errAbandonedInFlight
+	case res.detected:
+		if res.finish {
+			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+				archiveLogger.Error("could not finish an archive with a detection", slog.String(logErrorKey, finishErr.Error()))
+			}
+		}
+		return nil
+	case res.inFlight:
+		return errAbandonedInFlight
 	}
+	if removeErr := os.RemoveAll(res.folder); removeErr != nil {
+		archiveLogger.Error("could not remove temp folder", slog.String("folder", res.folder), slog.String(logErrorKey, removeErr.Error()))
+	}
+	return plugins.ErrExtractorUnavailable
 }
 
 // memberCause strips the location of the temporary file from an I/O error: the
@@ -1800,25 +1834,20 @@ func hashFile(f io.Reader) (fileSHA256 string, err error) {
 }
 
 // analyzeArchiveFile handles the analysis of a file that is part of an archive.
+// Its archive is always in the handler: a status is deleted only after its last
+// member was counted, so a missing one is a defect, said at Error, and ends the
+// run of the top-level file.
 func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", input.archiveID), slog.String("archive location", input.archiveLocation))
-	status, started, ok := c.archiveStatus.claimStart(input.archiveID)
+	status, ok := c.archiveStatus.getStatus(input.archiveID)
 	if status.finished {
 		archiveLogger.Debug("archive already analyzed", slog.String("archive-id", input.archiveID))
 		return
 	}
 	if !ok {
-		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		archiveLogger.Error("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
 		c.finishRun(input.archiveTopLocation, input.run)
 		return
-	}
-	if started {
-		// No onStartScanFile here: a sub-archive belongs to the scan of its
-		// top-level archive and must not start a session of its own.
-		if archiveResult := c.onScanFile(input.archiveLogical(), input.archiveLocation, input.archiveSHA256, true); archiveResult != nil {
-			c.endFilteredArchive(input.archiveID, *archiveResult, input.archiveLocation, input.archiveSHA256, input.archiveSize, input.archiveTopLocation, input.run, archiveLogger)
-			return
-		}
 	}
 	result := c.analyzeFile(input)
 	if result.Error != nil {
@@ -1827,7 +1856,7 @@ func (c *Connector) analyzeArchiveFile(input fileToAnalyze) (err error) {
 	}
 	finished, archiveFound := c.archiveStatus.addInnerFileResult(input.archiveID, input.filename, result)
 	if !archiveFound {
-		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
+		archiveLogger.Error("could not handle archive, not found in archive handler", slog.String("archive", input.archiveLocation))
 		c.finishRun(input.archiveTopLocation, input.run)
 		return
 	}
@@ -1850,16 +1879,27 @@ func (c *Connector) endFilteredArchive(archiveID string, result datamodel.Result
 	result.SHA256 = sha256
 	result.FileSize = size
 	markPolicySkipped(&result, location)
+	ensureMalwareReason(&result)
 	c.endArchive(archiveID, result, location, top, run, archiveLogger)
 }
 
-// endArchive ends an archive at once, with no member left to analyze: it gets
-// the result as it is, then is finished. When the archive is gone from the
-// handler, the run of its top-level file is ended instead.
+// endArchive ends an archive at once, with no member to analyze: the result is
+// merged into what the archive holds (see setArchiveResult), and it is finished.
+// When the archive is gone from the handler, the run of its top-level file is
+// ended instead; that cannot happen, since a status is deleted only after its last
+// member was counted, and is said at Error.
 func (c *Connector) endArchive(archiveID string, result datamodel.Result, location, top string, run *ongoing, archiveLogger *slog.Logger) {
-	if !c.archiveStatus.setArchiveResult(archiveID, result) {
-		archiveLogger.Warn("could not handle archive, not found in archive handler", slog.String("archive", location))
+	ok, busy := c.archiveStatus.setArchiveResult(archiveID, result)
+	if !ok {
+		archiveLogger.Error("could not handle archive, not found in archive handler", slog.String("archive", location))
 		c.finishRun(top, run)
+		return
+	}
+	if busy {
+		// Members were sent: their result is the archive's and the last of them
+		// finishes it. This is a defect of the caller, said loudly, and nothing is
+		// dropped.
+		archiveLogger.Error("a result was given to an archive whose members are still being analyzed, ignored", slog.String("archive", location))
 		return
 	}
 	if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
@@ -1867,12 +1907,15 @@ func (c *Connector) endArchive(archiveID string, result datamodel.Result, locati
 	}
 }
 
+// finishArchiveAnalysis ends an archive whose last member was counted. The status
+// is always there: it is deleted only here, by the one caller that claimed the
+// finish, so not finding it is a defect, said at Error.
 func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 	archiveLogger := logger.With(slog.String("archive-id", archiveID))
 
 	status, claimed, found := c.archiveStatus.claimFinish(archiveID)
 	if !found {
-		archiveLogger.Warn("could not handle archive, not found in archive handler")
+		archiveLogger.Error("could not handle archive, not found in archive handler")
 		return
 	}
 	if !claimed {
@@ -1884,13 +1927,27 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 		c.finishRun(status.archiveLocation, status.run)
 	}()
 
-	if status.abandoned {
-		// Its extraction was cut short: no result, no action, only the cleanup.
+	if status.abandoned && !status.result.Malware {
+		// Its extraction was cut short and its last member is done, with nothing found:
+		// no result, no action, only the cleanup. An archive that holds a detection is
+		// never abandoned, see below. The top-level file is left in place to be tried
+		// again; a sub-archive is no longer waited for by its parent.
 		if removeErr := os.RemoveAll(status.tmpFolder); removeErr != nil {
 			archiveLogger.Error("could not remove temp folder", slog.String("folder", status.tmpFolder), slog.String(logErrorKey, removeErr.Error()))
 		}
 		c.archiveStatus.deleteStatus(archiveID)
+		if status.parentArchive.statusID == "" {
+			c.setResource(status.archiveLocation, status.run)
+		} else if finished, ok := c.archiveStatus.addInnerError(status.parentArchive.statusID, status.parentArchive.relPath, errUnsent); ok && finished {
+			err = c.finishArchiveAnalysis(status.parentArchive.statusID)
+		}
 		return
+	}
+
+	if status.abandoned {
+		// Abandoned before a member of it was detected: the members that were never
+		// sent are inner errors of an archive that ends with its detection.
+		status.recordUnsent(status.unsent, status.unsentCount)
 	}
 
 	isSubArchive := status.parentArchive.statusID != ""
@@ -1995,6 +2052,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	res := c.onScanFile(input.logical(), readLocation, input.sha256, false)
 	if res != nil {
 		result = *res
+		ensureMalwareReason(&result)
 		// Reports and MaliciousSubfiles are keyed by the internal name, whatever
 		// the plugin put in Filename or Location.
 		result.Filename = input.filename

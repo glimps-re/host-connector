@@ -673,10 +673,11 @@ func effectiveMoveMode(conf *config.Config) scanner.MoveMode {
 // a key left out stays empty, the connector gives it its default.
 func unanalyzablePolicy(conf *config.Config) scanner.Unanalyzable {
 	return scanner.Unanalyzable{
-		TooBig:       conf.UnanalyzablePolicy.TooBig,
-		Empty:        conf.UnanalyzablePolicy.Empty,
-		Encrypted:    conf.UnanalyzablePolicy.Encrypted,
-		ExtractError: conf.UnanalyzablePolicy.ExtractError,
+		TooBig:        conf.UnanalyzablePolicy.TooBig,
+		Empty:         conf.UnanalyzablePolicy.Empty,
+		Encrypted:     conf.UnanalyzablePolicy.Encrypted,
+		ExtractError:  conf.UnanalyzablePolicy.ExtractError,
+		AnalysisError: conf.UnanalyzablePolicy.AnalysisError,
 	}
 }
 

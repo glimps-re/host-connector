@@ -521,6 +521,8 @@ func notAnalyzedText(reason datamodel.NotAnalyzedReason) string {
 		return "Liste blanche (non analysé)"
 	case datamodel.NotAnalyzedRestored:
 		return "Restauré (précédemment bloqué)"
+	case datamodel.NotAnalyzedAnalysisError:
+		return "Analyse en échec (contenu non vérifié)"
 	default:
 		return cellText(string(reason))
 	}

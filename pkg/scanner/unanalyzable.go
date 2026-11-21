@@ -40,6 +40,10 @@ type Unanalyzable struct {
 	// ExtractError is the policy of an archive found damaged or inconsistent by
 	// the extractor: PolicyError or PolicyAsFile.
 	ExtractError string
+	// AnalysisError is the policy of a file the analysis reported an error on
+	// and found no detection in: PolicyError, PolicyMitigate or PolicyPass. A
+	// detection is malware whatever this value.
+	AnalysisError string
 }
 
 // resolve gives each empty field its default and checks the result. An empty
@@ -62,6 +66,9 @@ func (u Unanalyzable) resolve(mode MoveMode) (resolved Unanalyzable, fallback bo
 	}
 	if u.ExtractError == "" {
 		u.ExtractError = PolicyError
+	}
+	if u.AnalysisError == "" {
+		u.AnalysisError = PolicyError
 	}
 	return u, fallback, u.validate(mode)
 }
@@ -95,6 +102,7 @@ func (u Unanalyzable) validate(mode MoveMode) error {
 		{"empty", u.Empty, []string{PolicySkip, PolicyPass, PolicyMitigate}},
 		{"encrypted", u.Encrypted, []string{PolicyError, PolicyPass, PolicyMitigate}},
 		{"extract_error", u.ExtractError, []string{PolicyError, PolicyAsFile}},
+		{"analysis_error", u.AnalysisError, []string{PolicyError, PolicyPass, PolicyMitigate}},
 	} {
 		ok := false
 		for _, a := range c.allowed {
@@ -124,9 +132,7 @@ func (c *Connector) unanalyzedResult(input fileToAnalyze, reason datamodel.NotAn
 		res.FilteredVolume = input.size
 		logger.Warn("file passed without analysis", slog.String("file", input.location), slog.String(logReasonKey, string(reason)))
 	case PolicyMitigate:
-		res.Malware = true
-		res.Score = mitigationScore
-		res.MalwareReason = mitigationReason(reason)
+		markMitigated(&res, mitigationReason(reason))
 		res.FilteredVolume = input.size
 		logger.Warn("file mitigated without analysis", slog.String("file", input.location), slog.String(logReasonKey, string(reason)))
 	default:
@@ -138,6 +144,23 @@ func (c *Connector) unanalyzedResult(input fileToAnalyze, reason datamodel.NotAn
 // mitigationScore is the score of a file mitigated without analysis.
 const mitigationScore = 1000
 
+// markMitigated makes res malware for a policy that mitigates: the reason, and a
+// score that is never lower than mitigationScore nor lowers one that is higher.
+func markMitigated(res *datamodel.Result, reason datamodel.MalwareReason) {
+	res.Malware = true
+	res.Score = max(res.Score, mitigationScore)
+	res.MalwareReason = reason
+}
+
+// addVolume adds two volumes, which an archive can make as large as it declares:
+// the sum saturates.
+func addVolume(a, b int64) int64 {
+	if b > 0 && a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
 func mitigationReason(reason datamodel.NotAnalyzedReason) datamodel.MalwareReason {
 	switch reason {
 	case datamodel.NotAnalyzedEmpty:
@@ -147,6 +170,70 @@ func mitigationReason(reason datamodel.NotAnalyzedReason) datamodel.MalwareReaso
 	default:
 		return datamodel.TooBig
 	}
+}
+
+// unanalyzableState is what made a file unanalyzable by nature, and the policy
+// that decides what becomes of it.
+type unanalyzableState struct {
+	reason  datamodel.NotAnalyzedReason
+	policy  string
+	failure error
+}
+
+// stateOf tells what made a file unanalyzable by nature, if anything did: an
+// encrypted archive, one the limits of the extraction left unopened, one the
+// extractor found damaged. It decides, and does nothing.
+func (c *Connector) stateOf(input fileToAnalyze) (state unanalyzableState, ok bool) {
+	switch {
+	case input.encrypted:
+		return unanalyzableState{datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure()}, true
+	case input.limitSkipped:
+		return unanalyzableState{datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped}, true
+	case input.extractError:
+		return unanalyzableState{datamodel.NotAnalyzedExtractError, PolicyPass, nil}, true
+	}
+	return unanalyzableState{}, false
+}
+
+// applyUnanalyzableState applies to the result of a file the policy of what made
+// it unanalyzable by nature, if anything did.
+func (c *Connector) applyUnanalyzableState(input fileToAnalyze, result datamodel.Result) datamodel.Result {
+	if state, ok := c.stateOf(input); ok {
+		return c.policiedResult(input, result, state.reason, state.policy, state.failure)
+	}
+	return result
+}
+
+// applyAnalysisErrorPolicy applies unanalyzable_policy.analysis_error to the result
+// of a file the analysis failed on (result.AnalysisError is set), and nothing was
+// analyzed. A detection stays malware whatever the error. A file unanalyzable by
+// nature follows its own policy first when that policy holds it (an error, or
+// malware): analysis_error then only decides what its own policy lets through, and
+// the reason of that policy never marks a file it did not hold. error leaves the
+// file where it is, mitigate makes it malware (analysis-error), pass delivers it
+// marked analysis-error, whatever its own policy let through.
+func (c *Connector) applyAnalysisErrorPolicy(input fileToAnalyze, result datamodel.Result) datamodel.Result {
+	if result.Malware {
+		return result
+	}
+	if state, ok := c.stateOf(input); ok && state.policy != PolicyPass {
+		logger.Warn("analysis failed on a file that its own policy holds", slog.String("file", input.location), slog.String(logErrorKey, result.AnalysisError))
+		held := c.policiedResult(input, result, state.reason, state.policy, state.failure)
+		held.AnalysisError = ""
+		return held
+	}
+	switch c.config.Unanalyzable.AnalysisError {
+	case PolicyMitigate:
+		markMitigated(&result, datamodel.AnalysisError)
+		result.AnalyzedVolume, result.FilteredVolume = 0, input.size
+		logger.Warn("file mitigated, its analysis failed", slog.String("file", input.location), slog.String(logErrorKey, result.AnalysisError))
+	case PolicyPass:
+		logger.Warn("file passed, its analysis failed", slog.String("file", input.location), slog.String(logReasonKey, string(datamodel.NotAnalyzedAnalysisError)), slog.String(logErrorKey, result.AnalysisError))
+		result.AnalysisError = ""
+		result.NotAnalyzedReason = datamodel.NotAnalyzedAnalysisError
+		result.AnalyzedVolume, result.FilteredVolume = 0, input.size
+	}
+	return result
 }
 
 // markPolicySkipped tells that a file a plugin let through (a result that is
@@ -174,12 +261,7 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 	reasons := map[datamodel.NotAnalyzedReason]bool{}
 	for _, f := range extraction.Skipped {
 		reasons[f.Reason] = true
-		// The sizes are what the archive declares: the sum saturates.
-		if f.Size > 0 && result.FilteredVolume > math.MaxInt64-f.Size {
-			result.FilteredVolume = math.MaxInt64
-		} else if f.Size > 0 {
-			result.FilteredVolume += f.Size
-		}
+		result.FilteredVolume = addVolume(result.FilteredVolume, f.Size)
 		if len(result.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
 			f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
 			result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
@@ -189,9 +271,7 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 	result.NotAnalyzedSubfilesCount = datamodel.AddCount(result.NotAnalyzedSubfilesCount, count)
 	reason := strings.Join(sortedReasons(reasons), ",")
 	if policy == PolicyMitigate {
-		result.Malware = true
-		result.Score = max(result.Score, mitigationScore)
-		result.MalwareReason = datamodel.TooBig
+		markMitigated(result, datamodel.TooBig)
 		logger.Warn("archive mitigated: members were left out by the limits of the extraction", slog.String("file", location), slog.Int("members", count), slog.String(logReasonKey, reason))
 		return nil
 	}

@@ -19,6 +19,7 @@ import (
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
 type fakeQuarantiner struct {
@@ -223,6 +224,7 @@ func TestApplyContract_prepareRefusals(t *testing.T) {
 		{"unparsable move throughput", func(c *config.Config) { c.Move.MinThroughput = "fast" }, "move.min_throughput"},
 		{"zero move throughput", func(c *config.Config) { c.Move.MinThroughput = "0" }, "move.min_throughput"},
 		{"unknown extract_error policy", func(c *config.Config) { c.UnanalyzablePolicy.ExtractError = "pass" }, "extract_error"},
+		{"unknown analysis_error policy", func(c *config.Config) { c.UnanalyzablePolicy.AnalysisError = "skip" }, "analysis_error"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -265,5 +267,14 @@ func TestApplyContract_installReportFileErrors(t *testing.T) {
 				t.Error("an unusable report location is refused at validation: nothing may be stopped or rebuilt")
 			}
 		})
+	}
+}
+
+func TestUnanalyzablePolicy_carriesEveryKey(t *testing.T) {
+	var conf config.Config
+	conf.UnanalyzablePolicy.TooBig, conf.UnanalyzablePolicy.Empty, conf.UnanalyzablePolicy.Encrypted = "a", "b", "c"
+	conf.UnanalyzablePolicy.ExtractError, conf.UnanalyzablePolicy.AnalysisError = "d", "e"
+	if got, want := unanalyzablePolicy(&conf), (scanner.Unanalyzable{TooBig: "a", Empty: "b", Encrypted: "c", ExtractError: "d", AnalysisError: "e"}); got != want {
+		t.Errorf("unanalyzablePolicy() = %+v, want %+v", got, want)
 	}
 }

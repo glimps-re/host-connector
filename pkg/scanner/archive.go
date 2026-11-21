@@ -283,6 +283,10 @@ func addErrorSubfile(m map[string]string, resume map[string]int, filename, msg s
 	return m
 }
 
+// memberAnalysisFailedText is what ErrorSubfiles says of a member the analysis
+// failed on.
+const memberAnalysisFailedText = "the analysis of the file failed"
+
 func mergeResult(baseResult, resultToMerge datamodel.Result, filename string, keyResume map[string]int) (result datamodel.Result) {
 	result = baseResult
 	for _, m := range resultToMerge.Malwares {
@@ -305,11 +309,12 @@ func mergeResult(baseResult, resultToMerge datamodel.Result, filename string, ke
 		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, keyResume, filename, resultToMerge.Error.Error())
 	}
 	if resultToMerge.AnalysisError != "" {
-		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, keyResume, filename, resultToMerge.AnalysisError)
+		// The text of the service stays in the log: the report names the member only.
+		result.ErrorSubfiles = addErrorSubfile(result.ErrorSubfiles, keyResume, filename, memberAnalysisFailedText)
 	}
 	result = mergeNotAnalyzed(result, resultToMerge, filename)
-	result.AnalyzedVolume += resultToMerge.AnalyzedVolume
-	result.FilteredVolume += resultToMerge.FilteredVolume
+	result.AnalyzedVolume = addVolume(result.AnalyzedVolume, resultToMerge.AnalyzedVolume)
+	result.FilteredVolume = addVolume(result.FilteredVolume, resultToMerge.FilteredVolume)
 	if resultToMerge.Score > result.Score {
 		result.Score = resultToMerge.Score
 	}

@@ -17,6 +17,9 @@ const (
 	NotAnalyzedExtractError  NotAnalyzedReason = "extract-error"
 	NotAnalyzedPolicySkipped NotAnalyzedReason = "policy-skipped"
 	NotAnalyzedRestored      NotAnalyzedReason = "restored"
+	// NotAnalyzedAnalysisError is a file the analysis failed on, let through by
+	// unanalyzable_policy.analysis_error: pass.
+	NotAnalyzedAnalysisError NotAnalyzedReason = "analysis-error"
 )
 
 const (

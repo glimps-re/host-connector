@@ -21,7 +21,6 @@ type pendingKey struct {
 // Each task implementing a key removes its entry from this list; the last one
 // deletes this file, CheckImplemented and its call.
 var pendingKeys = []pendingKey{
-	{"unanalyzable_policy.analysis_error", func(c *Config) string { return c.UnanalyzablePolicy.AnalysisError }, []string{"error"}},
 	{"filepath_filter", func(c *Config) string {
 		if n := len(c.FilepathFilter.ForbiddenPaths) + len(c.FilepathFilter.SkippedPaths); n > 0 {
 			return fmt.Sprintf("%d pattern(s)", n)

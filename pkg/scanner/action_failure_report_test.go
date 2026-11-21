@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -345,7 +346,9 @@ func TestReportAction_anAnalysisErrorAloneIsInTheReport(t *testing.T) {
 		{"an analysis error alone", datamodel.Result{AnalysisError: "service said: https://svc.example/secret-token timed out"}, analysisFailedText},
 		{"an error of the pipeline keeps its own text", datamodel.Result{Error: errors.New("the pipeline failed"), AnalysisError: "service"}, "the pipeline failed"},
 		{"no failure", datamodel.Result{}, ""},
-		{"an archive that names its failed members", datamodel.Result{AnalysisError: "m.bin: service (and 2 more)", ErrorSubfiles: map[string]string{"m.bin": "service"}}, ""},
+		{"an archive that names its failed members is an error, without the text of the service", datamodel.Result{AnalysisError: "m.bin: service (and 2 more)", ErrorSubfiles: map[string]string{"m.bin": "service", "n.bin": "service"}}, "2 extracted file(s) could not be analyzed"},
+		{"an archive with a detection stays a detection", datamodel.Result{Malware: true, AnalysisError: "m.bin: service", ErrorSubfiles: map[string]string{"m.bin": "service"}}, ""},
+		{"an archive past the cap of listed members", datamodel.Result{AnalysisError: "m: service", ErrorSubfiles: failedMembers(datamodel.MaxListedSubfiles)}, "1000 or more extracted file(s) could not be analyzed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -440,4 +443,12 @@ func TestPipeline_aFileWhoseAnalysisFailedIsInErrorInItsReport(t *testing.T) {
 	if reports[0].Malicious {
 		t.Error("a file that could not be analyzed is reported as malicious")
 	}
+}
+
+func failedMembers(n int) map[string]string {
+	m := make(map[string]string, n)
+	for i := range n {
+		m[fmt.Sprintf("m%04d.bin", i)] = "service"
+	}
+	return m
 }

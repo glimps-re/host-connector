@@ -78,6 +78,8 @@ type accSetup struct {
 	maxDepth int
 	// remove deletes the detected files instead of quarantining them.
 	remove bool
+	// rename moves by rename instead of by copy.
+	rename bool
 	// inform receives the console line of each file.
 	inform io.WriteCloser
 }
@@ -135,7 +137,7 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		Extract: s.extract != nil, ExtractMinThreshold: 1, Workers: 2, ExtractWorkers: 1,
 		RecursiveExtractMaxDepth: cmp.Or(s.maxDepth, 3),
 		Actions:                  Actions{Move: true, Quarantine: !s.remove, Deleted: s.remove, Inform: s.inform != nil, InformDest: s.inform},
-		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: MoveModeCopy,
+		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: cmp.Or(map[bool]MoveMode{true: MoveModeRename}[s.rename], MoveModeCopy),
 		CustomActions: []Action{capture},
 	}, q, submitter)
 	if err != nil {

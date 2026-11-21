@@ -111,7 +111,7 @@ func TestArchive_innerAnalysisError(t *testing.T) {
 	id := newArchiveForTest(t, h, 3)
 	h.addInnerFileResult(id, "a.bin", datamodel.Result{AnalysisError: "engine failure"})
 	st, _ := h.getStatus(id)
-	if st.result.AnalysisError != "a.bin: engine failure" || st.result.ErrorSubfiles["a.bin"] != "engine failure" {
+	if st.result.AnalysisError != "a.bin: engine failure" || st.result.ErrorSubfiles["a.bin"] != memberAnalysisFailedText {
 		t.Errorf("one analysis error: %+v", st.result)
 	}
 	h.addInnerFileResult(id, "b.bin", datamodel.Result{AnalysisError: "other"})

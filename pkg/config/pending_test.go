@@ -15,8 +15,8 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 		{"nothing set", "debug: true\n", ""},
 		{"analysis_error left out", "unanalyzable_policy:\n  too_big: error\n", ""},
 		{"analysis_error error", "unanalyzable_policy:\n  analysis_error: error\n", ""},
-		{"analysis_error mitigate", "unanalyzable_policy:\n  analysis_error: mitigate\n", "unanalyzable_policy.analysis_error"},
-		{"analysis_error pass", "unanalyzable_policy:\n  analysis_error: pass\n", "unanalyzable_policy.analysis_error"},
+		{"analysis_error mitigate", "unanalyzable_policy:\n  analysis_error: mitigate\n", ""},
+		{"analysis_error pass", "unanalyzable_policy:\n  analysis_error: pass\n", ""},
 		{"filepath_filter empty lists", "filepath_filter:\n  forbidden_paths: []\n  skipped_paths: []\n", ""},
 		{"filepath_filter forbidden", "filepath_filter:\n  forbidden_paths:\n    - '\\.exe$'\n", "filepath_filter"},
 		{"filepath_filter skipped", "filepath_filter:\n  skipped_paths:\n    - '^/srv/in/trusted/'\n", "filepath_filter"},
@@ -37,9 +37,9 @@ func TestCheckImplemented_ViperYAML(t *testing.T) {
 	}
 }
 
-func TestCheckImplemented_namesEveryKeyThatIsSet(t *testing.T) {
+func TestCheckImplemented_namesTheKeysThatAreStillPending(t *testing.T) {
 	err := CheckImplemented(loadViperYAML(t, "unanalyzable_policy:\n  analysis_error: pass\nfilepath_filter:\n  skipped_paths: [a]\n"))
-	if err == nil || !strings.Contains(err.Error(), "unanalyzable_policy.analysis_error") || !strings.Contains(err.Error(), "filepath_filter") {
-		t.Errorf("error = %v, want both keys named", err)
+	if err == nil || strings.Contains(err.Error(), "unanalyzable_policy.analysis_error") || !strings.Contains(err.Error(), "filepath_filter") {
+		t.Errorf("error = %v, want only filepath_filter named", err)
 	}
 }

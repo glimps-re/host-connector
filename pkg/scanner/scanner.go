@@ -2132,14 +2132,11 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		}
 		ConsoleLogger.Error(fmt.Sprintf("error in %s analysis, error: %s", input.location, analysisError))
 		result.AnalysisError = analysisError
+		result = c.applyAnalysisErrorPolicy(input, result)
 	case gdetectResult.Malware:
 		// A detection outranks every unanalyzable policy: the file stays malware.
-	case input.encrypted:
-		result = c.policiedResult(input, result, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure())
-	case input.limitSkipped:
-		result = c.policiedResult(input, result, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
-	case input.extractError:
-		result = c.policiedResult(input, result, datamodel.NotAnalyzedExtractError, PolicyPass, nil)
+	default:
+		result = c.applyUnanalyzableState(input, result)
 	}
 	return
 }
@@ -2170,9 +2167,7 @@ func (c *Connector) policiedResult(input fileToAnalyze, analyzed datamodel.Resul
 	analyzed.Error = policied.Error
 	analyzed.NotAnalyzedReason = policied.NotAnalyzedReason
 	if policied.Malware {
-		analyzed.Malware = true
-		analyzed.Score = policied.Score
-		analyzed.MalwareReason = policied.MalwareReason
+		markMitigated(&analyzed, policied.MalwareReason)
 	}
 	return analyzed
 }

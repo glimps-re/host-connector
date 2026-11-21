@@ -59,6 +59,17 @@ const (
 	analysisFailedText = "the file could not be analyzed"
 )
 
+// membersAnalysisFailedText is what the report of an archive says when the
+// analysis failed on some of its members: their names are in ErrorExtractedFiles,
+// the text of the service stays in the log. The list is capped, so past the cap
+// the count is a lower bound.
+func membersAnalysisFailedText(listed int) string {
+	if listed >= datamodel.MaxListedSubfiles {
+		return fmt.Sprintf("%d or more extracted file(s) could not be analyzed", listed)
+	}
+	return fmt.Sprintf("%d extracted file(s) could not be analyzed", listed)
+}
+
 // setErrorIfNone puts text in the report of a file that cannot be delivered as it
 // is, unless the report already says what is wrong with the file (an error of the
 // analysis, a refusal with its own reason): the first cause stays.
@@ -104,8 +115,11 @@ func (a *ReportAction) Handle(ctx context.Context, src Source, result datamodel.
 	case result.Error != nil:
 		analysisReport.Error = result.Error.Error()
 	case result.AnalysisError != "" && len(result.ErrorSubfiles) == 0:
-		// An archive says which of its members failed: it is not an error of its own.
 		analysisReport.Error = analysisFailedText
+	case result.AnalysisError != "" && !result.Malware:
+		// "Analyzed" means the archive and every member analyzed: an archive with a
+		// member the analysis failed on is an error, not an analyzed file.
+		analysisReport.Error = membersAnalysisFailedText(datamodel.ListedErrors(result.ErrorSubfiles))
 	}
 	analysisReport.Bound()
 	return
@@ -466,10 +480,11 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 }
 
 // notAnalyzedLabel is how the console tells a file was let through unanalyzed.
-// A file too big is moved as it is: its content was not verified.
+// A file too big, or whose analysis failed, is moved as it is: its content was
+// not verified.
 func notAnalyzedLabel(reason datamodel.NotAnalyzedReason) string {
 	label := "not analyzed (" + strings.ReplaceAll(string(reason), "-", " ") + ")"
-	if reason == datamodel.NotAnalyzedTooBig {
+	if reason == datamodel.NotAnalyzedTooBig || reason == datamodel.NotAnalyzedAnalysisError {
 		label += ", content not verified"
 	}
 	return label

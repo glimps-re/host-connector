@@ -43,6 +43,7 @@ var everyReason = map[datamodel.NotAnalyzedReason]string{
 	datamodel.NotAnalyzedExtractError:  "Anomalie d'extraction",
 	datamodel.NotAnalyzedPolicySkipped: "Liste blanche (non analysé)",
 	datamodel.NotAnalyzedRestored:      "Restauré (précédemment bloqué)",
+	datamodel.NotAnalyzedAnalysisError: "Analyse en échec (contenu non vérifié)",
 }
 
 func TestNotAnalyzedText_everyReasonIsSaidAndAnUnknownOneShowsItsCode(t *testing.T) {

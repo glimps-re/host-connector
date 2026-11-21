@@ -38,8 +38,6 @@ func TestHandler_ConfigureRefusesWhatNothingEnforcesYet(t *testing.T) {
 		raw     string
 		wantKey string
 	}{
-		{"analysis_error mitigate", `{"unanalyzable_policy":{"analysis_error":"mitigate"}}`, "unanalyzable_policy.analysis_error"},
-		{"analysis_error pass", `{"unanalyzable_policy":{"analysis_error":"pass"}}`, "unanalyzable_policy.analysis_error"},
 		{"forbidden paths", `{"filepath_filter":{"forbidden_paths":["a"]}}`, "filepath_filter"},
 		{"skipped paths", `{"filepath_filter":{"skipped_paths":["a"]}}`, "filepath_filter"},
 	}

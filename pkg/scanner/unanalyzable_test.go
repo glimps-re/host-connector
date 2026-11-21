@@ -39,10 +39,10 @@ func malwareSubmitter() *gdetectMock.MockGDetectSubmitter {
 
 func TestUnanalyzable_defaultsAndValidation(t *testing.T) {
 	c := policyConnector(t, Unanalyzable{}, 100, cleanSubmitter())
-	if got := c.config.Unanalyzable; got != (Unanalyzable{TooBig: PolicyError, Empty: PolicyPass, Encrypted: PolicyError, ExtractError: PolicyError}) {
+	if got := c.config.Unanalyzable; got != (Unanalyzable{TooBig: PolicyError, Empty: PolicyPass, Encrypted: PolicyError, ExtractError: PolicyError, AnalysisError: PolicyError}) {
 		t.Errorf("defaults = %+v", got)
 	}
-	for _, bad := range []Unanalyzable{{TooBig: "skip"}, {Empty: "error"}, {Encrypted: "skip"}, {ExtractError: "pass"}, {TooBig: "bogus"}} {
+	for _, bad := range []Unanalyzable{{TooBig: "skip"}, {Empty: "error"}, {Encrypted: "skip"}, {ExtractError: "pass"}, {TooBig: "bogus"}, {AnalysisError: "skip"}} {
 		if _, err := NewConnector(Config{Unanalyzable: bad, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
 			t.Errorf("NewConnector(%+v) accepted an invalid policy", bad)
 		}

@@ -985,7 +985,7 @@ func (c *Connector) dispatchFile(sub submission) {
 	}
 
 	// Route to extraction if applicable
-	if c.config.Extract && (input.size > c.config.ExtractMinThreshold || c.isSmallArchive(input)) {
+	if c.config.Extract && (input.size > c.config.ExtractMinThreshold || c.isTypedArchive(input)) {
 		archive := archiveToAnalyze{location: location, sha256: input.sha256, identity: input.identity, input: input.input, run: input.run, size: input.size}
 		select {
 		case <-c.stopWorker:
@@ -1206,6 +1206,10 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		MaxFiles:     c.config.RecursiveExtractMaxFiles - *totalExtractedFiles,
 		MaxTotalSize: c.config.RecursiveExtractMaxSize - *totalExtractedSize,
 	}
+	// Typed once, before the extractor reads the file, from the verified descriptor:
+	// typing it again after a refusal would let bytes rewritten in between make it
+	// a plain file.
+	typed, typeErr := c.archiveTyping(archive)
 	source, cleanupSource, sourceErr := c.extractSource(archive)
 	if sourceErr != nil {
 		err = fmt.Errorf("extract-error: %w", sourceErr)
@@ -1228,6 +1232,13 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	}
 	// 7z ran, whatever it concluded: an alert about the extractor is over.
 	c.extractorAvailable()
+	if errors.Is(extractErr, plugins.ErrUnsupportedFormat) && (typed || typeErr != nil) {
+		// Typed as an archive by its content (or not told, which counts as typed)
+		// but refused by the extractor: a file cut before its end keeps the
+		// signature, and what it still holds (an encrypted entry included) is
+		// recoverable. It is not a plain file.
+		extractErr = fmt.Errorf("%w: %w: typed as an archive but the extractor cannot open it", plugins.ErrArchiveAnomaly, plugins.ErrEncryptionPossible)
+	}
 	if extractErr != nil && !errors.Is(extractErr, plugins.ErrUnsupportedFormat) && !errors.Is(extractErr, plugins.ErrEncrypted) {
 		// A recognized archive that could not be extracted is an error, never
 		// a plain file unless the policy says so for an anomaly of the archive:
@@ -1551,25 +1562,46 @@ func (c *Connector) isArchiveType(path string) bool {
 	return c.isKnownArchiveType(mtype.String())
 }
 
-// isSmallArchive tells whether a file too small for extract_min_size is an
-// archive all the same: it must reach the extractor, which is what tells that its
-// password is unknown, instead of being submitted as a plain file.
-func (c *Connector) isSmallArchive(input fileToAnalyze) bool {
+// isTypedArchive tells whether a file is typed as an archive of a known format, at
+// any size: it must reach the extractor, which is what tells that its password is
+// unknown, instead of being submitted as a plain file. A file that cannot be typed
+// goes to the extractor too.
+func (c *Connector) isTypedArchive(input fileToAnalyze) bool {
+	typed, err := c.archiveTyping(input)
+	return typed || err != nil
+}
+
+// readProbe reads the first bytes of a file; tests replace it.
+var readProbe = func(f io.ReaderAt, p []byte) (int, error) { return f.ReadAt(p, 0) }
+
+// archiveTyping tells whether the content of the file is typed as an archive of a
+// known format, read from the verified descriptor when there is one (no second
+// open, and no other file). An error says the type could not be read.
+func (c *Connector) archiveTyping(input fileToAnalyze) (typed bool, err error) {
 	if input.input != nil {
-		// The verified descriptor is read: no second open, and no other file.
 		buf, ok := probeBuffers.Get().(*[]byte)
 		if !ok {
-			return false
+			return false, errors.New("no probe buffer")
 		}
 		defer probeBuffers.Put(buf)
-		n, err := input.input.f.ReadAt(*buf, 0)
-		if n == 0 && err != nil {
-			return false
+		n, readErr := readProbe(input.input.f, *buf)
+		if n == 0 && readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return false, nil // nothing to be typed
+			}
+			return false, readErr
 		}
-		return c.isKnownArchiveType(mimetype.Detect((*buf)[:n]).String())
+		return c.isKnownArchiveType(mimetype.Detect((*buf)[:n]).String()), nil
 	}
 	path, err := c.readPath(input)
-	return err == nil && c.isArchiveType(path)
+	if err != nil {
+		return false, err
+	}
+	mtype, err := mimetype.DetectFile(path)
+	if err != nil {
+		return false, err
+	}
+	return c.isKnownArchiveType(mtype.String()), nil
 }
 
 // smallTypeProbe is how many bytes of a small file are read to know its type

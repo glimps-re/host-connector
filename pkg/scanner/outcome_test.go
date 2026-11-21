@@ -553,8 +553,8 @@ func TestRuns_aLateMemberOfAnAbandonedArchiveDoesNotEndTheNextRun(t *testing.T) 
 			return plugins.Extraction{Size: uint64(len(zipBytes)) + 12, Files: []string{plain, inner}}, nil
 		case 2: // the sub-archive: the extractor goes down
 			return plugins.Extraction{}, plugins.ErrExtractorUnavailable
-		default: // the second run of the top-level file: not an archive after all
-			return plugins.Extraction{}, plugins.ErrUnsupportedFormat
+		default: // the second run of the top-level file: nothing to extract after all
+			return plugins.Extraction{}, nil
 		}
 	}
 	c.submitter = readerTrio(&gdetectMock.MockGDetectSubmitter{

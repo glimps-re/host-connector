@@ -792,9 +792,9 @@ func TestRecursiveExtract_extractionFailureClassification(t *testing.T) {
 		extractor func(string, string, plugins.ExtractLimits) (plugins.Extraction, error)
 		wantErr   bool
 	}{
-		{"not an archive is a plain file", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		{"a file typed as an archive that the extractor refuses is not a plain file", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrUnsupportedFormat)
-		}, false},
+		}, true},
 		{"encrypted goes to the policy of the encrypted files", func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 			return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrEncrypted)
 		}, false},

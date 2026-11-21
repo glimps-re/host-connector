@@ -210,7 +210,7 @@ func TestT16a_tooBigPolicyTable(t *testing.T) {
 			return accSetup{policy: p, files: map[string]string{"f.bin": big}}
 		}, "f.bin"},
 		{"non-extractable archive", func(p Unanalyzable) accSetup {
-			return accSetup{policy: p, files: map[string]string{"a.zip": zipOf(t, accMax)}, extract: func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+			return accSetup{policy: p, files: map[string]string{"a.zip": big}, extract: func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
 			}}
 		}, "a.zip"},

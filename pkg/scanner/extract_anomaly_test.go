@@ -1,9 +1,12 @@
 package scanner
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -414,5 +417,167 @@ func TestAnalyzeFile_asFileOverMaxFileSizeFollowsTooBig(t *testing.T) {
 			c := policyConnector(t, Unanalyzable{TooBig: tt.policy, ExtractError: PolicyAsFile}, 100, cleanSubmitter())
 			tt.check(t, c.analyzeFile(in))
 		})
+	}
+}
+
+func refusedAsNotAnArchive(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+	return plugins.Extraction{}, plugins.ErrUnsupportedFormat
+}
+
+// An extractor that refuses a file typed as an archive does not make it a plain
+// file: it is an anomaly with the encryption possible.
+func TestExtractError_aFileTypedAsAnArchiveThatTheExtractorRefusesIsNotAPlainFile(t *testing.T) {
+	t.Run("default: definitive, in INPUT", func(t *testing.T) {
+		run, archive := scanAnomalyWith(t, Unanalyzable{}, refusedAsNotAnArchive)
+		reports := run.reportList()
+		if len(reports) != 1 || reports[0].Error != errExtractAnomaly.Error() || run.submitted.Load() != 0 {
+			t.Fatalf("reports = %+v, submissions %d, want the fixed definitive error and nothing submitted", reports, run.submitted.Load())
+		}
+		if out := run.done.get(); out[0].Kind != OutcomeFinal {
+			t.Errorf("outcome = %v, want OutcomeFinal", out[0].Kind)
+		}
+		run.assertLeftInPlace(t, archive)
+	})
+	t.Run("as_file with encrypted pass: delivered marked encrypted", func(t *testing.T) {
+		run, _ := scanAnomalyWith(t, Unanalyzable{Encrypted: PolicyPass, ExtractError: PolicyAsFile}, refusedAsNotAnArchive)
+		reports := run.reportList()
+		if len(reports) != 1 || reports[0].NotAnalyzedReason != datamodel.NotAnalyzedEncrypted {
+			t.Fatalf("reports = %+v, want the archive marked encrypted", reports)
+		}
+	})
+	t.Run("as_file with encrypted error: kept in INPUT", func(t *testing.T) {
+		run, archive := scanAnomalyWith(t, Unanalyzable{ExtractError: PolicyAsFile}, refusedAsNotAnArchive)
+		reports := run.reportList()
+		if len(reports) != 1 || reports[0].Error != errEncryptedOrDamaged.Error() {
+			t.Fatalf("reports = %+v, want the failure of the encrypted policy", reports)
+		}
+		run.assertLeftInPlace(t, archive)
+	})
+}
+
+// A file that is not typed as an archive stays a plain file when it is refused.
+func TestExtractError_aFileNotTypedAsAnArchiveStaysAPlainFileWhenRefused(t *testing.T) {
+	noOpenInputs(t)
+	run := &anomalyRun{done: &outcomes{}}
+	run.extractorFixture = newExtractorFixture(t, refusedAsNotAnArchive, func(c *Config) { c.OnFileDone = run.done.add })
+	t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+	path := filepath.Join(run.src, "notes.bin")
+	if err := os.WriteFile(path, append([]byte{0x00, 0x01, 0x02}, make([]byte, 200)...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.conn.ScanFile(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+	if run.submitted.Load() != 1 {
+		t.Errorf("submissions = %d, want the file once, as a plain file", run.submitted.Load())
+	}
+	if _, err := os.Stat(filepath.Join(run.dst, "notes.bin")); err != nil {
+		t.Errorf("the file is not in OUTPUT: %v", err)
+	}
+}
+
+// The rule is the same for a member that is a sub-archive.
+func TestExtractError_aMemberTypedAsAnArchiveThatTheExtractorRefusesFollowsThePolicies(t *testing.T) {
+	inner := realZip(t)
+	nested := func(policy Unanalyzable) *anomalyRun {
+		var calls atomic.Int32
+		run, _ := scanAnomalyWith(t, policy, func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+			if calls.Add(1) > 1 {
+				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
+			}
+			p := filepath.Join(outputDir, "inner.zip")
+			if err := os.WriteFile(p, inner, 0o600); err != nil {
+				return plugins.Extraction{}, err
+			}
+			return plugins.Extraction{Size: uint64(len(inner)), Files: []string{p}}, nil
+		})
+		return run
+	}
+	t.Run("default: the member is in error, the archive definitive", func(t *testing.T) {
+		run := nested(Unanalyzable{})
+		reports := run.reportList()
+		if len(reports) != 1 || reports[0].ErrorExtractedFiles["inner.zip"] == "" {
+			t.Fatalf("reports = %+v, want inner.zip listed in error", reports)
+		}
+		if out := run.done.get(); out[0].Kind != OutcomeFinal {
+			t.Errorf("outcome = %v, want OutcomeFinal", out[0].Kind)
+		}
+	})
+	t.Run("as_file with encrypted pass: the member is passed marked encrypted", func(t *testing.T) {
+		run := nested(Unanalyzable{Encrypted: PolicyPass, ExtractError: PolicyAsFile})
+		reports := run.reportList()
+		if len(reports) != 1 || len(reports[0].NotAnalyzedExtractedFiles) != 1 || reports[0].NotAnalyzedExtractedFiles[0].Reason != datamodel.NotAnalyzedEncrypted {
+			t.Fatalf("reports = %+v, want inner.zip listed as not analyzed, encrypted", reports)
+		}
+	})
+}
+
+// The type is read once, before the extractor reads the file: bytes rewritten
+// while it works do not make the file a plain file after its refusal.
+func TestExtractError_theTypeIsReadBeforeTheExtractorNotAfterItsRefusal(t *testing.T) {
+	run, archive := scanAnomalyWith(t, Unanalyzable{}, func(location, _ string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+		if err := os.WriteFile(location, []byte("now plain text, no signature at all"), 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		return plugins.Extraction{}, plugins.ErrUnsupportedFormat
+	})
+	if reports := run.reportList(); len(reports) != 1 || reports[0].Error != errExtractAnomaly.Error() || run.submitted.Load() != 0 {
+		t.Fatalf("reports = %+v, submissions %d, want the definitive anomaly and nothing submitted", reports, run.submitted.Load())
+	}
+	run.assertLeftInPlace(t, archive)
+}
+
+// A type that cannot be read counts as an archive when the extractor refuses the
+// file: it is never a plain file.
+func TestExtractError_aTypeThatCannotBeReadIsNeverAPlainFile(t *testing.T) {
+	prev := readProbe
+	readProbe = func(io.ReaderAt, []byte) (int, error) { return 0, errors.New("injected read error") }
+	t.Cleanup(func() { readProbe = prev })
+	run, archive := scanAnomalyWith(t, Unanalyzable{}, refusedAsNotAnArchive)
+	if reports := run.reportList(); len(reports) != 1 || reports[0].Error != errExtractAnomaly.Error() || run.submitted.Load() != 0 {
+		t.Fatalf("reports = %+v, submissions %d, want the definitive anomaly and nothing submitted", reports, run.submitted.Load())
+	}
+	run.assertLeftInPlace(t, archive)
+}
+
+// Without the extract plugin the built-in extractor refuses what it does not know
+// how to open: a valid tar named like data is typed as an archive all the same,
+// and its refusal is a failure, not a plain file.
+func TestExtractError_theBuiltInExtractorRefusingATypedArchiveIsAnAnomaly(t *testing.T) {
+	noOpenInputs(t)
+	run := &anomalyRun{done: &outcomes{}}
+	prev := ExtractFile
+	run.extractorFixture = newExtractorFixture(t, refusedAsNotAnArchive, func(c *Config) { c.OnFileDone = run.done.add })
+	ExtractFile = prev
+	t.Cleanup(func() { run.conn.Close(context.WithoutCancel(t.Context())) })
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	body := []byte("a member of the tar")
+	if err := tw.WriteHeader(&tar.Header{Name: "a.txt", Mode: 0o600, Size: int64(len(body))}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		return plugins.Extraction{}, fmt.Errorf("%w: unknown type", plugins.ErrUnsupportedFormat)
+	}
+	path := filepath.Join(run.src, "data.dat")
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run.conn.ScanFile(t.Context(), path); err != nil {
+		t.Fatal(err)
+	}
+	waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
+	if run.submitted.Load() != 0 {
+		t.Error("a typed archive that the extractor refuses was submitted as a plain file")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("the file must stay in INPUT: %v", err)
 	}
 }

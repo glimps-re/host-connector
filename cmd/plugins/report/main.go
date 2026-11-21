@@ -331,7 +331,7 @@ func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datam
 		totalSizeFile += report.FileSize
 		reportData.addErrors(report)
 		if report.NotAnalyzedReason != "" {
-			reportData.NbFileNotAnalyzed++
+			reportData.NbFileNotAnalyzed = datamodel.AddCount(reportData.NbFileNotAnalyzed, 1)
 			reportData.NotAnalyzedFiles = appendCapped(reportData.NotAnalyzedFiles, func() NotAnalyzedFileData {
 				return NotAnalyzedFileData{
 					Name:   cellText(report.Filename),
@@ -340,8 +340,10 @@ func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datam
 				}
 			})
 		}
-		// datamodel.Report.Bound cuts the list of the members, the count stays exact.
-		reportData.NbFileNotAnalyzed += max(report.NotAnalyzedExtractedCount, len(report.NotAnalyzedExtractedFiles))
+		// datamodel.Report.Bound cuts the list of the members, the count is kept (up to
+		// datamodel.MaxFileCount). The sums below saturate whatever Bound did: the
+		// report may not have been bounded.
+		reportData.NbFileNotAnalyzed = datamodel.AddCount(reportData.NbFileNotAnalyzed, max(report.NotAnalyzedExtractedCount, len(report.NotAnalyzedExtractedFiles)))
 		for _, member := range report.NotAnalyzedExtractedFiles {
 			reportData.NotAnalyzedFiles = appendCapped(reportData.NotAnalyzedFiles, func() NotAnalyzedFileData {
 				return NotAnalyzedFileData{
@@ -418,13 +420,13 @@ func (d *ReportData) addErrors(report datamodel.Report) {
 		}
 		d.addError(name, report.ErrorExtractedFiles[name])
 	}
-	if more, ok := report.ErrorExtractedFiles[datamodel.MoreErrorsKey]; ok {
-		d.TotalErrors += datamodel.ParseMoreErrors(more)
-	}
+	d.TotalErrors = datamodel.AddCount(d.TotalErrors, datamodel.ParseMoreErrors(report.ErrorExtractedFiles[datamodel.MoreErrorsKey]))
 }
 
 func (d *ReportData) addError(name, text string) {
-	d.TotalErrors++
+	// Saturating, like every sum of counts here: the total can already stand at the
+	// ceiling after the count of a report.
+	d.TotalErrors = datamodel.AddCount(d.TotalErrors, 1)
 	d.ErrorFiles = appendCapped(d.ErrorFiles, func() ErrorFileData { return ErrorFileData{Name: cellText(name), Error: cellText(text)} })
 }
 

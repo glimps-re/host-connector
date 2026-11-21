@@ -346,13 +346,14 @@ func mergeNotAnalyzed(base, merged datamodel.Result, filename string) datamodel.
 		base = appendNotAnalyzed(base, datamodel.NotAnalyzedFile{FileName: filename + "/" + f.FileName, Size: f.Size, Reason: f.Reason})
 	}
 	if extra := merged.NotAnalyzedSubfilesCount - len(merged.NotAnalyzedSubfiles); extra > 0 {
-		base.NotAnalyzedSubfilesCount += extra
+		base.NotAnalyzedSubfilesCount = datamodel.AddCount(base.NotAnalyzedSubfilesCount, extra)
 	}
 	return base
 }
 
 func appendNotAnalyzed(r datamodel.Result, f datamodel.NotAnalyzedFile) datamodel.Result {
-	r.NotAnalyzedSubfilesCount++
+	// Even an increment can wrap: a plugin can have set the count of the result.
+	r.NotAnalyzedSubfilesCount = datamodel.AddCount(r.NotAnalyzedSubfilesCount, 1)
 	if len(r.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
 		f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
 		r.NotAnalyzedSubfiles = append(r.NotAnalyzedSubfiles, f)

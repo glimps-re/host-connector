@@ -183,7 +183,8 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 			result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
 		}
 	}
-	result.NotAnalyzedSubfilesCount += count
+	// A plugin may have set the count of the result already: it is added to without wrapping around.
+	result.NotAnalyzedSubfilesCount = datamodel.AddCount(result.NotAnalyzedSubfilesCount, count)
 	reason := strings.Join(sortedReasons(reasons), ",")
 	if policy == PolicyMitigate {
 		result.Malware = true

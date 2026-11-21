@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"os"
 	"runtime"
 	"slices"
@@ -520,23 +521,23 @@ func TestParseMoreErrors(t *testing.T) {
 			t.Errorf("ParseMoreErrors(MoreErrorsText(%d)) = %d", n, got)
 		}
 	}
-	if got := ParseMoreErrors(MoreErrorsText(maxMoreErrors + 5)); got != maxMoreErrors {
-		t.Errorf("a count over the bound reads %d, want %d", got, maxMoreErrors)
+	if got := ParseMoreErrors(MoreErrorsText(MaxFileCount + 5)); got != MaxFileCount {
+		t.Errorf("a count over the bound reads %d, want %d", got, MaxFileCount)
 	}
 	// Past the clamp, whatever the size of an int: these must not read as 0 on 32 bits.
 	for _, v := range []string{"1073741825 more", "2147483648 more", "4294967296 more", "9999999999 more"} {
-		if got := ParseMoreErrors(v); got != maxMoreErrors {
-			t.Errorf("ParseMoreErrors(%q) = %d, want the clamp %d", v, got, maxMoreErrors)
+		if got := ParseMoreErrors(v); got != MaxFileCount {
+			t.Errorf("ParseMoreErrors(%q) = %d, want the clamp %d", v, got, MaxFileCount)
 		}
 	}
-	if got := ParseMoreErrors("1073741824 more"); got != maxMoreErrors {
-		t.Errorf("the clamp itself reads %d, want %d", got, maxMoreErrors)
+	if got := ParseMoreErrors("1073741824 more"); got != MaxFileCount {
+		t.Errorf("the clamp itself reads %d, want %d", got, MaxFileCount)
 	}
-	if got := ParseMoreErrors("1073741823 more"); got != maxMoreErrors-1 {
-		t.Errorf("just under the clamp reads %d, want %d", got, maxMoreErrors-1)
+	if got := ParseMoreErrors("1073741823 more"); got != MaxFileCount-1 {
+		t.Errorf("just under the clamp reads %d, want %d", got, MaxFileCount-1)
 	}
-	if got := ParseMoreErrors("99999999999999999999999 more"); got != maxMoreErrors {
-		t.Errorf("an overflowing count reads %d, want %d", got, maxMoreErrors)
+	if got := ParseMoreErrors("99999999999999999999999 more"); got != MaxFileCount {
+		t.Errorf("an overflowing count reads %d, want %d", got, MaxFileCount)
 	}
 	if got := ParseMoreErrors("0000000000005 more"); got != 5 {
 		t.Errorf("a count with leading zeros reads %d, want 5", got)
@@ -696,5 +697,56 @@ func TestUniqueKey_theFallbackCounterStaysWithinTheRoomForIt(t *testing.T) {
 	}
 	if maxCounter != limit-1 {
 		t.Errorf("maxCounter = %d, want the largest number of %d digits (%d)", maxCounter, countDigits, limit-1)
+	}
+}
+
+func TestAddCount(t *testing.T) {
+	tests := []struct {
+		name string
+		a, b int
+		want int
+	}{
+		{"small counts", 3, 4, 7},
+		{"zero", 0, 0, 0},
+		{"to the ceiling exactly", MaxFileCount - 1, 1, MaxFileCount},
+		{"one under, plus two", MaxFileCount - 1, 2, MaxFileCount},
+		{"one under, plus nothing", MaxFileCount - 1, 0, MaxFileCount - 1},
+		{"two halves just under the ceiling", MaxFileCount/2 - 1, MaxFileCount / 2, MaxFileCount - 1},
+		{"two halves, exactly the ceiling", MaxFileCount / 2, MaxFileCount / 2, MaxFileCount},
+		{"over the ceiling", MaxFileCount, 1, MaxFileCount},
+		{"two counts at the ceiling", MaxFileCount, MaxFileCount, MaxFileCount},
+		{"an absurd count", math.MaxInt, 5, MaxFileCount},
+		{"two absurd counts", math.MaxInt, math.MaxInt, MaxFileCount},
+		{"a negative count counts for nothing", -5, 3, 3},
+		{"two negative counts", math.MinInt, -1, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AddCount(tt.a, tt.b); got != tt.want {
+				t.Errorf("AddCount(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// The count of the files not analyzed that a report or a plugin gives is kept to
+// the ceiling, and never under the files listed.
+func TestReportBound_theCountOfTheFilesNotAnalyzedHasACeiling(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		count, want int
+	}{
+		{"absurd", math.MaxInt, MaxFileCount},
+		{"at the ceiling", MaxFileCount, MaxFileCount},
+		{"negative", -3, 2},
+		{"under the listed", 1, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := Report{NotAnalyzedExtractedCount: tt.count, NotAnalyzedExtractedFiles: []NotAnalyzedFile{{FileName: "a"}, {FileName: "b"}}}
+			r.Bound()
+			if r.NotAnalyzedExtractedCount != tt.want {
+				t.Errorf("count = %d, want %d", r.NotAnalyzedExtractedCount, tt.want)
+			}
+		})
 	}
 }

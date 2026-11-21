@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html/template"
+	"math"
 	"reflect"
 	"regexp"
 	"slices"
@@ -233,27 +234,96 @@ func TestReportData_theCountOfTheFailedMembersIsExactBeyondTheListedOnes(t *test
 	}
 }
 
-// A count set by a plugin is added as it is read: only digits count, a bad one is
-// 0, and no row appears for it.
+// The entry that counts the failed members not listed adds its count and never
+// makes a row, whatever the report holds besides.
 func TestReportData_theCountEntryAddsItsCountAndNeverARow(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		value string
-		want  int
+	summary := datamodel.ExtractedErrorsTransient + ": " + datamodel.ExtractedErrorsSummary(40, "x: boom")
+	tests := []struct {
+		name      string
+		reports   []datamodel.Report
+		wantTotal int
+		wantRows  int
 	}{
-		{"a count", datamodel.MoreErrorsText(40), 41},
-		{"not a count", "many", 1},
-		{"a negative count", "-5 more", 1},
-	} {
+		{
+			"the summary error and the count alone: 40 failed, none listed",
+			[]datamodel.Report{{Filename: "/in/a.zip", Error: summary, ErrorExtractedFiles: map[string]string{datamodel.MoreErrorsKey: datamodel.MoreErrorsText(40)}}},
+			40, 0,
+		},
+		{
+			"an error of its own and the count: the file and the 40",
+			[]datamodel.Report{{Filename: "/in/a.zip", Error: "own", ErrorExtractedFiles: map[string]string{datamodel.MoreErrorsKey: datamodel.MoreErrorsText(40)}}},
+			41, 1,
+		},
+		{
+			"a member listed and the count",
+			[]datamodel.Report{{Filename: "/in/a.zip", ErrorExtractedFiles: map[string]string{"only": "x", datamodel.MoreErrorsKey: datamodel.MoreErrorsText(40)}}},
+			41, 1,
+		},
+		{
+			"a member and a count that is not one: the member alone",
+			[]datamodel.Report{{Filename: "/in/a.zip", ErrorExtractedFiles: map[string]string{"only": "x", datamodel.MoreErrorsKey: "many"}}},
+			1, 1,
+		},
+		{
+			"two archives, each with a count",
+			[]datamodel.Report{
+				{Filename: "/in/a.zip", ErrorExtractedFiles: map[string]string{"a": "x", datamodel.MoreErrorsKey: datamodel.MoreErrorsText(40)}},
+				{Filename: "/in/b.zip", ErrorExtractedFiles: map[string]string{"b": "y", datamodel.MoreErrorsKey: datamodel.MoreErrorsText(2)}},
+			},
+			44, 2,
+		},
+		{
+			"a count at the clamp",
+			[]datamodel.Report{{Filename: "/in/a.zip", ErrorExtractedFiles: map[string]string{datamodel.MoreErrorsKey: datamodel.MoreErrorsText(datamodel.MaxFileCount)}}},
+			datamodel.MaxFileCount, 0,
+		},
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			d := mustReportData(t, scanContext(), []datamodel.Report{{
-				Filename:            "/in/a.zip",
-				ErrorExtractedFiles: map[string]string{"only": "x", datamodel.MoreErrorsKey: tt.value},
-			}})
-			if d.TotalErrors != tt.want || len(d.ErrorFiles) != 1 || d.ErrorFiles[0].Name != "only" {
-				t.Errorf("total %d, rows %+v; want %d and the one member", d.TotalErrors, d.ErrorFiles, tt.want)
+			d := mustReportData(t, scanContext(), tt.reports)
+			if d.TotalErrors != tt.wantTotal || len(d.ErrorFiles) != tt.wantRows {
+				t.Errorf("total %d, rows %d (%+v); want %d and %d", d.TotalErrors, len(d.ErrorFiles), d.ErrorFiles, tt.wantTotal, tt.wantRows)
+			}
+			for _, row := range d.ErrorFiles {
+				if strings.Contains(row.Name, "more failed file") {
+					t.Errorf("the count is shown as a row: %+v", row)
+				}
+			}
+			if d.MoreErrorFiles != tt.wantTotal-tt.wantRows {
+				t.Errorf("more = %d, want %d", d.MoreErrorFiles, tt.wantTotal-tt.wantRows)
 			}
 		})
+	}
+}
+
+// The counts of a report stop at the ceiling instead of wrapping around: reports
+// that each hold a count at the clamp, or an absurd one, still add up to the
+// ceiling, and the lines that say how many are left out stay positive.
+func TestReportData_theCountsStopAtTheCeilingInsteadOfWrapping(t *testing.T) {
+	const reports = 5
+	all := make([]datamodel.Report, 0, reports)
+	for i := range reports {
+		all = append(all, datamodel.Report{
+			Filename:                  fmt.Sprintf("/in/a%d.zip", i),
+			NotAnalyzedExtractedCount: math.MaxInt,
+			NotAnalyzedExtractedFiles: []datamodel.NotAnalyzedFile{{FileName: "m", Reason: datamodel.NotAnalyzedExtractLimit}},
+			ErrorExtractedFiles:       map[string]string{"e": "x", datamodel.MoreErrorsKey: datamodel.MoreErrorsText(datamodel.MaxFileCount)},
+		})
+	}
+	data, html := renderReports(t, all)
+	if data.NbFileNotAnalyzed != datamodel.MaxFileCount {
+		t.Errorf("NbFileNotAnalyzed = %d, want the ceiling %d", data.NbFileNotAnalyzed, datamodel.MaxFileCount)
+	}
+	if data.TotalErrors != datamodel.MaxFileCount {
+		t.Errorf("TotalErrors = %d, want the ceiling %d", data.TotalErrors, datamodel.MaxFileCount)
+	}
+	if data.MoreNotAnalyzed <= 0 || data.MoreErrorFiles <= 0 {
+		t.Errorf("more: %d not analyzed, %d errors; want both positive", data.MoreNotAnalyzed, data.MoreErrorFiles)
+	}
+	for _, note := range []string{fmt.Sprintf("… et %d autres</p>", data.MoreNotAnalyzed), fmt.Sprintf("… et %d autres</p>", data.MoreErrorFiles)} {
+		if !strings.Contains(html, note) {
+			t.Errorf("the report lacks %q", note)
+		}
 	}
 }
 

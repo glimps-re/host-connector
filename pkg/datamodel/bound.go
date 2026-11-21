@@ -51,7 +51,7 @@ func (r *Report) Bound() {
 	r.Error = CutText(r.Error, MaxListedNameLen)
 	r.Malwares = boundNames(r.Malwares, MaxReportMalwares)
 
-	r.NotAnalyzedExtractedCount = max(r.NotAnalyzedExtractedCount, len(r.NotAnalyzedExtractedFiles))
+	r.NotAnalyzedExtractedCount = min(max(r.NotAnalyzedExtractedCount, len(r.NotAnalyzedExtractedFiles)), MaxFileCount)
 	r.NotAnalyzedExtractedFiles = boundNotAnalyzed(r.NotAnalyzedExtractedFiles)
 	r.ErrorExtractedFiles = boundErrors(r.ErrorExtractedFiles)
 	fileBudget, nameBudget := MaxReportMaliciousFiles, MaxReportNodeMalwares
@@ -87,23 +87,41 @@ func boundNotAnalyzed(list []NotAnalyzedFile) []NotAnalyzedFile {
 	return out
 }
 
-// maxMoreErrors bounds the count of the failed files not listed, whoever wrote
-// it: a plugin can set the value of MoreErrorsKey. It fits an int of 32 bits, and
-// a count is exact only below it.
-const maxMoreErrors = 1 << 30
+// MaxFileCount bounds every count of files a report carries, whoever wrote it: a
+// plugin can set the count of the files not analyzed, or the value of
+// MoreErrorsKey. It fits an int of 32 bits, but two of them do not (their sum is
+// 2^31, one more than the largest int32): two counts are added with AddCount,
+// never with +. A count is exact only below it.
+const MaxFileCount = 1 << 30
+
+// clampCount brings a count into [0, MaxFileCount].
+func clampCount(n int) int {
+	return min(max(n, 0), MaxFileCount)
+}
+
+// AddCount is the sum of two counts of files, each between 0 and MaxFileCount (a
+// count out of that range is brought back into it), and at most MaxFileCount: it
+// stops there instead of wrapping around, whatever the size of an int.
+func AddCount(a, b int) int {
+	a, b = clampCount(a), clampCount(b)
+	if a >= MaxFileCount-b {
+		return MaxFileCount
+	}
+	return a + b
+}
 
 // MoreErrorsText is the value of MoreErrorsKey for n failed files not listed: n,
-// in decimal digits (n is kept between 0 and maxMoreErrors), then a text.
+// in decimal digits (n is kept between 0 and MaxFileCount), then a text.
 // ParseMoreErrors reads it back.
 func MoreErrorsText(n int) string {
-	return strconv.Itoa(min(max(n, 0), maxMoreErrors)) + " more failed file(s) not listed"
+	return strconv.Itoa(clampCount(n)) + " more failed file(s) not listed"
 }
 
 // ParseMoreErrors is the count in a value made by MoreErrorsText: decimal digits
 // (ASCII only, leading zeros allowed) then a space and anything. A value that does
-// not have that shape has no count (0), and a count over maxMoreErrors, however
-// many digits it has, is read as maxMoreErrors. ParseMoreErrors(MoreErrorsText(n))
-// is n for n up to maxMoreErrors. It does not depend on the size of an int: the
+// not have that shape has no count (0), and a count over MaxFileCount, however
+// many digits it has, is read as MaxFileCount. ParseMoreErrors(MoreErrorsText(n))
+// is n for n up to MaxFileCount. It does not depend on the size of an int: the
 // digits are read as 64 bits.
 func ParseMoreErrors(value string) int {
 	digits, _, found := strings.Cut(value, " ")
@@ -116,8 +134,8 @@ func ParseMoreErrors(value string) int {
 		}
 	}
 	n, err := strconv.ParseUint(digits, 10, 64)
-	if errors.Is(err, strconv.ErrRange) || n > maxMoreErrors {
-		return maxMoreErrors
+	if errors.Is(err, strconv.ErrRange) || n > MaxFileCount {
+		return MaxFileCount
 	}
 	if err != nil {
 		return 0
@@ -147,13 +165,13 @@ func addMoreErrors(out, src map[string]string, dropped int) {
 	if !had && dropped == 0 {
 		return
 	}
-	out[MoreErrorsKey] = MoreErrorsText(ParseMoreErrors(more) + dropped)
+	out[MoreErrorsKey] = MoreErrorsText(AddCount(ParseMoreErrors(more), dropped))
 }
 
 // failureCount is the number of failed files a map of errors stands for: the
 // entries listed and the count of those not listed.
 func failureCount(errs map[string]string) int {
-	return ListedErrors(errs) + ParseMoreErrors(errs[MoreErrorsKey])
+	return AddCount(ListedErrors(errs), ParseMoreErrors(errs[MoreErrorsKey]))
 }
 
 // boundErrors returns the first MaxListedSubfiles entries by name, in a new map,

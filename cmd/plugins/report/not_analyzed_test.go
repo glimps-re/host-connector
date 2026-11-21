@@ -327,6 +327,21 @@ func TestReportData_theCountsStopAtTheCeilingInsteadOfWrapping(t *testing.T) {
 	}
 }
 
+// A file whose analysis failed, with the fixed text the scanner gives it, is a
+// file in error: listed so, and not counted among the analyzed files.
+func TestReportData_aFileWhoseAnalysisFailedIsInErrorAndNotAnalyzed(t *testing.T) {
+	d := mustReportData(t, scanContext(), []datamodel.Report{
+		{Filename: "/in/clean.txt"},
+		{Filename: "/in/failed.txt", Error: "the file could not be analyzed"},
+	})
+	if d.NbFileSubmitted != 2 || d.NbFileAnalyzed != 1 || d.TotalErrors != 1 {
+		t.Errorf("submitted %d, analyzed %d, errors %d; want 2, 1 and 1", d.NbFileSubmitted, d.NbFileAnalyzed, d.TotalErrors)
+	}
+	if len(d.ErrorFiles) != 1 || d.ErrorFiles[0].Name != "/in/failed.txt" {
+		t.Errorf("error rows = %+v, want /in/failed.txt", d.ErrorFiles)
+	}
+}
+
 func TestReportData_whatCountsAsAnalyzed(t *testing.T) {
 	d := mustReportData(t, scanContext(), []datamodel.Report{
 		{Filename: "/in/clean"},

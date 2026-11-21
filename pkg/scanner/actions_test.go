@@ -479,9 +479,10 @@ func TestMoveAction_Handle(t *testing.T) {
 			wantedReport: datamodel.Report{},
 		},
 		{
-			name:       "unexpected path",
-			wantErr:    true,
-			samplePath: "/a/b/c",
+			name:         "unexpected path",
+			wantErr:      true,
+			samplePath:   "/a/b/c",
+			wantedReport: datamodel.Report{Error: moveFailedText},
 		},
 		{
 			name:       "move legit",

@@ -266,6 +266,92 @@ func TestSession_retriesOfAFailedFileOpenNoSessionAfterTheClose(t *testing.T) {
 	}
 }
 
+// The text the scanner puts in the report of a file whose move, quarantine or
+// removal failed makes the file a failed one for the session: reported once, and
+// a repeat of the failure opens no session once the first one is closed.
+func TestSession_aFileWhoseActionFailedIsReportedOnceAndItsRepeatsOpenNoSession(t *testing.T) {
+	const moveFailed = "the file could not be moved to the destination"
+	f := newRetention(t, Config{})
+	a := f.file("tom", "locked.bin")
+	f.p.OnStartScanFile(a, "h1")
+	f.p.OnFileScanned(a, "h1", datamodel.Result{})
+	f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1", Error: moveFailed})
+	s := f.session("tom")
+	if len(s.CompletedReports) != 1 || s.CompletedReports[0].Error != moveFailed {
+		t.Fatalf("reports = %+v, want one entry in error", s.CompletedReports)
+	}
+	f.clock.advance(2 * time.Minute)
+	f.p.checkAndCloseSessions(f.p.baseCtx())
+	if f.session("tom") != nil || len(f.reports(t)) != 1 {
+		t.Fatalf("session = %v, reports = %v, want the session closed with its report", f.session("tom"), f.reports(t))
+	}
+	for range 3 {
+		f.p.OnStartScanFile(a, "h1")
+		f.p.OnFileScanned(a, "h1", datamodel.Result{})
+		f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1", Error: moveFailed})
+	}
+	if f.session("tom") != nil {
+		t.Error("a repeat of a failed move reopened a session")
+	}
+	f.p.OnReport(&datamodel.Report{Filename: a, SHA256: "h1", MovedTo: "/out/locked.bin"})
+	if f.session("tom") == nil {
+		t.Error("the report of the move that finally worked must reach a session")
+	}
+}
+
+// A file in error that is still in INPUT is retried, and its repeats open no
+// session. A file whose disposition was done (quarantined, deleted or moved) has
+// left INPUT: the same bytes dropped again are a new file, and get their session
+// from the start, whatever error its first report carried (an analysis error that
+// a filter quarantined, for instance).
+func TestSession_aFileThatLeftInputGetsASessionWhenItsBytesAreDroppedAgain(t *testing.T) {
+	const analysisFailed = "the file could not be analyzed"
+	tests := []struct {
+		name        string
+		report      datamodel.Report
+		wantSession bool
+	}{
+		{"quarantined after an analysis error", datamodel.Report{Error: analysisFailed, Action: datamodel.Quarantined, Malicious: true}, true},
+		{"deleted after an error", datamodel.Report{Error: analysisFailed, Deleted: true}, true},
+		{"moved after an error", datamodel.Report{Error: analysisFailed, MovedTo: "/out/f.bin"}, true},
+		{"a quarantine that failed: still in INPUT, retried", datamodel.Report{Error: "the file could not be quarantined", Malicious: true}, false},
+		{"a move that failed: still in INPUT, retried", datamodel.Report{Error: "the file could not be moved to the destination"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newRetention(t, Config{})
+			a := f.file("tom", "f.bin")
+			rep := tt.report
+			rep.Filename, rep.SHA256 = a, "h1"
+			f.p.OnStartScanFile(a, "h1")
+			f.p.OnFileScanned(a, "h1", datamodel.Result{})
+			f.p.OnReport(&rep)
+			f.clock.advance(2 * time.Minute)
+			f.p.checkAndCloseSessions(f.p.baseCtx())
+			if f.session("tom") != nil || len(f.reports(t)) != 1 {
+				t.Fatalf("session = %v, reports = %v, want the first session closed with its report", f.session("tom"), f.reports(t))
+			}
+			f.p.OnStartScanFile(a, "h1")
+			if got := f.session("tom") != nil; got != tt.wantSession {
+				t.Fatalf("a session after the bytes were dropped again at start = %v, want %v", got, tt.wantSession)
+			}
+			again := rep
+			f.p.OnFileScanned(a, "h1", datamodel.Result{})
+			f.p.OnReport(&again)
+			s := f.session("tom")
+			if tt.wantSession {
+				if s == nil || len(s.CompletedReports) != 1 {
+					t.Fatalf("session = %+v, want the second report in a session of its own", s)
+				}
+				return
+			}
+			if s != nil {
+				t.Errorf("the repeat of a failure of a file still in INPUT opened a session: %+v", s)
+			}
+		})
+	}
+}
+
 func TestSession_aLateReportReopensASessionAndGetsItsOwnReport(t *testing.T) {
 	f := newRetention(t, Config{})
 	a := f.file("tom", "a.txt")

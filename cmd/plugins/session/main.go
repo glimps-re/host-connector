@@ -476,11 +476,11 @@ func (p *SessionPlugin) OnFileScanned(file string, sha256 string, result datamod
 // action) a new one is opened and will write a complementary report. Only a
 // repeated failure of a file already reported as failed opens nothing.
 func (p *SessionPlugin) OnReport(rep *datamodel.Report) {
-	session, _ := p.attach(rep.Filename, rep.Error == "" || !p.knownError(rep.Filename, rep.SHA256), func(s *Session) bool { return s.addReport(*rep) })
+	session, _ := p.attach(rep.Filename, rep.Error == "" || leftInput(*rep) || !p.knownError(rep.Filename, rep.SHA256), func(s *Session) bool { return s.addReport(*rep) })
 	if session == nil {
 		return
 	}
-	if rep.Error == "" {
+	if rep.Error == "" || leftInput(*rep) {
 		p.forgetError(rep.Filename)
 	}
 	p.logger.Debug("report added to session",
@@ -505,7 +505,14 @@ func (p *SessionPlugin) forgetError(file string) {
 	delete(p.known, file)
 }
 
-// rememberErrors keeps the files of a closed session that ended in error.
+// leftInput tells that the disposition of the file was done: it was quarantined,
+// deleted or moved, so it is not in INPUT any more and will not be tried again.
+func leftInput(rep datamodel.Report) bool {
+	return rep.Action == datamodel.Quarantined || rep.Deleted || rep.MovedTo != ""
+}
+
+// rememberErrors keeps the files of a closed session that ended in error and are
+// still in INPUT, to be retried: a retry that fails again opens no new session.
 func (p *SessionPlugin) rememberErrors(s *Session) {
 	s.mutex.RLock()
 	defer s.mutex.RUnlock()
@@ -515,6 +522,11 @@ func (p *SessionPlugin) rememberErrors(s *Session) {
 		p.known = make(map[string]string)
 	}
 	for path, i := range s.errorAt {
+		// A file that left INPUT (quarantined, deleted, moved) is not retried: the
+		// same bytes dropped again are a new file and must get their session.
+		if leftInput(s.CompletedReports[i]) {
+			continue
+		}
 		if len(p.known) >= maxKnownErrors {
 			for k := range p.known {
 				delete(p.known, k)

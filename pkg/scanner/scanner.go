@@ -627,10 +627,12 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	report := &datamodel.Report{}
 	actionCtx, cancel := context.WithTimeout(c.workContext(), c.actionTimeout(size))
 	defer cancel()
-	if err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report); err != nil {
+	err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report)
+	if err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))
-		return
 	}
+	// The report goes out whatever the actions did: a restored file whose move
+	// failed is in error in its report, as any other file.
 	c.addReport(report)
 	return
 }

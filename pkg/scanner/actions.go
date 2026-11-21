@@ -47,6 +47,27 @@ var (
 // maxMoveConflicts is how many conflict names are tried after the plain one.
 const maxMoveConflicts = 5
 
+// What the report of a file says when an action on it failed: short, and with no
+// path or system error (the log has the cause), so that the file counts as in
+// error and not as analyzed whatever the action was.
+const (
+	quarantineFailedText = "the file could not be quarantined"
+	moveFailedText       = "the file could not be moved to the destination"
+	removeFailedText     = "the file could not be removed"
+	// analysisFailedText is what the report says of a file whose analysis failed
+	// without an error of the pipeline: the text of the service stays in the log.
+	analysisFailedText = "the file could not be analyzed"
+)
+
+// setErrorIfNone puts text in the report of a file that cannot be delivered as it
+// is, unless the report already says what is wrong with the file (an error of the
+// analysis, a refusal with its own reason): the first cause stays.
+func setErrorIfNone(report *datamodel.Report, text string) {
+	if report.Error == "" {
+		report.Error = text
+	}
+}
+
 // errPermanentAction marks an action failure that retrying cannot fix.
 var errPermanentAction = errors.New("permanent action failure")
 
@@ -79,8 +100,12 @@ func (a *ReportAction) Handle(ctx context.Context, src Source, result datamodel.
 	analysisReport.NotAnalyzedReason = result.NotAnalyzedReason
 	analysisReport.NotAnalyzedExtractedFiles = slices.Clone(result.NotAnalyzedSubfiles)
 	analysisReport.NotAnalyzedExtractedCount = max(result.NotAnalyzedSubfilesCount, len(result.NotAnalyzedSubfiles))
-	if result.Error != nil {
+	switch {
+	case result.Error != nil:
 		analysisReport.Error = result.Error.Error()
+	case result.AnalysisError != "" && len(result.ErrorSubfiles) == 0:
+		// An archive says which of its members failed: it is not an error of its own.
+		analysisReport.Error = analysisFailedText
 	}
 	analysisReport.Bound()
 	return
@@ -310,6 +335,7 @@ func (a *RemoveFileAction) SkipAfterError() bool { return true }
 func (a *RemoveFileAction) Handle(ctx context.Context, src Source, result datamodel.Result, report *datamodel.Report) (err error) {
 	defer func() {
 		if err != nil {
+			setErrorIfNone(report, removeFailedText)
 			err = fmt.Errorf("remove action: %w", err)
 		}
 	}()
@@ -318,8 +344,8 @@ func (a *RemoveFileAction) Handle(ctx context.Context, src Source, result datamo
 	}
 	err = src.Remove()
 	if err != nil {
-		if errors.Is(err, errSourceLink) && report.Error == "" {
-			report.Error = "malware behind a symbolic link: the link and its target are left in place"
+		if errors.Is(err, errSourceLink) {
+			setErrorIfNone(report, "malware behind a symbolic link: the link and its target are left in place")
 		}
 		if quarantine.IsRemovalRefused(err) {
 			err = fmt.Errorf("%w: %w", errPermanentAction, err)
@@ -348,6 +374,11 @@ func (a *QuarantineAction) Handle(ctx context.Context, src Source, result datamo
 	path := src.Path
 	defer func() {
 		if err != nil {
+			// A content that was restored is refused on purpose, and the next pass
+			// handles the file as restored: that is not a failure of the quarantine.
+			if !errors.Is(err, quarantine.ErrRestored) {
+				setErrorIfNone(report, quarantineFailedText)
+			}
 			err = fmt.Errorf("quarantine action: %w", err)
 		}
 	}()
@@ -553,6 +584,7 @@ func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Re
 	path := src.Path
 	defer func() {
 		if err != nil {
+			setErrorIfNone(report, moveFailedText)
 			err = fmt.Errorf("move action: %w", err)
 		}
 	}()
@@ -584,7 +616,7 @@ func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Re
 		const msg = "file name reserved for session reports"
 		logger.Warn("file will not be moved to destination, "+msg, slog.String("file", path))
 		ConsoleLogger.Warn(fmt.Sprintf("file %s will not be moved to destination: %s", path, msg))
-		report.Error = msg
+		setErrorIfNone(report, msg)
 		if result.Malware {
 			// The detection must reach the other actions and the console: the
 			// file simply stays where it is.
@@ -600,7 +632,7 @@ func (a *MoveAction) Handle(ctx context.Context, src Source, result datamodel.Re
 	if !result.Malware && result.AnalysisError == "" {
 		if err = src.actionable(); err != nil {
 			if errors.Is(err, errSourceLink) {
-				report.Error = "the file is a symbolic link: it was analyzed but is not moved"
+				setErrorIfNone(report, "the file is a symbolic link: it was analyzed but is not moved")
 			}
 			return
 		}

@@ -194,6 +194,69 @@ func TestReportData_errorsAreCountedOnce(t *testing.T) {
 	}
 }
 
+// The failed members of an archive are counted exactly, however many there are:
+// the entry that counts those the report does not list is not a failed file, has
+// no row, and adds its count.
+func TestReportData_theCountOfTheFailedMembersIsExactBeyondTheListedOnes(t *testing.T) {
+	const failed = 1500
+	errs := map[string]string{}
+	for i := range failed {
+		errs[fmt.Sprintf("/in/member%05d", i)] = "boom"
+	}
+	// As the report of an archive reaches the plugin: bounded, with the count of
+	// the files not listed.
+	bounded := datamodel.Report{Filename: "/in/a.zip", ErrorExtractedFiles: errs}
+	bounded.Bound()
+	if _, ok := bounded.ErrorExtractedFiles[datamodel.MoreErrorsKey]; !ok {
+		t.Fatal("setup: the bounded report has no count of the files not listed")
+	}
+	data, html := renderReports(t, []datamodel.Report{bounded})
+	if data.TotalErrors != failed {
+		t.Errorf("TotalErrors = %d, want %d", data.TotalErrors, failed)
+	}
+	if len(data.ErrorFiles) != maxRows || data.MoreErrorFiles != failed-maxRows {
+		t.Errorf("rows %d, more %d; want %d and %d", len(data.ErrorFiles), data.MoreErrorFiles, maxRows, failed-maxRows)
+	}
+	for _, row := range data.ErrorFiles {
+		if strings.Contains(row.Name, "more failed file") {
+			t.Fatalf("the count of the files not listed is shown as a row: %+v", row)
+		}
+	}
+	if strings.Contains(html, "more failed file") {
+		t.Error("the count of the files not listed is in the HTML")
+	}
+	if !strings.Contains(html, fmt.Sprintf("Fichiers en erreur : </strong>%d", failed)) {
+		t.Errorf("the HTML does not give %d files in error", failed)
+	}
+	if !strings.Contains(html, fmt.Sprintf("… et %d autres</p>", failed-maxRows)) {
+		t.Errorf("the HTML does not say that %d are left out", failed-maxRows)
+	}
+}
+
+// A count set by a plugin is added as it is read: only digits count, a bad one is
+// 0, and no row appears for it.
+func TestReportData_theCountEntryAddsItsCountAndNeverARow(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		value string
+		want  int
+	}{
+		{"a count", datamodel.MoreErrorsText(40), 41},
+		{"not a count", "many", 1},
+		{"a negative count", "-5 more", 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			d := mustReportData(t, scanContext(), []datamodel.Report{{
+				Filename:            "/in/a.zip",
+				ErrorExtractedFiles: map[string]string{"only": "x", datamodel.MoreErrorsKey: tt.value},
+			}})
+			if d.TotalErrors != tt.want || len(d.ErrorFiles) != 1 || d.ErrorFiles[0].Name != "only" {
+				t.Errorf("total %d, rows %+v; want %d and the one member", d.TotalErrors, d.ErrorFiles, tt.want)
+			}
+		})
+	}
+}
+
 func TestReportData_whatCountsAsAnalyzed(t *testing.T) {
 	d := mustReportData(t, scanContext(), []datamodel.Report{
 		{Filename: "/in/clean"},

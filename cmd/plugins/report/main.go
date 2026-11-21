@@ -403,14 +403,23 @@ func reportDataFrom(reportContext datamodel.ScanContext, reports iter.Seq2[datam
 
 // addErrors counts and lists the errors of a report: its own, unless it is the
 // summary of its failed members (which are not counted again), then those of its
-// extracted files, in the order of their names.
+// extracted files, in the order of their names. The entry that counts the failed
+// files the report does not list (datamodel.MoreErrorsKey) is not a failed file
+// and has no row: its count is added to the total, so the total is exact however
+// many members failed.
 func (d *ReportData) addErrors(report datamodel.Report) {
 	isSummary := len(report.ErrorExtractedFiles) > 0 && datamodel.IsExtractedErrorsSummary(report.Error)
 	if report.Error != "" && !isSummary {
 		d.addError(report.Filename, report.Error)
 	}
 	for _, name := range slices.Sorted(maps.Keys(report.ErrorExtractedFiles)) {
+		if name == datamodel.MoreErrorsKey {
+			continue
+		}
 		d.addError(name, report.ErrorExtractedFiles[name])
+	}
+	if more, ok := report.ErrorExtractedFiles[datamodel.MoreErrorsKey]; ok {
+		d.TotalErrors += datamodel.ParseMoreErrors(more)
 	}
 }
 

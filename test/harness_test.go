@@ -92,13 +92,37 @@ func TestMain(m *testing.M) {
 
 func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
+	poll(t, what, cond, nil, nil)
+}
+
+// poll waits for cond up to a minute. When exited is not nil and gets closed
+// meanwhile, the process ended: a connector that refused its configuration
+// would otherwise be waited for until the deadline.
+func poll(t *testing.T, what string, cond func() bool, exited <-chan struct{}, exitErr func() error) {
+	t.Helper()
 	deadline := time.Now().Add(60 * time.Second)
 	for !cond() {
+		select {
+		case <-exited:
+			if cond() {
+				return
+			}
+			t.Fatalf("the process ended (%v) while waiting for %s", exitErr(), what)
+		default:
+		}
 		if time.Now().After(deadline) {
 			t.Fatalf("timeout waiting for %s", what)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// waitFor waits for the condition like the package function, and fails at
+// once if the process ended meanwhile: a connector that refused its
+// configuration would otherwise be waited for until the deadline.
+func (in *instance) waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	poll(t, what, cond, in.exited, func() error { return in.exitErr })
 }
 
 func write(t *testing.T, path string, data []byte) {
@@ -218,6 +242,9 @@ type options struct {
 	config map[string]any
 	// session is merged over the configuration of the session plugin.
 	session map[string]any
+	// more adds plugins, by name of their folder in cmd/plugins, with their
+	// configuration.
+	more map[string]map[string]any
 	// plugins is merged over the configuration of the extract plugin.
 	plugins map[string]any
 }
@@ -247,6 +274,34 @@ func cloneMap(t *testing.T, m map[string]any) map[string]any {
 		t.Fatal(err)
 	}
 	return cp
+}
+
+// pluginBuilds holds the plugins built on demand, besides the two of buildAll.
+var pluginBuilds struct {
+	mu   sync.Mutex
+	errs map[string]error
+}
+
+// buildPlugin builds the plugin of cmd/plugins/<name> once, with the toolchain
+// of the binary, and returns the path of its shared object.
+func buildPlugin(t *testing.T, name string) string {
+	t.Helper()
+	bin := buildAll(t)
+	out := filepath.Join(bin, name+".so")
+	pluginBuilds.mu.Lock()
+	defer pluginBuilds.mu.Unlock()
+	if pluginBuilds.errs == nil {
+		pluginBuilds.errs = map[string]error{}
+	}
+	err, built := pluginBuilds.errs[name]
+	if !built {
+		err = goBuild(repoRoot(t), out, "-buildmode=plugin", "./cmd/plugins/"+name)
+		pluginBuilds.errs[name] = err
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
 }
 
 // writeJSON writes v as JSON, which the YAML loaders of the connector read.
@@ -326,9 +381,12 @@ func startInstance(t *testing.T, g *gmalware, opt options) *instance {
 		}
 	}
 	session := mergeMaps(map[string]any{"root_folder": in.input, "exports": []string{in.export}, "delay": "2s"}, opt.session)
-	plugins := map[string]any{"session": map[string]any{"file": filepath.Join(bin, "session.so"), "config": session}}
+	plugins := map[string]map[string]any{"session": {"file": filepath.Join(bin, "session.so"), "config": session}}
 	if opt.extract {
 		plugins["extract"] = map[string]any{"file": filepath.Join(bin, "extract.so"), "config": opt.plugins}
+	}
+	for name, cfg := range opt.more {
+		plugins[name] = map[string]any{"file": buildPlugin(t, name), "config": cfg}
 	}
 	pluginsFile := filepath.Join(root, "plugins.yml")
 	conf := mergeMaps(map[string]any{

@@ -33,6 +33,7 @@ type expectations struct {
 	reasons     map[datamodel.NotAnalyzedReason]bool
 	archives    map[string][][]byte
 	released    map[string]bool
+	flagged     map[string]bool
 }
 
 // allow declares that files may be delivered with these not-analyzed reasons.
@@ -42,6 +43,18 @@ func (e *expectations) allow(reasons ...datamodel.NotAnalyzedReason) {
 	}
 	for _, r := range reasons {
 		e.reasons[r] = true
+	}
+}
+
+// flag declares contents that a plugin treats as malware without the service
+// (a forbidden path or type): they count as malware for the checker, as the
+// ones the test programmed in the fake service. It only adds to that set.
+func (e *expectations) flag(contents ...[]byte) {
+	if e.flagged == nil {
+		e.flagged = map[string]bool{}
+	}
+	for _, c := range contents {
+		e.flagged[sha256Hex(c)] = true
 	}
 }
 
@@ -96,7 +109,7 @@ func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
 			continue
 		}
 		if isLockReport(filepath.Base(path)) {
-			if gm.Programmed(sum) {
+			if spec.programmedMalware(sum, gm) {
 				violations = append(violations, rel+": programmed as malware")
 			}
 			violations = append(violations, lockReportViolations(rel, path, size, spec, gm, reports)...)
@@ -187,7 +200,7 @@ func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmal
 	if r.MitigationID == "" || r.MitigationID != id {
 		violations = append(violations, rel+": the mitigation ID of the lock report is not the one of its file")
 	}
-	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil && !restoredIn(reports[r.SHA256]) {
+	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil && (!spec.released[r.SHA256] || !restoredIn(reports[r.SHA256])) {
 		violations = append(violations, rel+": the file of the lock report is not in the quarantine")
 	}
 	return violations
@@ -199,17 +212,24 @@ func isSHA256(s string) bool {
 }
 
 // programmedMalware tells whether the content is malware for the test: it was
-// programmed as such, or it is a declared archive with a member that was.
+// programmed in the service or flagged for a plugin, or it is a declared archive
+// with a member that was.
 func (e *expectations) programmedMalware(sha string, gm *gmalware) bool {
-	if gm.Programmed(sha) {
+	if e.isMalware(sha, gm) {
 		return true
 	}
 	for _, m := range e.archives[sha] {
-		if gm.Programmed(sha256Hex(m)) {
+		if e.isMalware(sha256Hex(m), gm) {
 			return true
 		}
 	}
 	return false
+}
+
+// isMalware tells whether the content itself, not an archive around it, was
+// programmed in the service or flagged for a plugin.
+func (e *expectations) isMalware(sha string, gm *gmalware) bool {
+	return gm.Programmed(sha) || e.flagged[sha]
 }
 
 // reasonAllowed tells whether a file of that size may be delivered with that
@@ -293,6 +313,11 @@ func restoredEntryViolations(rel string, size int64, e datamodel.Report, spec ch
 	if e.NotAnalyzedReason != "" && e.NotAnalyzedReason != datamodel.NotAnalyzedRestored && !spec.reasonAllowed(e.NotAnalyzedReason, size) {
 		violations = append(violations, fmt.Sprintf("%s: the restored entry says %q, which nothing justifies", rel, e.NotAnalyzedReason))
 	}
+	for _, sub := range e.NotAnalyzedExtractedFiles {
+		if !spec.reasonAllowed(sub.Reason, sub.Size) {
+			violations = append(violations, fmt.Sprintf("%s: member %q of the restored entry delivered not analyzed for %q", rel, sub.FileName, sub.Reason))
+		}
+	}
 	return len(violations) == 0 && len(problems) == 0, violations, problems
 }
 
@@ -344,7 +369,7 @@ func archiveViolations(rel, sum string, e datamodel.Report, spec checkSpec, gm *
 	seen := false
 	for _, m := range members {
 		memberSum := sha256Hex(m)
-		if gm.Programmed(memberSum) {
+		if spec.isMalware(memberSum, gm) {
 			violations = append(violations, rel+": a member is programmed as malware")
 		}
 		if _, ok := gm.Given(memberSum); ok {

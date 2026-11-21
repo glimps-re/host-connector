@@ -23,10 +23,13 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,7 +47,7 @@ func TestE2E_cleanDeliveredMaliciousQuarantined(t *testing.T) {
 	in := startInstance(t, gm, options{})
 	in.drop(t, "clean.txt", []byte("some harmless content"))
 	badPath := in.drop(t, "bad.txt", bad)
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 	if !in.inOutput("clean.txt") {
 		t.Errorf("clean.txt was not delivered; log:\n%s", in.stderr.String())
 	}
@@ -73,8 +76,8 @@ func TestE2E_gmalwareOutageThenRecovery(t *testing.T) {
 	gm.FailWith(503)
 	in := startInstance(t, gm, options{config: map[string]any{"monitoring": map[string]any{"period": "2s"}}})
 	path := in.drop(t, "a.txt", []byte("content waiting for the service"))
-	waitFor(t, "the connector to meet the outage", func() bool { return gm.failed.Load() > 0 })
-	waitFor(t, "the failure to be reported", func() bool { return in.logHas("could not analyze file") })
+	in.waitFor(t, "the connector to meet the outage", func() bool { return gm.failed.Load() > 0 })
+	in.waitFor(t, "the failure to be reported", func() bool { return in.logHas("could not analyze file") })
 	if in.inOutput("a.txt") {
 		t.Error("a file was delivered without analysis during the outage")
 	}
@@ -82,8 +85,8 @@ func TestE2E_gmalwareOutageThenRecovery(t *testing.T) {
 		t.Errorf("the file left INPUT during the outage: %v", err)
 	}
 	gm.FailWith(0)
-	waitFor(t, "the delivery after the recovery", func() bool { return in.inOutput("a.txt") })
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the delivery after the recovery", func() bool { return in.inOutput("a.txt") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 }
 
 // The console drives the agent: Stop and Start are executed and acknowledged
@@ -92,15 +95,15 @@ func TestE2E_consoleStopThenStart(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{agent: true})
 	in.drop(t, "first.txt", []byte("first content"))
-	waitFor(t, "the first delivery", func() bool { return in.inOutput("first.txt") })
+	in.waitFor(t, "the first delivery", func() bool { return in.inOutput("first.txt") })
 	for _, action := range []string{"stop", "start"} {
 		if msg := in.console.WaitAck(t, in.console.Push(t, action, nil)); msg != "" {
 			t.Fatalf("%s acknowledged with the error %q", action, msg)
 		}
 	}
 	in.drop(t, "second.txt", []byte("second content"))
-	waitFor(t, "the delivery after the restart", func() bool { return in.inOutput("second.txt") })
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the delivery after the restart", func() bool { return in.inOutput("second.txt") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 }
 
 // reportCount counts the session reports written to the exports.
@@ -161,10 +164,10 @@ func TestE2E_destinationConflictKeepsBoth(t *testing.T) {
 			}})
 			first, second := []byte("first content"), []byte("second content, same name")
 			firstPath := in.drop(t, "a.txt", first)
-			waitFor(t, "the first delivery", func() bool { return in.inOutput("a.txt") })
-			waitFor(t, "the first file to leave INPUT", func() bool { return in.gone(firstPath) })
+			in.waitFor(t, "the first delivery", func() bool { return in.inOutput("a.txt") })
+			in.waitFor(t, "the first file to leave INPUT", func() bool { return in.gone(firstPath) })
 			secondPath := in.drop(t, "a.txt", second)
-			waitFor(t, "the second file to leave INPUT", func() bool { return in.gone(secondPath) })
+			in.waitFor(t, "the second file to leave INPUT", func() bool { return in.gone(secondPath) })
 			delivered := globOne(t, filepath.Join(in.output, "tom", "*"))
 			if len(delivered) != 2 {
 				t.Fatalf("OUTPUT = %v, want both files", delivered)
@@ -173,7 +176,7 @@ func TestE2E_destinationConflictKeepsBoth(t *testing.T) {
 			if err != nil || !bytes.Equal(got, first) {
 				t.Errorf("a.txt in OUTPUT = %q, %v; want the first content untouched", got, err)
 			}
-			waitFor(t, "the report to name the conflict", func() bool {
+			in.waitFor(t, "the report to name the conflict", func() bool {
 				return slices.ContainsFunc(in.reportsOf(t, second), func(e datamodel.Report) bool { return e.MoveConflictOf != "" })
 			})
 		})
@@ -210,12 +213,12 @@ func TestE2E_watcherSwitch(t *testing.T) {
 			in := startInstance(t, gm, options{config: map[string]any{
 				"monitoring": map[string]any{"disable_fs_watcher": disabled, "period": period},
 			}})
-			waitFor(t, "the monitoring to start", func() bool { return in.logHas("monitoring successfully completed") })
+			in.waitFor(t, "the monitoring to start", func() bool { return in.logHas("monitoring successfully completed") })
 			if got := inotifyWatches(in.cmd.Process.Pid); (got == 0) != disabled {
 				t.Errorf("inotify watches = %d with disable_fs_watcher=%v", got, disabled)
 			}
 			in.drop(t, "late.txt", []byte("written after the start"))
-			waitFor(t, "the delivery", func() bool { return in.inOutput("late.txt") })
+			in.waitFor(t, "the delivery", func() bool { return in.inOutput("late.txt") })
 		})
 	}
 }
@@ -226,9 +229,9 @@ func TestE2E_emptyFoldersRemoved(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{session: map[string]any{"remove_empty_dirs": true}})
 	in.drop(t, "deep/er/a.txt", []byte("in a subfolder"))
-	waitFor(t, "the delivery", func() bool { return in.inOutput("deep/er/a.txt") })
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
-	waitFor(t, "the empty folders to go", func() bool { return in.gone(filepath.Join(in.input, "tom", "deep")) })
+	in.waitFor(t, "the delivery", func() bool { return in.inOutput("deep/er/a.txt") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the empty folders to go", func() bool { return in.gone(filepath.Join(in.input, "tom", "deep")) })
 }
 
 // P15: a file above max_file_size and an empty file are delivered when the
@@ -241,8 +244,8 @@ func TestE2E_unanalyzablePolicyPass(t *testing.T) {
 	}})
 	in.create(t, "big.bin", 2<<20)
 	in.drop(t, "empty.txt", nil)
-	waitFor(t, "both files to be delivered", func() bool { return in.inOutput("big.bin") && in.inOutput("empty.txt") })
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "both files to be delivered", func() bool { return in.inOutput("big.bin") && in.inOutput("empty.txt") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 	if gm.submitted.Load() != 0 {
 		t.Errorf("%d submissions: neither file should have been analyzed", gm.submitted.Load())
 	}
@@ -288,23 +291,23 @@ func TestE2E_invalidConfigureKeepsTheOldConfiguration(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{agent: true})
 	in.drop(t, "before.txt", []byte("before the bad configuration"))
-	waitFor(t, "the first delivery", func() bool { return in.inOutput("before.txt") })
+	in.waitFor(t, "the first delivery", func() bool { return in.inOutput("before.txt") })
 
 	in.console.SetConfig(in.withConf(t, map[string]any{"move": map[string]any{"mode": "bogus"}}))
 	if msg := in.console.WaitAck(t, in.console.Push(t, "update-config", nil)); msg == "" {
 		t.Error("an invalid configuration was acknowledged without error")
 	}
-	waitFor(t, "the console to be told of the rejection", func() bool { return slices.Contains(in.console.errorTypes(), "host-config-rejected") })
+	in.waitFor(t, "the console to be told of the rejection", func() bool { return slices.Contains(in.console.errorTypes(), "host-config-rejected") })
 	in.drop(t, "during.txt", []byte("while the bad configuration is refused"))
-	waitFor(t, "the old configuration to keep delivering", func() bool { return in.inOutput("during.txt") })
+	in.waitFor(t, "the old configuration to keep delivering", func() bool { return in.inOutput("during.txt") })
 
 	in.console.SetConfig(in.withConf(t, nil))
 	if msg := in.console.WaitAck(t, in.console.Push(t, "update-config", nil)); msg != "" {
 		t.Fatalf("the valid configuration was refused: %s", msg)
 	}
-	waitFor(t, "the rejection to be resolved", func() bool { return slices.Contains(in.console.resolvedTypes(), "host-config-rejected") })
+	in.waitFor(t, "the rejection to be resolved", func() bool { return slices.Contains(in.console.resolvedTypes(), "host-config-rejected") })
 	in.drop(t, "after.txt", []byte("after the good configuration"))
-	waitFor(t, "the delivery after the good configuration", func() bool { return in.inOutput("after.txt") })
+	in.waitFor(t, "the delivery after the good configuration", func() bool { return in.inOutput("after.txt") })
 }
 
 // startFailure starts the connector with a configuration it must refuse, and
@@ -325,6 +328,7 @@ func TestE2E_refusedAtStart(t *testing.T) {
 		want string
 	}{
 		{name: "work dir under a watched path (P14)", opt: options{config: map[string]any{"work_dir": "INPUT/work"}}, want: "is, or is under, the monitored path"},
+		{name: "browser that does not exist (P19)", opt: options{more: map[string]map[string]any{"report": {"chrome_path": "/nonexistent/chromium"}}}, want: "plugin report: browser /nonexistent/chromium: unsafe executable"},
 		{name: "7-Zip that does not exist (P18)", opt: options{extract: true, plugins: map[string]any{"seven_zip_path": "/nonexistent/7z"}}, want: "install the binary or fix the configured path"},
 	}
 	for _, tt := range tests {
@@ -355,15 +359,52 @@ func TestE2E_archives(t *testing.T) {
 	in.expect.archive(bad, goodMembers[0], badMember)
 	in.drop(t, "good.zip", good)
 	badPath := in.drop(t, "bad.zip", bad)
-	waitFor(t, "the clean archive to be delivered", func() bool { return in.inOutput("good.zip") })
-	waitFor(t, "the malicious archive to leave INPUT", func() bool { return in.gone(badPath) })
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the clean archive to be delivered", func() bool { return in.inOutput("good.zip") })
+	in.waitFor(t, "the malicious archive to leave INPUT", func() bool { return in.gone(badPath) })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 	if in.inOutput("bad.zip") {
 		t.Error("the archive with a malicious member reached OUTPUT")
 	}
 	if m := globOne(t, filepath.Join(in.quarantine, "*.lock")); len(m) != 1 {
 		t.Errorf("quarantine = %v, want the malicious archive only", m)
 	}
+}
+
+// outputWatch samples OUTPUT for a file that must not appear yet.
+type outputWatch struct {
+	found atomic.Bool
+	quit  chan struct{}
+	done  chan struct{}
+	once  sync.Once
+}
+
+// watchOutput starts sampling for the file below the owner folder every 20 ms,
+// until stop or the end of the test.
+func watchOutput(t *testing.T, in *instance, rel string) *outputWatch {
+	t.Helper()
+	w := &outputWatch{quit: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		for {
+			if in.inOutput(rel) {
+				w.found.Store(true)
+			}
+			select {
+			case <-w.quit:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	t.Cleanup(func() { w.stop() })
+	return w
+}
+
+// stop ends the sampling and tells whether the file showed up while it ran.
+func (w *outputWatch) stop() (found bool) {
+	w.once.Do(func() { close(w.quit) })
+	<-w.done
+	return w.found.Load()
 }
 
 // P16: a quarantined malware is restorable by the console, in either container
@@ -378,14 +419,12 @@ func TestE2E_quarantineRestore(t *testing.T) {
 			bad := []byte("this content is a malware, restored later " + format)
 			gm.MarkMalicious(bad)
 			in.expect.release(bad)
+			early := watchOutput(t, in, "bad.txt")
 			path := in.drop(t, "bad.txt", bad)
 			id := hcquarantine.ComputeCacheID(path, sha256Hex(bad))
 			lock := filepath.Join(in.quarantine, id+".lock")
-			waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
-			waitFor(t, "the malware to leave INPUT", func() bool { return in.gone(path) })
-			if in.inOutput("bad.txt") {
-				t.Fatal("the malware was delivered before the restore")
-			}
+			in.waitFor(t, "the quarantine", func() bool { return !in.gone(lock) })
+			in.waitFor(t, "the malware to leave INPUT", func() bool { return in.gone(path) })
 			head, err := os.ReadFile(filepath.Clean(lock))
 			if err != nil {
 				t.Fatal(err)
@@ -394,10 +433,13 @@ func TestE2E_quarantineRestore(t *testing.T) {
 			if isZip := bytes.HasPrefix(head, []byte("PK")); isZip != (format == "zip") {
 				t.Errorf("container starts with %q for the format %s", head, format)
 			}
+			if early.stop() {
+				t.Fatal("the malware was delivered before the restore")
+			}
 			if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
 				t.Fatalf("restore refused: %s", msg)
 			}
-			waitFor(t, "the restored file to be delivered", func() bool { return in.inOutput("bad.txt") })
+			in.waitFor(t, "the restored file to be delivered", func() bool { return in.inOutput("bad.txt") })
 			delivered, err := os.ReadFile(filepath.Join(in.output, "tom", "bad.txt"))
 			if err != nil || !bytes.Equal(delivered, bad) {
 				t.Errorf("delivered content = %q, %v", delivered, err)
@@ -436,7 +478,7 @@ func TestE2E_slowUploadAndWriterThatKeepsTheFileOpen(t *testing.T) {
 			t.Fatal("a file still being written was analyzed or delivered")
 		}
 	}
-	waitFor(t, "the delivery once the writer paused", func() bool { return in.inOutput("upload.bin") })
+	in.waitFor(t, "the delivery once the writer paused", func() bool { return in.inOutput("upload.bin") })
 	delivered := filepath.Join(in.output, "tom", "upload.bin")
 	got, err := os.ReadFile(filepath.Clean(delivered))
 	if err != nil || !bytes.Equal(got, written) {
@@ -445,7 +487,7 @@ func TestE2E_slowUploadAndWriterThatKeepsTheFileOpen(t *testing.T) {
 	if _, err = f.WriteString("written after the delivery"); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
 	after, err := os.ReadFile(filepath.Clean(delivered))
 	if err != nil || !bytes.Equal(after, written) {
 		t.Errorf("OUTPUT changed after the delivery: %d bytes, %v", len(after), err)
@@ -508,7 +550,7 @@ func TestE2E_extractionBombsAreStopped(t *testing.T) {
 			in := startInstance(t, gm, options{extract: true, config: map[string]any{"recursive_extract_max_size": "4MiB"}})
 			bomb := tt.make(t, 64<<20)
 			path := in.drop(t, tt.name, bomb)
-			waitFor(t, "the bomb to be reported", func() bool { return len(in.reportsOf(t, bomb)) > 0 })
+			in.waitFor(t, "the bomb to be reported", func() bool { return len(in.reportsOf(t, bomb)) > 0 })
 			for _, e := range in.reportsOf(t, bomb) {
 				if !strings.Contains(e.Error, "left out by the limits of the extraction") {
 					t.Errorf("the error of the bomb = %q, want the limits of the extraction named", e.Error)
@@ -521,5 +563,237 @@ func TestE2E_extractionBombsAreStopped(t *testing.T) {
 				t.Error("the bomb was delivered")
 			}
 		})
+	}
+}
+
+// P3: a session that is closed gets its report, and the files that come later
+// open a new session with its own report.
+func TestE2E_sessionsCloseAndReopen(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{session: map[string]any{"delay": "2s"}})
+	first, second := []byte("content of the first session"), []byte("content of the second session")
+	in.drop(t, "one.txt", first)
+	in.waitFor(t, "the first session report", func() bool { return in.reportCount() == 1 })
+	in.drop(t, "two.txt", second)
+	in.waitFor(t, "the second session report", func() bool { return in.reportCount() == 2 })
+	in.waitFor(t, "both deliveries", func() bool { return in.inOutput("one.txt") && in.inOutput("two.txt") })
+	if got := in.reportsOf(t, first); len(got) != 1 {
+		t.Errorf("entries for the first file = %d, want 1", len(got))
+	}
+	if got := in.reportsOf(t, second); len(got) != 1 {
+		t.Errorf("entries for the second file = %d, want 1", len(got))
+	}
+	reports := globOne(t, filepath.Join(in.export, "tom", datamodel.SessionReportPrefix+"*"))
+	if len(reports) != 2 {
+		t.Errorf("reports = %v, want two distinct files", reports)
+	}
+}
+
+// P4: with a table of tracked files too small for the load (the least the
+// product accepts, 1 MiB, against files with long names), nothing is lost: the
+// files that did not fit are found again by the rescan, and the process stays
+// small.
+func TestE2E_manyFilesWithATinyTable(t *testing.T) {
+	const files = 3000
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, config: map[string]any{
+		"workers":    8,
+		"monitoring": map[string]any{"max_tracked_memory": "1MiB", "period": "3s", "modification_delay": "1s"},
+	}})
+	long := strings.Repeat("n", 180)
+	for i := range files {
+		in.drop(t, fmt.Sprintf("d%d/%s%05d.txt", i%20, long, i), []byte(fmt.Sprintf("file number %d", i)))
+	}
+	in.waitFor(t, "every file to be delivered", func() bool { return deliveredBelow(in, 20) == files })
+	// The pressure event is the guard: without it the table never overflowed, and
+	// the scenario would prove nothing about the cap.
+	if !slices.Contains(in.console.errorTypes(), "host-monitor-pressure") {
+		t.Errorf("the table never overflowed (events %v): the scenario proves nothing", in.console.errorTypes())
+	}
+}
+
+// deliveredBelow counts the files delivered in the folders d0 to d<n-1> of the
+// owner folder of OUTPUT, without listing them all.
+func deliveredBelow(in *instance, n int) (count int) {
+	for i := range n {
+		entries, err := os.ReadDir(filepath.Join(in.output, "tom", fmt.Sprintf("d%d", i)))
+		if err == nil {
+			count += len(entries)
+		}
+	}
+	return count
+}
+
+// P10: the path filters judge the logical path: the real path of a file, and
+// for a member of an archive the path of the archive followed by the member's.
+// A forbidden path is treated as malware, a skipped one is delivered without
+// analysis.
+func TestE2E_pathFiltersJudgeTheLogicalPath(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, more: map[string]map[string]any{
+		"filepath_filter": {
+			"forbidden_paths": []string{`/forbidden/`, `\.zip/secret/`},
+			"skipped_paths":   []string{`/trusted/`},
+		},
+	}})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	plain := []byte("an ordinary file")
+	trusted := []byte("a file in a trusted folder")
+	forbidden := []byte("a file in a forbidden folder")
+	member := []byte(strings.Repeat("a member in a forbidden folder of an archive ", 40))
+	other := []byte(strings.Repeat("another member, in an allowed folder ", 40))
+	archive := zipOf(t, map[string]string{"secret/x.txt": string(member), "open/y.txt": string(other)})
+	cleanMember := []byte(strings.Repeat("the only member of the clean archive ", 40))
+	clean := zipOf(t, map[string]string{"open/z.txt": string(cleanMember)})
+	in.expect.archive(clean, cleanMember)
+	in.expect.archive(archive, member, other)
+	in.expect.flag(forbidden, member)
+	in.drop(t, "plain.txt", plain)
+	in.drop(t, "trusted/t.txt", trusted)
+	forbiddenPath := in.drop(t, "forbidden/f.txt", forbidden)
+	archivePath := in.drop(t, "bad.zip", archive)
+	in.drop(t, "clean.zip", clean)
+	in.waitFor(t, "the ordinary files to be delivered", func() bool {
+		return in.inOutput("plain.txt") && in.inOutput("trusted/t.txt") && in.inOutput("clean.zip")
+	})
+	in.waitFor(t, "the filtered files to leave INPUT", func() bool { return in.gone(forbiddenPath) && in.gone(archivePath) })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	if in.inOutput("forbidden/f.txt") || in.inOutput("bad.zip") {
+		t.Error("a file under a forbidden logical path reached OUTPUT")
+	}
+	if got := globOne(t, filepath.Join(in.quarantine, "*.lock")); len(got) != 2 {
+		t.Errorf("quarantine = %v, want the forbidden file and the archive", got)
+	}
+	if _, ok := gm.Given(sha256Hex(trusted)); ok {
+		t.Error("a file under a skipped path was analyzed")
+	}
+	for name, content := range map[string][]byte{"plain.txt": plain, "the member of clean.zip": cleanMember} {
+		if _, ok := gm.Given(sha256Hex(content)); !ok {
+			t.Errorf("%s was not analyzed", name)
+		}
+	}
+	skipped := func(content []byte) bool {
+		return slices.ContainsFunc(in.reportsOf(t, content), func(e datamodel.Report) bool {
+			return e.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped
+		})
+	}
+	if !skipped(trusted) {
+		t.Error("the file under a skipped path is not reported as skipped")
+	}
+	if skipped(plain) {
+		t.Error("an ordinary file is reported as skipped")
+	}
+}
+
+// requireChromium returns the path of a browser for the report plugin, or skips
+// the test; with E2E_REQUIRE_BROWSER=1 a missing browser fails it instead.
+func requireChromium(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"chromium", "chromium-browser", "google-chrome"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path
+		}
+	}
+	if os.Getenv("E2E_REQUIRE_BROWSER") == "1" {
+		t.Fatal("no browser found and E2E_REQUIRE_BROWSER=1")
+	}
+	t.Skip("no browser found (chromium, chromium-browser, google-chrome)")
+	return ""
+}
+
+// P13: with the report plugin and a real browser, the session report is a PDF
+// that bears the reserved name in the exports, not a JSON file.
+func TestE2E_sessionReportGeneratedByTheBrowser(t *testing.T) {
+	chrome := requireChromium(t)
+	gm := newGMalware(t, false)
+	bad := []byte("a malware that makes a report")
+	gm.MarkMalicious(bad)
+	in := startInstance(t, gm, options{agent: true, more: map[string]map[string]any{"report": {"chrome_path": chrome}}})
+	in.drop(t, "bad.txt", bad)
+	pattern := filepath.Join(in.export, "tom", datamodel.SessionReportPrefix+"tom-*.pdf")
+	in.waitFor(t, "the PDF report in the exports", func() bool { return len(globOne(t, pattern)) > 0 })
+	reports := globOne(t, filepath.Join(in.export, "tom", "*"))
+	if len(reports) != 1 {
+		t.Fatalf("exports = %v, want the PDF report only", reports)
+	}
+	name := filepath.Base(reports[0])
+	if !strings.HasPrefix(name, datamodel.SessionReportPrefix+"tom-") || filepath.Ext(name) != ".pdf" {
+		t.Errorf("report name = %q, want %stom-<time>.pdf", name, datamodel.SessionReportPrefix)
+	}
+	raw, err := os.ReadFile(filepath.Clean(reports[0]))
+	if err != nil || !bytes.HasPrefix(raw, []byte("%PDF")) {
+		t.Errorf("the report is not a PDF: %v", err)
+	}
+	if slices.Contains(in.console.errorTypes(), "session-report-fallback") {
+		t.Error("the connector fell back to JSON although the browser works")
+	}
+}
+
+// browserStub is the source of a program that stands for the browser: it runs
+// the real one until the file named broken exists, and then fails.
+const browserStub = `package main
+
+import (
+	"fmt"
+	"os"
+	"syscall"
+)
+
+var chrome, broken string
+
+func main() {
+	if _, err := os.Stat(broken); err == nil {
+		fmt.Fprintln(os.Stderr, "cannot render")
+		os.Exit(1)
+	}
+	if err := syscall.Exec(chrome, append([]string{chrome}, os.Args[1:]...), os.Environ()); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+}
+`
+
+// buildBrowserStub builds the browser stub in dir and returns its path.
+func buildBrowserStub(t *testing.T, dir, chrome, broken string) string {
+	t.Helper()
+	src := filepath.Join(dir, "stub.go")
+	write(t, src, []byte(browserStub))
+	out := filepath.Join(dir, "chromium")
+	flags := fmt.Sprintf("-X main.chrome=%s -X main.broken=%s", chrome, broken)
+	if err := goBuild(repoRoot(t), out, "-ldflags", flags, src); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// P12: when the generator fails, the report is not lost: after its retries the
+// session writes the JSON fallback under the reserved name, the console is
+// told, and the delivered files are in that report. The browser is the real
+// one until the test breaks it, once the connector has started.
+func TestE2E_failingReportGeneratorFallsBackToJSON(t *testing.T) {
+	chrome := requireChromium(t)
+	dir := t.TempDir()
+	broken := filepath.Join(dir, "broken")
+	wrapper := buildBrowserStub(t, dir, chrome, broken)
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{
+		agent:   true,
+		more:    map[string]map[string]any{"report": {"chrome_path": wrapper}},
+		session: map[string]any{"report_retries": 1, "report_timeout": "30s"},
+	})
+	in.waitFor(t, "the monitoring to start", func() bool { return in.logHas("monitoring successfully completed") })
+	write(t, broken, nil)
+	content := []byte("a file whose report cannot be rendered")
+	in.drop(t, "a.txt", content)
+	in.waitFor(t, "the JSON fallback", func() bool {
+		return len(globOne(t, filepath.Join(in.export, "tom", datamodel.SessionReportPrefix+"*.json"))) == 1
+	})
+	in.waitFor(t, "the console to be told", func() bool { return slices.Contains(in.console.errorTypes(), "session-report-fallback") })
+	in.waitFor(t, "the delivery", func() bool { return in.inOutput("a.txt") })
+	if got := in.reportsOf(t, content); len(got) != 1 {
+		t.Errorf("entries for the file in the fallback = %d, want 1", len(got))
+	}
+	if m := globOne(t, filepath.Join(in.export, "tom", datamodel.SessionReportPrefix+"*.pdf")); len(m) != 0 {
+		t.Errorf("a PDF report was written by a browser that fails: %v", m)
 	}
 }

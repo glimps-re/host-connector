@@ -22,7 +22,7 @@ func TestShutdown_sigtermDuringTheAnalysisOfAnArchive(t *testing.T) {
 	in := startInstance(t, g, options{extract: true, timeout: "4s"})
 	archive := filepath.Join(in.input, "tom", "a.zip")
 	write(t, archive, zipOf(t, map[string]string{"m1.txt": strings.Repeat("member one ", 200), "m2.txt": strings.Repeat("member two ", 200)}))
-	waitFor(t, "the analysis of a member to start", func() bool { return g.submitted.Load() > 0 })
+	in.waitFor(t, "the analysis of a member to start", func() bool { return g.submitted.Load() > 0 })
 	in.signal(t, syscall.SIGTERM)
 	took, err := in.wait(t, 4*time.Second+2*time.Second)
 	if err != nil {
@@ -52,7 +52,7 @@ func TestShutdown_sigtermWritesTheReportOfAnOpenSession(t *testing.T) {
 	g := newGMalware(t, false)
 	in := startInstance(t, g, options{session: map[string]any{"delay": "1h"}})
 	in.drop(t, "a.txt", []byte("some content to analyze"))
-	waitFor(t, "the file to be delivered", func() bool { return in.inOutput("a.txt") })
+	in.waitFor(t, "the file to be delivered", func() bool { return in.inOutput("a.txt") })
 	in.signal(t, syscall.SIGTERM)
 	if _, err := in.wait(t, 6*time.Second); err != nil {
 		t.Errorf("exit = %v, want code 0; log:\n%s", err, in.stderr.String())
@@ -75,9 +75,9 @@ func TestShutdown_aSecondSignalStopsImmediately(t *testing.T) {
 	g := newGMalware(t, true)
 	in := startInstance(t, g, options{timeout: "30s"})
 	in.drop(t, "a.txt", []byte("some content to analyze"))
-	waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
+	in.waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
 	in.signal(t, syscall.SIGTERM)
-	waitFor(t, "the stop to be under way", func() bool { return in.logHas("stop requested") })
+	in.waitFor(t, "the stop to be under way", func() bool { return in.logHas("stop requested") })
 	in.signal(t, syscall.SIGTERM)
 	took, err := in.wait(t, 3*time.Second)
 	t.Logf("second signal handled in %s", took)
@@ -104,7 +104,7 @@ func TestShutdown_sigintStopsLikeSigterm(t *testing.T) {
 	g := newGMalware(t, true)
 	in := startInstance(t, g, options{timeout: "4s"})
 	in.drop(t, "a.txt", []byte("some content to analyze"))
-	waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
+	in.waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
 	in.signal(t, syscall.SIGINT)
 	if _, err := in.wait(t, 6*time.Second); err != nil {
 		t.Errorf("exit = %v, want code 0; log:\n%s", err, in.stderr.String())
@@ -122,7 +122,7 @@ func TestShutdown_sigtermStopsTheAgent(t *testing.T) {
 	g := newGMalware(t, true)
 	in := startInstance(t, g, options{timeout: "4s", agent: true})
 	in.drop(t, "a.txt", []byte("some content to analyze"))
-	waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
+	in.waitFor(t, "the analysis to start", func() bool { return g.submitted.Load() > 0 })
 	in.signal(t, syscall.SIGTERM)
 	if _, err := in.wait(t, 6*time.Second); err != nil {
 		t.Errorf("exit = %v, want code 0; log:\n%s", err, in.stderr.String())

@@ -201,6 +201,20 @@ func TestOutputViolations(t *testing.T) {
 			}))
 		}, want: `member "m" delivered not analyzed`},
 
+		{name: "flagged content delivered", setup: func(f *fixture) {
+			f.spec.flag(content)
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.report(entry(content, nil))
+		}, want: "programmed as malware"},
+		{name: "archive with a flagged member delivered whole", setup: func(f *fixture) {
+			member := []byte("a member flagged by its path")
+			f.spec.flag(member)
+			f.spec.archive(content, member)
+			f.deliver("a.zip", content)
+			f.gm.see(content)
+			f.report(entry(content, nil))
+		}, want: "programmed as malware"},
 		{name: "restored malware with the restored reason", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
@@ -244,6 +258,15 @@ func TestOutputViolations(t *testing.T) {
 			}))
 			f.spec.release(content)
 		}, want: "nothing justifies"},
+		{name: "restored entry with a member delivered not analyzed for nothing", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.HasBeenRestored = true
+				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: "m", Size: 5, Reason: datamodel.NotAnalyzedEncrypted}}
+			}))
+			f.spec.release(content)
+		}, want: `member "m" of the restored entry`},
 		{name: "restored entry in error", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
@@ -522,16 +545,21 @@ func TestOutputViolations_lockReportOfAnArchive(t *testing.T) {
 		name       string
 		declared   bool
 		programmed bool
+		flagged    bool
 		want       string
 	}{
 		{name: "declared with a malware member", declared: true, programmed: true},
 		{name: "declared with no malware member", declared: true, want: "did not program"},
 		{name: "not declared", programmed: true, want: "did not program"},
+		{name: "declared with a flagged member", declared: true, flagged: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			f := newFixture(t)
 			if tt.programmed {
 				f.gm.MarkMalicious(member)
+			}
+			if tt.flagged {
+				f.spec.flag(member)
 			}
 			if tt.declared {
 				f.spec.archive(archive, member)
@@ -561,13 +589,13 @@ func TestOutputViolations_lockReportOfARestoredMalware(t *testing.T) {
 	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
 		t.Errorf("violations = %q, want the missing container flagged", got)
 	}
-	f.spec.release(bad)
-	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
-		t.Errorf("violations = %q, want the missing container flagged: nothing shows a restore", got)
-	}
 	f.report(entry(bad, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
+		t.Errorf("violations = %q, want the missing container flagged: the scenario did not declare the restore", got)
+	}
+	f.spec.release(bad)
 	if got := f.violations(); got != "" {
-		t.Errorf("violations = %q, want none once the reports show the restore", got)
+		t.Errorf("violations = %q, want none once the restore is declared and shown by the reports", got)
 	}
 }
 

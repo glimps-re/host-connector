@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -652,5 +653,69 @@ func TestSession_aSessionCreatedDuringTheStopIsRefusedOrReported(t *testing.T) {
 				t.Fatalf("%s: neither reported nor refused with a warning", user)
 			}
 		}
+	}
+}
+
+// Once the spool failed, nothing more is written to it: the next reports are held
+// in memory, and the report of the session reads back what the spool kept, then
+// what was held.
+func TestSession_aSpoolThatFailedIsNotWrittenToAgain(t *testing.T) {
+	s := testSession(t, "tom", time.Unix(1_700_000_000, 0), nil)
+	s.closed = false
+	okAdd(s, datamodel.Report{Filename: "before"})
+	s.mutex.Lock()
+	size := s.spool.size()
+	s.spoolErr = errors.New("disk full")
+	s.mutex.Unlock()
+
+	for _, name := range []string{"after1", "after2"} {
+		if ok, st := s.addReport(datamodel.Report{Filename: name}, false); !ok || st.forced != forceSpoolError || st.spoolErr == nil {
+			t.Fatalf("addReport(%s) = %v, %+v, want it taken, with the session to be closed for its spool", name, ok, st)
+		}
+	}
+	s.mutex.RLock()
+	held, spoolSize, spoolCount := len(s.pending), s.spool.size(), s.spool.count
+	s.mutex.RUnlock()
+	if held != 2 {
+		t.Errorf("%d reports held in memory, want the 2 that came after the failure", held)
+	}
+	if spoolSize != size || spoolCount != 1 {
+		t.Errorf("spool = %d bytes, %d lines, want it untouched at %d bytes, 1 line", spoolSize, spoolCount, size)
+	}
+	s.closeSession()
+	reports := sessionReports(t, s)
+	got := make([]string, 0, len(reports))
+	for _, r := range reports {
+		got = append(got, r.Filename)
+	}
+	if want := []string{"before", "after1", "after2"}; !slices.Equal(got, want) {
+		t.Errorf("reports = %v, want %v: nothing lost, the spool first", got, want)
+	}
+}
+
+// The same with a disk that really failed, then works again: the session stays
+// broken, a new one is the way back.
+func TestSession_aSpoolThatFailedStaysBrokenEvenWhenTheDiskIsBack(t *testing.T) {
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skip("no /dev/full")
+	}
+	s := testSession(t, "tom", time.Unix(1_700_000_000, 0), nil)
+	s.closed = false
+	okAdd(s, datamodel.Report{Filename: "before"})
+	onDisk := s.spool.path
+	s.spool.path = "/dev/full"
+	if _, st := s.addReport(datamodel.Report{Filename: "big", SHA256: strings.Repeat("p", spoolFlushSize)}, false); st.forced != forceSpoolError {
+		t.Fatalf("status = %+v, want the spool failure", st)
+	}
+	s.spool.path = onDisk
+	size := s.spool.size()
+	if _, st := s.addReport(datamodel.Report{Filename: "later"}, false); st.forced != forceSpoolError {
+		t.Errorf("status = %+v, want the session to stay broken", st)
+	}
+	if s.spool.size() != size {
+		t.Error("the spool took a line after its failure")
+	}
+	if _, held := s.pending["later"]; !held {
+		t.Error("the report after the failure must be held in memory")
 	}
 }

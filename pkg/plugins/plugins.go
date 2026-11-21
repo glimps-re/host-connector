@@ -56,8 +56,9 @@ type GeneratedReport struct {
 // even if nobody reads Content, and the end of ctx reaches the reader as the
 // error of Content.Read. The caller always closes Content. A connector that
 // enforces this ends the sequence for a generator that goes on reading after
-// Close (at most one report already in flight may still be delivered): it sees a normal end of sequence, not an error, which is harmless
-// because its content is closed and its output discarded.
+// Close (at most one report already in flight may still be delivered): it sees a
+// normal end of sequence, not an error, which is harmless because its content is
+// closed and its output discarded.
 type GenerateReport = func(ctx context.Context, reportContext datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (GeneratedReport, error)
 
 // Extraction is the result of one ExtractFile call.

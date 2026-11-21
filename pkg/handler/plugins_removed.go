@@ -11,6 +11,9 @@ import (
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
+// removedFilesizeName is the name of the plugin that is no longer shipped.
+const removedFilesizeName = "filesize_filter"
+
 // removedFilesizeWarning is what the entries of the removed plugin get: each one
 // is named, its configuration is not carried over, and the message says which
 // policy governs oversized files now, so that nothing is switched on for the
@@ -26,7 +29,7 @@ func removedFilesizeWarning(dropped []scanner.PluginConfig, tooBig string) strin
 	} else {
 		policy += ": set it to mitigate to keep oversized files quarantined"
 	}
-	return "the filesize_filter plugin was removed and these entries of the plugins file are ignored: " + strings.Join(entries, ", ") +
+	return "the " + removedFilesizeName + " plugin was removed and these entries of the plugins file are ignored: " + strings.Join(capKeys(entries), ", ") +
 		"; their configuration (max_size) is not carried over, max_file_size and unanalyzable_policy.too_big apply instead (" + policy + ")"
 }
 
@@ -39,16 +42,16 @@ func effectiveTooBig(tooBig string) string {
 
 // errOnlyRemovedPlugins refuses a plugins file that holds nothing but removed
 // plugins: loading no plugin would silently drop every filter.
-var errOnlyRemovedPlugins = errors.New("the plugins file only has the removed filesize_filter plugin: remove the plugins file or add a plugin")
+var errOnlyRemovedPlugins = errors.New("the plugins file only has the removed " + removedFilesizeName + " plugin: remove the plugins file or add a plugin")
 
 // isRemovedFilesizeFilter tells whether a plugins file entry is the one of the
 // removed plugin: by its name, or by the file it names.
 func isRemovedFilesizeFilter(pc scanner.PluginConfig) bool {
-	if pc.Name == "filesize_filter" {
+	if pc.Name == removedFilesizeName {
 		return true
 	}
 	switch filepath.Base(pc.File) {
-	case "filesize_filter.so", "filesize.so":
+	case removedFilesizeName + ".so", "filesize.so":
 		return true
 	}
 	return false
@@ -73,7 +76,7 @@ func dropRemovedPlugins(configs []scanner.PluginConfig) (kept, dropped []scanner
 // the log and a console error for as long as the plugins file has them.
 func (h *Handler) reportRemovedPlugins(ctx context.Context, dropped []scanner.PluginConfig, tooBig string) {
 	if len(dropped) == 0 {
-		if e := eventHandler.NotifyResolution(ctx, "no entry of the removed filesize_filter plugin in the plugins file", HostPluginRemovedFilesize); e != nil {
+		if e := eventHandler.NotifyResolution(ctx, "no entry of the removed "+removedFilesizeName+" plugin in the plugins file", HostPluginRemovedFilesize); e != nil {
 			logger.Warn("could not push resolution event to connector manager", slog.String("error", e.Error()))
 		}
 		return

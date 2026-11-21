@@ -1,10 +1,18 @@
 package handler
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 
+	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
+	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/google/go-cmp/cmp"
 )
@@ -134,33 +142,158 @@ func TestReportRemovedPlugins_raisesAtEachReportAndResolvesOnce(t *testing.T) {
 
 // A configuration whose installation fails raises nothing about the entry: it
 // was not applied.
-func TestConfigure_aFailedInstallRaisesNoRemovedPluginEvent(t *testing.T) {
-	rec := recordEvents(t)
-	h := newRunningHandler(t, validConf(t, t.TempDir()))
-	h.validatePlugins = func([]scanner.PluginConfig, *scanner.ValidationContext) error { return nil }
-	next := validConf(t, t.TempDir())
-	next.PluginsConfig = writePluginsFile(t, "filesize_filter:\n  file: filesize_filter.so\nextra:\n  file: extra.so\n")
-	if err := h.Configure(t.Context(), rawConf(t, next)); err == nil {
-		t.Fatal("Configure() error = nil, want the load of extra.so to fail")
+// sealOnly stands for the load of the plugins: a plugin is a shared object, the
+// test only needs the connector sealed as after a load.
+func sealOnly(conn *scanner.Connector, _ []scanner.PluginConfig) error { return conn.LoadPlugins(nil) }
+
+// newPluginHandler is a running handler whose plugins validation and load are
+// replaced, so that a plugins file can be applied without a shared object.
+func newPluginHandler(t *testing.T, conf *config.Config, load func(*scanner.Connector, []scanner.PluginConfig) error) *Handler {
+	t.Helper()
+	h := new(Handler)
+	h.stopped = true
+	h.submitter = &gdetectMock.MockGDetectSubmitter{
+		ReconfigureMock: func(context.Context, gdetect.ClientConfig) error { return nil },
 	}
-	if n := len(rec.find("error", HostPluginRemovedFilesize)); n != 0 {
-		t.Errorf("%d removed-plugin events for a configuration that was not applied, want none", n)
+	h.validatePlugins = func([]scanner.PluginConfig, *scanner.ValidationContext) error { return nil }
+	h.loadPlugins = load
+	if err := h.setup(t.Context(), conf); err != nil {
+		t.Fatalf("setup() error = %v", err)
+	}
+	if err := h.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		h.stopRejectReminder()
+		if err := h.Stop(context.Background()); err != nil {
+			t.Errorf("Stop() error = %v", err)
+		}
+	})
+	return h
+}
+
+func withRemovedEntry(t *testing.T, tooBig string) *config.Config {
+	t.Helper()
+	conf := validConf(t, t.TempDir())
+	conf.UnanalyzablePolicy.TooBig = tooBig
+	conf.PluginsConfig = writePluginsFile(t, "filesize_filter:\n  file: /opt/plugins/filesize_filter.so\nextra:\n  file: extra.so\n")
+	return conf
+}
+
+func captureScannerConsole(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := scanner.ConsoleLogger
+	scanner.ConsoleLogger = slog.New(slog.NewTextHandler(&buf, nil))
+	t.Cleanup(func() { scanner.ConsoleLogger = prev })
+	return &buf
+}
+
+// An application that installs with an entry of the removed plugin raises the
+// event, writes the console line, and tells the policy in force.
+func TestConfigure_anEntryOfTheRemovedPluginIsReportedAfterASuccessfulInstall(t *testing.T) {
+	for _, tooBig := range []string{"", "mitigate"} {
+		t.Run("too_big "+tooBig, func(t *testing.T) {
+			rec := recordEvents(t)
+			logs := captureHandlerLogs(t)
+			console := captureScannerConsole(t)
+			h := newPluginHandler(t, validConf(t, t.TempDir()), sealOnly)
+			if err := h.Configure(t.Context(), rawConf(t, withRemovedEntry(t, tooBig))); err != nil {
+				t.Fatalf("Configure() error = %v", err)
+			}
+			events := rec.find("error", HostPluginRemovedFilesize)
+			if len(events) != 1 {
+				t.Fatalf("%d events, want one", len(events))
+			}
+			want := "too_big is error (the default)"
+			if tooBig == "mitigate" {
+				want = "too_big is mitigate, which keeps"
+			}
+			for name, text := range map[string]string{"event": events[0].msg, "console": console.String(), "log": logs.String()} {
+				if !strings.Contains(text, want) || !strings.Contains(text, "/opt/plugins/filesize_filter.so") {
+					t.Errorf("%s = %q, want the policy %q and the entry named", name, text, want)
+				}
+			}
+		})
 	}
 }
 
-func TestConfigure_aPluginsFileOfOnlyTheRemovedPluginIsRefusedAndNothingIsApplied(t *testing.T) {
+// A refusal leaves the previous configuration running: nothing is stopped, rebuilt
+// or replaced, and the rejection is raised.
+func TestConfigure_aPluginsFileOfOnlyTheRemovedPluginIsRefusedAndTheRunningConfigurationKeepsRunning(t *testing.T) {
 	rec := recordEvents(t)
-	h := newRunningHandler(t, validConf(t, t.TempDir()))
-	good := h.conf
+	captureHandlerLogs(t)
+	h := newPluginHandler(t, validConf(t, t.TempDir()), sealOnly)
+	good, conn, monitor := h.conf, h.Conn, h.monitor
 	next := validConf(t, t.TempDir())
 	next.PluginsConfig = writePluginsFile(t, "filesize_filter:\n  file: filesize_filter.so\n")
 	if err := h.Configure(t.Context(), rawConf(t, next)); !errors.Is(err, errOnlyRemovedPlugins) {
 		t.Fatalf("Configure() error = %v, want errOnlyRemovedPlugins", err)
 	}
-	if h.conf != good {
-		t.Error("the configuration in service changed after a refusal")
+	if h.conf != good || h.Conn != conn || h.monitor != monitor {
+		t.Error("the configuration, the connector or the monitor in service changed after a refusal")
+	}
+	if got := h.Status(); got != sdk.Started {
+		t.Errorf("Status() = %v, want Started", got)
 	}
 	if n := len(rec.find("error", HostPluginRemovedFilesize)); n != 0 {
 		t.Errorf("%d removed-plugin events for a refused configuration, want none", n)
+	}
+	if n := len(rec.find("error", HostConfigRejected)); n != 1 {
+		t.Errorf("%d rejection events, want one", n)
+	}
+}
+
+// A configuration whose installation fails raises nothing about the entry: it was
+// not applied. The previous configuration is replayed, and as it has the entry
+// too, it is reported again, once.
+func TestConfigure_aRollbackReportsTheEntryOfTheConfigurationItReplays(t *testing.T) {
+	rec := recordEvents(t)
+	captureHandlerLogs(t)
+	var loads atomic.Int32
+	failSecond := func(conn *scanner.Connector, cfgs []scanner.PluginConfig) error {
+		if loads.Add(1) == 2 {
+			return errors.New("the load of the second configuration fails")
+		}
+		return sealOnly(conn, cfgs)
+	}
+	h := newPluginHandler(t, withRemovedEntry(t, ""), failSecond)
+	if n := len(rec.find("error", HostPluginRemovedFilesize)); n != 1 {
+		t.Fatalf("%d events after the start, want one", n)
+	}
+	next := withRemovedEntry(t, "mitigate")
+	if err := h.Configure(t.Context(), rawConf(t, next)); err == nil {
+		t.Fatal("Configure() error = nil, want the load to fail")
+	}
+	events := rec.find("error", HostPluginRemovedFilesize)
+	if len(events) != 2 {
+		t.Fatalf("%d events in all, want the start and the replay", len(events))
+	}
+	if !strings.Contains(events[1].msg, "too_big is error (the default)") {
+		t.Errorf("the replay reports %q, want the policy of the configuration replayed, not of the refused one", events[1].msg)
+	}
+	if h.conf.UnanalyzablePolicy.TooBig != "" {
+		t.Error("the configuration in service is not the previous one")
+	}
+}
+
+// What the plugins file says is hostile: the message escapes it and is bounded.
+func TestRemovedFilesizeWarning_isBoundedAndEscapesWhatTheFileSays(t *testing.T) {
+	hostile := scanner.PluginConfig{Name: "filesize_filter\n\x1b[31mred\u202e", File: strings.Repeat("a", 5000) + ".so"}
+	dropped := make([]scanner.PluginConfig, 2000)
+	for i := range dropped {
+		dropped[i] = hostile
+	}
+	got := removedFilesizeWarning(dropped, "")
+	if len(got) > 50*(maxReportedKeyLen+8)+1024 {
+		t.Errorf("the message is %d bytes long, want it bounded", len(got))
+	}
+	if !strings.Contains(got, "1950 more") {
+		t.Errorf("the message does not say how many entries are not listed: %.200q", got)
+	}
+	for _, bad := range []string{"\n", "\x1b", "\u202e"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("the message holds the raw character %q", bad)
+		}
 	}
 }

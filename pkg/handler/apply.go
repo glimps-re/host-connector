@@ -253,6 +253,7 @@ func (h *Handler) replay(ctx context.Context, old *config.Config, start bool) er
 		return err
 	}
 	h.commit(ctx, old)
+	h.reportRemovedPlugins(ctx, p.removedPlugins, old.UnanalyzablePolicy.TooBig)
 	return nil
 }
 
@@ -405,7 +406,11 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 		return err
 	}
 	h.bindQuarantine(conn.GetWorkDir())
-	if err = conn.LoadPlugins(p.pluginsConfig); err != nil {
+	load := h.loadPlugins
+	if load == nil {
+		load = (*scanner.Connector).LoadPlugins
+	}
+	if err = load(conn, p.pluginsConfig); err != nil {
 		return fmt.Errorf("could not load plugins, error: %w", err)
 	}
 	if err = checkDeclarations(conf, conn.Declarations()); err != nil {

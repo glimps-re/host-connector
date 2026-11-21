@@ -204,7 +204,7 @@ Plugins are configured via a separate YAML file referenced in the main configura
 plugins_config: /etc/gmhost/plugins.yml
 ```
 
-Plugins are loaded in the order of the file, and that order is the callback order: with the same file, the verdict is always the same. A plugin name must appear only once. Recommended order: filters, then `error_filter`, then `session`. An empty plugins file, a duplicate name, YAML anchors, aliases and merge keys, unknown keys (only `file` and `config` per plugin, and the options each plugin documents), the same plugin file declared twice, and files over 1 MiB are refused at startup, with an error naming the key and never quoting a value; on Windows, which does not support plugins, a configured plugin also refuses to start.
+Plugins are loaded in the order of the file, and that order is the callback order: with the same file, the verdict is always the same. A plugin name must appear only once. Recommended order: filters, then `error_filter`, then `session`. An entry of the removed `filesize_filter` plugin is ignored with a warning (see `unanalyzable_policy`). An empty plugins file, a duplicate name, YAML anchors, aliases and merge keys, unknown keys (only `file` and `config` per plugin, and the options each plugin documents), the same plugin file declared twice, and files over 1 MiB are refused at startup, with an error naming the key and never quoting a value; on Windows, which does not support plugins, a configured plugin also refuses to start.
 
 A complete example configuration is available at `rsc/plugin_config.yml`. Below are the configuration options for each built-in plugin:
 

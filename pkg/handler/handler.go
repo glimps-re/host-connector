@@ -53,6 +53,9 @@ type Handler struct {
 
 	// validatePlugins replaces scanner.ValidatePlugins when set (tests).
 	validatePlugins func([]scanner.PluginConfig, *scanner.ValidationContext) error
+	// loadPlugins replaces the loading of the plugins into the connector when set
+	// (tests: a plugin is a shared object).
+	loadPlugins func(*scanner.Connector, []scanner.PluginConfig) error
 }
 
 const (

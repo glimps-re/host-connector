@@ -122,6 +122,7 @@ func TestValidatePlugins_aHostileNameIsQuoted(t *testing.T) {
 		"failing.so": &validatingPlugin{validateErr: errors.New("7z not found")},
 		"panic.so":   &validatingPlugin{panics: true},
 		"plain.so":   &plainPlugin{},
+		"good.so":    &validatingPlugin{},
 	}
 	tests := []struct {
 		name   string
@@ -132,6 +133,7 @@ func TestValidatePlugins_aHostileNameIsQuoted(t *testing.T) {
 		{"no configuration taken", PluginConfig{Name: hostile, File: "plain.so", Config: map[string]any{"k": 1}}},
 		{"missing file key", PluginConfig{Name: hostile}},
 		{"unopenable file", PluginConfig{Name: hostile, File: "nope.so"}},
+		{"unknown config key", PluginConfig{Name: hostile, File: "good.so", Config: map[string]any{hostile: 1}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

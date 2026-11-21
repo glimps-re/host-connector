@@ -17,8 +17,8 @@ const removedFilesizeName = "filesize_filter"
 // policy governs oversized files now, so that nothing is switched on for the
 // operator.
 func removedFilesizeWarning(dropped []scanner.PluginConfig, tooBig string) string {
-	entries := make([]string, len(dropped))
-	for i, pc := range dropped {
+	entries := make([]string, min(len(dropped), maxReportedKeys))
+	for i, pc := range dropped[:len(entries)] {
 		entries[i] = quoteBounded(pc.Name, maxReportedNameLen) + " (file " + quoteBounded(pc.File, maxReportedFileLen) + ")"
 	}
 	policy := "unanalyzable_policy.too_big is " + effectiveTooBig(tooBig)
@@ -27,7 +27,7 @@ func removedFilesizeWarning(dropped []scanner.PluginConfig, tooBig string) strin
 	} else {
 		policy += ": set it to mitigate to keep oversized files quarantined"
 	}
-	return "the " + removedFilesizeName + " plugin was removed and these entries of the plugins file are ignored: " + boundedList(entries) +
+	return "the " + removedFilesizeName + " plugin was removed and these entries of the plugins file are ignored: " + joinCounted(entries, len(dropped)) +
 		"; their configuration (max_size) is not carried over, max_file_size and unanalyzable_policy.too_big apply instead (" + policy + ")"
 }
 

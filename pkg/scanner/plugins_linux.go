@@ -31,11 +31,11 @@ func (c *Connector) LoadPlugins(pluginsConfig []PluginConfig) error {
 func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
 	pluginName := pluginConfig.Name
 	if pluginConfig.File == "" {
-		return fmt.Errorf("plugin %s: %w: missing %q", pluginName, errInvalidPlugin, "file")
+		return fmt.Errorf("plugin %q: %w: missing %q", pluginName, errInvalidPlugin, "file")
 	}
 	pp, err := openPlugin(pluginConfig.File)
 	if err != nil {
-		return fmt.Errorf("plugin %s: %w", pluginName, err)
+		return fmt.Errorf("plugin %q: %w", pluginName, err)
 	}
 
 	config := pp.GetDefaultConfig()
@@ -44,7 +44,7 @@ func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
 			return err
 		}
 	} else if len(pluginConfig.Config) > 0 {
-		return fmt.Errorf("plugin %s: %w: it takes no configuration", pluginName, errInvalidPlugin)
+		return fmt.Errorf("plugin %q: %w: it takes no configuration", pluginName, errInvalidPlugin)
 	}
 
 	c.setLoading(pluginName)
@@ -52,7 +52,7 @@ func (c *Connector) loadPlugin(pluginConfig PluginConfig) error {
 	if err = pp.Init(config, c); err != nil {
 		// The config is not logged: it can hold secrets (e.g. archive passwords).
 		logger.Error("could not load plugin", slog.String("plugin", pluginName), slog.String("error", err.Error()))
-		return fmt.Errorf("error loading plugin %s: %w", pluginName, err)
+		return fmt.Errorf("error loading plugin %q: %w", pluginName, err)
 	}
 	c.loadedPlugins = append(c.loadedPlugins, pp)
 	return nil

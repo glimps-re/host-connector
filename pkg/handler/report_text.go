@@ -67,11 +67,6 @@ func quoteBounded(s string, budget int) string {
 	return b.String()
 }
 
-// boundedList joins at most maxReportedKeys items and says how many more there are.
-func boundedList(items []string) string {
-	return joinCounted(items[:min(len(items), maxReportedKeys)], len(items))
-}
-
 // boundedKeys quotes, within maxReportedKeyLen bytes each, the first
 // maxReportedKeys keys only, and says how many more there are: the keys come from
 // the network, and a document of many of them must cost no more than its first 50.

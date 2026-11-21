@@ -461,3 +461,24 @@ func TestReportUnknownKeys_quotesWhatTheNetworkSends(t *testing.T) {
 		}
 	}
 }
+
+// Only the entries listed are quoted: what the removed entries cost does not
+// depend on how many there are.
+func TestRemovedFilesizeWarning_costsNothingForTheEntriesLeftOut(t *testing.T) {
+	entries := func(n int) []scanner.PluginConfig {
+		out := make([]scanner.PluginConfig, n)
+		for i := range out {
+			out[i] = scanner.PluginConfig{Name: "p\x01" + strconv.Itoa(i), File: "f.so"}
+		}
+		return out
+	}
+	few, many := entries(maxReportedKeys+10), entries(5000)
+	allocsFew := testing.AllocsPerRun(5, func() { _ = removedFilesizeWarning(few, "") })
+	allocsMany := testing.AllocsPerRun(5, func() { _ = removedFilesizeWarning(many, "") })
+	if allocsMany > allocsFew+5 {
+		t.Errorf("%v allocations for 5000 entries, %v for %d: the entries left out are quoted", allocsMany, allocsFew, len(few))
+	}
+	if got := removedFilesizeWarning(many, ""); !strings.Contains(got, ", ... and 4950 more") {
+		t.Errorf("warning %.100q lacks the count of the entries left out", got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"maps"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -44,16 +45,40 @@ func DecodeConfig(pluginName string, raw map[string]any, dst any) error {
 		Metadata:   &md,
 	})
 	if err != nil {
-		return fmt.Errorf("plugin %s: %w: create decoder", pluginName, ErrInvalidConfig)
+		return fmt.Errorf("plugin %q: %w: create decoder", pluginName, ErrInvalidConfig)
 	}
 	if err = decoder.Decode(raw); err != nil {
-		return fmt.Errorf("plugin %s: %w: invalid value for key(s) %s", pluginName, ErrInvalidConfig, strings.Join(decodeErrKeys(err), ", "))
+		return fmt.Errorf("plugin %q: %w: invalid value for key(s) %s", pluginName, ErrInvalidConfig, quotedKeys(decodeErrKeys(err)))
 	}
 	if len(md.Unused) > 0 {
 		unused := slices.Sorted(slices.Values(md.Unused))
-		return fmt.Errorf("plugin %s: %w: unknown config key(s) %s", pluginName, ErrInvalidConfig, strings.Join(unused, ", "))
+		return fmt.Errorf("plugin %q: %w: unknown config key(s) %s", pluginName, ErrInvalidConfig, quotedKeys(unused))
 	}
 	return nil
+}
+
+// What an error says of the keys of a configuration, which someone else writes:
+// each is quoted (a control or invisible character is escaped), cut, and only the
+// first few are listed.
+const (
+	maxQuotedKeys   = 20
+	maxQuotedKeyLen = 100
+)
+
+func quotedKeys(keys []string) string {
+	shown := keys[:min(len(keys), maxQuotedKeys)]
+	quoted := make([]string, len(shown))
+	for i, k := range shown {
+		if len(k) > maxQuotedKeyLen {
+			k = k[:maxQuotedKeyLen] + "..."
+		}
+		quoted[i] = strconv.Quote(k)
+	}
+	list := strings.Join(quoted, ", ")
+	if len(keys) > len(shown) {
+		list += fmt.Sprintf(", ... and %d more", len(keys)-len(shown))
+	}
+	return list
 }
 
 func checkRemovedKeys(pluginName string, config map[string]any) error {
@@ -64,7 +89,7 @@ func checkRemovedKeys(pluginName string, config map[string]any) error {
 	var errs []error
 	for _, key := range slices.Sorted(maps.Keys(config)) {
 		if msg, ok := removed[key]; ok {
-			errs = append(errs, fmt.Errorf("plugin %s: %w: key %q removed: %s", pluginName, ErrInvalidConfig, key, msg))
+			errs = append(errs, fmt.Errorf("plugin %q: %w: key %q removed: %s", pluginName, ErrInvalidConfig, key, msg))
 		}
 	}
 	return errors.Join(errs...)

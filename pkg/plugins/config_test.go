@@ -2,6 +2,8 @@ package plugins
 
 import (
 	"errors"
+	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -110,5 +112,56 @@ func TestDecodeConfig_removedExtractLimitKeysAreRefusedWithTheReplacement(t *tes
 		if err != nil && strings.Contains(err.Error(), "unknown config key") {
 			t.Errorf("key %s: the explicit message was replaced by the generic one: %v", key, err)
 		}
+	}
+}
+
+// The name of a plugin and the keys of its configuration are written by someone
+// else: an error quotes them, so that they cannot forge a line of a log, and lists
+// no more than a few.
+func TestDecodeConfig_hostileNamesAndKeysAreQuoted(t *testing.T) {
+	const hostile = "x\nERROR forged\x1b[31m\u202e"
+	setRemovedKeys(t, map[string]map[string]string{hostile: {hostile + "-old": "use the new one"}})
+	many := map[string]any{}
+	for i := range 50 {
+		many[fmt.Sprintf("bad%02d\n", i)] = i
+	}
+	tests := []struct {
+		name string
+		raw  map[string]any
+		want []string
+		not  []string
+	}{
+		{"unknown key", map[string]any{hostile: 1}, []string{strconv.Quote(hostile), "unknown config key"}, nil},
+		{"invalid value", map[string]any{"depth": "not a number"}, []string{"invalid value", `"depth"`}, nil},
+		{"removed key", map[string]any{hostile + "-old": 1}, []string{strconv.Quote(hostile + "-old"), "removed"}, nil},
+		{"many unknown keys", many, []string{`"bad00\n"`, `"bad19\n"`, "... and 30 more"}, []string{"bad20"}},
+		{"a long key", map[string]any{strings.Repeat("k", 1000): 1}, []string{strings.Repeat("k", maxQuotedKeyLen) + `..."`}, []string{strings.Repeat("k", maxQuotedKeyLen+1)}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := DecodeConfig(hostile, tt.raw, &testPluginConfig{})
+			if err == nil {
+				t.Fatal("DecodeConfig() error = nil")
+			}
+			text := err.Error()
+			for _, raw := range []string{"\n", "\x1b", "\u202e"} {
+				if strings.Contains(strings.ReplaceAll(text, strconv.Quote(hostile), ""), raw) {
+					t.Errorf("error holds the raw %q: %q", raw, text)
+				}
+			}
+			if !strings.Contains(text, "plugin "+strconv.Quote(hostile)) {
+				t.Errorf("error %q lacks the quoted plugin name", text)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(text, want) {
+					t.Errorf("error %q lacks %q", text, want)
+				}
+			}
+			for _, not := range tt.not {
+				if strings.Contains(text, not) {
+					t.Errorf("error %q holds %q", text, not)
+				}
+			}
+		})
 	}
 }

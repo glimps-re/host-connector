@@ -1,0 +1,440 @@
+//go:build linux
+
+package test
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/glimps-re/host-connector/pkg/datamodel"
+	hcquarantine "github.com/glimps-re/host-connector/pkg/quarantine"
+)
+
+// see makes the service say it analyzed the content.
+func (g *gmalware) see(content []byte) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	sum := sha256Hex(content)
+	g.given[sum] = g.verdicts[sum]
+}
+
+// fixture is the folders of a run, filled by hand.
+type fixture struct {
+	t    *testing.T
+	spec checkSpec
+	gm   *gmalware
+	n    int
+}
+
+func newFixture(t *testing.T) *fixture {
+	t.Helper()
+	root := t.TempDir()
+	f := &fixture{t: t, gm: newGMalware(t, false)}
+	f.spec = checkSpec{
+		output: filepath.Join(root, "output"), reports: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"),
+		expectations: expectations{maxFileSize: 1 << 20},
+	}
+	for _, d := range []string{f.spec.output, f.spec.reports, f.spec.quarantine} {
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return f
+}
+
+func (f *fixture) deliver(name string, content []byte) {
+	f.t.Helper()
+	write(f.t, filepath.Join(f.spec.output, name), content)
+}
+
+func (f *fixture) report(entries ...datamodel.Report) {
+	f.t.Helper()
+	f.n++
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	write(f.t, filepath.Join(f.spec.reports, datamodel.SessionReportPrefix+strconv.Itoa(f.n)+".json"), raw)
+}
+
+// quarantined puts the container of a file in the quarantine, named as the
+// connector names it.
+func (f *fixture) quarantined(path string, content []byte) {
+	f.t.Helper()
+	write(f.t, filepath.Join(f.spec.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(content))+".lock"), []byte("locked"))
+}
+
+func (f *fixture) violations() string {
+	return strings.Join(outputViolations(f.spec, f.gm), "\n")
+}
+
+func entry(content []byte, mutate func(*datamodel.Report)) datamodel.Report {
+	r := datamodel.Report{Filename: "f", SHA256: sha256Hex(content)}
+	if mutate != nil {
+		mutate(&r)
+	}
+	return r
+}
+
+func reason(r datamodel.NotAnalyzedReason) func(*datamodel.Report) {
+	return func(e *datamodel.Report) { e.NotAnalyzedReason = r }
+}
+
+func TestOutputViolations(t *testing.T) {
+	content := []byte("some delivered content")
+	member := []byte("a member of the archive")
+	tests := []struct {
+		name  string
+		setup func(f *fixture)
+		want  string
+	}{
+		{name: "analyzed clean file", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, nil))
+			f.gm.see(content)
+		}},
+		{name: "empty output"},
+		{name: "file in no report", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+		}, want: "in no session report"},
+		{name: "file never analyzed", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, nil))
+		}, want: "never analyzed"},
+		{name: "reported malicious", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }))
+		}, want: "reported malicious"},
+		{name: "reported in error", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Error = "boom" }))
+		}, want: "reported in error"},
+		{name: "error then a valid report", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.gm.see(content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Error = "outage" }), entry(content, nil))
+		}},
+		{name: "link in output", setup: func(f *fixture) {
+			if err := os.Symlink("/etc/hostname", filepath.Join(f.spec.output, "link")); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "link: not a regular file"},
+		{name: "unreadable report", setup: func(f *fixture) {
+			write(t, filepath.Join(f.spec.reports, datamodel.SessionReportPrefix+"bad.json"), []byte("{not json"))
+		}, want: "unreadable report"},
+
+		{name: "programmed malware with a clean report", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, nil))
+		}, want: "programmed as malware"},
+		{name: "programmed malware with a not-analyzed reason", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedPolicySkipped)))
+			f.spec.allow(datamodel.NotAnalyzedPolicySkipped)
+		}, want: "programmed as malware"},
+		{name: "programmed malware in an archive report", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.zip", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.TotalExtractedFile = 1 }))
+		}, want: "programmed as malware"},
+
+		{name: "empty file with the empty reason", setup: func(f *fixture) {
+			f.deliver("a.txt", nil)
+			f.report(entry(nil, reason(datamodel.NotAnalyzedEmpty)))
+		}},
+		{name: "non-empty file with the empty reason", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedEmpty)))
+		}, want: "nothing justifies"},
+		{name: "big file with the too-big reason", setup: func(f *fixture) {
+			big := bytes.Repeat([]byte("x"), 1<<20+1)
+			f.deliver("a.bin", big)
+			f.report(entry(big, reason(datamodel.NotAnalyzedTooBig)))
+		}},
+		{name: "small file with the too-big reason", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedTooBig)))
+		}, want: "nothing justifies"},
+		{name: "reason the scenario did not declare", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedPolicySkipped)))
+		}, want: "nothing justifies"},
+		{name: "reason the scenario declared", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason(datamodel.NotAnalyzedPolicySkipped)))
+			f.spec.allow(datamodel.NotAnalyzedPolicySkipped)
+		}},
+		{name: "unknown reason", setup: func(f *fixture) {
+			f.deliver("a.txt", content)
+			f.report(entry(content, reason("whatever")))
+			f.spec.allow("whatever")
+		}, want: "nothing justifies"},
+		{name: "member delivered not analyzed for an undeclared reason", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.gm.see(member)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.TotalExtractedFile = 2
+				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: "m", Size: 10, Reason: datamodel.NotAnalyzedEncrypted}}
+			}))
+		}, want: `member "m" delivered not analyzed`},
+
+		{name: "archive of an analyzed member", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.gm.see(member)
+			f.report(entry(content, func(r *datamodel.Report) { r.TotalExtractedFile = 1 }))
+		}},
+		{name: "archive the scenario did not declare", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.TotalExtractedFile = 1 }))
+		}, want: "members the scenario did not declare"},
+		{name: "archive no member of which was analyzed", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.report(entry(content, func(r *datamodel.Report) { r.TotalExtractedFile = 1 }))
+		}, want: "no member was ever analyzed"},
+		{name: "archive with a malware member", setup: func(f *fixture) {
+			f.gm.MarkMalicious(member)
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.gm.see(member)
+			f.report(entry(content, func(r *datamodel.Report) { r.TotalExtractedFile = 1 }))
+		}, want: "a member is programmed as malware"},
+		{name: "archive with a failed member", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.spec.archive(content, member)
+			f.gm.see(member)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.TotalExtractedFile = 1
+				r.ErrorExtractedFiles = map[string]string{"m": "x"}
+			}))
+		}, want: "members in error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tt.setup != nil {
+				tt.setup(f)
+			}
+			got := f.violations()
+			if tt.want == "" && got != "" {
+				t.Errorf("violations = %q, want none", got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("violations = %q, want one containing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestOutputViolations_lockReport(t *testing.T) {
+	bad := []byte("a malware")
+	tests := []struct {
+		name       string
+		content    func(sha, id string) string
+		programmed bool
+		quarantine bool
+		want       string
+	}{
+		{name: "detection of a quarantined malware", content: detectionOf, programmed: true, quarantine: true},
+		{name: "not a report", content: func(string, string) string { return "MZ binary content" }, programmed: true, quarantine: true, want: "not a report"},
+		{name: "unknown field", content: func(sha, id string) string {
+			return strings.TrimSuffix(detectionOf(sha, id), "}") + `,"payload":"MZ"}`
+		}, programmed: true, quarantine: true, want: "not a report"},
+		{name: "trailing payload", content: func(sha, id string) string { return detectionOf(sha, id) + "\nMZ-payload" }, programmed: true, quarantine: true, want: "followed by more data"},
+		{name: "a second report", content: func(sha, id string) string { return detectionOf(sha, id) + detectionOf(sha, id) }, programmed: true, quarantine: true, want: "followed by more data"},
+		{name: "clean file behind the name", content: func(sha, id string) string {
+			return strings.Replace(detectionOf(sha, id), `"malicious":true`, `"malicious":false`, 1)
+		}, programmed: true, quarantine: true, want: "not malicious"},
+		{name: "file not programmed as malware", content: detectionOf, quarantine: true, want: "did not program"},
+		{name: "nothing in the quarantine", content: detectionOf, programmed: true, want: "not in the quarantine"},
+		{name: "mitigation ID of another file", content: func(sha, _ string) string { return detectionOf(sha, "abc") }, programmed: true, quarantine: true, want: "mitigation ID"},
+		{name: "no SHA256", content: func(string, string) string { return `{"malicious":true}` }, programmed: true, quarantine: true, want: "no verifiable SHA256"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newFixture(t)
+			if tt.programmed {
+				f.gm.MarkMalicious(bad)
+			}
+			if tt.quarantine {
+				f.quarantined(inputBadPath, bad)
+			}
+			sum := sha256Hex(bad)
+			f.deliver("bad.txt-lockreport211126_0818.json", []byte(tt.content(sum, hcquarantine.ComputeCacheID(inputBadPath, sum))))
+			got := f.violations()
+			if tt.want == "" && got != "" {
+				t.Errorf("violations = %q, want none", got)
+			}
+			if tt.want != "" && !strings.Contains(got, tt.want) {
+				t.Errorf("violations = %q, want one containing %q", got, tt.want)
+			}
+		})
+	}
+}
+
+const inputBadPath = "/input/tom/bad.txt"
+
+func detectionOf(sha, id string) string {
+	return `{"filename":"` + inputBadPath + `","sha256":"` + sha + `","malicious":true,"mitigation-id":"` + id + `"}`
+}
+
+// analyze submits content to the fake and returns the status of the answer
+// and, when the submission was accepted, the result of the analysis.
+func analyze(t *testing.T, gm *gmalware, content []byte) (status int, res map[string]any) {
+	t.Helper()
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	part, err := mw.CreateFormFile("file", "f")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err = mw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	post, err := http.NewRequestWithContext(t.Context(), http.MethodPost, gm.URL+"/api/lite/v2/submit", &body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	post.Header.Set("Content-Type", mw.FormDataContentType())
+	resp, err := http.DefaultClient.Do(post)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return resp.StatusCode, nil
+	}
+	var sub struct {
+		UUID string `json:"uuid"`
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&sub); err != nil {
+		t.Fatal(err)
+	}
+	return getResult(t, gm, sub.UUID)
+}
+
+func getResult(t *testing.T, gm *gmalware, uuid string) (status int, res map[string]any) {
+	t.Helper()
+	get, err := http.NewRequestWithContext(t.Context(), http.MethodGet, gm.URL+"/api/lite/v2/results/"+uuid, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(get)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, nil
+	}
+	if err = json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, res
+}
+
+// The fake service answers what it is told: a verdict per content, a failure
+// on request, and it remembers what it gave.
+func TestGMalware_programmable(t *testing.T) {
+	gm := newGMalware(t, false)
+	bad, good := []byte("bad content"), []byte("good content")
+	gm.MarkMalicious(bad)
+
+	if _, res := analyze(t, gm, bad); res["is_malware"] != true {
+		t.Errorf("verdict of the marked content = %v, want malware", res["is_malware"])
+	}
+	if _, res := analyze(t, gm, good); res["is_malware"] != false {
+		t.Errorf("verdict of another content = %v, want clean", res["is_malware"])
+	}
+	if v, ok := gm.Given(sha256Hex(bad)); !ok || !v.malware {
+		t.Errorf("Given(bad) = %v, %v, want a malware verdict", v, ok)
+	}
+	if _, ok := gm.Given(sha256Hex([]byte("never sent"))); ok {
+		t.Error("Given reports a result nobody asked for")
+	}
+	if status, _ := getResult(t, gm, "00000000-0000-0000-0000-000000000000"); status != http.StatusNotFound {
+		t.Errorf("status of an unknown analysis = %d, want 404", status)
+	}
+	if _, ok := gm.Given(""); ok {
+		t.Error("an unknown analysis was recorded as given")
+	}
+
+	gm.FailWith(http.StatusServiceUnavailable)
+	if status, _ := analyze(t, gm, good); status != http.StatusServiceUnavailable {
+		t.Errorf("status during the outage = %d, want 503", status)
+	}
+	if gm.failed.Load() == 0 {
+		t.Error("the failed request is not counted")
+	}
+	gm.FailWith(0)
+	if status, _ := analyze(t, gm, good); status != http.StatusOK {
+		t.Errorf("status after the outage = %d, want 200", status)
+	}
+
+	gm.DelaySubmissions(300 * time.Millisecond)
+	at := time.Now()
+	analyze(t, gm, good)
+	if took := time.Since(at); took < 300*time.Millisecond {
+		t.Errorf("a delayed submission was answered in %s", took)
+	}
+}
+
+// The fake console refuses what strays from the SDK protocol and says so.
+func TestFakeConsole_protocol(t *testing.T) {
+	c := newFakeConsole(t, map[string]any{})
+	do := func(method, path, auth, body string) int {
+		req, err := http.NewRequestWithContext(t.Context(), method, c.URL+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+	good := "ApiKey " + consoleAPIKey
+	if got := do(http.MethodPost, "/api/v1/connectors/register", good, "{}"); got != http.StatusOK {
+		t.Errorf("register = %d, want 200", got)
+	}
+	for name, got := range map[string]int{
+		"wrong method":  do(http.MethodGet, "/api/v1/connectors/register", good, ""),
+		"no key":        do(http.MethodPost, "/api/v1/connectors/register", "", "{}"),
+		"unknown route": do(http.MethodPost, "/api/v1/connectors/elsewhere", good, "{}"),
+		"bad event":     do(http.MethodPost, "/api/v1/connectors/events", good, "{not json"),
+	} {
+		if got != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", name, got)
+		}
+	}
+	if n := len(c.ProtocolErrors()); n != 4 {
+		t.Errorf("protocol errors = %d, want 4: %v", n, c.ProtocolErrors())
+	}
+	id := c.Push(t, "stop", nil)
+	if _, acked := c.Ack(id); acked {
+		t.Error("a task nobody acknowledged is reported acknowledged")
+	}
+}

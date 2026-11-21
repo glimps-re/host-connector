@@ -136,6 +136,9 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 	if base == nil {
 		base = context.Background()
 	}
+	// Only a monitor that is made says that its delay is short: one that fails to
+	// start does not.
+	warnShortModDelay(time.Duration(cfg.ModDelay))
 	return &Monitor{
 		ctx:         context.WithoutCancel(base),
 		watcher:     watcher,
@@ -153,6 +156,23 @@ func NewMonitor(onNewFile OnNewFileFunc, cfg Config) (*Monitor, error) {
 		walkWake:    make(chan struct{}, 1),
 		done:        make(chan struct{}),
 	}, nil
+}
+
+// shortModDelay is the modification_delay under which the identity of a file
+// stops being a safe proof that it is complete and unchanged.
+const shortModDelay = time.Second
+
+// warnShortModDelay says, in the log, what a modification_delay under shortModDelay
+// risks. The value is accepted: an operator who knows the file system may want
+// it, but he must know that a file still being written can be analyzed
+// incomplete, and that a rewrite of the same size within one tick of the
+// timestamps of the file system escapes the check of the identity of a file.
+func warnShortModDelay(delay time.Duration) {
+	if delay >= shortModDelay {
+		return
+	}
+	logger.Warn("modification_delay is short: a file still being written may be analyzed incomplete, and a rewrite of the same size within one timestamp tick of the file system is not seen by the identity check; it must exceed the timestamp granularity of the file system",
+		slog.Duration("modification_delay", delay), slog.Duration("recommended_minimum", shortModDelay))
 }
 
 // PendingFiles returns how many files detected under the owner whose folder is

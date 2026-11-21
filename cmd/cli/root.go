@@ -94,7 +94,7 @@ func initRoot(rootCmd *cobra.Command) {
 	monitoringCmd.PersistentFlags().BoolVar(&hostConfig.Monitoring.PreScan, "pre-scan", false, "Immediately scan all existing files in monitored paths when monitoring starts")
 	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.Period, "scan-period", "If set enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m')")
 	monitoringCmd.PersistentFlags().BoolVar(&hostConfig.Monitoring.DisableFSWatcher, "disable-fs-watcher", hostConfig.Monitoring.DisableFSWatcher, "Do not watch filesystem events, only pre-scan and periodic rescan (requires --scan-period)")
-	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.ModificationDelay, "mod-delay", "Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes)")
+	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.ModificationDelay, "mod-delay", "Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes; under 1s logs a warning)")
 
 	agentCmd.PersistentFlags().StringVar(&hostConfig.Console.URL, "console-url", "", "connector manager url")
 	agentCmd.PersistentFlags().StringVar(&hostConfig.Console.APIKey, "console-api-key", "", "connector manager API key")

@@ -226,14 +226,19 @@ func TestMonitorT09_processDue(t *testing.T) {
 		return p
 	}
 	t.Run("a file changed while waiting waits again, then is handed over once", func(t *testing.T) {
+		const delay = time.Hour
+		type handed struct {
+			path  string
+			stamp scanner.FileIdentity
+		}
 		var mu sync.Mutex
-		var got []string
-		m := newBareMonitor(t, func(p string, _ scanner.FileIdentity) (bool, error) {
+		var got []handed
+		m := newBareMonitor(t, func(p string, stamp scanner.FileIdentity) (bool, error) {
 			mu.Lock()
-			got = append(got, p)
+			got = append(got, handed{p, stamp})
 			mu.Unlock()
 			return true, nil
-		}, Config{ModDelay: sdk.Duration(time.Millisecond)})
+		}, Config{ModDelay: sdk.Duration(delay)})
 		p := write("changing.txt", "v1")
 		info, err := os.Lstat(p)
 		if err != nil {
@@ -242,6 +247,11 @@ func TestMonitorT09_processDue(t *testing.T) {
 		old := time.Now().Add(-time.Second)
 		m.table.Track(p, scanner.IdentityOf(info), old, old)
 		write("changing.txt", "version two")
+		current, err := os.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := scanner.IdentityOf(current)
 		m.processDue()
 		mu.Lock()
 		first := len(got)
@@ -249,15 +259,28 @@ func TestMonitorT09_processDue(t *testing.T) {
 		if first != 0 {
 			t.Fatalf("the callback ran for a file that changed while waiting: %v", got)
 		}
-		if _, ok := m.table.Get(p); !ok {
+		tracked, ok := m.table.Get(p)
+		if !ok {
 			t.Fatal("the changed file must be tracked again")
 		}
-		time.Sleep(20 * time.Millisecond)
+		if !tracked.stamp.Equal(want) {
+			t.Errorf("tracked with %+v, want its new identity %+v", tracked.stamp, want)
+		}
+		if until := time.Until(tracked.deadline); until <= delay/2 || until > delay {
+			t.Errorf("tracked again for %v, want a whole new delay of %v", until, delay)
+		}
+		// A one-hour delay cannot elapse in a test: the end of the wait is put in the
+		// table, as the clock would have.
+		m.table.Forget(p)
+		m.table.Track(p, want, old, old)
 		m.processDue()
 		mu.Lock()
 		defer mu.Unlock()
-		if len(got) != 1 || got[0] != p {
-			t.Errorf("callback calls = %v, want exactly one for %s", got, p)
+		if len(got) != 1 || got[0].path != p {
+			t.Fatalf("callback calls = %v, want exactly one for %s", got, p)
+		}
+		if !got[0].stamp.Equal(want) {
+			t.Errorf("handed over with %+v, want its current identity %+v", got[0].stamp, want)
 		}
 	})
 	t.Run("a vanished file is forgotten without callback", func(t *testing.T) {

@@ -55,12 +55,10 @@ func TestMonitor_preScanWaitsForStabilityAndPassesTheValidatedIdentity(t *testin
 	if err := m.Add(root); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(delay / 3)
-	if len(seen()) != 0 {
-		t.Fatalf("the pre-scan handed %v before the stability delay", seen())
-	}
 	waitFor(t, "the file to be handed over", func() bool { return len(seen()) == 1 })
 	got := seen()[file]
+	// The delay is checked on the time of the hand-over: a pause before looking
+	// would only prove that the machine was slow.
 	if got.at.Sub(start) < delay {
 		t.Errorf("handed over after %v, want at least %v", got.at.Sub(start), delay)
 	}
@@ -80,14 +78,21 @@ func TestMonitor_writeResumedBeforeTheDelayPostponesTheFile(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "upload.bin")
 	writeTestFile(t, file)
-	const delay = 300 * time.Millisecond
+	const delay = 500 * time.Millisecond
 	m, seen := newIdentityMonitor(t, Config{PreScan: true, ModDelay: sdk.Duration(delay), DisableWatcher: true, Period: sdk.Duration(20 * time.Millisecond)})
 	m.Start()
-	start := time.Now()
 	if err := m.Add(root); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(delay / 2)
+	var first trackedFile
+	waitFor(t, "the file to be tracked", func() bool {
+		var ok bool
+		first, ok = m.table.Get(file)
+		return ok
+	})
+	// The change is judged through the table, not through naps: a rescan that sees
+	// it must give the file a whole new delay, counted from the write.
+	wrote := time.Now()
 	f, err := os.OpenFile(filepath.Clean(file), os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		t.Fatal(err)
@@ -98,9 +103,28 @@ func TestMonitor_writeResumedBeforeTheDelayPostponesTheFile(t *testing.T) {
 	if err = f.Close(); err != nil {
 		t.Fatal(err)
 	}
+	info, err := os.Lstat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := scanner.IdentityOf(info)
+	var postponed trackedFile
+	waitFor(t, "the changed file to be tracked with its new identity", func() bool {
+		var ok bool
+		postponed, ok = m.table.Get(file)
+		return ok && postponed.stamp.Equal(want)
+	})
+	if postponed.deadline.Before(wrote.Add(delay)) || !postponed.deadline.After(first.deadline) {
+		t.Errorf("the changed file waits until %v, want at least %v (the write plus the delay) and after the first deadline %v",
+			postponed.deadline, wrote.Add(delay), first.deadline)
+	}
 	waitFor(t, "the file to be handed over", func() bool { return len(seen()) == 1 })
-	if elapsed := seen()[file].at.Sub(start); elapsed < delay/2+delay {
-		t.Errorf("handed over after %v, want at least %v: the write restarted the delay", elapsed, delay/2+delay)
+	got := seen()[file]
+	if !got.id.Equal(want) {
+		t.Errorf("handed over with %+v, want its new identity %+v", got.id, want)
+	}
+	if got.at.Before(wrote.Add(delay)) {
+		t.Errorf("handed over %v after the write, want at least %v: the write restarted the delay", got.at.Sub(wrote), delay)
 	}
 }
 

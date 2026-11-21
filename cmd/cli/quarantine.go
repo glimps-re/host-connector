@@ -53,6 +53,9 @@ var quarantineRestoreCmd = &cobra.Command{
 	Short: "Restore quarantined files",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if hostConfig.Quarantine.Registry == "" {
+			logger.Warn("the registry of the quarantine is in memory: this restoration is unknown to the monitoring process")
+		}
 		for _, id := range args {
 			if strings.HasSuffix(id, ".lock") {
 				ts := restorePattern.FindStringSubmatch(id)

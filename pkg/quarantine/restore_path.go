@@ -100,9 +100,3 @@ func openOutsideWatched(restoreDir string) (dir *os.Root, closeAll func(), err e
 	}
 	return dir, func() { closeQuietly(dir, "destination directory") }, nil
 }
-
-func closeQuietly(r *os.Root, what string) {
-	if err := r.Close(); err != nil {
-		logger.Error("Restore cannot close "+what, slog.String("error", err.Error()))
-	}
-}

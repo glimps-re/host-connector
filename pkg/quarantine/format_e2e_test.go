@@ -120,6 +120,11 @@ func TestReconfigure_FormatChangeKeepsOldLocksRestorable(t *testing.T) {
 	for id, want := range map[string]struct {
 		path, content string
 	}{oldID: {oldSrc, "old tar content"}, newID: {newSrc, "new zip content"}} {
+		// The original is deleted once quarantined; a restoration never replaces a
+		// file that is there.
+		if err := os.Remove(want.path); err != nil {
+			t.Fatal(err)
+		}
 		if err := q.Restore(t.Context(), id); err != nil {
 			t.Fatalf("Restore(%s) error = %v", id, err)
 		}

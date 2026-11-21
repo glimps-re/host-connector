@@ -263,3 +263,66 @@ func filesUnder(t *testing.T, dir string) []string {
 	}
 	return out
 }
+
+func TestPipeline_aRestoredFileIsDeliveredByVerifiedCopyInCopyMode(t *testing.T) {
+	noOpenInputs(t)
+	in, dest := t.TempDir(), t.TempDir()
+	file := filepath.Join(in, "f.bin")
+	content := []byte("restored content")
+	if err := os.WriteFile(file, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	srcInfo, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quarantiner := &quarantineMock.QuarantineMock{
+		IsRestoredMock: func(context.Context, string, string) (bool, error) { return true, nil },
+	}
+	submitter := readerTrio(&gdetectMock.MockGDetectSubmitter{
+		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
+		WaitForReaderMock: func(_ context.Context, r io.Reader, _ gdetect.WaitForOptions) (gdetect.Result, error) {
+			h := sha256.New()
+			_, e := io.Copy(h, r)
+			return gdetect.Result{SHA256: hex.EncodeToString(h.Sum(nil)), Malware: true, Malwares: []string{"m"}}, e
+		},
+	})
+	c, err := NewConnector(Config{
+		Roots: []string{in}, WorkDir: t.TempDir(), Workers: 1, MoveTo: dest, MoveFrom: in,
+		MoveMode: MoveModeCopy,
+		Actions:  Actions{Quarantine: true, Move: true},
+	}, quarantiner, submitter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := &outcomes{}
+	c.config.OnFileDone = got.add
+	if err = c.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if err = c.ScanFile(t.Context(), file); err != nil {
+		t.Fatal(err)
+	}
+	c.Close(t.Context())
+	entries := filesUnder(t, dest)
+	if len(entries) != 1 {
+		t.Fatalf("the destination holds %v, want the restored file", entries)
+	}
+	data, err := os.ReadFile(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(content) {
+		t.Errorf("delivered content = %q", data)
+	}
+	dstInfo, err := os.Stat(entries[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.SameFile(srcInfo, dstInfo) {
+		t.Error("copy mode must not deliver the inode that was deposited")
+	}
+	if _, err = os.Stat(file); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the source must be removed once delivered: %v", err)
+	}
+}

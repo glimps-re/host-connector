@@ -41,6 +41,9 @@ type quarantineRegistry interface {
 	// Set adds or updates an entry
 	Set(ctx context.Context, entry *Entry) error
 
+	// Delete removes an entry; one that does not exist is not an error.
+	Delete(ctx context.Context, id string) error
+
 	// Get fetch an entry
 	Get(ctx context.Context, id string) (entry *Entry, err error)
 	// HasRestored reports whether any entry with this content was restored.
@@ -316,6 +319,15 @@ ON CONFLICT(id) DO UPDATE SET
 		entry.RestoredAt.UnixMilli(),
 	)
 	return
+}
+
+func (c *sqliteRegistry) Delete(ctx context.Context, id string) error {
+	c.Lock()
+	defer c.Unlock()
+	if _, err := c.db.ExecContext(ctx, "DELETE FROM entries WHERE id = ?", id); err != nil {
+		return fmt.Errorf("cannot delete the entry %s: %w", id, err)
+	}
+	return nil
 }
 
 func ComputeCacheID(path string, contentSHA256 string) (id string) {

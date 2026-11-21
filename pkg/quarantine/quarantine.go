@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"iter"
 	"log/slog"
 	"os"
@@ -17,6 +16,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/glimps-re/host-connector/pkg/config"
@@ -85,6 +85,10 @@ type QuarantineHandler struct {
 	registry quarantineRegistry
 	location string
 	watched  []string
+	// workDir and onUnregistered are bindings of the running instance, not
+	// configuration: Reconfigure never touches them, and they are read without mu.
+	workDir        atomic.Pointer[string]
+	onUnregistered atomic.Pointer[func(ctx context.Context, id, dest, sha256 string)]
 
 	restoreLocks keyedMutex
 
@@ -117,6 +121,26 @@ func NewQuarantineHandler(ctx context.Context, conf Config) (quarantineHandler *
 		watched:  slices.Clone(conf.WatchedPaths),
 	}
 	return
+}
+
+// SetWorkDir sets the private work directory of the connector: Restore never
+// writes below it. "" disables the check (CLI, tests). Safe for concurrent use;
+// Reconfigure never changes it.
+func (q *QuarantineHandler) SetWorkDir(dir string) {
+	q.workDir.Store(&dir)
+}
+
+// SetUnregisteredRestoreHook sets the function called once after a successful
+// restore that had no registry entry (decision Q30), so that the caller raises a
+// console event. It runs in a goroutine of its own, with a context that the end
+// of the restoration does not cancel, so that it never delays the reply; it must
+// still end. nil removes it. Safe for concurrent use; Reconfigure never changes it.
+func (q *QuarantineHandler) SetUnregisteredRestoreHook(f func(ctx context.Context, id, dest, sha256 string)) {
+	if f == nil {
+		q.onUnregistered.Store(nil)
+		return
+	}
+	q.onUnregistered.Store(&f)
 }
 
 // newQuarantineLocker builds the fileLocker used for both writing and
@@ -289,11 +313,6 @@ func (q *QuarantineHandler) isRestored(ctx context.Context, location, sha256 str
 }
 
 var (
-	// ErrNoRegistryEntry is returned by Restore when no registry entry
-	// exists for the requested id. The check happens before any filesystem
-	// write.
-	ErrNoRegistryEntry = errors.New("no registry entry for this quarantine id")
-
 	// ErrRestorePathMismatch is returned by Restore when the path recorded
 	// inside the quarantine container is not a clean absolute path, is a
 	// Windows UNC/device path, or does not match the registry's
@@ -324,28 +343,26 @@ var (
 	// in for the destination directory from redirecting the restore.
 	ErrRestoreDestinationUnsafe = errors.New("quarantine restore destination directory is not safe to use")
 
+	// ErrRestoreRollbackFailed is joined to the error of a restoration that failed
+	// when the change it made to the registry could not be undone: the content is
+	// allowed by its SHA256 although nothing was restored. The container is kept.
+	ErrRestoreRollbackFailed = errors.New("the registry change of a failed restore could not be undone")
+
+	// ErrRestoredNotRegistered is joined to the error of a restoration of a
+	// container without registry entry that published the file but could not
+	// register it: the file is there, and the registry does not know it, so its
+	// content is detected and quarantined again at the next pass.
+	ErrRestoredNotRegistered = errors.New("the file was restored but the registry could not be told")
+
 	errInvalidQuarantineID = errors.New("invalid quarantine id")
 
 	validQuarantineID = regexp.MustCompile(`^[0-9a-f]{64}$`)
 )
 
-// isValidRestorePath reports whether path is an acceptable Restore
-// destination: a clean, absolute path, not a Windows UNC/device path, and
-// exactly equal to expected (the registry's InitialLocation for this id).
-func isValidRestorePath(path, expected string) bool {
-	if path == "" || expected == "" {
-		return false
-	}
-	if !filepath.IsAbs(path) {
-		return false
-	}
-	if filepath.Clean(path) != path {
-		return false
-	}
-	if path != expected {
-		return false
-	}
-	return isRestorePathAllowed(path)
+// validRestorePath reports whether path is an acceptable Restore destination: a
+// clean, absolute path, not a Windows UNC/device path.
+func validRestorePath(path string) bool {
+	return path != "" && filepath.IsAbs(path) && filepath.Clean(path) == path && isRestorePathAllowed(path)
 }
 
 // limitWriter caps the number of bytes it accepts and counts those written.
@@ -408,231 +425,6 @@ func randomHex(n int) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// Restore restores the file of quarantine id to its original location: the
-// registry is consulted, and the destination path validated, before any
-// filesystem write; the plaintext goes to an exclusive temp file in the
-// destination directory and is renamed into place only once its size and
-// SHA256 match the container index and the registry. Any failure before the
-// rename leaves the filesystem as it was, except for a possibly created
-// destination directory tree.
-func (q *QuarantineHandler) Restore(ctx context.Context, id string) (err error) {
-	if !validQuarantineID.MatchString(id) {
-		return fmt.Errorf("%w: %q", errInvalidQuarantineID, id)
-	}
-
-	unlockID := q.restoreLocks.Lock(id)
-	defer unlockID()
-
-	// restoreLocks is taken before this lock, and Reconfigure never takes it:
-	// no deadlock.
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	locker := q.locker
-	location := q.location
-	watched := q.watched
-
-	lockPath := filepath.Join(location, id+".lock")
-	f, err := os.OpenInRoot(location, id+".lock")
-	if err != nil {
-		return
-	}
-	closed := false
-	defer func() {
-		if !closed {
-			if e := f.Close(); e != nil {
-				logger.Error("Restore cannot close container file", slog.String("error", e.Error()))
-			}
-		}
-	}()
-
-	stat, err := f.Stat()
-	if err != nil {
-		return
-	}
-	if !stat.Mode().IsRegular() {
-		err = fmt.Errorf("%w: not a regular file", errInvalidQuarantineID)
-		return
-	}
-	header, err := locker.GetHeader(f, stat.Size())
-	if err != nil {
-		return
-	}
-
-	// Restoring an id without registry entry is refused, before any write.
-	entry, err := q.registry.Get(ctx, id)
-	if err != nil {
-		if errors.Is(err, errEntryNotFound) {
-			err = ErrNoRegistryEntry
-		}
-		return
-	}
-
-	// Path policy: Nothing derived from container content alone is
-	// ever trusted as a write destination.
-	// The container index is JSON: invalid UTF-8 bytes of the original path were
-	// replaced, so the comparison uses the same replacement. The exact path of
-	// the registry is the destination.
-	dest := entry.InitialLocation
-	if !isValidRestorePath(header.Filepath, strings.Map(func(r rune) rune { return r }, dest)) {
-		err = ErrRestorePathMismatch
-		return
-	}
-
-	restoreDir := filepath.Dir(dest)
-	root, closeRoot, err := openRestoreDir(watched, restoreDir)
-	if err != nil {
-		return
-	}
-	defer closeRoot()
-
-	base := filepath.Base(dest)
-
-	tmpName, tmpFile, err := createRestoreTempFile(root, base)
-	if err != nil {
-		return
-	}
-	tmpRemoved := false
-	tmpClosed := false
-	defer func() {
-		if !tmpClosed {
-			if e := tmpFile.Close(); e != nil {
-				logger.Error("Restore cannot close temp file", slog.String("error", e.Error()))
-			}
-		}
-		if !tmpRemoved {
-			if e := root.Remove(tmpName); e != nil && !errors.Is(e, os.ErrNotExist) {
-				logger.Error("Restore cannot remove leftover temp file", slog.String("name", tmpName), slog.String("error", e.Error()))
-			}
-		}
-	}()
-
-	// No format compresses: the plaintext cannot be larger than the container,
-	// whatever size the container claims.
-	hasher := sha256.New()
-	limited := &limitWriter{w: &ctxWriter{ctx: ctx, w: io.MultiWriter(tmpFile, hasher)}, remaining: stat.Size()}
-	locked, err := locker.UnlockFile(f, stat.Size(), limited)
-	if err != nil {
-		return
-	}
-	if limited.written != locked.Size {
-		err = fmt.Errorf("%w: wrote %d, recorded %d", ErrRestoreSizeMismatch, limited.written, locked.Size)
-		return
-	}
-	// A wrong password decrypts the tar format to random bytes without error.
-	if got := hex.EncodeToString(hasher.Sum(nil)); !strings.EqualFold(got, entry.SHA256) {
-		err = ErrRestoreContentMismatch
-		return
-	}
-	if e := f.Close(); e != nil {
-		logger.Error("Restore cannot close container file", slog.String("error", e.Error()))
-	}
-	closed = true
-
-	if err = restoreFileInfo(root, tmpFile, tmpName, locked); err != nil {
-		return
-	}
-	if err = tmpFile.Sync(); err != nil {
-		return
-	}
-	// Closed before the rename: Windows cannot rename an open file.
-	tmpClosed = true
-	if err = tmpFile.Close(); err != nil {
-		return
-	}
-
-	// Atomic rename: the destination never holds partial or unverified bytes.
-	if err = root.Rename(tmpName, base); err != nil {
-		return
-	}
-	tmpRemoved = true // renamed away; nothing left to clean up
-
-	// A failure here leaves the restored file in place with the .lock also
-	// still present.
-	entry.QuarantineLocation = ""
-	entry.RestoredAt = now()
-	if err = q.registry.Set(ctx, entry); err != nil {
-		err = fmt.Errorf("error set cache for sha256 %v, %w", entry.SHA256, err)
-		return
-	}
-	logger.Info("file restored", slog.String("file", dest), slog.String("reason", locked.Reason))
-	if e := os.Remove(lockPath); e != nil {
-		logger.Error("Restore cannot remove lock file", slog.String("error", e.Error()))
-	}
-	return
-}
-
-type QuarantinedFile struct {
-	LockEntry
-	ID string
-}
-
-// ListQuarantinedFiles lists every container in the quarantine directory
-// without needing the password (both formats store their index in
-// cleartext). A single unreadable or malformed container is logged and
-// skipped; only a failure of the walk itself (e.g. the quarantine
-// directory disappearing) surfaces as an error to the caller.
-func (q *QuarantineHandler) ListQuarantinedFiles(ctx context.Context) iter.Seq2[*QuarantinedFile, error] {
-	return func(yield func(f *QuarantinedFile, err error) bool) {
-		q.mu.RLock()
-		locker := q.locker
-		location := q.location
-		q.mu.RUnlock()
-
-		walkErr := filepath.WalkDir(location, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				logger.Warn("list quarantined error", slog.String("path", path), slog.String("error", err.Error()))
-				return nil
-			}
-			if ctx.Err() != nil {
-				return filepath.SkipAll
-			}
-			if d.IsDir() {
-				return nil
-			}
-			if !strings.HasSuffix(path, ".lock") {
-				return nil
-			}
-
-			relPath, relErr := filepath.Rel(location, path)
-			if relErr != nil {
-				logger.Warn("list quarantined: cannot compute relative path", slog.String("path", path), slog.String("error", relErr.Error()))
-				return nil
-			}
-			file, openErr := os.OpenInRoot(location, relPath)
-			if openErr != nil {
-				logger.Warn("list quarantined: cannot open file", slog.String("path", path), slog.String("error", openErr.Error()))
-				return nil
-			}
-			defer func() {
-				if e := file.Close(); e != nil {
-					logger.Error("ListQuarantinedFiles cannot close file", slog.String("error", e.Error()))
-				}
-			}()
-
-			stat, statErr := file.Stat()
-			if statErr != nil {
-				logger.Warn("list quarantined: cannot stat file", slog.String("path", path), slog.String("error", statErr.Error()))
-				return nil
-			}
-
-			entry, headerErr := locker.GetHeader(file, stat.Size())
-			if headerErr != nil {
-				logger.Warn("list quarantined: cannot read header", slog.String("path", path), slog.String("error", headerErr.Error()))
-				return nil
-			}
-			id := strings.TrimSuffix(filepath.Base(path), ".lock")
-
-			if !yield(&QuarantinedFile{LockEntry: entry, ID: id}, nil) {
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if walkErr != nil {
-			yield(nil, walkErr)
-		}
-	}
 }
 
 func (q *QuarantineHandler) Close() (err error) {

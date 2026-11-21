@@ -84,7 +84,11 @@ func TestIntegration_MixedFormatDirectory(t *testing.T) {
 		t.Errorf("listing: zip entry path = %q, want %q", seen[zipID], zipSamplePath)
 	}
 
-	// 4. Both restore correctly.
+	// 4. Both restore correctly, once the original of the tar sample is gone: a
+	// restoration never replaces a file that is there.
+	if err := os.Remove(tarSamplePath); err != nil {
+		t.Fatal(err)
+	}
 	if err := q.Restore(ctx, tarID); err != nil {
 		t.Fatalf("Restore(tar) error = %s", err)
 	}

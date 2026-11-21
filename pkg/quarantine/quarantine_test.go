@@ -2,11 +2,15 @@ package quarantine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -46,6 +50,7 @@ func (l *lockerMock) GetHeader(src io.ReaderAt, size int64) (entry LockEntry, er
 type registryMock struct {
 	GetLocationMock func() (location string)
 	SetMock         func(ctx context.Context, entry *Entry) error
+	DeleteMock      func(ctx context.Context, id string) error
 	GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
 	CloneMock       func(ctx context.Context, newLocation string, mergeExisting bool) (quarantineRegistry, error)
 	DiscardMock     func() error
@@ -65,6 +70,13 @@ func (m *registryMock) Set(ctx context.Context, entry *Entry) error {
 		return m.SetMock(ctx, entry)
 	}
 	panic("Set not implemented")
+}
+
+func (m *registryMock) Delete(ctx context.Context, id string) error {
+	if m.DeleteMock != nil {
+		return m.DeleteMock(ctx, id)
+	}
+	panic("Delete not implemented")
 }
 
 func (m *registryMock) Get(ctx context.Context, id string) (*Entry, error) {
@@ -395,7 +407,6 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 	unlockFailPath := filepath.Join(t.TempDir(), "restored.txt")
 	registryGetFailPath := filepath.Join(t.TempDir(), "restored.txt")
 	sizeMismatchPath := filepath.Join(t.TempDir(), "restored.txt")
-	noRegistryEntryPath := filepath.Join(t.TempDir(), "restored.txt")
 
 	type fields struct {
 		getHeaderMock  func(src io.ReaderAt, size int64) (entry LockEntry, err error)
@@ -474,26 +485,6 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 			},
 			args:    args{entryID: testRestoreID},
 			wantErr: errors.New("get header failed"),
-		},
-		{
-			name: "error when no registry entry exists (checked before any write)",
-			fields: fields{
-				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
-					return LockEntry{Filepath: noRegistryEntryPath}, nil
-				},
-				unlockFileMock: unlockWriteContent("should never be written", "malware: test"),
-				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
-					return nil, errEntryNotFound
-				},
-				registrySet: func(ctx context.Context, entry *Entry) error {
-					t.Fatalf("registry.Set must not be called when the registry entry is missing")
-					return nil
-				},
-				lockFileExists: true,
-			},
-			args:              args{entryID: testRestoreID},
-			wantErr:           ErrNoRegistryEntry,
-			wantDestUntouched: noRegistryEntryPath,
 		},
 		{
 			name: "error when container path does not match registry entry",
@@ -1095,9 +1086,10 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 			// Setup quarantine directory
 			quarantineDir := t.TempDir()
 
-			// Create lock files
+			// Create lock files: a container is named by an id, so the names of the
+			// table are turned into ids.
 			for _, filename := range tt.fields.lockFiles {
-				filePath := filepath.Join(quarantineDir, filename)
+				filePath := filepath.Join(quarantineDir, listID(strings.TrimSuffix(filename, ".lock"))+".lock")
 				err := os.WriteFile(filePath, []byte("dummy lock file content"), 0o600)
 				if err != nil {
 					t.Fatalf("failed to create lock file: %v", err)
@@ -1170,7 +1162,13 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 				gotIDs[i] = f.ID
 			}
 
-			if diff := cmp.Diff(gotIDs, tt.wantQuarantinedFiles); diff != "" {
+			wantIDs := make([]string, len(tt.wantQuarantinedFiles))
+			for i, w := range tt.wantQuarantinedFiles {
+				wantIDs[i] = listID(w)
+			}
+			slices.Sort(gotIDs)
+			slices.Sort(wantIDs)
+			if diff := cmp.Diff(gotIDs, wantIDs); diff != "" {
 				t.Errorf("ListQuarantinedFiles() IDs diff(-got+want)=%s", diff)
 			}
 
@@ -1474,4 +1472,10 @@ func TestMoveFile(t *testing.T) {
 			}
 		})
 	}
+}
+
+// listID is the id a name of the table of ListQuarantinedFiles stands for.
+func listID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:])
 }

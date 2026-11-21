@@ -32,6 +32,8 @@ func restoreFileInfo(root *os.Root, f *os.File, name string, locked LockedFile) 
 	}
 	// AccessTime is intentionally absent from LockedFile (see its
 	// documentation): atime is set equal to mtime.
+	// Chtimes follows a link inside the root: at worst the times of what the link
+	// designates change, nothing else is written.
 	err = root.Chtimes(name, locked.ModTime, locked.ModTime)
 	return
 }

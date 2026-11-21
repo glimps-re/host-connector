@@ -398,6 +398,7 @@ func (h *Handler) install(ctx context.Context, conf *config.Config, p *prepared,
 	if err != nil {
 		return err
 	}
+	h.bindQuarantine(conn.GetWorkDir())
 	if err = conn.LoadPlugins(p.pluginsConfig); err != nil {
 		return fmt.Errorf("could not load plugins, error: %w", err)
 	}

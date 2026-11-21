@@ -297,9 +297,7 @@ func (h *Handler) Restore(ctx context.Context, restoreInfo sdk.RestoreActionCont
 		return
 	}
 	err = quarantiner.Restore(ctx, restoreInfo.ID)
-	if err != nil {
-		return
-	}
+	notifyRestoreRegistry(ctx, restoreInfo.ID, err)
 	return
 }
 

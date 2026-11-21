@@ -583,13 +583,20 @@ func TestPool_aCallWhenEverySlotIsStuckFailsClosed(t *testing.T) {
 		closeCookies()
 	})
 	png := write(t, "a.png", pngHead)
+	// Each call is guarded: a call that waits for ever fails the test in seconds.
+	typeGuarded := func() error {
+		return guarded(t, func() error {
+			_, err := typeByName(png)
+			return err
+		})
+	}
 	for range 2 {
-		if _, err := typeByName(png); err == nil || !strings.Contains(err.Error(), "took more than") {
+		if err := typeGuarded(); err == nil || !strings.Contains(err.Error(), "took more than") {
 			t.Fatalf("a stuck call: error = %v", err)
 		}
 	}
 	start := time.Now()
-	_, err := typeByName(png)
+	err := typeGuarded()
 	if err == nil || !strings.Contains(err.Error(), "no libmagic handle was free") || time.Since(start) > 3*time.Second {
 		t.Errorf("libmagicType() = %v after %v, want a refusal after about %v", err, time.Since(start), typeTimeout)
 	}

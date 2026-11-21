@@ -117,7 +117,7 @@ func TestDecodePluginsConfig_shippedFile(t *testing.T) {
 	for _, pc := range got {
 		names = append(names, pc.Name)
 	}
-	want := []string{"extract", "filetype_filter", "filepath_filter", "filesize_filter", "error_filter", "session", "report"}
+	want := []string{"extract", "filetype_filter", "filepath_filter", "error_filter", "session", "report"}
 	if diff := cmp.Diff(want, names); diff != "" {
 		t.Errorf("shipped plugin order mismatch:\n%s", diff)
 	}

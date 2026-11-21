@@ -132,8 +132,7 @@ func (c *Connector) unanalyzedResult(input fileToAnalyze, reason datamodel.NotAn
 	return res
 }
 
-// mitigationScore is the score of a file mitigated without analysis, the one
-// of the former filesize_filter plugin.
+// mitigationScore is the score of a file mitigated without analysis.
 const mitigationScore = 1000
 
 func mitigationReason(reason datamodel.NotAnalyzedReason) datamodel.MalwareReason {

@@ -32,6 +32,10 @@ const (
 	// HostMoveRename is raised at each configuration applied with the move
 	// action in rename mode, and resolved by the next one that is not.
 	HostMoveRename events.ErrorEventType = "host-move-rename"
+	// HostPluginRemovedFilesize is raised at each configuration applied with an
+	// entry of the removed filesize_filter plugin in the plugins file, and
+	// resolved by the next one without it.
+	HostPluginRemovedFilesize events.ErrorEventType = "plugin-removed-filesize-filter"
 )
 
 const moveRenameWarning = "move.mode is rename: files are moved as the inode that was analyzed, a writer that still holds one open can change what reaches the destination; use copy to publish exactly what was analyzed"
@@ -63,6 +67,7 @@ type prepared struct {
 	maxTracked              int64
 	moveMinThroughput       int64
 	pluginsConfig           []scanner.PluginConfig
+	removedPlugins          []scanner.PluginConfig
 }
 
 // prepare validates conf without any effect on what is running or on disk.
@@ -129,6 +134,10 @@ func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
 	}
 	if p.pluginsConfig, err = readPluginsConfig(conf.PluginsConfig); err != nil {
 		return nil, err
+	}
+	p.pluginsConfig, p.removedPlugins = dropRemovedPlugins(p.pluginsConfig)
+	if len(p.removedPlugins) > 0 && len(p.pluginsConfig) == 0 {
+		return nil, errOnlyRemovedPlugins
 	}
 	if err = h.validatePluginsConfig(conf, p.pluginsConfig); err != nil {
 		return nil, err
@@ -200,6 +209,7 @@ func (h *Handler) apply(ctx context.Context, conf *config.Config, start bool) (e
 	}
 	if err = h.install(ctx, conf, p, start); err == nil {
 		h.commit(ctx, conf)
+		h.reportRemovedPlugins(ctx, p.removedPlugins, conf.UnanalyzablePolicy.TooBig)
 		return nil
 	}
 	if !h.configured || conf == h.conf {

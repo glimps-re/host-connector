@@ -73,17 +73,6 @@ filepath_filter:
       - "^.*.png$"         # all png files
       - "^.*.jpg$"         # all jpg files
 
-# FileSize Filter Plugin - File size-based filtering
-# Filters files exceeding a maximum size threshold
-filesize_filter:
-  file: filesize_filter.so
-  config:
-    # Maximum file size (human-readable format)
-    # Files exceeding this size are treated as threats (Score=1000)
-    # Supported units: B, KB, MB, GB, TB
-    # Default: 100MB
-    max_size: "100MB"
-
 # Error Filter Plugin - Analysis error handling
 # Marks files with analysis errors as malicious for proper handling
 # This plugin requires no configuration - it automatically flags files that encounter

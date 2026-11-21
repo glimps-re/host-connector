@@ -66,7 +66,6 @@ func TestAnalyzeFile_tooBigPolicies(t *testing.T) {
 			}
 		}},
 		{PolicyMitigate, func(t *testing.T, r datamodel.Result) {
-			// The result the former filesize_filter plugin gave.
 			want := datamodel.Result{Filename: "f", Location: "/in/f", SHA256: "sha", FileSize: 500, FilteredVolume: 500, Malware: true, Score: 1000, MalwareReason: datamodel.TooBig}
 			if r.Error != nil || r.Malware != want.Malware || r.Score != want.Score || r.MalwareReason != want.MalwareReason || r.FilteredVolume != want.FilteredVolume || r.FileSize != want.FileSize {
 				t.Errorf("result = %+v, want %+v", r, want)

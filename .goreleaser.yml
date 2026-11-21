@@ -82,18 +82,6 @@ builds:
     flags:
       - -buildmode=plugin
 
-  - id: plugin-filesize-filter
-    main: ./cmd/plugins/filesize_filter
-    binary: filesize_filter
-    goos:
-      - linux
-    goarch:
-      - amd64
-    ldflags:
-      - -s -w
-    flags:
-      - -buildmode=plugin
-
   - id: plugin-session
     main: ./cmd/plugins/session
     binary: session
@@ -133,7 +121,6 @@ archives:
       - plugin-error-filter
       - plugin-extract
       - plugin-filepath-filter
-      - plugin-filesize-filter
       - plugin-filetype-filter
       - plugin-report
       - plugin-session

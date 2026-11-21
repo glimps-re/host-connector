@@ -1622,11 +1622,8 @@ func (c *Connector) zipFamily(mtype *mimetype.MIME) bool {
 func (c *Connector) checkZipFamily(file fileToAnalyze, extractedFiles int, extractedSize int64, fileLogger *slog.Logger) error {
 	maxFiles := c.config.RecursiveExtractMaxFiles - extractedFiles
 	maxSize := c.config.RecursiveExtractMaxSize - extractedSize
-	// Exhausted as checkBeforeExtract says it: the totals went past the limits. With
-	// nothing left but not past, the extractor is asked: every member is then over
-	// the budget, and the document is left out by it.
-	if maxFiles < 0 || maxSize < 0 {
-		fileLogger.Debug("the budget of the extraction is spent, no document is checked")
+	if maxFiles <= 0 || maxSize <= 0 {
+		fileLogger.Debug("no budget of the extraction is left to check a document")
 		return c.sendForAnalyze(file.limited(), fileLogger)
 	}
 	outputDir, err := os.MkdirTemp(c.work.extractDir(), "x-")

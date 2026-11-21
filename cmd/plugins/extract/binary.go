@@ -212,6 +212,7 @@ func prove(sze *sevenZipExtract, workDir string) error {
 	test := &sevenZipExtract{
 		config:       extractorConfig{},
 		sevenZipPath: sze.sevenZipPath,
+		workDir:      workDir,
 		// The reference archive is built to trip the checks of the analysis.
 		logger: slog.New(slog.DiscardHandler),
 	}

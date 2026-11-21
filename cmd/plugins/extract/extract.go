@@ -172,8 +172,11 @@ func stagedName(base string) string {
 	}
 	name := b.String()
 	if len(name) > maxStagedName {
+		// Up to two extensions are kept (x.exe.gz, x.tar.gz): 7z reads them.
 		ext := filepath.Ext(name)
-		if len(ext) > 16 {
+		if inner := filepath.Ext(strings.TrimSuffix(name, ext)); len(inner)+len(ext) <= 32 {
+			ext = inner + ext
+		} else if len(ext) > 16 {
 			ext = ""
 		}
 		name = name[:maxStagedName-len(ext)] + ext
@@ -182,6 +185,13 @@ func stagedName(base string) string {
 		name = "archive" + name
 	}
 	return name
+}
+
+// stagingFailure is the failure of the host to give 7z its name for an archive (the
+// work directory cannot be used): nothing is known of the archive, and the operator
+// is told, as when the extractor is down.
+func stagingFailure(err error) error {
+	return fmt.Errorf("%w: cannot stage the archive: %w", plugins.ErrExtractorUnavailable, err)
 }
 
 // stage links the archive, under a name of ours, in a new private folder, and gives
@@ -193,11 +203,11 @@ func (sze *sevenZipExtract) stage(archivePath string) (staged string, cleanup fu
 	// A link to a relative path would be read from the folder of the link.
 	target, err := filepath.Abs(archivePath)
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+		return "", nil, stagingFailure(err)
 	}
 	dir, err := os.MkdirTemp(sze.workDir, "src-")
 	if err != nil {
-		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+		return "", nil, stagingFailure(err)
 	}
 	cleanup = func() {
 		if rmErr := os.RemoveAll(dir); rmErr != nil {
@@ -207,7 +217,7 @@ func (sze *sevenZipExtract) stage(archivePath string) (staged string, cleanup fu
 	staged = filepath.Join(dir, stagedName(filepath.Base(archivePath)))
 	if err = os.Symlink(target, staged); err != nil {
 		cleanup()
-		return "", nil, fmt.Errorf("cannot stage the archive: %w", err)
+		return "", nil, stagingFailure(err)
 	}
 	return staged, cleanup, nil
 }

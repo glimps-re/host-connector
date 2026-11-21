@@ -5,7 +5,9 @@ import (
 	"log/slog"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"unicode"
 	"unicode/utf8"
 
@@ -20,11 +22,6 @@ const (
 
 	errLinePrefix = "ERROR: "
 	labelSep      = " : "
-
-	// outputFileLabel and nameTooLong are what 7z says when the file system refuses
-	// the name of a member it extracts (ENAMETOOLONG).
-	outputFileLabel = "Cannot open output file"
-	nameTooLong     = "errno=36 : File name too long"
 
 	// exitFatal is the exit code of 7z for a fatal error.
 	exitFatal = 2
@@ -102,6 +99,13 @@ type sevenZipOutput struct {
 	links []string
 	// other is set when an error line is none of the above.
 	other bool
+	// echoed is set once a line has repeated a name of the archive (a member 7z
+	// could not create, a link it refused): what follows may be forged by that name,
+	// and none of it is believed but the lines that are one of those.
+	echoed bool
+	// sealed is set once a line has repeated the name of a member that could not be
+	// created: its errno alone decides, nothing after it is read.
+	sealed bool
 }
 
 // classifyStderr reads the error lines of 7z. Only the label of a line counts
@@ -117,6 +121,17 @@ func classifyStderr(stderr string, paths []string) sevenZipOutput {
 	lines := strings.Split(stderr, "\n")
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
+		if out.sealed {
+			break
+		}
+		if out.echoed && isErrorLine(line) && !isLinkLine(line) {
+			// A line has repeated a name of the archive: nothing after it is
+			// believed, whatever it says, since the name may have written it. It is
+			// damage, which fails the archive closed and is not retried: a refused
+			// link, which is tolerated, is the only line that keeps its meaning.
+			out.recoverable = true
+			continue
+		}
 		switch {
 		case line == errLinePrefix+pathToken && i+1 < len(lines) && slices.Contains(encryptedOpenLines, lines[i+1]):
 			// Extracting, 7z writes the refusal of an archive with encrypted
@@ -137,9 +152,24 @@ func classifyStderr(stderr string, paths []string) sevenZipOutput {
 	return out
 }
 
+// isErrorLine tells whether a line of stderr says something about the archive.
+func isErrorLine(line string) bool {
+	return strings.HasPrefix(line, errLinePrefix) || line == "Is not archive" || slices.Contains(recoverableLines, line)
+}
+
+// isLinkLine tells whether a line is the refusal of a link.
+func isLinkLine(line string) bool {
+	label, _, _ := strings.Cut(strings.TrimPrefix(line, errLinePrefix), labelSep)
+	return strings.HasPrefix(line, errLinePrefix) && slices.Contains(linkLabels, label)
+}
+
 func (o *sevenZipOutput) classifyError(body string) {
 	label, rest, hasRest := strings.Cut(body, labelSep)
 	switch {
+	case slices.Contains(linkLabels, label) && hasRest:
+		o.echoed = true
+		name, _, _ := strings.Cut(rest, labelSep)
+		o.links = append(o.links, name)
 	case slices.Contains(wrongPasswordLabels, label), label == pathToken && slices.Contains(encryptedOpenLines, rest):
 		// Only whole labels count, never a part of what follows: the names of the
 		// members are the archive's.
@@ -152,9 +182,6 @@ func (o *sevenZipOutput) classifyError(body string) {
 			}
 			o.hintMembers[rest] = struct{}{}
 		}
-	case slices.Contains(linkLabels, label) && hasRest:
-		name, _, _ := strings.Cut(rest, labelSep)
-		o.links = append(o.links, name)
 	case label == pathToken && rest == "Cannot open the file as archive":
 		o.notAnArchive = true
 	case label == pathToken && rest == pathToken:
@@ -162,16 +189,53 @@ func (o *sevenZipOutput) classifyError(body string) {
 		// say why, and are classified on their own.
 	case strings.HasPrefix(label, "errno=") && rest == "No such file or directory":
 		o.notFound = true
-	case label == outputFileLabel && strings.HasPrefix(rest, nameTooLong):
-		// The extraction cannot create a member (a name made too long by a rename
-		// on a clash, a path over PATH_MAX): the archive is damaged for it, and
-		// retrying would fail the same way for ever.
-		o.recoverable = true
 	case slices.Contains(recoverableLabels, label) || slices.Contains(recoverableLabels, body):
+		// Damage is believed whoever says it: it only fails the archive closed.
 		o.recoverable = true
 	default:
-		o.other = true
+		// Any other label is taken for one that repeats a name of the archive,
+		// raw (7z prints "Cannot open output file", "Cannot create hard link", the
+		// target of a link... with the name as the archive spells it, newlines
+		// included): a list of the labels that do would miss one.
+		o.classifyEchoing(label, rest)
 	}
+}
+
+// archiveErrnos are the errors of the file system that a member causes by what it is
+// (a name that goes through a file, that is a directory, a link that loops, a name
+// too long): the archive is damaged for them, and retrying would fail the same way
+// for ever. Any other errno (permission, space, quota, read-only, i/o, too many open
+// files) is the host's, and is retried. ENOTDIR and ELOOP can also be the doing of a
+// process of the host that changes the output folder while 7z works; the archive is
+// then failed closed instead of retried, which a retry would put right: such a
+// process is the host's to prevent.
+var archiveErrnos = []syscall.Errno{syscall.ENOTDIR, syscall.EISDIR, syscall.ELOOP, syscall.ENAMETOOLONG}
+
+// linkCreation are the labels of a link that cannot be made, which a target that is
+// not in the archive (ENOENT) causes: the archive's doing, as it is for a name.
+var linkCreation = []string{"Cannot create hard link", "Cannot create symbolic link"}
+
+// classifyEchoing reads a line that may repeat a name of the archive: errno=N : the
+// text of the error : the names. Nothing after it is read: the errno alone decides.
+// A line that has no errno is an unknown error.
+func (o *sevenZipOutput) classifyEchoing(label, rest string) {
+	o.echoed, o.sealed = true, true
+	token := label
+	if !strings.HasPrefix(label, "errno=") {
+		token, _, _ = strings.Cut(rest, labelSep)
+	}
+	digits, found := strings.CutPrefix(token, "errno=")
+	n, err := strconv.ParseUint(digits, 10, 16)
+	if !found || err != nil {
+		o.other = true
+		return
+	}
+	errno := syscall.Errno(n)
+	if slices.Contains(archiveErrnos, errno) || (errno == syscall.ENOENT && slices.Contains(linkCreation, label)) {
+		o.recoverable = true
+		return
+	}
+	o.other = true
 }
 
 // sanitizeOutput makes 7z's output fit to be logged or returned: valid UTF-8,

@@ -300,6 +300,12 @@ func TestListSink_aFolderThatHoldsDataIsAnAnomalyExceptInImageFormats(t *testing
 	folder := func(size int) string {
 		return fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "D....", size, size, "evil.exe")
 	}
+	folderPacked := func(size, packed int) string {
+		return fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "D....", size, packed, "evil.exe")
+	}
+	blankFolder := func() string {
+		return fmt.Sprintf("%-19s %-5s %12s %12s  %s", "2024-01-01 00:00:00", "D....", "", "", "evil.exe")
+	}
 	tests := []struct {
 		name        string
 		archiveType string
@@ -315,6 +321,14 @@ func TestListSink_aFolderThatHoldsDataIsAnAnomalyExceptInImageFormats(t *testing
 		{"a format 7-Zip may add, a folder with data", "Newfangled", folder(10), true},
 		{"no type, a folder with data", "", folder(10), true},
 		{"zip, an empty folder", "zip", folder(0), false},
+		{"zip, a folder packed in a few bytes of framing", "zip", folderPacked(0, 2), false},
+		{"zip, a folder of no size packed in 1 byte", "zip", folderPacked(0, 1), true},
+		{"zip, a folder of no size packed in 3 bytes", "zip", folderPacked(0, 3), true},
+		{"zip, a folder of no size packed in 16 bytes", "zip", folderPacked(0, 16), true},
+		{"zip, a folder that declares a size and packs nothing", "zip", folderPacked(1, 0), true},
+		{"7z, a folder of no size packed in 2 bytes: the method is unknown", "7z", folderPacked(0, 2), true},
+		{"tar, a folder of no size packed in 2 bytes", "tar", folderPacked(0, 2), true},
+		{"xar, a folder with a blank size", "Xar", blankFolder(), false},
 		{"7z, an empty folder", "7z", folder(0), false},
 		{"tar, an empty folder", "tar", folder(0), false},
 		{"no type, an empty folder", "", folder(0), false},
@@ -345,5 +359,34 @@ func TestListSink_aFolderThatHoldsDataIsAnAnomalyExceptInImageFormats(t *testing
 				t.Errorf("selected = %v, the folder entry is never selected", s.table.selected)
 			}
 		})
+	}
+}
+
+// A Type line with no name is a type seen: a later Type line of a comment cannot
+// become the type of the archive.
+func TestListSink_anEmptyTypeIsStillTheTypeSeen(t *testing.T) {
+	s := newListSink(1<<20, 10, 1<<30)
+	if err := s.scan(strings.NewReader(listing([]string{"Path = a", "Type = ", "Type = Iso"}, listingLine("a.txt", 1)))); err != nil {
+		t.Fatal(err)
+	}
+	if s.archiveType != "" || !s.typeSeen {
+		t.Errorf("archiveType = %q, seen %t, want the empty first type kept", s.archiveType, s.typeSeen)
+	}
+}
+
+func TestListSink_onlyAZipCountsItsFoldersForTheWalk(t *testing.T) {
+	folder := fmt.Sprintf("%-19s %-5s %12d %12d  %s", "2024-01-01 00:00:00", "D....", 0, 0, "d")
+	for archiveType, want := range map[string]int{"zip": 1, "7z": 0, "tar": 0, "Iso": 0, "": 0} {
+		s := newListSink(1<<20, 10, 1<<30)
+		header := []string{"Path = a"}
+		if archiveType != "" {
+			header = append(header, "Type = "+archiveType)
+		}
+		if err := s.scan(strings.NewReader(listing(header, listingLine("a.txt", 1), folder))); err != nil {
+			t.Fatal(err)
+		}
+		if s.table.folders != want {
+			t.Errorf("%q: %d folders to walk, want %d", archiveType, s.table.folders, want)
+		}
 	}
 }

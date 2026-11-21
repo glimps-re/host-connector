@@ -65,7 +65,7 @@ var (
 		"Data Error in encrypted file. Wrong password?",
 		"CRC Failed in encrypted file. Wrong password?",
 	}
-	recoverableLabels = []string{"Headers Error", "Data Error", "CRC Failed", "Unexpected end of archive"}
+	recoverableLabels = []string{"Headers Error", "Data Error", "CRC Failed", "Unexpected end of archive", "There are some data after the end of the payload data"}
 	// recoverableLines are the lines 7z prints alone, under its ERRORS: or WARNINGS: blocks.
 	recoverableLines = []string{
 		"Headers Error", "Data Error", "Unexpected end of archive",

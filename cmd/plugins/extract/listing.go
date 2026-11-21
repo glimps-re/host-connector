@@ -68,6 +68,9 @@ type listSink struct {
 	// archiveType is the first "Type =" line before the first table: what 7z says
 	// the archive is (an archive comment is printed after it, and can forge more).
 	archiveType string
+	// typeSeen says archiveType was read: an empty one is a Type line with no name,
+	// not a line not seen yet.
+	typeSeen bool
 	// dataFailure is set when 7z reported a failure on the data of the archive
 	// (as opposed to a structural anomaly): errors, a wrong password, a hint of
 	// encryption, a failed check.
@@ -91,6 +94,10 @@ type tableState struct {
 	// a depth no file system takes): they are neither selected nor skipped, and
 	// are never extracted nor tested, so nothing is known of their encryption.
 	unexamined int
+	// folders counts the folder entries of a zip that the listing shows empty: the
+	// listing is the central directory, a local header can say more, so the headers
+	// of the zip are walked (see walkZipFolders).
+	folders int
 
 	entries         int
 	files           int
@@ -230,8 +237,8 @@ func (s *listSink) startTable() {
 // of the archive and warnings.
 func (s *listSink) noteMeta(line string) {
 	switch {
-	case strings.HasPrefix(line, szTypePrefix) && s.archiveType == "" && s.tables == 0:
-		s.archiveType = strings.TrimPrefix(line, szTypePrefix)
+	case strings.HasPrefix(line, szTypePrefix) && !s.typeSeen && s.tables == 0:
+		s.archiveType, s.typeSeen = strings.TrimPrefix(line, szTypePrefix), true
 	case strings.HasPrefix(line, szTailSizePrefix):
 		if v := strings.TrimSpace(strings.TrimPrefix(line, szTailSizePrefix)); v != "0" {
 			s.tail = true
@@ -244,6 +251,17 @@ func (s *listSink) noteMeta(line string) {
 		s.dataFailure = true
 	}
 }
+
+// deflateEmptyPacked is the packed size of an empty deflate stream (the fixed
+// block "03 00"): two bytes cannot encode a literal. Only a zip is given it, and
+// only when its headers confirm the method (walkZipFolders): the listing has no
+// method column.
+const deflateEmptyPacked = 2
+
+const (
+	zipType           = "zip"
+	anomalyFolderData = "a folder entry holds data"
+)
 
 // imageFormats are the types 7-Zip reports (the Type line of its listing, exact
 // names of 7-Zip 25.01, as `7zzs i` prints them) for the file systems and disk
@@ -289,11 +307,22 @@ func (s *listSink) addLine(line string) error {
 	if fp.IsDirectory {
 		// A folder holds no data. An entry that is flagged as a folder (a FAT host
 		// in a zip, an attribute) and holds some is never extracted by 7z, while
-		// other readers extract it as a file: it is left out, so the archive is not
-		// proven plain.
-		if (fp.Size > 0 || fp.CompressedSize > 0) && !imageFormat(s.archiveType) {
-			s.anomalies = noteAnomaly(s.anomalies, "a folder entry holds data")
+		// other readers extract it as a file, and cut it at the packed size, not at
+		// the size the headers declare: it is left out, so the archive is not proven
+		// plain.
+		if imageFormat(s.archiveType) {
+			return nil
+		}
+		zip := s.archiveType == zipType
+		switch {
+		case fp.Name == "" || len(fp.Name) > maxMemberNameLen || longComponent(fp.Name):
+			s.anomalies = noteAnomaly(s.anomalies, "a folder entry has a name no file system takes")
 			t.unexamined++
+		case fp.Size > 0 || (fp.CompressedSize > 0 && (!zip || fp.CompressedSize != deflateEmptyPacked)):
+			s.anomalies = noteAnomaly(s.anomalies, anomalyFolderData)
+			t.unexamined++
+		case zip:
+			t.folders++
 		}
 		return nil
 	}

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"os"
 	"os/exec"
@@ -440,24 +441,55 @@ func TestRealSevenZip_aBackslashNameIsSplitIntoComponents(t *testing.T) {
 // extracts it, while other readers extract it as a file.
 func folderDataZip(t *testing.T) []byte {
 	t.Helper()
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for _, h := range []*zip.FileHeader{
-		{Name: "a.txt", Method: zip.Store},
-		{Name: "evil.exe", Method: zip.Store, CreatorVersion: 20, ExternalAttrs: 0x10},
-	} {
-		w, err := zw.CreateHeader(h)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = w.Write([]byte("0123456789")); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := zw.Close(); err != nil {
+	return rawZip{entries: []rawEntry{fileEntry("a.txt", "0123456789"), {name: "evil.exe", attrs: 0x10, data: []byte("0123456789"), localComp: 10, localUncomp: 10, centralComp: 10, centralUncomp: 10, crc: crc32.ChecksumIEEE([]byte("0123456789"))}}}.bytes(t)
+}
+
+// slashFolderZip is a zip whose second entry is a regular file with data, renamed
+// in the raw bytes to end with a slash (evil.exeX becomes evil.exe/): 7-Zip lists
+// it as a folder, and readers that go by the local header (unzip) extract it as a file.
+func slashFolderZip(t *testing.T) []byte {
+	t.Helper()
+	return rawZip{entries: []rawEntry{fileEntry("a.txt", "0123456789"), {name: "evil.exe/", attrs: 0, data: []byte("0123456789"), localComp: 10, localUncomp: 10, centralComp: 10, centralUncomp: 10, crc: crc32.ChecksumIEEE([]byte("0123456789"))}}}.bytes(t)
+}
+
+// deflatedEmptyFolderZip is a zip with a folder entry compressed on its own (what
+// Java-style tools write): Size 0, 2 bytes packed.
+func deflatedEmptyFolderZip(t *testing.T) []byte {
+	t.Helper()
+	return rawZip{entries: []rawEntry{fileEntry("a.txt", "0123456789"), {name: "dir/", method: zipMethodDeflate, data: deflateEmptyData, localComp: 2, centralComp: 2}}}.bytes(t)
+}
+
+func TestRealSevenZip_aZipFolderNamedWithASlashThatHoldsDataIsAnAnomaly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "slash.zip")
+	if err := os.WriteFile(path, slashFolderZip(t), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return buf.Bytes()
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"extraction": openLimits,
+		"check only": {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+	} {
+		_, err := realPlugin(t).ExtractFile(path, t.TempDir(), limits)
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible) || !strings.Contains(fmt.Sprint(err), "a folder entry holds data") {
+			t.Errorf("%s: error = %v, want an anomaly with the encryption possible, for a folder entry that holds data", mode, err)
+		}
+	}
+}
+
+// A folder deflated on its own is not a payload: its size is 0, whatever the few
+// bytes of framing it takes.
+func TestRealSevenZip_aDeflatedEmptyFolderIsNotAnAnomaly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "deflated-dir.zip")
+	if err := os.WriteFile(path, deflatedEmptyFolderZip(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for mode, limits := range map[string]plugins.ExtractLimits{
+		"extraction": openLimits,
+		"check only": {MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true},
+	} {
+		if _, err := realPlugin(t).ExtractFile(path, t.TempDir(), limits); err != nil {
+			t.Errorf("%s: error = %v, want a plain archive", mode, err)
+		}
+	}
 }
 
 // An entry flagged as a folder that holds data is never extracted by 7-Zip, but
@@ -559,6 +591,11 @@ func TestImageFormats_everyNameIsAFormatOf7Zip(t *testing.T) {
 		if strings.HasPrefix(line, "Formats:") {
 			formats = true
 			continue
+		}
+		// The next section (Codecs:, Hashers:) ends the formats: its names are not
+		// archive types.
+		if formats && strings.HasSuffix(line, ":") && !strings.HasPrefix(line, " ") {
+			break
 		}
 		if fields := strings.Fields(line); formats && len(fields) >= 2 {
 			known[fields[1]] = true

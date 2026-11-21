@@ -97,11 +97,12 @@ func possiblyEncryptedCases() map[string]asFileCase {
 		"plain zip then a ZipCrypto zip": {"plain_then_zc.zip", func(t *testing.T) []byte {
 			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), t17Fixture(t, "enc_zipcrypto.zip")...)
 		}},
-		"a member name over the limit":    {"longname.zip", longNamesZip},
-		"a member component over 255":     {"longcomponent.zip", longComponentZip},
-		"a member path of 64 folders":     {"deep.zip", deepPathZip},
-		"a folder entry that holds data":  {"folderdata.zip", folderDataZip},
-		"a tar directory that holds data": {"folderdata.tar", folderDataTar},
+		"a member name over the limit":                {"longname.zip", longNamesZip},
+		"a member component over 255":                 {"longcomponent.zip", longComponentZip},
+		"a member path of 64 folders":                 {"deep.zip", deepPathZip},
+		"a folder entry that holds data":              {"folderdata.zip", folderDataZip},
+		"a folder named with a slash that holds data": {"slashfolder.zip", slashFolderZip},
+		"a tar directory that holds data":             {"folderdata.tar", folderDataTar},
 		"plain 7z then an encrypted 7z": {"plain7_then_enc7.7z", func(t *testing.T) []byte {
 			return append(plainSevenZip(t), t17Fixture(t, "enc_content.7z")...)
 		}},
@@ -174,8 +175,12 @@ func TestT17b_theDefaultPolicyKeepsEveryDamagedArchiveInInput(t *testing.T) {
 		t.Run(key, func(t *testing.T) {
 			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: c.content(t)})
 			got, ran := r.maybe(name)
-			if r.exists(r.out, name) && (!ran || got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted) {
+			delivered := r.exists(r.out, name)
+			if delivered && (!ran || got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted) {
 				t.Errorf("%s was delivered under extract_error: error (reason %q)", key, got.result.NotAnalyzedReason)
+			}
+			if !delivered && !r.exists(r.in, name) {
+				t.Errorf("%s left INPUT without being delivered: it must stay in INPUT", key)
 			}
 		})
 	}

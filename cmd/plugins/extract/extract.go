@@ -457,6 +457,15 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 	res.dataFailure, res.listComplete, res.listedEntries = sink.dataFailure, sink.complete, sink.table.entries
 	res.skipped = sink.table.skipped
 	res.unexamined = sink.table.unexamined
+	zipAnomaly, _, walkErr := nopw.walkFolders(ctx, archivePath, sink)
+	if walkErr != nil {
+		return res, walkErr
+	}
+	if zipAnomaly != "" {
+		res.anomalies = noteAnomaly(res.anomalies, zipAnomaly)
+		res.unexamined++
+		res.dataFailure = true
+	}
 	defer func() {
 		if err == nil && len(res.anomalies) > 0 {
 			res.encryptionExcluded = nopw.excludesEncryption(ctx, archivePath, &res)
@@ -497,6 +506,27 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 		return res, runErr
 	}
 	return res, nopw.decideEncryption(ctx, archivePath, trace, res.listedEntries, runErr)
+}
+
+// walkFolders walks the headers of an archive 7z listed as a zip (see
+// walkZipFolders). The anomaly it finds is returned as text; an error is a failure
+// to read the file, to retry.
+func (sze *sevenZipExtract) walkFolders(ctx context.Context, archivePath string, sink *listSink) (anomaly string, found zipFindings, err error) {
+	if sink.archiveType != zipType {
+		return "", found, nil
+	}
+	found, err = walkZipFolders(ctx, archivePath, sink.table.entries, sink.table.folders)
+	switch {
+	case err == nil:
+		return "", found, nil
+	case errors.Is(err, errFolderData):
+		sze.logger.Warn("a folder of the zip holds data", slog.String("detail", err.Error()))
+		return anomalyFolderData, found, nil
+	case errors.Is(err, errZipStructure):
+		sze.logger.Warn("the zip headers are not what the listing says", slog.String("detail", err.Error()))
+		return "the zip headers are not a plain succession of the entries the listing gives", found, nil
+	}
+	return "", found, fmt.Errorf("could not read the zip headers: %w", err)
 }
 
 // excludesEncryption is the one proof that an archive with anomalies holds no
@@ -546,6 +576,20 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	if err = sze.list(ctx, archivePath, passwords, sink); err != nil {
 		return
 	}
+	// Found once per archive, added after the passwords were tried: the retry loop
+	// restores the anomalies of the listing, and must not erase this one.
+	zipAnomaly, _, walkErr := sze.walkFolders(ctx, archivePath, sink)
+	if walkErr != nil {
+		err = walkErr
+		return
+	}
+	defer func() {
+		if err == nil && zipAnomaly != "" {
+			extraction.anomalies = noteAnomaly(extraction.anomalies, zipAnomaly)
+			extraction.unexamined++
+			extraction.dataFailure = true
+		}
+	}()
 	baseAnomalies := slices.Clone(sink.anomalies)
 	extraction.anomalies = slices.Clone(baseAnomalies)
 	extraction.skipped = sink.table.skipped

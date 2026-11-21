@@ -617,6 +617,12 @@ type familyRun struct {
 // is what the extractor answers to the check of the file.
 func scanDocument(t *testing.T, policy Unanalyzable, check func() error) (*familyRun, string) {
 	t.Helper()
+	return scanDocumentExtraction(t, policy, func() (plugins.Extraction, error) { return plugins.Extraction{}, check() })
+}
+
+// scanDocumentExtraction is scanDocument with the whole answer of the extractor.
+func scanDocumentExtraction(t *testing.T, policy Unanalyzable, check func() (plugins.Extraction, error)) (*familyRun, string) {
+	t.Helper()
 	noOpenInputs(t)
 	run := &familyRun{anomalyRun: &anomalyRun{done: &outcomes{}}}
 	run.extractorFixture = newExtractorFixture(t, func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
@@ -631,7 +637,7 @@ func scanDocument(t *testing.T, policy Unanalyzable, check func() error) (*famil
 			return plugins.Extraction{}, errors.New("a document must never be extracted")
 		}
 		run.checks.Add(1)
-		return plugins.Extraction{}, check()
+		return check()
 	}
 	run.conn.RegisterOnReport(func(r *datamodel.Report) {
 		run.mu.Lock()
@@ -928,5 +934,206 @@ func TestDispatch_theTypeIsNotReadWhenTheExtractionIsOff(t *testing.T) {
 	waitUntil(t, "the processing to end", func() bool { return len(run.done.get()) == 1 })
 	if probes.Load() != 0 {
 		t.Errorf("the type was read %d times with the extraction off", probes.Load())
+	}
+}
+
+// A file past the limits of the extraction whose type could not be read is left
+// out like an archive, not submitted as a plain file; one that is typed as
+// something else is a plain file.
+func TestRecursiveExtract_aTypeThatCouldNotBeReadIsLeftOutByTheLimits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "member.bin")
+	if err := os.WriteFile(path, []byte("whatever it is"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	text := mimetype.Detect([]byte("plain text"))
+	tests := []struct {
+		name string
+		file fileToAnalyze
+		want bool
+	}{
+		{"type unreadable", fileToAnalyze{location: path, typeRead: true, typeErr: true}, true},
+		{"typed as text", fileToAnalyze{location: path, typeRead: true, mtype: text}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 1, ExtractMinThreshold: 1}, nil, cleanSubmitter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { c.Close(context.WithoutCancel(t.Context())) })
+			c.analysisChan = make(chan fileToAnalyze, 1)
+			var size int64
+			var files int
+			if err = c.recursiveExtract(tt.file, 1, &size, &files, logger); err != nil {
+				t.Fatalf("recursiveExtract() error = %v", err)
+			}
+			got := <-c.analysisChan
+			if got.limitSkipped != tt.want {
+				t.Errorf("limitSkipped = %t, want %t", got.limitSkipped, tt.want)
+			}
+		})
+	}
+}
+
+// The check of a document is held to what is left of the budget of the extraction,
+// not to the whole of it.
+func TestCheckZipFamily_isHeldToWhatIsLeftOfTheBudget(t *testing.T) {
+	var got plugins.ExtractLimits
+	prev := ExtractFile
+	ExtractFile = func(_, _ string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+		got = limits
+		return plugins.Extraction{}, nil
+	}
+	t.Cleanup(func() { ExtractFile = prev })
+	path := filepath.Join(t.TempDir(), "doc.docx")
+	if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1, RecursiveExtractMaxFiles: 100, RecursiveExtractMaxSize: 1000}, nil, cleanSubmitter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close(context.WithoutCancel(t.Context())) })
+	c.analysisChan = make(chan fileToAnalyze, 1)
+	size, files := int64(400), 30
+	file := fileToAnalyze{location: path, zipFamily: true, typeRead: true}
+	if err = c.recursiveExtract(file, 1, &size, &files, logger); err != nil {
+		t.Fatalf("recursiveExtract() error = %v", err)
+	}
+	if !got.CheckOnly || got.MaxFiles != 70 || got.MaxTotalSize != 600 {
+		t.Errorf("limits = %+v, want a check with 70 files and 600 bytes left", got)
+	}
+	if size != 400 || files != 30 {
+		t.Errorf("totals = %d bytes, %d files: a check extracts nothing and uses no budget", size, files)
+	}
+}
+
+// A document that finds no budget left to be checked is left out like any
+// archive the limits do not let open, not made damaged: the operator's too_big
+// policy decides, as for every other archive. Zero and negative remainders alike
+// (the totals may pass the limits by what the last archive held).
+func TestCheckZipFamily_noBudgetLeftLeavesTheDocumentOutLikeAnArchive(t *testing.T) {
+	tests := []struct {
+		name        string
+		files       int
+		size        int64
+		wantChecked bool
+		wantLimited bool
+	}{
+		{name: "budget left", files: 30, size: 400, wantChecked: true},
+		{name: "no file left", files: 100, size: 400, wantLimited: true},
+		{name: "files over the limit", files: 130, size: 400, wantLimited: true},
+		{name: "no byte left", files: 30, size: 1000, wantLimited: true},
+		{name: "bytes over the limit", files: 30, size: 1500, wantLimited: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var checked bool
+			prev := ExtractFile
+			ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+				checked = true
+				return plugins.Extraction{}, nil
+			}
+			t.Cleanup(func() { ExtractFile = prev })
+			got := checkedDocument(t, tt.files, tt.size)
+			if checked != tt.wantChecked {
+				t.Errorf("the extractor was asked = %t, want %t", checked, tt.wantChecked)
+			}
+			if got.limitSkipped != tt.wantLimited {
+				t.Errorf("limitSkipped = %t, want %t", got.limitSkipped, tt.wantLimited)
+			}
+		})
+	}
+}
+
+// A check that cannot hold every member to the budget leaves them out: the
+// document is not submitted whole as if it had been checked.
+func TestCheckZipFamily_membersLeftOutByTheBudgetLeaveTheDocumentOut(t *testing.T) {
+	prev := ExtractFile
+	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		return plugins.Extraction{SkippedCount: 3}, nil
+	}
+	t.Cleanup(func() { ExtractFile = prev })
+	if got := checkedDocument(t, 0, 0); !got.limitSkipped {
+		t.Error("a document whose members the check left out for the budget must be limitSkipped")
+	}
+}
+
+// checkedDocument runs the check of a docx with the totals given, against a
+// budget of 100 files and 1000 bytes, and returns what was sent to the analysis.
+func checkedDocument(t *testing.T, files int, size int64) fileToAnalyze {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "doc.docx")
+	if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1, RecursiveExtractMaxFiles: 100, RecursiveExtractMaxSize: 1000}, nil, cleanSubmitter())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close(context.WithoutCancel(t.Context())) })
+	c.analysisChan = make(chan fileToAnalyze, 1)
+	file := fileToAnalyze{location: path, zipFamily: true, typeRead: true}
+	if err = c.recursiveExtract(file, 1, &size, &files, logger); err != nil {
+		t.Fatalf("recursiveExtract() error = %v", err)
+	}
+	return <-c.analysisChan
+}
+
+// The check of a document uses what the extractor says was left out, by its count
+// or by its list: either is enough.
+func TestCheckZipFamily_theListOfMembersLeftOutIsEnoughToLeaveTheDocumentOut(t *testing.T) {
+	prev := ExtractFile
+	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
+		return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "a", Reason: datamodel.NotAnalyzedExtractLimit}}}, nil
+	}
+	t.Cleanup(func() { ExtractFile = prev })
+	if got := checkedDocument(t, 0, 0); !got.limitSkipped {
+		t.Error("a list of members left out, with a count of 0, must leave the document out")
+	}
+}
+
+// What becomes of a document left out by the budget is what any archive over the
+// limits becomes: the stricter of too_big and encrypted decides.
+func TestZipFamily_aDocumentOverTheBudgetFollowsTheStricterPolicy(t *testing.T) {
+	overBudget := func() (plugins.Extraction, error) { return plugins.Extraction{SkippedCount: 2}, nil }
+	tests := []struct {
+		name      string
+		policy    Unanalyzable
+		delivered bool
+	}{
+		{"default", Unanalyzable{}, false},
+		{"too_big pass, encrypted error", Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyError}, false},
+		{"too_big error, encrypted pass", Unanalyzable{TooBig: PolicyError, Encrypted: PolicyPass}, false},
+		{"too_big mitigate, encrypted pass", Unanalyzable{TooBig: PolicyMitigate, Encrypted: PolicyPass}, false},
+		{"both pass", Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyPass}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run, path := scanDocumentExtraction(t, tt.policy, overBudget)
+			reports := run.reportList()
+			if len(reports) != 1 {
+				t.Fatalf("reports = %+v, want one", reports)
+			}
+			_, deliveredErr := os.Stat(filepath.Join(run.dst, "report.docx"))
+			if got := deliveredErr == nil; got != tt.delivered {
+				t.Errorf("delivered = %t, want %t (report %+v)", got, tt.delivered, reports[0])
+			}
+			if tt.delivered {
+				if reports[0].NotAnalyzedReason != datamodel.NotAnalyzedExtractLimit {
+					t.Errorf("report %+v, want the document marked extract-limit", reports[0])
+				}
+				return
+			}
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("the document must stay in INPUT or be handled by the policy: %v", err)
+			}
+			if reports[0].Error == "" && !reports[0].Malicious {
+				t.Errorf("report %+v, want a failure or a malware verdict", reports[0])
+			}
+			if run.extractions.Load() != 0 {
+				t.Error("a document was extracted")
+			}
+		})
 	}
 }

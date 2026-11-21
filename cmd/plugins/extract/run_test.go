@@ -350,3 +350,38 @@ func TestRunStream_argumentListTooLongIsNotAnUnavailableExtractor(t *testing.T) 
 		t.Errorf("runStream() error = %v, want an error that is not ErrExtractorUnavailable: the archive is to blame", err)
 	}
 }
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("no entropy") }
+
+func TestDrawNoPassword(t *testing.T) {
+	got, err := drawNoPassword(bytes.NewReader(bytes.Repeat([]byte{0xab}, 16)))
+	if err != nil || got != strings.Repeat("ab", 16) {
+		t.Errorf("drawNoPassword() = %q, %v, want 32 hexadecimal characters", got, err)
+	}
+	if got, err = drawNoPassword(failingReader{}); err == nil || got != "" {
+		t.Errorf("drawNoPassword(no entropy) = %q, %v, want the error and no password", got, err)
+	}
+	if got, err = drawNoPassword(bytes.NewReader([]byte{1, 2, 3})); err == nil || got != "" {
+		t.Errorf("drawNoPassword(a short source) = %q, %v, want the error", got, err)
+	}
+}
+
+func TestRunStream_noRandomPasswordIsAnUnavailableExtractor(t *testing.T) {
+	boom := errors.New("no entropy")
+	prev := noPassword
+	t.Cleanup(func() { noPassword = prev })
+	noPassword = func() (string, error) { return "", boom }
+	sze := &sevenZipExtract{sevenZipPath: "/nonexistent/7zzs", logger: slog.New(slog.DiscardHandler)}
+	for name, run := range map[string]func() error{
+		"runStream": func() error { _, err := sze.runStream(t.Context(), "", []string{"l", "a.7z"}, nil); return err },
+		"run":       func() error { _, err := sze.run(t.Context(), runSpec{args: []string{"l", "a.7z"}}); return err },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := run(); !errors.Is(err, plugins.ErrExtractorUnavailable) || !errors.Is(err, boom) {
+				t.Errorf("error = %v, want an unavailable extractor caused by the random source: the console must hear of it", err)
+			}
+		})
+	}
+}

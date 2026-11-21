@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"compress/flate"
 	"context"
 	"errors"
 	"os"
@@ -285,8 +286,75 @@ func TestRealSevenZip_truncatedArchivesAreErrorsNotPlainFiles(t *testing.T) {
 	}
 }
 
+// A document that declares gigabytes in a few bytes is a bomb, whatever budget is
+// left: a smaller budget must not turn it into a document that is merely left out.
+func TestRealSevenZip_aBombIsAnAnomalyWhateverTheBudgetLeft(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bomb.docx")
+	f, err := os.Create(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	w, err := zw.Create("[Content_Types].xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = w.Write([]byte("<x/>")); err != nil {
+		t.Fatal(err)
+	}
+	var packed bytes.Buffer
+	fw, err := flate.NewWriter(&packed, flate.BestCompression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = fw.Write(make([]byte, 1<<20)); err != nil {
+		t.Fatal(err)
+	}
+	if err = fw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := zw.CreateRaw(&zip.FileHeader{Name: "word/media/zeros.bin", Method: zip.Deflate, CompressedSize64: uint64(max(packed.Len(), 0)), UncompressedSize64: 4 << 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = raw.Write(packed.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(zw.Close(), f.Close()); err != nil {
+		t.Fatal(err)
+	}
+	for _, total := range []int64{1 << 30, 10 << 30} {
+		_, err = realPlugin(t).ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: total, CheckOnly: true})
+		if !errors.Is(err, plugins.ErrArchiveAnomaly) {
+			t.Errorf("budget %d: error = %v, want the bomb to be an anomaly", total, err)
+		}
+	}
+}
+
 // runCmd runs a command to build test archives with the embedded 7-Zip.
 func runCmd(ctx context.Context, bin string, args ...string) (string, error) {
 	out, err := exec.CommandContext(ctx, bin, args...).CombinedOutput() //nolint:gosec // test helper running the test binary
 	return string(out), err
+}
+
+func TestRealSevenZip_aCheckOverTheBudgetLeavesMembersOutInsteadOfDamage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "five.zip")
+	members := make([]zipMember, 0, 5)
+	for i := range 5 {
+		members = append(members, zipMember{name: strings.Repeat("m", i+1) + ".txt", data: "x"})
+	}
+	writeZip(t, path, "", members...)
+	plugin := realPlugin(t)
+	ex, err := plugin.ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 2, MaxTotalSize: 1 << 30, CheckOnly: true})
+	if err != nil || ex.SkippedCount == 0 {
+		t.Errorf("Extraction = %+v, %v, want no error and members left out for the budget", ex, err)
+	}
+	within, err := plugin.ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 10, MaxTotalSize: 1 << 30, CheckOnly: true})
+	if err != nil || within.SkippedCount != 0 {
+		t.Errorf("Extraction = %+v, %v, want a clean check within the budget", within, err)
+	}
+	writeZip(t, path, "", append(members, zipMember{name: strings.Repeat("n", maxMemberNameLen+10), data: "y"})...)
+	if _, err = plugin.ExtractFile(path, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 2, MaxTotalSize: 1 << 30, CheckOnly: true}); !errors.Is(err, plugins.ErrArchiveAnomaly) {
+		t.Errorf("error = %v, want the anomaly to win over a budget that is exceeded too", err)
+	}
 }

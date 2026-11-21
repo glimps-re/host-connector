@@ -101,6 +101,9 @@ type extractResult struct {
 	dataFailure bool
 	// listComplete is set when the listing reached its end.
 	listComplete bool
+	// overBudget is set by a check that holds the listing to a budget it exceeds,
+	// with nothing else wrong: the members are left out, not damaged.
+	overBudget bool
 	// encryptionExcluded is set, when there are anomalies, once it is proven that
 	// the archive holds no encrypted content.
 	encryptionExcluded bool
@@ -378,12 +381,18 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 	}()
 	t := &sink.table
 	switch {
-	case t.skipped.count > 0:
-		res.anomalies = noteAnomaly(res.anomalies, "the listing announces more members or bytes than the extraction budget allows")
-		return res, nil
+	// The bomb first: a member that declares gigabytes is over any small budget,
+	// and must stay what it is, an anomaly, not a document left out by the limits.
 	case t.isBomb():
 		res.anomalies = noteAnomaly(res.anomalies, "the sizes of the members are high compared to the archive, potential ZipBomb")
 		res.dataFailure = true
+		return res, nil
+	case t.skipped.count > 0:
+		if len(res.anomalies) == 0 {
+			res.overBudget = true
+			return res, nil
+		}
+		res.anomalies = noteAnomaly(res.anomalies, "the listing announces more members or bytes than the extraction budget allows")
 		return res, nil
 	}
 	_, runErr := nopw.runStream(ctx, "", []string{"-spd", "--", "t", archivePath}, discard, archivePath)
@@ -835,20 +844,36 @@ func (sze *sevenZipExtract) runStream(ctx context.Context, password string, args
 // used to mean "no password": the listing, the first attempt of an extraction and
 // the check all run with this one, and a member that it does not open needs a
 // password.
-var noPassword = sync.OnceValue(func() string {
+//
+// The password is on the command line of 7-Zip, which the users of the account of
+// the connector can read in /proc: it is not a secret, and does not need to be, as
+// it only has to be a password that no archive can have been encrypted with. The
+// known passwords are on that command line too.
+//
+// A failure of the random source is kept until the process restarts (the draw is
+// made once): every run then fails as an unavailable extractor, which is fail
+// closed.
+var noPassword = sync.OnceValues(func() (string, error) { return drawNoPassword(rand.Reader) })
+
+// drawNoPassword draws 16 bytes from r, as 32 hexadecimal characters.
+func drawNoPassword(r io.Reader) (string, error) {
 	b := make([]byte, 16)
-	if _, err := rand.Read(b); err != nil {
-		panic("no random source: " + err.Error())
+	if _, err := io.ReadFull(r, b); err != nil {
+		return "", fmt.Errorf("no random source for the password of 7z: %w", err)
 	}
-	return hex.EncodeToString(b)
-})
+	return hex.EncodeToString(b), nil
+}
 
 // run is runStream with the limits on what 7z writes: the kernel's limit on
 // each file, and the watch of the output folder. A run stopped by them returns
 // a *limitHit.
 func (sze *sevenZipExtract) run(ctx context.Context, spec runSpec) (symLinkFiles []string, err error) {
 	if spec.password == "" {
-		spec.password = noPassword()
+		random, drawErr := noPassword()
+		if drawErr != nil {
+			return nil, fmt.Errorf("%w: %w", plugins.ErrExtractorUnavailable, drawErr)
+		}
+		spec.password = random
 	}
 	passwordArg := "-P" + spec.password
 	runCtx, runCancel := context.WithTimeout(ctx, szRunTimeout)

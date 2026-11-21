@@ -379,7 +379,10 @@ func TestRun_noCallUsesDashPForNoPassword(t *testing.T) {
 	if len(lines) < 4 {
 		t.Fatalf("7-Zip ran %d times, want the listings, a test and an extraction", len(lines))
 	}
-	random := noPassword()
+	random, err := noPassword()
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, line := range lines {
 		if strings.Contains(" "+line+" ", " -p- ") {
 			t.Errorf("a call uses -p-: %s", line)

@@ -81,8 +81,12 @@ type ExtractLimits struct {
 	// knows included, makes the archive encrypted, since nothing is extracted and
 	// nothing would be analyzed. The Extraction is empty; the error says what was
 	// found, with the same sentinels as an extraction (nil: readable and not
-	// encrypted); ErrUnsupportedFormat means the file is damaged. An extractor that
-	// ignores the field extracts into outputDir, which the caller removes.
+	// encrypted); ErrUnsupportedFormat means the file is damaged. A listing over
+	// MaxFiles or MaxTotalSize, with nothing else wrong, is not tested: the members
+	// are given back as skipped (Extraction.Skipped or SkippedCount) with no error,
+	// and the caller decides what the file becomes. An extractor must honour the
+	// field: one that ignores it extracts into outputDir, which the caller removes,
+	// and a document would then be extracted, not only checked.
 	CheckOnly bool
 }
 

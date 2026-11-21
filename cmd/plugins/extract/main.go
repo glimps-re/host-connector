@@ -217,5 +217,10 @@ func (p *SevenZipExtractPlugin) checkOnly(ctx context.Context, archiveLocation s
 	if len(result.anomalies) > 0 {
 		return p.anomalyOf(archiveLocation, result, plugins.Extraction{})
 	}
+	if result.overBudget {
+		// Members left out by the budget, as an extraction leaves them: the caller
+		// decides what the files left out become.
+		return plugins.Extraction{Skipped: result.skipped.entries, SkippedCount: result.skipped.count}, nil
+	}
 	return plugins.Extraction{}, nil
 }

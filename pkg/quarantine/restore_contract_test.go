@@ -773,6 +773,34 @@ func TestRestore_theHookIsNotCancelledWithTheRequest(t *testing.T) {
 	}
 }
 
+// within runs restore with a context the test cancels when it ends, and fails the
+// test, instead of waiting for the timeout of the package, when it does not
+// return in time: whatever it is stuck on is released by the cancellation.
+func within(t *testing.T, restore func(ctx context.Context) error) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		result <- restore(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(time.Second):
+		}
+	})
+	select {
+	case err := <-result:
+		return err
+	case <-time.After(time.Second):
+		t.Fatal("Restore() did not end: the registry holds it")
+		return nil
+	}
+}
+
 // A registry that hangs does not hold the locks of a restoration for ever: its
 // writes are bounded, and the restoration ends with the error that says what the
 // registry was left as.
@@ -780,30 +808,6 @@ func TestRestore_aRegistryThatHangsIsBounded(t *testing.T) {
 	prev := registryTimeout
 	registryTimeout = 100 * time.Millisecond
 	t.Cleanup(func() { registryTimeout = prev })
-	within := func(t *testing.T, restore func(ctx context.Context) error) error {
-		t.Helper()
-		ctx, cancel := context.WithCancel(t.Context())
-		result := make(chan error, 1)
-		finished := make(chan struct{})
-		go func() {
-			defer close(finished)
-			result <- restore(ctx)
-		}()
-		t.Cleanup(func() {
-			cancel()
-			select {
-			case <-finished:
-			case <-time.After(time.Second):
-			}
-		})
-		select {
-		case err := <-result:
-			return err
-		case <-time.After(time.Second):
-			t.Fatal("Restore() did not end: the registry holds it")
-			return nil
-		}
-	}
 	t.Run("the marking hangs", func(t *testing.T) {
 		q, _ := newE2EHandler(t, FormatTar)
 		path, id := quarantined(t, q, "f.bin", "content")
@@ -896,6 +900,12 @@ type gateTakingRegistry struct {
 	quarantineRegistry
 	reg    *sqliteRegistry
 	unlock func()
+	sets   atomic.Int32
+}
+
+func (r *gateTakingRegistry) Set(ctx context.Context, e *Entry) error {
+	r.sets.Add(1)
+	return r.quarantineRegistry.Set(ctx, e)
 }
 
 func (r *gateTakingRegistry) Get(ctx context.Context, id string) (*Entry, error) {
@@ -927,9 +937,7 @@ func TestRestore_aMarkingThatNeverStartedIsNotUndone(t *testing.T) {
 	})
 	q.registry = gate
 
-	start := time.Now()
-	err := q.Restore(t.Context(), id)
-	elapsed := time.Since(start)
+	err := within(t, func(ctx context.Context) error { return q.Restore(ctx, id) })
 	if err == nil {
 		t.Fatal("Restore() = nil, want the failure of the marking")
 	}
@@ -939,8 +947,8 @@ func TestRestore_aMarkingThatNeverStartedIsNotUndone(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("Restore() = %v, want the deadline", err)
 	}
-	if elapsed >= 2*registryTimeout-registryTimeout/4 {
-		t.Errorf("Restore() took %v, want about one timeout (%v): the undo waited again", elapsed, registryTimeout)
+	if n := gate.sets.Load(); n != 1 {
+		t.Errorf("the registry was written %d times, want the marking only: nothing was written, so nothing is undone", n)
 	}
 	if _, statErr := os.Stat(path); statErr == nil {
 		t.Error("a file was published although the registry could not be marked")

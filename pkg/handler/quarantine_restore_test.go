@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -85,6 +86,44 @@ func TestNotifyRestoreRegistry(t *testing.T) {
 				if len(rec.find("resolution", key)) != 0 {
 					t.Errorf("event %q must never be resolved", key)
 				}
+			}
+		})
+	}
+}
+
+// The console says what a restoration left at the level that fits: a container
+// that stays is a success to deal with later (a warning), the rest disagrees with
+// the files (an error).
+func TestNotifyRestoreRegistry_consoleLevels(t *testing.T) {
+	lockKept := errors.Join(quarantine.ErrRestoredLockKept, errors.New("permission denied"))
+	tests := []struct {
+		name string
+		err  error
+		want []string
+	}{
+		{"the container is kept", lockKept, []string{"WARN"}},
+		{"the registry could not be put back", errors.Join(errors.New("exists"), quarantine.ErrRestoreRollbackFailed), []string{"ERROR"}},
+		{"not registered", errors.Join(quarantine.ErrRestoredNotRegistered, errors.New("db")), []string{"ERROR"}},
+		{"not registered and the container is kept", errors.Join(lockKept, quarantine.ErrRestoredNotRegistered), []string{"ERROR", "WARN"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recordEvents(t)
+			logs := captureHandlerLogs(t)
+			notifyRestoreRegistry(t.Context(), "abc", tt.err)
+			lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+			got := make([]string, 0, len(lines))
+			for _, line := range lines {
+				var entry struct {
+					Level string `json:"level"`
+				}
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatalf("log line %q: %v", line, err)
+				}
+				got = append(got, entry.Level)
+			}
+			if !slices.Equal(got, tt.want) {
+				t.Errorf("console levels = %v, want %v", got, tt.want)
 			}
 		})
 	}

@@ -63,8 +63,10 @@ type quarantineRegistry interface {
 
 var errEntryNotFound = errors.New("entry not found")
 
-// errRegistryNotWritten is wrapped in the error of a call that gave up before it
-// reached the database: nothing was written, so there is nothing to undo.
+// errRegistryNotWritten is wrapped in the error of any call of the registry that
+// gave up waiting for its lock before it reached the database (Get, HasRestored,
+// Set, Clone and the others take it the same way): nothing was read, written or
+// created, so a restoration whose marking fails with it has nothing to undo.
 var errRegistryNotWritten = errors.New("the registry was not reached")
 
 type sqliteRegistry struct {

@@ -39,12 +39,7 @@ type archiveStatus struct {
 	abandoned bool
 	// dispatching is set once the members start to be sent: from then on the
 	// result of the archive is what its members merge, and nothing replaces it.
-	dispatching bool
-	// unsent holds the first names of the members of an abandoned archive that
-	// were never sent, and unsentCount all of them: if a detection comes in, they
-	// are recorded as inner errors.
-	unsent          []string
-	unsentCount     int
+	dispatching     bool
 	archiveLocation string
 	sha256          string       // hash computed by the pipeline, never replaced by a plugin
 	identity        FileIdentity // of the top-level archive, checked before its action
@@ -126,45 +121,38 @@ func (a *archiveStatusHandler) addInnerError(id string, filename string, err err
 }
 
 // abandon gives up the extraction of an archive: unsent are the names of its
-// members that will never be sent, and they no longer count in its total. It
-// says what the archive came to (see abandonResult): with a detection it is not
-// abandoned and ends with it; otherwise, with no member in flight the status is
-// deleted (removeNow), and with members in flight the archive and its live
-// ancestors are marked abandoned and the last member to come back ends it. ok is
-// false when the archive is gone or its finish was claimed.
-func (a *archiveStatusHandler) abandon(id string, unsent []string) (res abandonResult, ok bool) {
+// members that will never be sent, and they no longer count in its total. Unless
+// the outcome is abandonConcluded or abandonRemoveNow they are recorded at once
+// as inner errors (see abandonOutcome). folder is the temporary folder of the archive, meaningful
+// only for abandonRemoveNow.
+func (a *archiveStatusHandler) abandon(id string, unsent []string) (outcome abandonOutcome, folder string) {
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
 	if !ok || status.finishClaimed {
-		return abandonResult{}, false
+		return abandonConcluded, ""
 	}
-	res.folder = status.tmpFolder
+	folder = status.tmpFolder
 	status.total -= len(unsent)
+	if !status.result.Malware && status.total <= status.analyzed {
+		delete(a.statusByID, id)
+		return abandonRemoveNow, folder
+	}
+	status.recordUnsent(unsent, len(unsent))
 	if status.result.Malware {
-		// A detection is never abandoned with the archive: the members that were
-		// not sent are inner errors, and the archive ends with its detection.
-		res.detected = true
-		status.recordUnsent(unsent, len(unsent))
+		// The archive ends with its detection and is not abandoned.
+		outcome = abandonDetectedLate
 		if status.total <= status.analyzed {
 			status.finished = true
-			res.finish = true
+			outcome = abandonDetectedNow
 		}
 		a.statusByID[id] = status
-		return res, true
+		return outcome, folder
 	}
 	status.abandoned = true
-	status.unsent = slices.Clone(unsent[:min(len(unsent), datamodel.MaxListedSubfiles)])
-	status.unsentCount = len(unsent)
-	if status.total <= status.analyzed {
-		delete(a.statusByID, id)
-		res.removeNow = true
-		return res, true
-	}
-	res.inFlight = true
 	a.statusByID[id] = status
 	a.abandonAncestors(status.parentArchive.statusID)
-	return res, true
+	return abandonInFlight, folder
 }
 
 // abandonAncestors marks every live ancestor, up to the first one that has
@@ -188,19 +176,23 @@ func (a *archiveStatusHandler) abandonAncestors(id string) {
 	}
 }
 
-// abandonResult is what abandoning an archive came to:
-//   - detected: the archive holds a detection, so it is not abandoned, it ends
-//     with it (finish tells it must be finished now: no member is in flight);
-//   - removeNow: nothing is in flight, the status is gone and the caller removes
-//     the folder;
-//   - inFlight: members are still being analyzed, and the last of them finishes the
-//     archive (cleanup, or its detection).
-type abandonResult struct {
-	folder                                string
-	removeNow, detected, finish, inFlight bool
-}
+// abandonOutcome is what abandoning an archive came to.
+type abandonOutcome uint8
 
-// errUnsent is why a member of an archive abandoned after a detection has no
+const (
+	// abandonConcluded: the archive is gone or its finish was claimed, it ended elsewhere.
+	abandonConcluded abandonOutcome = iota
+	// abandonDetectedNow: the archive holds a detection and nothing is in flight, the caller finishes it.
+	abandonDetectedNow
+	// abandonDetectedLate: the archive holds a detection and members are in flight, the last one finishes it.
+	abandonDetectedLate
+	// abandonInFlight: no detection and members are in flight, the last one ends the archive.
+	abandonInFlight
+	// abandonRemoveNow: no detection and nothing in flight, the status is gone and the caller removes the folder.
+	abandonRemoveNow
+)
+
+// errUnsent is why a member of an archive whose extraction was abandoned has no
 // verdict: transient, since the extractor was only unavailable.
 var errUnsent = fmt.Errorf("%w: the extractor was unavailable, the file was not analyzed", errInnerTransient)
 
@@ -312,7 +304,8 @@ func (a *archiveStatusHandler) setArchiveResult(id string, result datamodel.Resu
 }
 
 // ensureMalwareReason gives a detection without reason the reason of a
-// detection: a result that is malware always says why.
+// detection: a result that is malware always says why. It is enforced where
+// plugin results enter the core and where results are combined.
 func ensureMalwareReason(r *datamodel.Result) {
 	if r.Malware && r.MalwareReason == "" {
 		r.MalwareReason = datamodel.MalwareDetected

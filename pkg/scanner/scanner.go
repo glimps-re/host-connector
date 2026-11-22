@@ -762,7 +762,6 @@ func (c *Connector) refusedWhenRestored(location, sha256 string, size int64, wan
 		return nil, nil
 	}
 	refusal := *r
-	ensureMalwareReason(&refusal)
 	refusal.Filename, refusal.Location, refusal.SHA256 = location, location, sha256
 	if refusal.FileSize == 0 {
 		refusal.FileSize = size
@@ -1687,26 +1686,30 @@ var errAbandonedInFlight = errors.New("extraction abandoned, members still in fl
 //     detection among them is not lost: the caller returns errAbandonedInFlight, and
 //     the last member ends the archive.
 func (c *Connector) abandonArchive(archiveID string, unsent []string, archiveLogger *slog.Logger) (err error) {
-	res, ok := c.archiveStatus.abandon(archiveID, unsent)
-	switch {
-	case !ok:
+	outcome, folder := c.archiveStatus.abandon(archiveID, unsent)
+	switch outcome {
+	case abandonConcluded:
 		// Already ended, and propagated to its parent, by its own last member.
 		archiveLogger.Debug("archive already ended by its last member, nothing to abandon", slog.String("archive-id", archiveID))
 		return errAbandonedInFlight
-	case res.detected:
-		if res.finish {
-			if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
-				archiveLogger.Error("could not finish an archive with a detection", slog.String(logErrorKey, finishErr.Error()))
-			}
+	case abandonDetectedNow:
+		if finishErr := c.finishArchiveAnalysis(archiveID); finishErr != nil {
+			archiveLogger.Error("could not finish an archive with a detection", slog.String(logErrorKey, finishErr.Error()))
 		}
 		return nil
-	case res.inFlight:
+	case abandonDetectedLate:
+		return nil
+	case abandonInFlight:
 		return errAbandonedInFlight
+	case abandonRemoveNow:
+		if removeErr := os.RemoveAll(folder); removeErr != nil {
+			archiveLogger.Error("could not remove temp folder", slog.String("folder", folder), slog.String(logErrorKey, removeErr.Error()))
+		}
+		return plugins.ErrExtractorUnavailable
+	default:
+		archiveLogger.Error("unknown abandon outcome", slog.Int("outcome", int(outcome)))
+		return plugins.ErrExtractorUnavailable
 	}
-	if removeErr := os.RemoveAll(res.folder); removeErr != nil {
-		archiveLogger.Error("could not remove temp folder", slog.String("folder", res.folder), slog.String(logErrorKey, removeErr.Error()))
-	}
-	return plugins.ErrExtractorUnavailable
 }
 
 // memberCause strips the location of the temporary file from an I/O error: the
@@ -2072,7 +2075,6 @@ func (c *Connector) endFilteredArchive(archiveID string, result datamodel.Result
 	result.SHA256 = sha256
 	result.FileSize = size
 	markPolicySkipped(&result, location)
-	ensureMalwareReason(&result)
 	c.endArchive(archiveID, result, location, top, run, archiveLogger)
 }
 
@@ -2135,12 +2137,6 @@ func (c *Connector) finishArchiveAnalysis(archiveID string) (err error) {
 			err = c.finishArchiveAnalysis(status.parentArchive.statusID)
 		}
 		return
-	}
-
-	if status.abandoned {
-		// Abandoned before a member of it was detected: the members that were never
-		// sent are inner errors of an archive that ends with its detection.
-		status.recordUnsent(status.unsent, status.unsentCount)
 	}
 
 	isSubArchive := status.parentArchive.statusID != ""
@@ -2254,7 +2250,6 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	}
 	if res != nil {
 		result = *res
-		ensureMalwareReason(&result)
 		// Reports and MaliciousSubfiles are keyed by the internal name, whatever
 		// the plugin put in Filename or Location.
 		result.Filename = input.filename

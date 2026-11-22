@@ -345,3 +345,41 @@ func TestScanFile_skipsQuarantineTempFile(t *testing.T) {
 		t.Errorf("ScanFile() error = %v, want nil: temporary files are ignored before any access", err)
 	}
 }
+
+func TestOnScanFileRules_aRefusalWithoutReasonGetsOneOnACopy(t *testing.T) {
+	waived := &datamodel.Result{Filename: "w"}
+	tests := []struct {
+		name       string
+		cb         *datamodel.Result
+		wantReason datamodel.MalwareReason
+		wantCopy   bool
+	}{
+		{"a detection without reason", &datamodel.Result{Malware: true}, datamodel.MalwareDetected, true},
+		{"a detection with a reason keeps it", &datamodel.Result{Malware: true, MalwareReason: datamodel.FilteredFilePath}, datamodel.FilteredFilePath, true},
+		{"a waiver is returned as it is", waived, "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			orig := *tt.cb
+			c := &Connector{onScanFileCbs: []plugins.OnScanFile{
+				func(string, string, string, bool) *datamodel.Result { return tt.cb },
+			}}
+			got := c.onScanFileRules("f", "", "/loc/f", "sha", false, false)
+			if got == nil {
+				t.Fatal("onScanFileRules() = nil")
+			}
+			if got.MalwareReason != tt.wantReason {
+				t.Errorf("reason = %q, want %q", got.MalwareReason, tt.wantReason)
+			}
+			if tt.wantCopy && got == tt.cb {
+				t.Error("onScanFileRules() returned the pointer of the plugin")
+			}
+			if !tt.wantCopy && got != tt.cb {
+				t.Error("a waiver must be returned unaltered")
+			}
+			if tt.cb.MalwareReason != orig.MalwareReason {
+				t.Errorf("the plugin's result was changed: reason %q, was %q", tt.cb.MalwareReason, orig.MalwareReason)
+			}
+		})
+	}
+}

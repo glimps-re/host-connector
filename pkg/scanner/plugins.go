@@ -98,7 +98,7 @@ func (c *Connector) onScanFileRules(filename, raw, filepath, sha256 string, isAr
 	// refusal of a plugin (the type of the file) wins over a skipped path.
 	if r := c.config.PathFilter.apply(filename, raw, filepath, sha256, skip); r != nil {
 		if !isWaiver(r) {
-			return r
+			return withMalwareReason(r)
 		}
 		waiver = r
 	}
@@ -108,13 +108,21 @@ func (c *Connector) onScanFileRules(filename, raw, filepath, sha256 string, isAr
 			continue
 		}
 		if !isWaiver(r) {
-			return r
+			return withMalwareReason(r)
 		}
 		if waiver == nil {
 			waiver = r
 		}
 	}
 	return waiver
+}
+
+// withMalwareReason returns a copy of the struct of r that carries a reason if
+// it is a detection, never the pointer of a plugin; slices and maps stay shared.
+func withMalwareReason(r *datamodel.Result) *datamodel.Result {
+	out := *r
+	ensureMalwareReason(&out)
+	return &out
 }
 
 // isWaiver reports whether r only dispenses the file from analysis: not

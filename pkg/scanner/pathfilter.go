@@ -378,7 +378,8 @@ func (f *PathFilter) refusal(d pathDecision, rule, name, location, sha256 string
 	return nil
 }
 
-// forbiddenResult is the refusal of a file for its path.
+// forbiddenResult is the refusal of a file for its path. It always carries its
+// reason: the path-rule results rely on it.
 func forbiddenResult(name, location, sha256 string, size int64) *datamodel.Result {
 	return &datamodel.Result{
 		Filename:       name,

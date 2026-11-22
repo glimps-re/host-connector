@@ -424,9 +424,9 @@ func TestArchiveDetection_anArchiveAbandonedBeforeADetectionComesInEndsWithIt(t 
 		archiveLocation: location, sha256: sha, identity: id, tmpFolder: t.TempDir(), total: 3,
 		result: datamodel.Result{SHA256: sha, FileSize: 15},
 	})
-	res, ok := c.archiveStatus.abandon(archiveID, []string{"never1.bin", "never2.bin"})
-	if !ok || res.detected || res.removeNow {
-		t.Fatalf("abandon() = %+v, %t, want an abandoned archive with a member in flight", res, ok)
+	outcome, _ := c.archiveStatus.abandon(archiveID, []string{"never1.bin", "never2.bin"})
+	if outcome != abandonInFlight {
+		t.Fatalf("abandon() = %d, want an abandoned archive with a member in flight", outcome)
 	}
 	finished, ok := c.archiveStatus.addInnerFileResult(archiveID, "bad.bin", datamodel.Result{Malware: true, Malwares: []string{"evil"}, MalwareReason: datamodel.MalwareDetected})
 	if !ok || !finished {
@@ -459,24 +459,23 @@ func TestArchiveStatus_abandon(t *testing.T) {
 		name      string
 		status    archiveStatus
 		unsent    []string
-		want      abandonResult
+		want      abandonOutcome
 		wantTotal int
 		kept      bool // the status is still there
 	}{
-		{"no detection, nothing in flight: gone", archiveStatus{total: 5, analyzed: 3}, names(2), abandonResult{removeNow: true}, 3, false},
-		{"no detection, members in flight: waits", archiveStatus{total: 5, analyzed: 1}, names(2), abandonResult{inFlight: true}, 3, true},
-		{"a detection, nothing in flight: finish now", archiveStatus{total: 5, analyzed: 3, result: datamodel.Result{Malware: true}}, names(2), abandonResult{detected: true, finish: true}, 3, true},
-		{"a detection, members in flight: the last one finishes", archiveStatus{total: 5, analyzed: 1, result: datamodel.Result{Malware: true}}, names(2), abandonResult{detected: true}, 3, true},
+		{"no detection, nothing in flight: gone", archiveStatus{total: 5, analyzed: 3}, names(2), abandonRemoveNow, 3, false},
+		{"no detection, members in flight: waits", archiveStatus{total: 5, analyzed: 1}, names(2), abandonInFlight, 3, true},
+		{"a detection, nothing in flight: finish now", archiveStatus{total: 5, analyzed: 3, result: datamodel.Result{Malware: true}}, names(2), abandonDetectedNow, 3, true},
+		{"a detection, members in flight: the last one finishes", archiveStatus{total: 5, analyzed: 1, result: datamodel.Result{Malware: true}}, names(2), abandonDetectedLate, 3, true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			h := newArchiveStatusHandler()
 			tt.status.tmpFolder = "/tmp/x"
 			id := h.addStatus(tt.status)
-			got, ok := h.abandon(id, tt.unsent)
-			tt.want.folder = "/tmp/x"
-			if !ok || got != tt.want {
-				t.Fatalf("abandon() = %+v, %t, want %+v", got, ok, tt.want)
+			got, folder := h.abandon(id, tt.unsent)
+			if got != tt.want || folder != "/tmp/x" {
+				t.Fatalf("abandon() = %d, %q, want %d, %q", got, folder, tt.want, "/tmp/x")
 			}
 			st, found := h.getStatus(id)
 			if found != tt.kept {
@@ -485,8 +484,8 @@ func TestArchiveStatus_abandon(t *testing.T) {
 			if found && st.total != tt.wantTotal {
 				t.Errorf("total = %d, want %d: the unsent members are no longer waited for", st.total, tt.wantTotal)
 			}
-			if found && got.detected && st.result.Error == nil {
-				t.Error("a detection with members never sent must say they are errors")
+			if found && st.result.Error == nil {
+				t.Error("members never sent must say they are errors")
 			}
 		})
 	}
@@ -494,40 +493,45 @@ func TestArchiveStatus_abandon(t *testing.T) {
 		h := newArchiveStatusHandler()
 		id := h.addStatus(archiveStatus{total: 1})
 		h.claimFinish(id)
-		if _, ok := h.abandon(id, names(1)); ok {
-			t.Error("abandon() = ok on an archive whose finish was claimed")
+		if got, _ := h.abandon(id, names(1)); got != abandonConcluded {
+			t.Error("abandon() did not conclude on an archive whose finish was claimed")
 		}
 	})
-	t.Run("the unsent members are listed within the bound and counted exactly", func(t *testing.T) {
+	for _, malware := range []bool{true, false} {
+		t.Run(fmt.Sprintf("malware %t: the unsent members are recorded at once, listed within the bound and counted exactly", malware), func(t *testing.T) {
+			h := newArchiveStatusHandler()
+			many := datamodel.MaxListedSubfiles + 50
+			id := h.addStatus(archiveStatus{total: many + 5, result: datamodel.Result{Malware: malware}})
+			want := abandonInFlight
+			if malware {
+				want = abandonDetectedLate
+			}
+			if got, _ := h.abandon(id, names(many)); got != want {
+				t.Fatalf("abandon() = %d, want %d", got, want)
+			}
+			st, _ := h.getStatus(id)
+			if listed := datamodel.ListedErrors(st.result.ErrorSubfiles); listed != datamodel.MaxListedSubfiles {
+				t.Errorf("%d members listed, want the bound %d", listed, datamodel.MaxListedSubfiles)
+			}
+			if st.inner.count != many {
+				t.Errorf("%d errors counted, want all %d", st.inner.count, many)
+			}
+			if _, more := st.result.ErrorSubfiles[datamodel.MoreErrorsKey]; !more {
+				t.Error("the members not listed must be said with the count key")
+			}
+			if _, first := st.result.ErrorSubfiles["m0"]; !first || !strings.HasPrefix(st.inner.first, "m0") {
+				t.Errorf("first name kept: listed %t, inner.first %q, want m0", first, st.inner.first)
+			}
+		})
+	}
+	t.Run("without unsent members a kept status has no error", func(t *testing.T) {
 		h := newArchiveStatusHandler()
-		many := datamodel.MaxListedSubfiles + 50
-		id := h.addStatus(archiveStatus{total: many + 1, result: datamodel.Result{Malware: true}})
-		if _, ok := h.abandon(id, names(many)); !ok {
-			t.Fatal("abandon() refused")
+		id := h.addStatus(archiveStatus{total: 5, analyzed: 1})
+		if got, _ := h.abandon(id, nil); got != abandonInFlight {
+			t.Fatalf("abandon() = %d, want abandonInFlight", got)
 		}
-		st, _ := h.getStatus(id)
-		if listed := datamodel.ListedErrors(st.result.ErrorSubfiles); listed != datamodel.MaxListedSubfiles {
-			t.Errorf("%d members listed, want the bound %d", listed, datamodel.MaxListedSubfiles)
-		}
-		if st.inner.count != many {
-			t.Errorf("%d errors counted, want all %d", st.inner.count, many)
-		}
-		if _, more := st.result.ErrorSubfiles[datamodel.MoreErrorsKey]; !more {
-			t.Error("the members not listed must be said with the count key")
-		}
-	})
-	t.Run("the names kept for a late detection are bounded and copied", func(t *testing.T) {
-		h := newArchiveStatusHandler()
-		many := datamodel.MaxListedSubfiles + 50
-		id := h.addStatus(archiveStatus{total: many + 5})
-		unsent := names(many)
-		if _, ok := h.abandon(id, unsent); !ok {
-			t.Fatal("abandon() refused")
-		}
-		unsent[0] = "changed by the caller"
-		st, _ := h.getStatus(id)
-		if len(st.unsent) != datamodel.MaxListedSubfiles || st.unsentCount != many || st.unsent[0] != "m0" {
-			t.Errorf("kept %d names (first %q) for %d unsent, want the first %d, copied", len(st.unsent), st.unsent[0], st.unsentCount, datamodel.MaxListedSubfiles)
+		if st, _ := h.getStatus(id); st.result.Error != nil {
+			t.Errorf("error = %v, want none", st.result.Error)
 		}
 	})
 }
@@ -714,8 +718,8 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 	t.Run("members in flight: every ancestor is abandoned", func(t *testing.T) {
 		h := newArchiveStatusHandler()
 		grand, parent, child := chain(h)
-		if res, ok := h.abandon(child, []string{"x"}); !ok || !res.inFlight {
-			t.Fatalf("abandon() = %+v, %t, want members in flight", res, ok)
+		if got, _ := h.abandon(child, []string{"x"}); got != abandonInFlight {
+			t.Fatalf("abandon() = %d, want members in flight", got)
 		}
 		if !abandoned(h, parent) || !abandoned(h, grand) {
 			t.Errorf("parent abandoned %t, grandparent abandoned %t, want both", abandoned(h, parent), abandoned(h, grand))
@@ -724,7 +728,7 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 	t.Run("the last member then ends the sub-archive: its parent ends abandoned, not clean", func(t *testing.T) {
 		h := newArchiveStatusHandler()
 		_, parent, child := chain(h)
-		if _, ok := h.abandon(child, []string{"x"}); !ok {
+		if got, _ := h.abandon(child, []string{"x"}); got == abandonConcluded {
 			t.Fatal("abandon() refused")
 		}
 		finished, ok := h.addInnerFileResult(child, "m.bin", datamodel.Result{})
@@ -744,8 +748,8 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 		st, _ := h.getStatus(child)
 		st.analyzed = 3
 		h.statusByID[child] = st
-		if res, ok := h.abandon(child, nil); !ok || !res.removeNow {
-			t.Fatalf("abandon() = %+v, %t, want removeNow", res, ok)
+		if got, _ := h.abandon(child, nil); got != abandonRemoveNow {
+			t.Fatalf("abandon() = %d, want removeNow", got)
 		}
 		if abandoned(h, parent) || abandoned(h, grand) {
 			t.Error("an ancestor was abandoned although the sub-archive left no member in flight")
@@ -757,8 +761,8 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 		st, _ := h.getStatus(child)
 		st.result.Malware = true
 		h.statusByID[child] = st
-		if res, ok := h.abandon(child, []string{"x"}); !ok || !res.detected {
-			t.Fatalf("abandon() = %+v, %t, want a detection kept", res, ok)
+		if got, _ := h.abandon(child, []string{"x"}); got != abandonDetectedLate {
+			t.Fatalf("abandon() = %d, want a detection kept", got)
 		}
 		if abandoned(h, parent) || abandoned(h, grand) {
 			t.Error("an ancestor was abandoned for an archive that ends with its detection")
@@ -768,7 +772,7 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 		h := newArchiveStatusHandler()
 		grand, parent, child := chain(h)
 		h.claimFinish(parent)
-		if _, ok := h.abandon(child, []string{"x"}); !ok {
+		if got, _ := h.abandon(child, []string{"x"}); got == abandonConcluded {
 			t.Fatal("abandon() refused")
 		}
 		if abandoned(h, parent) || abandoned(h, grand) {
@@ -779,7 +783,7 @@ func TestArchiveStatus_abandonTakesTheLiveAncestorsWithIt(t *testing.T) {
 		h := newArchiveStatusHandler()
 		grand, parent, child := chain(h)
 		h.deleteStatus(parent)
-		if _, ok := h.abandon(child, []string{"x"}); !ok {
+		if got, _ := h.abandon(child, []string{"x"}); got == abandonConcluded {
 			t.Fatal("abandon() refused")
 		}
 		if abandoned(h, grand) {

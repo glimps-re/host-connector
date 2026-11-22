@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/alecthomas/units"
 	"github.com/gabriel-vasile/mimetype"
@@ -276,17 +277,34 @@ func sanitizeControl(p string) string {
 	}, p)
 }
 
+// maxSubmissionLabel bounds the name sent with a submission, in bytes: the path of
+// a member is the path of its archive followed by up to several levels of member
+// paths, so it is not bounded by PATH_MAX, and a server that refuses an oversized
+// header would fail the submission on every retry.
+const maxSubmissionLabel = 4096
+
 // submissionLabel is the name sent with a submission, which the service reads from
 // a header of the upload: control characters (C0, DEL, C1) and the line and
 // paragraph separators U+2028 and U+2029 become "_", and invalid UTF-8 becomes
-// U+FFFD, so that no server that splits lines refuses the file for its name.
+// U+FFFD, so that no server that splits lines refuses the file for its name. A
+// name longer than maxSubmissionLabel keeps its tail, which holds the member's
+// own name, behind an ellipsis.
 func submissionLabel(p string) string {
-	return strings.Map(func(r rune) rune {
+	label := strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) || r == 0x2028 || r == 0x2029 {
 			return '_'
 		}
 		return r
 	}, p)
+	if len(label) <= maxSubmissionLabel {
+		return label
+	}
+	const ellipsis = "…"
+	cut := len(label) - (maxSubmissionLabel - len(ellipsis))
+	for cut < len(label) && !utf8.RuneStart(label[cut]) {
+		cut++
+	}
+	return ellipsis + label[cut:]
 }
 
 // memberLogicalPath builds the logical path of an extracted file from rel, the
@@ -2206,7 +2224,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	defer cancel()
 
 	opts := c.config.WaitOpts
-	opts.Filename = submissionLabel(input.location)
+	opts.Filename = submissionLabel(input.rawLogical())
 
 	readLocation, locErr := c.readPath(input)
 	if locErr != nil {

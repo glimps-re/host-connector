@@ -10,6 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -195,8 +197,10 @@ type gmalware struct {
 	uuids    map[string]string
 	verdicts map[string]verdict
 	given    map[string]verdict
-	failure  int
-	delay    time.Duration
+	// names holds the file name of every submission, by SHA256 of its content.
+	names   map[string][]string
+	failure int
+	delay   time.Duration
 	// resultDelay is how long the results wait before they are answered.
 	resultDelay time.Duration
 
@@ -209,7 +213,7 @@ type gmalware struct {
 
 func newGMalware(t *testing.T, hang bool) *gmalware {
 	t.Helper()
-	g := &gmalware{hang: hang, uuids: map[string]string{}, verdicts: map[string]verdict{}, given: map[string]verdict{}}
+	g := &gmalware{hang: hang, uuids: map[string]string{}, verdicts: map[string]verdict{}, given: map[string]verdict{}, names: map[string][]string{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/versions", func(w http.ResponseWriter, r *http.Request) {
 		g.text(w, r, `{"/api/lite/v2":"2.0"}`)
@@ -288,6 +292,7 @@ func (g *gmalware) submit(w http.ResponseWriter, r *http.Request) {
 	uuid := sum[0:8] + "-" + sum[8:12] + "-" + sum[12:16] + "-" + sum[16:20] + "-" + sum[20:32]
 	g.mu.Lock()
 	g.uuids[uuid] = sum
+	g.names[sum] = append(g.names[sum], rawFileName(part))
 	g.mu.Unlock()
 	g.json(w, r, map[string]any{"status": true, "uuid": uuid})
 }
@@ -397,6 +402,24 @@ func (g *gmalware) Programmed(sha string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return g.verdicts[sha].malware
+}
+
+// rawFileName is the file name of a multipart part as it was sent. Part.FileName
+// keeps only the base of the name, which would hide the path under test.
+func rawFileName(part *multipart.Part) string {
+	_, params, err := mime.ParseMediaType(part.Header.Get("Content-Disposition"))
+	if err != nil {
+		return "<unparsable Content-Disposition: " + err.Error() + ">"
+	}
+	return params["filename"]
+}
+
+// SubmittedNames returns the file names under which the content was
+// submitted, in order: what the service is told the file is called.
+func (g *gmalware) SubmittedNames(content []byte) []string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.names[sha256Hex(content)])
 }
 
 // consolePollWait is how long a request for tasks waits before it is answered.

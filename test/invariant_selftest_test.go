@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -435,9 +436,15 @@ func detectionOf(sha, id string) string {
 // and, when the submission was accepted, the result of the analysis.
 func analyze(t *testing.T, gm *gmalware, content []byte) (status int, res map[string]any) {
 	t.Helper()
+	return analyzeAs(t, gm, "f", content)
+}
+
+// analyzeAs is analyze for a submission that carries the file name.
+func analyzeAs(t *testing.T, gm *gmalware, name string, content []byte) (status int, res map[string]any) {
+	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
-	part, err := mw.CreateFormFile("file", "f")
+	part, err := mw.CreateFormFile("file", name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -917,5 +924,24 @@ func TestInstance_expectAbortedUploads(t *testing.T) {
 	in.expectAbortedUploads(2)
 	if in.abortedUploads != 3 || in.gm.Unconsumed() != 3 {
 		t.Errorf("announced = %d, unconsumed = %d, want 3 and 3", in.abortedUploads, in.gm.Unconsumed())
+	}
+}
+
+func TestGMalware_recordsTheSubmittedName(t *testing.T) {
+	gm := newGMalware(t, false)
+	content := []byte("named content")
+	if got := gm.SubmittedNames(content); len(got) != 0 {
+		t.Fatalf("names before any submission = %v", got)
+	}
+	analyzeAs(t, gm, "/in/a.zip/d/evil.bin", content)
+	analyzeAs(t, gm, `we"ird\name`, content)
+	analyzeAs(t, gm, "/in/other", []byte("other content"))
+	got := gm.SubmittedNames(content)
+	if want := []string{"/in/a.zip/d/evil.bin", `we"ird\name`}; !slices.Equal(got, want) {
+		t.Errorf("names = %q, want %q", got, want)
+	}
+	got[0] = "changed"
+	if gm.SubmittedNames(content)[0] != "/in/a.zip/d/evil.bin" {
+		t.Error("the caller changed what the fake remembers")
 	}
 }

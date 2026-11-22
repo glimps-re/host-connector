@@ -621,6 +621,8 @@ Top-level configuration fields:
 
 The GLIMPS Malware service must answer `GET /api/lite/v2/status` (`GET /api/v1/status` when `gmalware_syndetect` is `true`) with HTTP 200. The connector calls it each time a configuration is applied (at start, and when the console pushes one). With go-gdetect v1.6.6, a `404` on that endpoint makes the configuration hang: the client holds its write lock while it applies the configuration and, on a 404, asks for the API version, which waits for the same lock. From then on the connector applies no further configuration and its submissions wait. A service that does not expose the endpoint must be fixed or upgraded.
 
+Name sent with a submission: the host path of the file for a plain file, and for a member of an archive the path of the archive followed by the path of the member (`/in/a.zip/d/evil.exe`, `/in/a.zip/sub.zip/x.exe` for a nested archive), never the path in the work directory. Control characters, line and paragraph separators become `_` and invalid UTF-8 becomes `U+FFFD`. A name longer than 4096 bytes keeps its end, preceded by `…`. A content GMalware already knows by its SHA256 is not submitted again, so its name in GMalware stays the first one it received.
+
 #### Quarantine
 
 - **`location`**: Directory path where quarantined files are stored (files are encrypted with .lock extension)

@@ -619,6 +619,8 @@ Top-level configuration fields:
 - **`gmalware_syndetect`**: use syndetect (default: false)
 - **`gmalware_bypass_cache`**: bypass gmalware (default: false)
 
+The GLIMPS Malware service must answer `GET /api/lite/v2/status` (`GET /api/v1/status` when `gmalware_syndetect` is `true`) with HTTP 200. The connector calls it each time a configuration is applied (at start, and when the console pushes one). With go-gdetect v1.6.6, a `404` on that endpoint makes the configuration hang: the client holds its write lock while it applies the configuration and, on a 404, asks for the API version, which waits for the same lock. From then on the connector applies no further configuration and its submissions wait. A service that does not expose the endpoint must be fixed or upgraded.
+
 #### Quarantine
 
 - **`location`**: Directory path where quarantined files are stored (files are encrypted with .lock extension)

@@ -97,6 +97,10 @@
 - extract plugin: 7-Zip repeats names of the archive raw in some errors (a member it cannot create, the target of a link), so a name with a newline could write a line of 7-Zip's errors, such as "Wrong password", and make a crafted archive, even a tar, pass for an encrypted one. After a line that repeats a name nothing is believed: after a member that cannot be created (or a label that is not known to carry no name) its errno decides, and after a refused link every other error line counts as damage. A member that goes through a file, is a directory, loops or has a name too long (ENOTDIR, EISDIR, ELOOP, ENAMETOOLONG), and a link toward a target that is not in the archive, is a damaged archive (an anomaly, encryption possible, no retry); any other errno of a member that cannot be created (permission, space, quota, read-only, I/O, descriptors) is the host's and is retried. A folder over a file the archive made before (EEXIST) and a link toward a directory (EPERM) are damage too. A line that is only the label of a refused link, or has an empty name, is not a refused link. Accepted limits: a hard link toward a member left out of the extraction for its size gives the same error as a missing target, so the archive is an anomaly; ENOTDIR and ELOOP caused by a process of the host that changes the output folder fail the archive closed instead of retrying it; a real refusal of the host in the same run as a real refused link is a definitive anomaly instead of a retry
 - monitoring: a directory that cannot be read during a periodic rescan no longer stops the walk of the other directories
 
+### Documentation
+
+- README: the GLIMPS Malware service must answer `GET /api/lite/v2/status` (`/api/v1/status` with `gmalware_syndetect`) with HTTP 200; with go-gdetect v1.6.6 a `404` makes the configuration hang, and the connector applies no further configuration
+
 ## [v1.5.6]
 
 ### Fixed

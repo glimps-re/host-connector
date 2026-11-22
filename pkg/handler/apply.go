@@ -36,6 +36,12 @@ const (
 	// entry of the removed filesize_filter plugin in the plugins file, and
 	// resolved by the next one without it.
 	HostPluginRemovedFilesize events.ErrorEventType = "plugin-removed-filesize-filter"
+	// HostPluginRemovedFilepath is HostPluginRemovedFilesize for the removed
+	// filepath_filter plugin.
+	HostPluginRemovedFilepath events.ErrorEventType = "plugin-removed-filepath-filter"
+	// HostPluginRemovedError is HostPluginRemovedFilesize for the removed
+	// error_filter plugin.
+	HostPluginRemovedError events.ErrorEventType = "plugin-removed-error-filter"
 	// HostExtractErrorAsFile is raised at each configuration applied with
 	// unanalyzable_policy.extract_error set to as_file, and resolved by the next
 	// one that is not.
@@ -219,7 +225,7 @@ func (h *Handler) apply(ctx context.Context, conf *config.Config, start bool) (e
 	}
 	if err = h.install(ctx, conf, p, start); err == nil {
 		h.commit(ctx, conf)
-		h.reportRemovedPlugins(ctx, p.removedPlugins, conf.UnanalyzablePolicy.TooBig)
+		h.reportRemovedPlugins(ctx, p.removedPlugins, newRemovedContext(conf))
 		return nil
 	}
 	if !h.configured || conf == h.conf {
@@ -257,7 +263,7 @@ func (h *Handler) replay(ctx context.Context, old *config.Config, start bool) er
 		return err
 	}
 	h.commit(ctx, old)
-	h.reportRemovedPlugins(ctx, p.removedPlugins, old.UnanalyzablePolicy.TooBig)
+	h.reportRemovedPlugins(ctx, p.removedPlugins, newRemovedContext(old))
 	return nil
 }
 

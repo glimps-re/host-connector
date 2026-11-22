@@ -2228,11 +2228,8 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		if tooBig != nil {
 			*tooBig = true
 		}
-		if input.encrypted {
-			return c.unanalyzedResult(input, datamodel.NotAnalyzedEncrypted, c.config.Unanalyzable.Encrypted, input.encryptedFailure())
-		}
-		if input.limitSkipped {
-			return c.unanalyzedResult(input, datamodel.NotAnalyzedExtractLimit, c.limitSkippedPolicy(), errLimitSkipped)
+		if state, ok := c.stateOf(input); ok && state.reason != datamodel.NotAnalyzedExtractError {
+			return c.unanalyzedResult(input, state.reason, state.policy, state.failure)
 		}
 		return c.unanalyzedResult(input, datamodel.NotAnalyzedTooBig, c.config.Unanalyzable.TooBig, errFileTooBig)
 	}

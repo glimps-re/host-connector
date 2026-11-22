@@ -255,7 +255,7 @@ func TestAnalysisErrorPolicy(t *testing.T) {
 							t.Errorf("NotAnalyzedExtractedFiles = %+v (count %d), want the failed member listed as %q", n, got.report.NotAnalyzedExtractedCount, datamodel.NotAnalyzedAnalysisError)
 						}
 						if !tt.members && (got.result.FilteredVolume != int64(len(tt.content)) || got.result.AnalyzedVolume != 0) {
-							t.Errorf("FilteredVolume = %d, want %d", got.result.FilteredVolume, len(tt.content))
+							t.Errorf("FilteredVolume = %d, AnalyzedVolume = %d, want %d and 0: a byte is never counted as both", got.result.FilteredVolume, got.result.AnalyzedVolume, len(tt.content))
 						}
 						if !rename {
 							// Verified copy: a file whose content changes after its analysis
@@ -386,5 +386,23 @@ func TestMergeResult_volumesSaturate(t *testing.T) {
 		if got := addVolume(tt.a, tt.b); got != tt.want {
 			t.Errorf("addVolume(%d, %d) = %d, want %d", tt.a, tt.b, got, tt.want)
 		}
+	}
+}
+
+// The volumes of the members left out are added without wrapping around: two
+// members that declare more than half of the largest volume saturate it.
+func TestApplyLimitSkips_theVolumeSaturates(t *testing.T) {
+	c := &Connector{config: Config{Unanalyzable: Unanalyzable{TooBig: PolicyPass}}}
+	half := int64(math.MaxInt64/2 + 1)
+	extraction := plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{
+		{FileName: "a.bin", Size: half, Reason: datamodel.NotAnalyzedTooBig},
+		{FileName: "b.bin", Size: half, Reason: datamodel.NotAnalyzedTooBig},
+	}}
+	var result datamodel.Result
+	if err := c.applyLimitSkips(extraction, 2, &result, "/in/a.zip"); err != nil {
+		t.Fatal(err)
+	}
+	if result.FilteredVolume != math.MaxInt64 {
+		t.Errorf("FilteredVolume = %d, want %d: the sum must saturate, not wrap to a negative", result.FilteredVolume, int64(math.MaxInt64))
 	}
 }

@@ -50,7 +50,7 @@ func TestDropRemovedPlugins(t *testing.T) {
 	}
 }
 
-func TestRemovedFilesizeWarning(t *testing.T) {
+func TestRemovedFilesizeMessage(t *testing.T) {
 	dropped := []scanner.PluginConfig{{Name: "acme", File: "/opt/acme/filesize.so"}, {Name: "filesize_filter", File: "filesize_filter.so"}}
 	tests := []struct {
 		name    string
@@ -65,7 +65,7 @@ func TestRemovedFilesizeWarning(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := removedFilesizeWarning(dropped, tt.tooBig)
+			got := removedFilesizeMessage(dropped, removedContext{tooBig: tt.tooBig})
 			for _, w := range tt.want {
 				if !strings.Contains(got, w) {
 					t.Errorf("message %q lacks %q", got, w)
@@ -126,15 +126,15 @@ func TestReportRemovedPlugins_raisesAtEachReportAndResolvesOnce(t *testing.T) {
 	captureHandlerLogs(t)
 	h := new(Handler)
 	dropped := []scanner.PluginConfig{{Name: "filesize_filter", File: "filesize_filter.so"}}
-	h.reportRemovedPlugins(t.Context(), dropped, "")
-	h.reportRemovedPlugins(t.Context(), dropped, "mitigate")
+	h.reportRemovedPlugins(t.Context(), dropped, removedContext{})
+	h.reportRemovedPlugins(t.Context(), dropped, removedContext{tooBig: "mitigate"})
 	if n := len(rec.find("error", HostPluginRemovedFilesize)); n != 2 {
 		t.Errorf("%d events for two reports with the entry, want one at each", n)
 	}
 	if n := len(rec.find("resolution", HostPluginRemovedFilesize)); n != 0 {
 		t.Errorf("%d resolutions while the entry is there, want none", n)
 	}
-	h.reportRemovedPlugins(t.Context(), nil, "")
+	h.reportRemovedPlugins(t.Context(), nil, removedContext{})
 	if n := len(rec.find("resolution", HostPluginRemovedFilesize)); n != 1 {
 		t.Errorf("%d resolutions by the report without the entry, want exactly 1", n)
 	}
@@ -268,7 +268,7 @@ func TestRemovedFilesizeWarning_isBoundedAndEscapesWhatTheFileSays(t *testing.T)
 	for i := range dropped {
 		dropped[i] = hostile
 	}
-	got := removedFilesizeWarning(dropped, "")
+	got := removedFilesizeMessage(dropped, removedContext{})
 	if len(got) > maxReportedKeys*(maxReportedKeyLen+8)+1024 {
 		t.Errorf("the message is %d bytes long, want it bounded", len(got))
 	}
@@ -300,7 +300,7 @@ func TestRemovedFilesizeWarning_isBoundedAfterQuotingAndKeepsBothPartsOfAnEntry(
 			for i := range dropped {
 				dropped[i] = entry
 			}
-			got := removedFilesizeWarning(dropped, "")
+			got := removedFilesizeMessage(dropped, removedContext{})
 			if !utf8.ValidString(got) {
 				t.Error("the message is not valid UTF-8")
 			}
@@ -473,12 +473,124 @@ func TestRemovedFilesizeWarning_costsNothingForTheEntriesLeftOut(t *testing.T) {
 		return out
 	}
 	few, many := entries(maxReportedKeys+10), entries(5000)
-	allocsFew := testing.AllocsPerRun(5, func() { _ = removedFilesizeWarning(few, "") })
-	allocsMany := testing.AllocsPerRun(5, func() { _ = removedFilesizeWarning(many, "") })
+	allocsFew := testing.AllocsPerRun(5, func() { _ = removedFilesizeMessage(few, removedContext{}) })
+	allocsMany := testing.AllocsPerRun(5, func() { _ = removedFilesizeMessage(many, removedContext{}) })
 	if allocsMany > allocsFew+5 {
 		t.Errorf("%v allocations for 5000 entries, %v for %d: the entries left out are quoted", allocsMany, allocsFew, len(few))
 	}
-	if got := removedFilesizeWarning(many, ""); !strings.Contains(got, ", ... and 4950 more") {
+	if got := removedFilesizeMessage(many, removedContext{}); !strings.Contains(got, ", ... and 4950 more") {
 		t.Errorf("warning %.100q lacks the count of the entries left out", got)
+	}
+}
+
+func TestDropRemovedPlugins_theThreePlugins(t *testing.T) {
+	keep := scanner.PluginConfig{Name: "extract", File: "extract.so"}
+	tests := []struct {
+		name string
+		pc   scanner.PluginConfig
+		want bool
+	}{
+		{"filepath_filter by name", scanner.PluginConfig{Name: "filepath_filter", File: "/opt/x.so"}, true},
+		{"filepath_filter by file", scanner.PluginConfig{Name: "paths", File: "/opt/plugins/filepath_filter.so"}, true},
+		{"filepath_filter by short file", scanner.PluginConfig{Name: "paths", File: "/opt/p/filepath.so"}, true},
+		{"error_filter by name", scanner.PluginConfig{Name: "error_filter", File: "/opt/x.so"}, true},
+		{"error_filter by file", scanner.PluginConfig{Name: "errors", File: "/opt/plugins/error_filter.so"}, true},
+		{"error.so was never shipped, it is kept", scanner.PluginConfig{Name: "errors", File: "/opt/p/error.so"}, false},
+		{"filepath_filter, the binary without extension", scanner.PluginConfig{Name: "paths", File: "/opt/p/filepath_filter"}, true},
+		{"error_filter, the binary without extension", scanner.PluginConfig{Name: "errors", File: "/opt/p/error_filter"}, true},
+		{"a look-alike of error_filter", scanner.PluginConfig{Name: "error_filter2", File: "my_error_filter.so"}, false},
+		{"a look-alike of error_filter by name", scanner.PluginConfig{Name: "my_error_filter", File: "errors.so"}, false},
+		{"a look-alike of filepath_filter", scanner.PluginConfig{Name: "filepath_filter2", File: "my_filepath_filter.so"}, false},
+		{"filetype_filter is not removed", scanner.PluginConfig{Name: "filetype_filter", File: "filetype_filter.so"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kept, dropped := dropRemovedPlugins([]scanner.PluginConfig{keep, tt.pc})
+			if got := len(dropped) == 1; got != tt.want || (tt.want && len(kept) != 1) {
+				t.Errorf("dropped %v, kept %v, want dropped %t", dropped, kept, tt.want)
+			}
+		})
+	}
+}
+
+func TestRemovedMessages_sayWhatToSetInstead(t *testing.T) {
+	dropped := []scanner.PluginConfig{{Name: "filepath_filter", File: "filepath_filter.so"}}
+	tests := []struct {
+		name string
+		got  string
+		want []string
+	}{
+		{"filepath_filter, nothing set", removedFilepathMessage(dropped, removedContext{}), []string{"filepath_filter plugin was removed", "not carried over", "no longer apply", "filepath_filter section", "forbidden_paths", "skipped_paths", "no pattern"}},
+		{"filepath_filter, a deny-list lost", removedFilepathMessage([]scanner.PluginConfig{{Name: "filepath_filter", File: "filepath_filter.so", Config: map[string]any{"forbidden_paths": []any{`\.exe$`, `\.dll$`}}}}, removedContext{}), []string{"WARNING", "NOT enforced", "2 forbidden_paths"}},
+		{"filepath_filter, rules set", removedFilepathMessage(dropped, removedContext{forbiddenPaths: 3, skippedPaths: 2}), []string{"3 forbidden and 2 skipped pattern(s)"}},
+		{"error_filter, default", removedErrorMessage(dropped, removedContext{}), []string{"error_filter plugin was removed", "unanalyzable_policy.analysis_error", "error (the default: they stay in INPUT)", "set it to mitigate"}},
+		{"error_filter, mitigate", removedErrorMessage(dropped, removedContext{analysisError: "mitigate"}), []string{"is mitigate", "quarantines them as the plugin did"}},
+	}
+	for _, tt := range tests {
+		for _, w := range tt.want {
+			if !strings.Contains(tt.got, w) {
+				t.Errorf("%s: message %q does not say %q", tt.name, tt.got, w)
+			}
+		}
+	}
+}
+
+// Each removed plugin has its event: raised while its entries are there, resolved
+// when they are gone, whatever the other plugins do.
+func TestReportRemovedPlugins_eachPluginHasItsOwnEvent(t *testing.T) {
+	rec := recordEvents(t)
+	captureHandlerLogs(t)
+	h := new(Handler)
+	filepathEntry := scanner.PluginConfig{Name: "filepath_filter", File: "filepath_filter.so"}
+	errorEntry := scanner.PluginConfig{Name: "error_filter", File: "error_filter.so"}
+	h.reportRemovedPlugins(t.Context(), []scanner.PluginConfig{filepathEntry}, removedContext{})
+	if len(rec.find("error", HostPluginRemovedFilepath)) != 1 || len(rec.find("error", HostPluginRemovedError)) != 0 || len(rec.find("error", HostPluginRemovedFilesize)) != 0 {
+		t.Fatalf("events after a filepath_filter entry: filepath %d, error_filter %d, filesize %d, want 1, 0, 0",
+			len(rec.find("error", HostPluginRemovedFilepath)), len(rec.find("error", HostPluginRemovedError)), len(rec.find("error", HostPluginRemovedFilesize)))
+	}
+	h.reportRemovedPlugins(t.Context(), []scanner.PluginConfig{errorEntry}, removedContext{})
+	if len(rec.find("error", HostPluginRemovedError)) != 1 || len(rec.find("resolution", HostPluginRemovedFilepath)) != 1 {
+		t.Errorf("after an error_filter entry only: want its error and the resolution of filepath_filter")
+	}
+}
+
+// A plugins file of the removed plugins only is refused, whichever of them: loading
+// no plugin would silently drop every filter.
+func TestDropRemovedPlugins_aFileOfOnlyRemovedPluginsKeepsNothing(t *testing.T) {
+	kept, dropped := dropRemovedPlugins([]scanner.PluginConfig{{Name: "filepath_filter"}, {Name: "error_filter"}, {Name: "filesize_filter"}})
+	if len(kept) != 0 || len(dropped) != 3 {
+		t.Errorf("kept %v, dropped %v, want nothing kept: prepare() refuses it with errOnlyRemovedPlugins", kept, dropped)
+	}
+	for _, name := range []string{"filesize_filter", "filepath_filter", "error_filter"} {
+		if !strings.Contains(errOnlyRemovedPlugins.Error(), name) {
+			t.Errorf("the refusal %q does not name %s", errOnlyRemovedPlugins, name)
+		}
+	}
+}
+
+// The one fail-open case of the upgrade is said outright: a deny-list that was in
+// the dropped entry, and the main configuration has none. Anything else is not.
+func TestRemovedFilepathMessage_saysWhenTheDenyListIsNotEnforced(t *testing.T) {
+	entry := func(forbidden any) []scanner.PluginConfig {
+		return []scanner.PluginConfig{{Name: "filepath_filter", File: "filepath_filter.so", Config: map[string]any{"forbidden_paths": forbidden}}}
+	}
+	tests := []struct {
+		name    string
+		dropped []scanner.PluginConfig
+		c       removedContext
+		want    bool
+	}{
+		{"patterns lost, none in the configuration", entry([]any{`\.exe$`}), removedContext{}, true},
+		{"patterns lost as strings", entry([]string{`\.exe$`}), removedContext{skippedPaths: 4}, true},
+		{"patterns lost, the configuration has some", entry([]any{`\.exe$`}), removedContext{forbiddenPaths: 1}, false},
+		{"an empty deny-list", entry([]any{}), removedContext{}, false},
+		{"no configuration in the entry", []scanner.PluginConfig{{Name: "filepath_filter"}}, removedContext{}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := strings.Contains(removedFilepathMessage(tt.dropped, tt.c), "NOT enforced"); got != tt.want {
+				t.Errorf("says it is not enforced: %t, want %t", got, tt.want)
+			}
+		})
 	}
 }

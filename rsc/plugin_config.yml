@@ -3,7 +3,9 @@
 # Reference this file in the main config.yml using: plugins_config: /path/to/plugin_config.yml
 #
 # Plugins are loaded, and their callbacks called, in the order of this file.
-# Recommended order: filters, then error_filter, then session.
+# Recommended order: filters, then session.
+# The filepath_filter and error_filter plugins are removed: see filepath_filter and
+# unanalyzable_policy.analysis_error in the main config.yml.
 
 # Extract Plugin - Archive extraction and scanning
 # Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.)
@@ -54,31 +56,6 @@ filetype_filter:
       - image/svg+xml
       - application/json
       - application/pdf
-
-# FilePath Filter Plugin - path based file filtering
-# Filters files based on their path, using regular expressions. A file extracted
-# from an archive is matched on its logical path: the path of the archive followed
-# by its path inside it (e.g. /in/alice/a.zip/dir/x.exe), never its temporary folder
-filepath_filter:
-  file: filepath_filter.so
-  config:
-    # List of paths (in the form of regular expressions) to flag as malicious (Score=1000)
-    # Files matching one of these paths will be immediately marked as threats without further analysis
-    forbidden_paths:
-      - "^.*\\.exe$"       # all exe files
-
-    # List of paths (in the form of regular expressions) to mark as safe (Score=-500)
-    # Files matching one of these paths will be skipped from expensive analysis
-    skipped_paths:
-      - "^.*.png$"         # all png files
-      - "^.*.jpg$"         # all jpg files
-
-# Error Filter Plugin - Analysis error handling
-# Marks files with analysis errors as malicious for proper handling
-# This plugin requires no configuration - it automatically flags files that encounter
-# errors during analysis to ensure they are properly reviewed
-error_filter:
-  file: error_filter.so
 
 # Session Plugin - Session-based file grouping and tracking
 # Manages scanning sessions by grouping files based on directory structure

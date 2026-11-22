@@ -5,16 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
-	"go.yaml.in/yaml/v3"
 )
 
 func TestOnScanFile_decisionRules(t *testing.T) {
@@ -101,62 +97,13 @@ func TestOnScanFile_concurrent(t *testing.T) {
 	}
 }
 
-func TestOnScanFile_shippedPluginConfigForbiddenPathBeatsTextPlain(t *testing.T) {
-	raw, err := os.ReadFile("../../rsc/plugin_config.yml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		t.Fatal(err)
-	}
-	var order []string
-	var forbidden []*regexp.Regexp
-	top := doc.Content[0]
-	for i := 0; i+1 < len(top.Content); i += 2 {
-		name := top.Content[i].Value
-		order = append(order, name)
-		if name != "filepath_filter" {
-			continue
-		}
-		var cfg struct {
-			Config struct {
-				Forbidden []string `yaml:"forbidden_paths"`
-			} `yaml:"config"`
-		}
-		if err := top.Content[i+1].Decode(&cfg); err != nil {
-			t.Fatal(err)
-		}
-		for _, p := range cfg.Config.Forbidden {
-			forbidden = append(forbidden, regexp.MustCompile(p))
-		}
-	}
-	idx := func(n string) int { return slices.Index(order, n) }
-	if idx("filetype_filter") < 0 || idx("filepath_filter") < 0 || idx("filetype_filter") > idx("filepath_filter") {
-		t.Fatalf("plugin order = %v, want filetype_filter before filepath_filter", order)
-	}
-	if len(forbidden) == 0 {
-		t.Fatal("no forbidden_paths in the shipped config")
-	}
-
-	c := &Connector{}
-	for _, name := range order {
-		switch name {
-		case "filetype_filter":
-			c.RegisterOnScanFile(func(fn, loc, sha string, _ bool) *datamodel.Result {
-				return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Score: -500}
-			})
-		case "filepath_filter":
-			c.RegisterOnScanFile(func(fn, loc, sha string, _ bool) *datamodel.Result {
-				for _, re := range forbidden {
-					if re.MatchString(fn) {
-						return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Malware: true, Score: 1000, MalwareReason: datamodel.FilteredFilePath}
-					}
-				}
-				return nil
-			})
-		}
-	}
+// A forbidden path of the configuration beats the waiver of a plugin (a text/plain
+// type), and a path that is not forbidden keeps it.
+func TestOnScanFile_aForbiddenPathBeatsTheWaiverOfAPlugin(t *testing.T) {
+	c := &Connector{config: Config{PathFilter: mustPathFilter(t, []string{`^.*\.exe$`}, nil)}}
+	c.RegisterOnScanFile(func(fn, loc, sha string, _ bool) *datamodel.Result {
+		return &datamodel.Result{Filename: fn, Location: loc, SHA256: sha, Score: -500}
+	})
 	if got := c.onScanFile("/in/a.exe", "/tmp/a.exe", "sha", false); got == nil || !got.Malware || got.MalwareReason != datamodel.FilteredFilePath {
 		t.Errorf("text/plain at a forbidden path = %+v, want malicious", got)
 	}

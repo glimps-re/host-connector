@@ -119,6 +119,11 @@ func (u Unanalyzable) validate(mode MoveMode) error {
 // reason, under policy. For PolicyError the result carries failure; for the
 // others it carries no error. The file passed through without a full analysis
 // is always written in the log.
+//
+// The volume rule: a file that was not analyzed adds its size to the filtered
+// volume and nothing to the analyzed volume (a byte is never counted as both), and
+// the volumes of the members of an archive are added to the archive's without
+// wrapping around (see addVolume).
 func (c *Connector) unanalyzedResult(input fileToAnalyze, reason datamodel.NotAnalyzedReason, policy string, failure error) datamodel.Result {
 	res := datamodel.Result{
 		Filename: input.filename,

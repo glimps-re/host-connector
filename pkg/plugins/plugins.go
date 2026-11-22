@@ -72,6 +72,11 @@ type Extraction struct {
 	Skipped []datamodel.NotAnalyzedFile
 	// SkippedCount is the exact total of skipped members.
 	SkippedCount int
+	// Names are the paths of the files of the archive as it lists them, filled in
+	// NamesOnly mode only: nil says that the names are not known (a listing that is
+	// not whole, over MaxFiles, with anything the extractor finds wrong in the
+	// archive), an empty non-nil slice that the archive holds no file.
+	Names []string
 }
 
 // ExtractLimits bounds one extraction; the values come from the global
@@ -98,7 +103,21 @@ type ExtractLimits struct {
 	// field: one that ignores it extracts into outputDir, which the caller removes,
 	// and a document would then be extracted, not only checked.
 	CheckOnly bool
+
+	// NamesOnly asks for the names of the members (Extraction.Names) and nothing
+	// else: the technical listing, and for a zip the walk of its headers; no
+	// integrity test, no decompression, no budget of sizes (nothing is written or
+	// decompressed). MaxFiles still bounds the names; MaxFileSize and MaxTotalSize
+	// are only safety caps, no size of the archive is held to them. An extractor
+	// that cannot list without extracting returns ErrListingUnsupported; one that
+	// does not know the field extracts, which the caller notices (Files are set) and
+	// discards.
+	NamesOnly bool
 }
+
+// ErrListingUnsupported is returned, wrapped, by an extractor that cannot list the
+// names of the members of an archive without extracting it (the default extractor).
+var ErrListingUnsupported = errors.New("the extractor cannot list member names")
 
 var (
 	// ErrEncrypted is returned, wrapped, when no known password opens the archive.

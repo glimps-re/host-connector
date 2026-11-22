@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
@@ -46,6 +47,9 @@ type ongoing struct {
 	started bool   // onStartScanFile was called for this file
 	scanned bool   // onFileScanned was called for it
 	sha     string // given to onStartScanFile
+	// rulesSpent is the time that matching the listings of the skipped archives of
+	// the file against the forbidden paths has taken.
+	rulesSpent time.Duration
 }
 
 func (o *ongoing) setInput(in *inputFD) {

@@ -428,6 +428,48 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 	return info, nil
 }
 
+// namesOnly lists the names of the files of the archive: the technical listing and,
+// for a zip, the walk of its headers; nothing is tested, decompressed or written,
+// and no budget of sizes applies. The names are given only when nothing is wrong
+// with the archive: the listing whole and within maxFiles, no anomaly of any kind
+// (a tail, a stub, a name no file system takes, a zip whose headers say more than
+// the listing), no member left out. Otherwise ok is false and the caller
+// knows nothing of the members. An error is a failure of the listing (headers that
+// need a password included), or of the extractor.
+func (sze *sevenZipExtract) namesOnly(ctx context.Context, archivePath string, maxFiles int) (names []string, ok bool, err error) {
+	ctx, cancel := context.WithTimeout(ctx, archiveTimeout(archivePath, 0))
+	defer cancel()
+	nopw := *sze
+	nopw.config = extractorConfig{}
+	const unlimited = 1 << 62
+	sink := newListSink(unlimited, max(maxFiles, 0), unlimited)
+	if err = nopw.list(ctx, archivePath, nil, sink); err != nil {
+		return nil, false, err
+	}
+	t := &sink.table
+	if !sink.complete || sink.tail || sink.dataFailure || len(sink.anomalies) > 0 || t.skipped.count > 0 || t.unexamined > 0 {
+		return nil, false, nil
+	}
+	anomaly, found, err := nopw.walkFolders(ctx, archivePath, sink)
+	if err != nil || anomaly != "" || found.controlNames {
+		return nil, false, err
+	}
+	// The technical listing says what the table does not: data before the archive (a
+	// stub) or after it, where another archive can hide.
+	info, err := nopw.encryptionInfo(ctx, archivePath, t.entries)
+	if errors.Is(err, errBadListing) || errors.Is(err, errTooManyEntries) {
+		nopw.logger.Warn("the technical listing of an archive is not as expected", slog.String("error", err.Error()))
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if info.attached {
+		return nil, false, nil
+	}
+	return append([]string{}, t.selected...), true, nil
+}
+
 // checkOnly lists the archive and tests every member, with the password of no one
 // (noPassword), without writing anything. A member that needs a password, a known
 // one included, is encrypted: nothing is extracted and nothing would be analyzed.

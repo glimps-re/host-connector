@@ -126,6 +126,9 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	}
 	ctx, cancel := context.WithTimeout(parent, szExtractTimeout)
 	defer cancel()
+	if limits.NamesOnly {
+		return p.namesOnly(ctx, archiveLocation, limits)
+	}
 	if limits.CheckOnly {
 		return p.checkOnly(ctx, archiveLocation, limits)
 	}
@@ -205,6 +208,19 @@ func (p *SevenZipExtractPlugin) anomalyOf(archiveLocation string, result extract
 		err = errors.Join(err, plugins.ErrEncryptionPossible)
 	}
 	return extraction, err
+}
+
+// namesOnly gives the names of the files of the archive, or says that they are
+// not known (see sevenZipExtract.namesOnly).
+func (p *SevenZipExtractPlugin) namesOnly(ctx context.Context, archiveLocation string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+	names, ok, err := p.sze.namesOnly(ctx, archiveLocation, limits.MaxFiles)
+	switch {
+	case err != nil:
+		return plugins.Extraction{}, classifyFailure(err)
+	case !ok:
+		return plugins.Extraction{}, nil
+	}
+	return plugins.Extraction{Names: names}, nil
 }
 
 // checkOnly checks the archive without extracting anything: what 7z lists and

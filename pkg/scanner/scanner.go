@@ -172,13 +172,21 @@ type Config struct {
 	PendingFiles func(dir string) int
 	// Unanalyzable is the policy for the files that cannot be analyzed.
 	Unanalyzable Unanalyzable
+	// PathFilter holds the path rules (forbidden and skipped paths), applied to the
+	// logical path of every file and member before the OnScanFile plugins; nil
+	// applies none.
+	PathFilter *PathFilter
 }
 
 type fileToAnalyze struct {
-	sha256             string
-	location           string
-	filename           string
-	logicalPath        string
+	sha256      string
+	location    string
+	filename    string
+	logicalPath string
+	// rawPath is the logical path as the file system gives it, before the control
+	// characters are replaced (empty: the same as logicalPath); the path rules
+	// match both.
+	rawPath            string
 	identity           FileIdentity // observed by the monitor, checked before every action
 	input              *inputFD     // descriptor of the deposited file, nil for an extracted one
 	run                *ongoing     // the run of the top-level file this belongs to
@@ -207,6 +215,13 @@ type fileToAnalyze struct {
 	// nothing proves that it holds no encrypted content: it is not told from an
 	// encrypted one.
 	undetermined bool
+	// noSkip is set for an archive that a skipped path covers but whose members
+	// could not be listed against the forbidden paths: the skip is withdrawn, and it
+	// is analyzed like any archive.
+	noSkip bool
+	// pathRefusal is the refusal that the path rules gave to a skipped archive for
+	// one of its members: the archive goes on as a file and ends with it.
+	pathRefusal *datamodel.Result
 }
 
 // named is the file with a name: the location of a deposited one.
@@ -236,6 +251,18 @@ func (f fileToAnalyze) logical() string {
 	return sanitizeControl(f.location)
 }
 
+// rawLogical is logical before the control characters and the invalid UTF-8 are
+// replaced.
+func (f fileToAnalyze) rawLogical() string {
+	switch {
+	case f.rawPath != "":
+		return f.rawPath
+	case f.archiveID == "":
+		return f.location
+	}
+	return f.logical()
+}
+
 // sanitizeControl replaces the control characters of a path by "_": a newline
 // in a name would otherwise let it slip past a rule such as
 // `^/in/alice/.*\.exe$`, where "." does not match it.
@@ -256,10 +283,36 @@ func sanitizeControl(p string) string {
 // by nature: "/in/a.zip/b.zip/x" names a file of a folder b.zip as well as one
 // of a nested archive b.zip.
 func memberLogicalPath(parent, rel string, inside bool, location string) string {
+	return sanitizeControl(memberRawPath(parent, rel, inside, location))
+}
+
+// memberRawPath is memberLogicalPath before the characters are replaced.
+func memberRawPath(parent, rel string, inside bool, location string) string {
 	if !inside {
 		rel = filepath.Base(location)
 	}
-	return path.Join(filepath.ToSlash(parent), sanitizeControl(filepath.ToSlash(rel)))
+	return joinMember(parent, filepath.ToSlash(rel))
+}
+
+// joinMember is the one place where the path of an archive and the path of a
+// member in it are joined. rel is a path under the extraction folder: it holds no
+// "." nor ".." component, so the join cannot leave the archive.
+func joinMember(parent, rel string) string {
+	return path.Join(filepath.ToSlash(parent), rel)
+}
+
+// extractedPath is the path an extractor writes a member to, relative to the
+// extraction folder, from the name the archive declares: the empty, "." and ".."
+// components are dropped (7-Zip writes "../x/evil.exe" as "x/evil.exe"), where a
+// join of the declared name would resolve the ".." against the path of the archive.
+func extractedPath(name string) string {
+	parts := make([]string, 0, strings.Count(name, "/")+1)
+	for part := range strings.SplitSeq(name, "/") {
+		if part != "" && part != "." && part != ".." {
+			parts = append(parts, part)
+		}
+	}
+	return strings.Join(parts, "/")
 }
 
 type archiveToAnalyze struct {
@@ -466,6 +519,9 @@ func (c *Connector) Start() (err error) {
 // nothing: it reports nothing and writes nothing, so that the documents and
 // packages are submitted unchecked.
 var ExtractFile plugins.ExtractFile = func(archiveLocation, outputDir string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
+	if limits.NamesOnly {
+		return plugins.Extraction{}, plugins.ErrListingUnsupported
+	}
 	if limits.CheckOnly {
 		// This extractor tells nothing of encryption: nothing to report, and nothing
 		// is written.
@@ -1240,6 +1296,12 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 		err = c.checkZipFamily(archive, *totalExtractedFiles, *totalExtractedSize, archiveLogger)
 		return
 	}
+	handled, withdrawn, skipErr := c.skippedArchive(archive, totalExtractedFiles, archiveLogger)
+	if handled {
+		err = skipErr
+		return
+	}
+	archive.noSkip = withdrawn
 	checkErr := c.checkBeforeExtract(archivePath, archive.mtype, archive.typeErr, totalExtractedSize, totalExtractedFiles, depth, archiveLogger)
 	if checkErr != nil {
 		archiveLogger.Debug("file cannot be extracted", slog.String(logReasonKey, checkErr.Error()))
@@ -1410,6 +1472,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			relPath = fileLocation
 		}
 		memberType, memberTypeErr := mimetype.DetectFile(fileLocation)
+		memberInside := relErr == nil && pathutil.Under(outputDir, fileLocation)
 		subFile := fileToAnalyze{
 			location:           fileLocation,
 			archiveID:          archiveID,
@@ -1424,6 +1487,9 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			mtype:              memberType,
 			typeErr:            memberTypeErr != nil,
 			typeRead:           true,
+		}
+		if raw := memberRawPath(archive.rawLogical(), relPath, memberInside, fileLocation); raw != subFile.logicalPath {
+			subFile.rawPath = raw
 		}
 		err = c.recursiveExtract(subFile, depth, totalExtractedSize, totalExtractedFiles, fileLogger)
 		if err != nil {
@@ -1477,7 +1543,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 // look at another file). A waiver or a refusal ends the archive at once and it
 // tells true: nothing of it is extracted or sent.
 func (c *Connector) decideArchive(archiveID string, archive fileToAnalyze, readLocation string, archiveLogger *slog.Logger) (ended bool) {
-	result := c.onScanFile(archive.logical(), readLocation, archive.sha256, true)
+	result := c.onScanFileRules(archive.logical(), archive.rawLogical(), readLocation, archive.sha256, true, c.skipAllowed(archive))
 	if result == nil {
 		return false
 	}
@@ -2052,7 +2118,10 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		return
 	}
 	fileLogger.Debug("applying onScanFile() from plugins")
-	res := c.onScanFile(input.logical(), readLocation, input.sha256, false)
+	res := input.pathRefusal
+	if res == nil {
+		res = c.onScanFileRules(input.logical(), input.rawLogical(), readLocation, input.sha256, false, c.skipAllowed(input))
+	}
 	if res != nil {
 		result = *res
 		ensureMalwareReason(&result)

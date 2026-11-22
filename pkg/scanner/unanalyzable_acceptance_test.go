@@ -79,10 +79,14 @@ type accSetup struct {
 	scanFile plugins.OnScanFile
 	// workers is the number of analysis workers, 2 when 0.
 	workers int
+	// pathFilter is the path rules of the configuration.
+	pathFilter *PathFilter
 	// maxDepth is the extraction depth, 3 when 0.
 	maxDepth int
 	// after is called with the connector once it is closed.
 	after func(*Connector)
+	// extractMaxFiles is recursive_extract_max_files, the default when 0.
+	extractMaxFiles int
 	// remove deletes the detected files instead of quarantining them.
 	remove bool
 	// rename moves by rename instead of by copy.
@@ -143,9 +147,11 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		MaxFileSize: accMax, Unanalyzable: s.policy, WorkDir: t.TempDir(),
 		Extract: s.extract != nil, ExtractMinThreshold: 1, Workers: cmp.Or(s.workers, 2), ExtractWorkers: 1,
 		RecursiveExtractMaxDepth: cmp.Or(s.maxDepth, 3),
+		RecursiveExtractMaxFiles: s.extractMaxFiles,
 		Actions:                  Actions{Move: true, Quarantine: !s.remove, Deleted: s.remove, Inform: s.inform != nil, InformDest: s.inform},
 		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: cmp.Or(map[bool]MoveMode{true: MoveModeRename}[s.rename], MoveModeCopy),
 		CustomActions: []Action{capture},
+		PathFilter:    s.pathFilter,
 	}, q, submitter)
 	if err != nil {
 		t.Fatal(err)

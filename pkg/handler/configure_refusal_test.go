@@ -3,7 +3,6 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 
@@ -30,16 +29,19 @@ func TestHandler_ConfigureRefusesUnknownExtractErrorPolicy(t *testing.T) {
 	}
 }
 
-// Between the SDK keys and the code that enforces them, a setting that nothing
-// enforces is refused, and the previous configuration is kept.
-func TestHandler_ConfigureRefusesWhatNothingEnforcesYet(t *testing.T) {
+// A rule that the SDK validation lets by but the connector refuses when it
+// compiles the rules (it matches every path) is refused too, and the previous
+// configuration is kept.
+func TestHandler_ConfigureRefusesPathRulesTheConnectorCannotApply(t *testing.T) {
 	tests := []struct {
 		name    string
 		raw     string
 		wantKey string
 	}{
-		{"forbidden paths", `{"filepath_filter":{"forbidden_paths":["a"]}}`, "filepath_filter"},
-		{"skipped paths", `{"filepath_filter":{"skipped_paths":["a"]}}`, "filepath_filter"},
+		{"a skipped pattern that matches the empty string", `{"filepath_filter":{"skipped_paths":["a*"]}}`, "matches the empty string"},
+		{"a forbidden pattern too large to compile", `{"filepath_filter":{"forbidden_paths":["((a{1000}){1000}){1000}"]}}`, "forbidden_paths[0]"},
+		{"an empty pattern", `{"filepath_filter":{"skipped_paths":[""]}}`, "skipped_paths[0]"},
+		{"a pattern in both lists", `{"filepath_filter":{"forbidden_paths":["x"],"skipped_paths":["x"]}}`, "also in forbidden_paths"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -47,8 +49,8 @@ func TestHandler_ConfigureRefusesWhatNothingEnforcesYet(t *testing.T) {
 			h := &Handler{conf: oldConf, needSetup: true, configured: true}
 			t.Cleanup(h.stopRejectReminder)
 			err := h.Configure(t.Context(), json.RawMessage(tt.raw))
-			if !errors.Is(err, config.ErrNotImplemented) || !strings.Contains(err.Error(), tt.wantKey) {
-				t.Fatalf("Configure() error = %v, want ErrNotImplemented naming %q", err, tt.wantKey)
+			if err == nil || !strings.Contains(err.Error(), tt.wantKey) {
+				t.Fatalf("Configure() error = %v, want a refusal naming %q", err, tt.wantKey)
 			}
 			if h.conf != oldConf {
 				t.Error("h.conf changed after a refused Configure")

@@ -74,14 +74,18 @@ type prepared struct {
 	moveMinThroughput       int64
 	pluginsConfig           []scanner.PluginConfig
 	removedPlugins          []scanner.PluginConfig
+	pathFilter              *scanner.PathFilter
 }
 
 // prepare validates conf without any effect on what is running or on disk.
 func (h *Handler) prepare(conf *config.Config) (p *prepared, err error) {
-	if err = errors.Join(config.Validate(conf), config.CheckImplemented(conf)); err != nil {
+	if err = config.Validate(conf); err != nil {
 		return nil, fmt.Errorf("invalid configuration: %w", err)
 	}
 	p = new(prepared)
+	if p.pathFilter, err = scanner.NewPathFilter(conf.FilepathFilter.ForbiddenPaths, conf.FilepathFilter.SkippedPaths); err != nil {
+		return nil, fmt.Errorf("invalid configuration: %w", err)
+	}
 	if p.maxFileSize, err = units.ParseStrictBytes(conf.MaxFileSize); err != nil {
 		return nil, fmt.Errorf("could not parse max-file-size: %w", err)
 	}
@@ -549,6 +553,7 @@ func (h *Handler) newConnector(conf *config.Config, p *prepared, informDest io.W
 		MoveMode:                 effectiveMoveMode(conf),
 		MoveMinThroughput:        p.moveMinThroughput,
 		Unanalyzable:             unanalyzablePolicy(conf),
+		PathFilter:               p.pathFilter,
 	}, quarantiner, h.submitter)
 }
 

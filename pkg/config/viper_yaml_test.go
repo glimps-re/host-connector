@@ -51,10 +51,10 @@ func TestValidate_ViperYAML(t *testing.T) {
 		{"filepath_filter empty pattern", "filepath_filter:\n  skipped_paths: ['']\n", "skipped_paths[0]"},
 		{"filepath_filter invalid pattern", "filepath_filter:\n  forbidden_paths: ['(']\n", "forbidden_paths[0]"},
 		{"filepath_filter 1025 bytes", "filepath_filter:\n  forbidden_paths:\n    - " + strings.Repeat("a", 1025) + "\n", "forbidden_paths[0]"},
-		{"filepath_filter 512 two-byte runes", "filepath_filter:\n  skipped_paths:\n    - " + strings.Repeat("é", 512) + "\n", ""},
+		{"filepath_filter 512 two-byte runes", "filepath_filter:\n  skipped_paths:\n    - " + strings.Repeat("(?s)", 200) + strings.Repeat("é", 112) + "\n", ""},
 		{"filepath_filter 513 two-byte runes", "filepath_filter:\n  skipped_paths:\n    - " + strings.Repeat("é", 513) + "\n", "skipped_paths[0]"},
 		{"filepath_filter 32 KiB in all", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(16, 1024, "a") + "\n  skipped_paths: " + yamlPatterns(16, 1024, "b") + "\n", ""},
-		{"filepath_filter 32 KiB and one byte", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(16, 1024, "a") + "\n  skipped_paths: " + yamlPatterns(15, 1024, "b")[:len(yamlPatterns(15, 1024, "b"))-1] + ", " + strings.Repeat("c", 1024) + "x]\n", "32768 in all"},
+		{"filepath_filter 32 KiB and one byte", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(16, 1024, "a") + "\n  skipped_paths: " + yamlPatterns(15, 1024, "b")[:len(yamlPatterns(15, 1024, "b"))-1] + ", " + "'" + strings.Repeat("(?s)", 256) + "x']\n", "32768 in all"},
 		{"filepath_filter 20000 entries", "filepath_filter:\n  forbidden_paths: " + yamlPatterns(20_000, 6, "a") + "\n", "20000 patterns, at most 256"},
 		{"filepath_filter pattern in both lists", "filepath_filter:\n  forbidden_paths: [same]\n  skipped_paths: [same]\n", "also in forbidden_paths"},
 	}
@@ -84,7 +84,16 @@ func yamlPatterns(n, size int, letter string) string {
 	items := make([]string, n)
 	for i := range items {
 		tail := fmt.Sprintf("%06d", i)
-		items[i] = strings.Repeat(letter, size-len(tail)) + tail
+		pad := size - len(letter) - len(tail)
+		if pad < 0 {
+			items[i] = strings.Repeat(letter, size-len(tail)) + tail
+			continue
+		}
+		// Flags that match nothing pad the pattern without costing an instruction.
+		items[i] = letter + strings.Repeat("(?s)", pad/4) + strings.Repeat(letter, pad%4) + tail
+	}
+	for i, item := range items {
+		items[i] = "'" + item + "'"
 	}
 	return "[" + strings.Join(items, ", ") + "]"
 }

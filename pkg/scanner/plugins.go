@@ -84,12 +84,24 @@ func (c *Connector) onStartScanFile(filepath string, sha256 string) {
 	}
 }
 
-// onScanFile calls the OnScanFile callbacks in order. The first refusal (any
+// onScanFileRules applies the path rules of the configuration, then calls the
+// OnScanFile callbacks in order. The first refusal (any
 // non-nil result that is not a waiver) wins and stops the chain. A waiver is
 // kept but later callbacks are still called, so a deny-list placed after an
 // allow-list still applies. Without refusal, the first waiver is returned; nil
-// means the file must be analyzed.
-func (c *Connector) onScanFile(filename string, filepath string, sha256 string, isArchive bool) (waiver *datamodel.Result) {
+// means the file must be analyzed. filename is the logical path of the file and raw
+// the path as the file system gives it (the path rules match both); skip tells
+// whether the skipped paths of the configuration may waive it.
+func (c *Connector) onScanFileRules(filename, raw, filepath, sha256 string, isArchive, skip bool) (waiver *datamodel.Result) {
+	// The path rules of the configuration come first: a refusal of theirs stops
+	// the chain, a waiver is kept and the plugins are still called, so that a
+	// refusal of a plugin (the type of the file) wins over a skipped path.
+	if r := c.config.PathFilter.apply(filename, raw, filepath, sha256, skip); r != nil {
+		if !isWaiver(r) {
+			return r
+		}
+		waiver = r
+	}
 	for _, cb := range c.onScanFileCbs {
 		r := cb(filename, filepath, sha256, isArchive)
 		if r == nil {

@@ -13,6 +13,10 @@ import (
 
 // errPathRulesSlow is the failure of a scan whose listings the forbidden paths
 // could not be matched against within pathRulesBudget of matching time.
+// errRestoredUnchecked refuses a restored archive whose members cannot be known
+// while paths are forbidden: it is not delivered unchecked.
+var errRestoredUnchecked = fmt.Errorf("%w: restored archive could not be checked against forbidden_paths", errInnerPermanent)
+
 var errPathRulesSlow = fmt.Errorf("%w: the path rules took too long on the listings of the archives of a file", errInnerPermanent)
 
 // pathRulesBudget bounds the time spent matching the listings of the archives of
@@ -72,7 +76,7 @@ func (c *Connector) skippedArchive(archive fileToAnalyze, totalFiles *int, archi
 	if pf.hasForbidden() {
 		maxFiles := c.config.RecursiveExtractMaxFiles - *totalFiles
 		if maxFiles <= 0 {
-			archiveLogger.Debug("no budget of the extraction is left to list a skipped archive")
+			archiveLogger.Debug("no budget of the extraction is left to list an archive")
 			return true, false, c.sendForAnalyze(file.limited(), archiveLogger)
 		}
 		*totalFiles++
@@ -81,7 +85,7 @@ func (c *Connector) skippedArchive(archive fileToAnalyze, totalFiles *int, archi
 			return true, false, listErr
 		}
 		if !known {
-			archiveLogger.Info("the members of a skipped archive are not known, the skip is withdrawn", slog.String("archive", archive.logical()))
+			archiveLogger.Info("the members of an archive are not known, the skip is withdrawn", slog.String("archive", archive.logical()))
 			return false, true, nil
 		}
 		*totalFiles += max(len(names)-1, 0)
@@ -114,7 +118,7 @@ func (c *Connector) listedNames(archive fileToAnalyze, maxFiles int, archiveLogg
 	}
 	switch {
 	case extractErr != nil:
-		archiveLogger.Warn("the members of a skipped archive could not be listed", slog.String(logErrorKey, extractErr.Error()))
+		archiveLogger.Warn("the members of an archive could not be listed", slog.String(logErrorKey, extractErr.Error()))
 		return nil, false, nil
 	case len(extraction.Files) > 0 || len(extraction.Skipped) > 0 || extraction.SkippedCount > 0 || len(extraction.Names) > maxFiles:
 		// An extractor that ignores NamesOnly extracts, and one that lists leaves
@@ -169,7 +173,7 @@ func (c *Connector) matchMembers(archive fileToAnalyze, names []string, archiveL
 		}
 	}
 	if refused > 0 {
-		archiveLogger.Warn("members of a skipped archive are refused by the path rules", slog.Int("members", refused))
+		archiveLogger.Warn("members of an archive are refused by the path rules", slog.Int("members", refused))
 	}
 	return refusal, nil
 }

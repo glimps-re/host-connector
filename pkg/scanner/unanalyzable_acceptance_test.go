@@ -93,6 +93,11 @@ type accSetup struct {
 	rename bool
 	// inform receives the console line of each file.
 	inform io.WriteCloser
+	// restored lists the files (of files) whose content was quarantined and restored
+	// by the operator before the run.
+	restored []string
+	// onDone receives the outcome of each file.
+	onDone func(FileOutcome)
 }
 
 // runAcc runs the real pipeline (move + quarantine actions) on the files.
@@ -152,6 +157,7 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		MoveFrom:                 r.in, MoveTo: r.out, MoveMode: cmp.Or(map[bool]MoveMode{true: MoveModeRename}[s.rename], MoveModeCopy),
 		CustomActions: []Action{capture},
 		PathFilter:    s.pathFilter,
+		OnFileDone:    s.onDone,
 	}, q, submitter)
 	if err != nil {
 		t.Fatal(err)
@@ -164,6 +170,9 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 	}
 	if err = c.Start(); err != nil {
 		t.Fatal(err)
+	}
+	for _, name := range s.restored {
+		restoreContent(t, q, filepath.Join(r.in, name), s.files[name])
 	}
 	for name, content := range s.files {
 		p := filepath.Join(r.in, name)
@@ -585,5 +594,31 @@ func TestT16a_extractErrorOnlyErrorOrAsFile(t *testing.T) {
 		if _, err := NewConnector(Config{Unanalyzable: Unanalyzable{ExtractError: v}, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
 			t.Errorf("extract_error=%q accepted", v)
 		}
+	}
+}
+
+// restoreContent quarantines the content at path, then restores it there, as the
+// operator does: the registry then holds it as restored.
+func restoreContent(t *testing.T, q *quarantine.QuarantineHandler, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(filepath.Clean(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, id, err := q.Quarantine(t.Context(), path, f, shaOf(content), []string{"m"})
+	if closeErr := f.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = q.Restore(t.Context(), id); err != nil {
+		t.Fatal(err)
 	}
 }

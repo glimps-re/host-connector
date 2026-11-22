@@ -695,6 +695,75 @@ func (c *Connector) submit(ctx context.Context, input string, want FileIdentity,
 	}
 }
 
+// refusedWhenRestored runs, for a restored content, what runs for any file before
+// its analysis: the path rules of the configuration and the OnScanFile chain. A
+// restored content waives the analysis only, never a refusal: one that is forbidden
+// at its path, or of a forbidden type, is refused as any file is. A waiver changes
+// nothing (the content is restored all the same).
+//
+// When paths are forbidden, a restored archive is also listed, never extracted: a
+// member at a forbidden path refuses it. Members that cannot be known refuse it with
+// an error, as a final outcome: the archive is not analyzed again. An extractor that
+// is down is an error to retry. nil: nothing refuses it.
+func (c *Connector) refusedWhenRestored(location, sha256 string, size int64, want FileIdentity, run *ongoing, in *inputFD) (*datamodel.Result, error) {
+	f := fileToAnalyze{filename: location, location: location, sha256: sha256, identity: want, input: in, run: run, size: size}
+	readLocation, err := c.readPath(f)
+	if err != nil {
+		return nil, err
+	}
+	if c.config.Extract {
+		f = c.typedOnce(f)
+	}
+	archive := c.isRestoredArchive(f)
+	r := c.onScanFileRules(f.logical(), f.rawLogical(), readLocation, sha256, archive, true)
+	if r != nil && isWaiver(r) {
+		r = nil
+	}
+	if r == nil && archive && c.config.PathFilter.hasForbidden() {
+		if r, err = c.refusedRestoredArchive(f); err != nil || r == nil {
+			return nil, err
+		}
+	}
+	if r == nil {
+		return nil, nil
+	}
+	refusal := *r
+	ensureMalwareReason(&refusal)
+	refusal.Filename, refusal.Location, refusal.SHA256 = location, location, sha256
+	if refusal.FileSize == 0 {
+		refusal.FileSize = size
+	}
+	return &refusal, nil
+}
+
+// isRestoredArchive tells whether a typed restored file is one the extraction would
+// open: typed as an archive, or not typed at all (which counts as one).
+func (c *Connector) isRestoredArchive(f fileToAnalyze) bool {
+	if !c.config.Extract || !f.typeRead {
+		return false
+	}
+	return f.typeErr || (f.mtype != nil && c.isKnownArchiveType(f.mtype.String()))
+}
+
+// refusedRestoredArchive lists a restored archive against the forbidden paths. A
+// listing that cannot be trusted or matched is a final refusal with an error, never
+// a retry that reports nothing.
+func (c *Connector) refusedRestoredArchive(f fileToAnalyze) (*datamodel.Result, error) {
+	archiveLogger := logger.With(slog.String("input file", f.location), slog.String("sha256", f.sha256))
+	names, known, err := c.listedNames(f, c.config.RecursiveExtractMaxFiles, archiveLogger)
+	if err != nil {
+		return nil, err
+	}
+	if !known {
+		return &datamodel.Result{Error: errRestoredUnchecked}, nil
+	}
+	refusal, err := c.matchMembers(f, names, archiveLogger)
+	if errors.Is(err, errPathTooLong) || errors.Is(err, errPathRulesSlow) {
+		return &datamodel.Result{Error: fmt.Errorf("%w: %w", errRestoredUnchecked, err)}, nil
+	}
+	return refusal, err
+}
+
 func (c *Connector) handleRestoredFile(location string, sha256 string, size int64, want FileIdentity, run *ongoing, in *inputFD) (err error) {
 	res := datamodel.Result{
 		Filename: filepath.Base(location),
@@ -703,11 +772,19 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 		FileSize: size,
 		Restored: true,
 	}
+	refusal, refuseErr := c.refusedWhenRestored(location, sha256, size, want, run, in)
+	if refuseErr != nil {
+		return refuseErr
+	}
+	if refusal != nil {
+		res = *refusal
+	}
 	if newres := c.fileScanned(location, run, sha256, res); newres != nil {
 		res = *newres
 	}
-	// A plugin may return another result: the file was restored all the same.
-	res.Restored = true
+	// A plugin may return another result: the file was restored all the same,
+	// unless the path rules or the plugins refused it.
+	res.Restored = refusal == nil
 	if pathErr := c.checkPath(location); pathErr != nil {
 		refusePath(location, pathErr)
 		c.setFinal(location, run)
@@ -719,6 +796,11 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	report := &datamodel.Report{}
 	actionCtx, cancel := context.WithTimeout(c.workContext(), c.actionTimeout(size))
 	defer cancel()
+	if refusal != nil {
+		// Refused for its path or its type, not for what it holds: quarantined although
+		// the content was restored, and its restored mark kept.
+		actionCtx = quarantine.WithRefusedAnyway(actionCtx)
+	}
 	err = c.action.Handle(actionCtx, in.source(location, want, sha256), res, report)
 	if err != nil {
 		logger.Error("could not handle file action", slog.String("file", location), slog.String(logErrorKey, err.Error()))

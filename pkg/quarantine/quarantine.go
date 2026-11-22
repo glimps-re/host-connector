@@ -222,10 +222,22 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fIn *os
 	locker := q.locker
 	quarantineDir := q.location
 
+	refusedAnyway := isRefusedAnyway(ctx)
 	if restored, restoredErr := q.isRestored(ctx, file, fileSHA256); restoredErr != nil {
 		return "", "", restoredErr
-	} else if restored {
+	} else if restored && !refusedAnyway {
 		return "", "", ErrRestored
+	}
+	if refusedAnyway {
+		// A refusal for the path or the type of the file is no verdict on its content:
+		// the mark of a restored entry is never lowered by it.
+		prev, getErr := q.registry.Get(ctx, entry.ID)
+		switch {
+		case getErr == nil && prev.Restored():
+			entry.RestoredAt, entry.CreatedAt = prev.RestoredAt, prev.CreatedAt
+		case getErr != nil && !errors.Is(getErr, errEntryNotFound):
+			return "", "", getErr
+		}
 	}
 	// Stat the open descriptor: the size recorded in the container must be the
 	// one of the bytes read, not of a path that may be swapped meanwhile.
@@ -280,6 +292,22 @@ func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fIn *os
 	location = entry.QuarantineLocation
 	id = entry.ID
 	return
+}
+
+type refusedAnywayKey struct{}
+
+// WithRefusedAnyway marks ctx for Quarantine: the file is quarantined although its
+// content was restored, because it is refused for where it is or what type it is,
+// not for what it holds. Only the scanner sets it, for a restored file that the path
+// rules or the OnScanFile chain refused. The restored mark of the content is kept.
+func WithRefusedAnyway(ctx context.Context) context.Context {
+	return context.WithValue(ctx, refusedAnywayKey{}, true)
+}
+
+// isRefusedAnyway tells whether ctx carries the mark of WithRefusedAnyway.
+func isRefusedAnyway(ctx context.Context) bool {
+	v, _ := ctx.Value(refusedAnywayKey{}).(bool)
+	return v
 }
 
 func (q *QuarantineHandler) IsRestored(ctx context.Context, location string, sha256 string) (restored bool, err error) {

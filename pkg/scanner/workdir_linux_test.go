@@ -3,14 +3,12 @@
 package scanner
 
 import (
-	"bytes"
 	"fmt"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 
@@ -136,23 +134,6 @@ func TestNewWorkDir_warnsOnMemoryFS(t *testing.T) {
 	if out := buf.String(); !strings.Contains(out, "memory filesystem") || !strings.Contains(out, `"level":"WARN"`) {
 		t.Errorf("log = %q, want a Warn about the memory filesystem", out)
 	}
-}
-
-type lockedBuffer struct {
-	mu sync.Mutex
-	b  bytes.Buffer
-}
-
-func (l *lockedBuffer) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-
-func (l *lockedBuffer) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
 }
 
 func captureConsole(t *testing.T) *lockedBuffer {

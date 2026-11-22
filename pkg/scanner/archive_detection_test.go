@@ -29,24 +29,15 @@ func nestedExtract(t *testing.T, outer, inner []string, innerUnavailable bool) p
 func nestedExtractThen(t *testing.T, outer, inner []string, innerUnavailable bool, beforeFail func()) plugins.ExtractFile {
 	t.Helper()
 	var calls atomic.Int32
-	write := func(outputDir string, names []string) (plugins.Extraction, error) {
-		files := make([]string, 0, len(names))
-		for _, n := range names {
-			content := "C-" + n
-			if n == "inner.zip" {
-				content = zipOf(t, 10)
-			}
-			p := filepath.Join(outputDir, n)
-			if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-				return plugins.Extraction{}, err
-			}
-			files = append(files, p)
+	content := func(n string) string {
+		if n == "inner.zip" {
+			return zipOf(t, 10)
 		}
-		return plugins.Extraction{Files: files}, nil
+		return "C-" + n
 	}
 	return func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
 		if calls.Add(1) == 1 {
-			return write(outputDir, outer)
+			return writeMembers(outputDir, outer, content)
 		}
 		if innerUnavailable {
 			if beforeFail != nil {
@@ -54,8 +45,22 @@ func nestedExtractThen(t *testing.T, outer, inner []string, innerUnavailable boo
 			}
 			return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
 		}
-		return write(outputDir, inner)
+		return writeMembers(outputDir, inner, content)
 	}
+}
+
+// writeMembers deposits one file per name in outputDir, with the content that
+// content gives for it, and returns them as an extraction.
+func writeMembers(outputDir string, names []string, content func(name string) string) (plugins.Extraction, error) {
+	files := make([]string, 0, len(names))
+	for _, n := range names {
+		p := filepath.Join(outputDir, n)
+		if err := os.WriteFile(p, []byte(content(n)), 0o600); err != nil {
+			return plugins.Extraction{}, err
+		}
+		files = append(files, p)
+	}
+	return plugins.Extraction{Files: files}, nil
 }
 
 func detectNamed(names ...string) func(string) (gdetect.Result, error) {
@@ -226,15 +231,14 @@ func TestArchiveDetection_anExtractorThatGoesDownWhileAMemberIsInFlightDoesNotLo
 	for _, remove := range []bool{false, true} {
 		t.Run(fmt.Sprintf("remove=%t", remove), func(t *testing.T) {
 			for range 5 {
-				failed := make(chan struct{})
-				var once sync.Once
+				failed := newGate()
 				r := runAcc(t, accSetup{
 					files:   map[string]string{"evil.zip": zipOf(t, 10)},
-					extract: nestedExtractThen(t, []string{"a-bad.bin", "inner.zip", "z.bin"}, nil, true, func() { once.Do(func() { close(failed) }) }),
+					extract: nestedExtractThen(t, []string{"a-bad.bin", "inner.zip", "z.bin"}, nil, true, failed.open),
 					remove:  remove, workers: 4,
 					submit: func(n string) (gdetect.Result, error) {
 						if n == "a-bad.bin" {
-							<-failed
+							failed.wait()
 						}
 						return detectNamed("a-bad.bin")(n)
 					},
@@ -254,15 +258,14 @@ func TestArchiveDetection_anExtractorThatGoesDownWhileAMemberIsInFlightDoesNotLo
 	}
 	t.Run("without a detection the archive is abandoned, left in INPUT and retried", func(t *testing.T) {
 		for range 5 {
-			failed := make(chan struct{})
-			var once sync.Once
+			failed := newGate()
 			r := runAcc(t, accSetup{
 				files:   map[string]string{"evil.zip": zipOf(t, 10)},
-				extract: nestedExtractThen(t, []string{"a.bin", "inner.zip"}, nil, true, func() { once.Do(func() { close(failed) }) }),
+				extract: nestedExtractThen(t, []string{"a.bin", "inner.zip"}, nil, true, failed.open),
 				workers: 4,
 				submit: func(n string) (gdetect.Result, error) {
 					if n == "a.bin" {
-						<-failed
+						failed.wait()
 					}
 					return gdetect.Result{}, nil
 				},
@@ -542,27 +545,18 @@ func TestArchiveStatus_abandon(t *testing.T) {
 func threeLevels(t *testing.T, beforeFail func()) plugins.ExtractFile {
 	t.Helper()
 	var calls atomic.Int32
-	write := func(outputDir string, names ...string) (plugins.Extraction, error) {
-		files := make([]string, 0, len(names))
-		for _, n := range names {
-			content := "C-" + n
-			if strings.HasSuffix(n, ".zip") {
-				content = zipOf(t, 10)
-			}
-			p := filepath.Join(outputDir, n)
-			if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
-				return plugins.Extraction{}, err
-			}
-			files = append(files, p)
+	content := func(n string) string {
+		if strings.HasSuffix(n, ".zip") {
+			return zipOf(t, 10)
 		}
-		return plugins.Extraction{Files: files}, nil
+		return "C-" + n
 	}
 	return func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
 		switch calls.Add(1) {
 		case 1:
-			return write(outputDir, "inner.zip", "z-last.bin")
+			return writeMembers(outputDir, []string{"inner.zip", "z-last.bin"}, content)
 		case 2:
-			return write(outputDir, "m.bin", "deep.zip")
+			return writeMembers(outputDir, []string{"m.bin", "deep.zip"}, content)
 		default:
 			if beforeFail != nil {
 				beforeFail()
@@ -577,15 +571,14 @@ func threeLevels(t *testing.T, beforeFail func()) plugins.ExtractFile {
 // reaches the top-level archive; without one the file is left in place.
 func TestArchiveDetection_aSubArchiveAbandonedWithAMemberInFlightReportsToItsParent(t *testing.T) {
 	for range 5 {
-		failed := make(chan struct{})
-		var once sync.Once
+		failed := newGate()
 		r := runAcc(t, accSetup{
 			files:   map[string]string{"evil.zip": zipOf(t, 10)},
-			extract: threeLevels(t, func() { once.Do(func() { close(failed) }) }),
+			extract: threeLevels(t, failed.open),
 			workers: 4,
 			submit: func(n string) (gdetect.Result, error) {
 				if n == "m.bin" {
-					<-failed
+					failed.wait()
 					return gdetect.Result{Malware: true, Malwares: []string{"evil"}}, nil
 				}
 				return gdetect.Result{}, nil
@@ -601,15 +594,14 @@ func TestArchiveDetection_aSubArchiveAbandonedWithAMemberInFlightReportsToItsPar
 	}
 	t.Run("without a detection", func(t *testing.T) {
 		for range 5 {
-			failed := make(chan struct{})
-			var once sync.Once
+			failed := newGate()
 			r := runAcc(t, accSetup{
 				files:   map[string]string{"evil.zip": zipOf(t, 10)},
-				extract: threeLevels(t, func() { once.Do(func() { close(failed) }) }),
+				extract: threeLevels(t, failed.open),
 				workers: 4,
 				submit: func(n string) (gdetect.Result, error) {
 					if n == "m.bin" {
-						<-failed
+						failed.wait()
 					}
 					return gdetect.Result{}, nil
 				},
@@ -650,25 +642,8 @@ func TestArchiveDetection_aTopLevelArchiveLetThroughKeepsThePipelinesSizeAndHash
 
 // The console line of a detection says why, even when the plugin left the reason
 // empty.
-type lineSink struct {
-	mu sync.Mutex
-	b  strings.Builder
-}
-
-func (l *lineSink) Write(p []byte) (int, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.Write(p)
-}
-func (l *lineSink) Close() error { return nil }
-func (l *lineSink) String() string {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return l.b.String()
-}
-
 func TestArchiveDetection_theConsoleLineOfADetectionWithoutReasonSaysWhy(t *testing.T) {
-	sink := &lineSink{}
+	sink := &lockedBuffer{}
 	runAcc(t, accSetup{
 		files:  map[string]string{"p.bin": "X"},
 		inform: sink,

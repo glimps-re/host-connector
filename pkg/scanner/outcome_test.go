@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -657,13 +658,54 @@ func TestRuns_anAbandonedArchiveWaitsForItsMembersInFlightThenEndsItsRun(t *test
 
 func waitUntil(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	if !pollUntil(10*time.Second, cond) {
+		t.Fatalf("timeout waiting for %s", what)
+	}
+}
+
+// pollUntil reports whether cond became true within timeout.
+func pollUntil(timeout time.Duration, cond func() bool) bool {
+	deadline := time.Now().Add(timeout)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for %s", what)
+			return false
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
+	return true
+}
+
+// gate is a one-shot signal: open may be called any number of times.
+type gate struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+func newGate() *gate { return &gate{ch: make(chan struct{})} }
+
+func (g *gate) open() { g.once.Do(func() { close(g.ch) }) }
+
+func (g *gate) wait() { <-g.ch }
+
+// lockedBuffer is a writer that tests may read while the code under test still
+// writes to it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) Close() error { return nil }
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // Once the plugins were told a run ended, nothing tells them again: a member

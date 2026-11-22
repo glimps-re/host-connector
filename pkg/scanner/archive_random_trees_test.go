@@ -157,6 +157,9 @@ func TestArchiveDetection_randomTreesNeverLoseADetection(t *testing.T) {
 	if testing.Short() {
 		iterations = 8
 	}
+	// The sleeps that simulate latency (slow, exWait, plugWait) make the
+	// interleaving of the workers differ from one run to the next: a seed fixes the
+	// tree, not the order in which its members finish.
 	for seed := range int64(iterations) {
 		rng := &prng{state: uint64(seed+1) * 0x9e3779b97f4a7c15}
 		top := randomTree(rng)
@@ -195,31 +198,26 @@ func TestArchiveDetection_randomTreesNeverLoseADetection(t *testing.T) {
 				time.Sleep(n.exWait)
 				return plugins.Extraction{}, fmt.Errorf("7z: %w", plugins.ErrExtractorUnavailable)
 			}
-			files := make([]string, 0, len(n.kids))
-			for _, k := range n.kids {
-				content := fmt.Sprintf("C-%d", k.id)
-				if k.archive {
-					content = zipOf(t, 10) + fmt.Sprintf("TAG%d", k.id)
-				}
-				p := filepath.Join(outputDir, k.name())
-				if err = os.WriteFile(p, []byte(content), 0o600); err != nil {
-					return plugins.Extraction{}, err
-				}
-				files = append(files, p)
+			names := make([]string, len(n.kids))
+			for i, k := range n.kids {
+				names[i] = k.name()
 			}
-			return plugins.Extraction{Files: files}, nil
+			return writeMembers(outputDir, names, func(name string) string {
+				k := byName[name]
+				if k.archive {
+					return zipOf(t, 10) + fmt.Sprintf("TAG%d", k.id)
+				}
+				return fmt.Sprintf("C-%d", k.id)
+			})
 		}
 		var leaked int
 		after := func(c *Connector) {
-			for range 100 {
+			pollUntil(10*time.Second, func() bool {
 				c.archiveStatus.RLock()
 				leaked = len(c.archiveStatus.statusByID)
 				c.archiveStatus.RUnlock()
-				if leaked == 0 {
-					return
-				}
-				time.Sleep(20 * time.Millisecond)
-			}
+				return leaked == 0
+			})
 		}
 		r := runAcc(t, accSetup{
 			files:   map[string]string{"evil.zip": zipOf(t, 10) + "TAG0"},

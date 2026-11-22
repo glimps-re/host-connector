@@ -210,3 +210,38 @@ func TestAnalyze_theSubmittedNameOfAMemberHoldsNoWorkFolder(t *testing.T) {
 		t.Errorf("error %v, names sent %q, want one, /in/a.zip/d/evil.bin", res.Error, sent)
 	}
 }
+
+func TestSubmissionLabel_hiddenRunes(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"right-to-left override", "invoice\u202Eexe.pdf", "invoice_exe.pdf"},
+		{"isolate", "a\u2066b\u2069c", "a_b_c"},
+		{"zero width space", "a.exe\u200B", "a.exe_"},
+		{"soft hyphen", "a\u00ADb", "a_b"},
+		{"filler", "a\u3164b", "a_b"},
+		{"variation selector", "a\uFE0Fb", "a_b"},
+		{"tag character", "a\U000E0041b", "a_b"},
+		{"line separator", "a\u2028b", "a_b"},
+		{"bidi in a folder name", "/in/dir\u202Egpj/file.txt", "/in/dir_gpj/file.txt"},
+		{"invalid UTF-8", "a\xffb", "a\uFFFDb"},
+		{"nbsp and emoji kept", "a\u00A0b\U0001F600", "a\u00A0b\U0001F600"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := submissionLabel(tt.in); got != tt.want {
+				t.Errorf("submissionLabel(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSubmissionLabel_hiddenRunesAreCappedKeepingTheTail(t *testing.T) {
+	in := strings.Repeat("\u202E/", 3000) + "evil.exe"
+	got := submissionLabel(in)
+	if len(got) > maxSubmissionLabel || !strings.HasSuffix(got, "evil.exe") || strings.Contains(got, "\u202E") {
+		t.Errorf("label of %d bytes, tail kept %v, bidi left %v", len(got), strings.HasSuffix(got, "evil.exe"), strings.Contains(got, "\u202E"))
+	}
+}

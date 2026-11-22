@@ -249,13 +249,8 @@ func TestPathFilter_rawAndLogicalForms(t *testing.T) {
 			forbidden: []string{`\.exe[^/]*$`}, check: wantForbidden,
 		},
 		{
-			name: "an end anchor does not see a trailing newline", file: "run.exe\n",
-			forbidden: []string{`\.exe$`}, check: func(t *testing.T, _ *accRun, got datamodel.Result) {
-				t.Helper()
-				if got.Malware {
-					t.Errorf("result = %+v, want a file that the rule does not match", got)
-				}
-			},
+			name: "an end anchor sees through a trailing newline", file: "run.exe\n",
+			forbidden: []string{`\.exe$`}, check: wantForbidden,
 		},
 		{
 			name: "a name whose logical form is skipped but not its raw form is analyzed", file: "a\x01b.txt",

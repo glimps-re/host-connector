@@ -20,7 +20,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/alecthomas/units"
@@ -29,6 +28,7 @@ import (
 	"github.com/glimps-re/connector-integration/sdk/events"
 	"github.com/glimps-re/connector-integration/sdk/metrics"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -290,18 +290,14 @@ func sanitizeControl(p string) string {
 const maxSubmissionLabel = 4096
 
 // submissionLabel is the name sent with a submission, which the service reads from
-// a header of the upload: control characters (C0, DEL, C1) and the line and
-// paragraph separators U+2028 and U+2029 become "_", and invalid UTF-8 becomes
-// U+FFFD, so that no server that splits lines refuses the file for its name. A
+// a header of the upload: each hidden rune (see displaytext.IsHidden: controls,
+// bidirectional and zero-width characters, line separators, blank fillers)
+// becomes "_", and invalid UTF-8 becomes U+FFFD, so that no server that splits
+// lines refuses the file for its name and no viewer shows another name. A
 // name longer than maxSubmissionLabel keeps its tail, which holds the member's
 // own name, behind an ellipsis.
 func submissionLabel(p string) string {
-	label := strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == 0x2028 || r == 0x2029 {
-			return '_'
-		}
-		return r
-	}, p)
+	label := displaytext.Replace(p, '_')
 	if len(label) <= maxSubmissionLabel {
 		return label
 	}

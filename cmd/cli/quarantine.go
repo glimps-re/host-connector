@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/glimps-re/connector-integration/sdk"
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/spf13/cobra"
 )
 
@@ -40,7 +41,7 @@ var quarantineListCmd = &cobra.Command{
 			if err != nil {
 				return err
 			}
-			fmt.Printf("|%-64s|%-64s|%-64s|\n", f.ID, f.Reason, filepath.Base(f.Filepath))
+			fmt.Printf("|%-64s|%-64s|%-64s|\n", f.ID, displaytext.Sanitize(f.Reason), displaytext.Sanitize(filepath.Base(f.Filepath)))
 		}
 		return nil
 	},

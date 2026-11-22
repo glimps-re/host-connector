@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/glimps-re/connector-integration/sdk/events"
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
@@ -460,7 +461,7 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 	actions := []string{}
 	details := []string{}
 	if result.Malware {
-		details = result.Malwares
+		details = slices.Clone(result.Malwares)
 		if report.QuarantineLocation != "" {
 			actions = append(actions, "quarantined")
 			details = append(details, report.QuarantineLocation)
@@ -472,7 +473,11 @@ func (a *PrintAction) Handle(ctx context.Context, src Source, result datamodel.R
 		details = append(details, report.MovedTo)
 		actions = append(actions, "moved")
 	}
-	s := fmt.Sprintf("time: %s, file: %s, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %v", now().UTC().Format(time.RFC3339), path, result.SHA256, strconv.FormatBool(result.Malware), reason, actions, details)
+	shown := make([]string, len(details))
+	for i, d := range details {
+		shown[i] = displaytext.Sanitize(d)
+	}
+	s := fmt.Sprintf("time: %s, file: %q, sha256: %s, flagged: %s, reason: %s, actions: %v, details: %q", now().UTC().Format(time.RFC3339), displaytext.Sanitize(path), result.SHA256, strconv.FormatBool(result.Malware), reason, actions, shown)
 	notAnalyzed := result.NotAnalyzedReason != "" || result.NotAnalyzedSubfilesCount > 0 || len(result.NotAnalyzedSubfiles) > 0
 	if result.Malware || a.Verbose || report.MovedTo != "" || notAnalyzed {
 		_, err = fmt.Fprintln(a.Out, s)

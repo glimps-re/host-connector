@@ -93,8 +93,8 @@ func TestPathFilter_Apply_logicalPath(t *testing.T) {
 		{"nested archive", "/in/alice/a.zip/b.zip/y.exe", true},
 		{"name of 4096 bytes", "/in/alice/" + strings.Repeat("a", 4096-len("/in/alice/.exe")) + ".exe", true},
 		{"neutralized control character", "/in/alice/a.zip/a_b.exe", true},
-		{"dot-dot does not leave the archive", "/in/alice/a.zip/../../etc/y.exe\x00", false},
-		{"nul at the end", "/in/alice/a.zip/y.exe\x00", false},
+		{"dot-dot with a nul at the end", "/in/alice/a.zip/../../etc/y.exe\x00", true},
+		{"nul at the end is folded away", "/in/alice/a.zip/y.exe\x00", true},
 		{"empty name", "", false},
 	}
 	for _, tt := range tests {
@@ -496,9 +496,13 @@ func TestPathFilter_hasForbidden(t *testing.T) {
 }
 
 func TestPathFilter_regexpDoesNotTellInvalidUTF8FromItsReplacement(t *testing.T) {
-	f := mustPathFilter(t, nil, []string{`a\x{FFFD}b$`})
-	if !f.skipsPath("/in/a�b", "/in/a\xffb") {
-		t.Error("skipsPath() = false: RE2 reads an invalid byte as U+FFFD, both forms match")
+	forbidden := mustPathFilter(t, []string{`a\x{FFFD}b$`}, nil)
+	if d, _ := forbidden.decide("/in/a\uFFFDb", "/in/a\xffb", true); d != pathForbidden {
+		t.Errorf("decide() = %d, want forbidden: RE2 reads an invalid byte as U+FFFD", d)
+	}
+	skipped := mustPathFilter(t, nil, []string{`a\x{FFFD}b$`})
+	if skipped.skipsPath("/in/a\uFFFDb", "/in/a\xffb") {
+		t.Error("skipsPath() = true, want false: the folded form without the invalid byte does not match")
 	}
 }
 
@@ -591,4 +595,135 @@ func TestNewPathFilter_agreesWithTheSDKValidation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPathFilter_decideFoldedForm(t *testing.T) {
+	tests := []struct {
+		name      string
+		forbidden []string
+		skipped   []string
+		path      string
+		want      pathDecision
+	}{
+		{"forbidden, zero width space after the extension", []string{`\.exe$`}, nil, "a.exe\u200B", pathForbidden},
+		{"forbidden, soft hyphen in the extension", []string{`\.exe$`}, nil, "a.ex\u00ADe", pathForbidden},
+		{"forbidden, newline after the extension", []string{`\.exe$`}, nil, "a.exe\n", pathForbidden},
+		{"forbidden, override before the extension", []string{`\.exe$`}, nil, "a\u202Eexe.exe", pathForbidden},
+		{"forbidden, tag character", []string{`\.exe$`}, nil, "a.exe\U000E0041", pathForbidden},
+		{"forbidden, combining grapheme joiner", []string{`\.exe$`}, nil, "a.exe\u034F", pathForbidden},
+		{"forbidden, variation selector 16", []string{`\.exe$`}, nil, "a.exe\uFE0F", pathForbidden},
+		{"forbidden, variation selector supplement", []string{`\.exe$`}, nil, "a.exe\U000E0100", pathForbidden},
+		{"forbidden, mongolian variation selector", []string{`\.exe$`}, nil, "a.exe\u180B", pathForbidden},
+		{"forbidden, khmer inherent vowel", []string{`\.exe$`}, nil, "a.exe\u17B4", pathForbidden},
+		{"forbidden, unassigned default ignorable 2065", []string{`\.exe$`}, nil, "a.exe\u2065", pathForbidden},
+		{"forbidden, unassigned default ignorable FFF0", []string{`\.exe$`}, nil, "a.exe\uFFF0", pathForbidden},
+		{"forbidden, unassigned default ignorable E0000", []string{`\.exe$`}, nil, "a.exe\U000E0000", pathForbidden},
+		{"forbidden, unassigned default ignorable E0080", []string{`\.exe$`}, nil, "a.exe\U000E0080", pathForbidden},
+		{"forbidden, braille blank", []string{`\.exe$`}, nil, "a.exe\u2800", pathForbidden},
+		{"forbidden, invalid UTF-8 byte", []string{`\.exe$`}, nil, "a.exe\xff", pathForbidden},
+		{"forbidden, a rule on the hidden rune still matches the raw form", []string{`\x{200b}`}, nil, "a\u200Bb", pathForbidden},
+		{"forbidden, folded form joins two halves", []string{`^ab$`}, nil, "a\u200Bb", pathForbidden},
+		{"forbidden, trailing spaces are still not caught", []string{`\.exe$`}, nil, "a.exe ", pathUnruled},
+		{"forbidden, a plain name is unchanged", []string{`\.exe$`}, nil, "a.txt", pathUnruled},
+		{"skipped by every form", nil, []string{`\.log$`}, "a\u200B.log", pathSkipped},
+		{"not skipped when the raw form fails", nil, []string{`^a\.log$`}, "a\u200B.log", pathUnruled},
+		{"not skipped when only the folded form matches", nil, []string{`^ab$`}, "a\u200Bb", pathUnruled},
+		{"not widened by a control character and a hidden rune", nil, []string{`^/in/a\.log$`}, "/in/a\x01\u200B.log", pathUnruled},
+		{"forbidden wins over skipped", []string{`\.exe$`}, []string{`\.log$`}, "a.exe\u200B", pathForbidden},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := mustPathFilter(t, tt.forbidden, tt.skipped)
+			for _, name := range []string{tt.path, sanitizeControl(tt.path)} {
+				got, _ := f.decide(name, tt.path, true)
+				if got != tt.want {
+					t.Errorf("decide(%q, %q) = %d, want %d", name, tt.path, got, tt.want)
+				}
+			}
+			if got, _ := f.decide(tt.path, "", true); got != tt.want {
+				t.Errorf("decide(%q, \"\") = %d, want %d", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPathFilter_decideFoldedFormIsBounded(t *testing.T) {
+	long := strings.Repeat("a", maxMatchedPath) + "\u200B"
+	tests := []struct {
+		name      string
+		forbidden []string
+		want      pathDecision
+	}{
+		{"checked with forbidden paths: too long", []string{`\.exe$`}, pathTooLong},
+		{"no forbidden paths: unruled", nil, pathUnruled},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := mustPathFilter(t, tt.forbidden, []string{`a$`})
+			if got, _ := f.decide(long, long, true); got != tt.want {
+				t.Errorf("decide() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFoldHidden(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"plain", "plain.txt", "plain.txt"},
+		{"hidden runes and controls", "a\u200Bb\u202Ec\nd\x00e", "abcde"},
+		{"only hidden runes", "\u200B\u202E", ""},
+		{"nbsp and ideographic space kept", "a\u00A0b\u3000", "a\u00A0b\u3000"},
+		{"invalid UTF-8 dropped", "a\xffb", "ab"},
+		{"truncated sequence dropped", "a\xe2\x82", "a"},
+		{"literal replacement character kept", "a\uFFFDb\xff", "a\uFFFDb"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := foldHidden(tt.in); got != tt.want {
+				t.Errorf("foldHidden(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// A name without hidden rune must cost no more than before the folded form: no
+// third form, no allocation, on the path of every file.
+func TestPathFilter_plainNameHasNoExtraForm(t *testing.T) {
+	f := mustPathFilter(t, nil, []string{`\.log$`})
+	allocs := testing.AllocsPerRun(100, func() {
+		f.decide("/in/a.log", "/in/a.log", true)
+	})
+	if allocs != 0 {
+		t.Errorf("a plain name allocates %v times, want 0", allocs)
+	}
+}
+
+func BenchmarkPathFilter_plainName(b *testing.B) {
+	f := mustPathFilter(b, []string{`\.(exe|dll)$`}, []string{`^/in/trusted/`})
+	b.ReportAllocs()
+	for b.Loop() {
+		f.decide("/in/other/a.txt", "/in/other/a.txt", true)
+	}
+}
+
+func BenchmarkFoldHidden(b *testing.B) {
+	plain := "/srv/in/" + strings.Repeat("segment/", 500)[:4000] + "file.bin"
+	hidden := plain + "\u202E"
+	b.Run("plain 4 KiB", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			foldHidden(plain)
+		}
+	})
+	b.Run("hidden 4 KiB", func(b *testing.B) {
+		b.ReportAllocs()
+		for b.Loop() {
+			foldHidden(hidden)
+		}
+	})
 }

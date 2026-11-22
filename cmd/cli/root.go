@@ -105,6 +105,7 @@ func initRoot(rootCmd *cobra.Command) {
 
 var rootCmd = &cobra.Command{
 	Use:               "GMHost",
+	SilenceErrors:     true,
 	PersistentPreRunE: resolveShutdownTimes,
 	Short:             "GLIMPS Malware Host connector is a tool to scan files with GLIMPS Malware Detect",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {

@@ -1579,13 +1579,13 @@ func TestE2E_aNewlineInAnArchiveNameDoesNotEscapeAForbiddenPath(t *testing.T) {
 // the end of the text, so `\.exe$` alone would not match even the raw name). A
 // control character makes the raw and the sanitized names differ: a file whose
 // sanitized name matches the skip rule `a_b\.txt$` but whose raw name does not is
-// analyzed. An invalid UTF-8 byte does not: RE2 reads it as U+FFFD, and so does
-// the sanitized form, so both give the same verdict and the folder is skipped.
+// analyzed. An invalid UTF-8 byte does not change the verdict of `trusted[^/]*`:
+// every form of the name matches, and the folder is skipped.
 func TestE2E_pathRulesMatchTheRawAndTheSanitizedName(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{config: pathFilter(
 		[]string{`\.exe[^/]*$`},
-		[]string{"/tom/trusted[_\\x{FFFD}]/", `a_b\.txt$`},
+		[]string{`/tom/trusted[^/]*/`, `a_b\.txt$`},
 	)})
 	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
 	exe := []byte("a file whose name ends in .exe and a newline")

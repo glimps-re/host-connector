@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"os"
@@ -8,8 +9,10 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
 
@@ -272,17 +275,22 @@ const (
 	pathTooLong
 )
 
-// decide matches the rules against the logical path name and its raw form (the
+// decide matches the rules against the logical path name, its raw form (the
 // path as the file system gives it: control characters and invalid UTF-8 are
-// kept, which name leaves out). A forbidden rule that matches either form
-// forbids; the path is skipped only when a skipped rule matches both forms, and
-// only if skip is set. A form over maxMatchedPath is never truncated nor skipped:
+// kept, which name leaves out) and its folded form (the raw form without its
+// hidden runes, see displaytext.IsHidden: `\.exe$` then catches "a.exe" followed
+// by a zero-width space). A forbidden rule that matches any form forbids; the
+// path is skipped only when a skipped rule matches every form, and only if skip
+// is set. A form over maxMatchedPath is never truncated nor skipped:
 // with forbidden paths set, the path cannot be checked. rule is the pattern that
 // decided.
 func (f *PathFilter) decide(name, raw string, skip bool) (d pathDecision, rule string) {
 	forms := []string{name}
 	if raw != "" && raw != name {
 		forms = append(forms, raw)
+	}
+	if folded := foldHidden(cmp.Or(raw, name)); !slices.Contains(forms, folded) {
+		forms = append(forms, folded)
 	}
 	for _, form := range forms {
 		if len(form) > maxMatchedPath {
@@ -314,6 +322,33 @@ func (f *PathFilter) decide(name, raw string, skip bool) (d pathDecision, rule s
 		rule = hit
 	}
 	return pathSkipped, rule
+}
+
+// foldHidden returns p without its hidden runes and without its bytes of
+// invalid UTF-8 (a U+FFFD that p holds is kept), so that a rule written for the
+// visible name matches it. It allocates only when p changes.
+func foldHidden(p string) string {
+	var b strings.Builder
+	last := 0
+	for i := 0; i < len(p); {
+		r, size := rune(p[i]), 1
+		if r >= utf8.RuneSelf {
+			r, size = utf8.DecodeRuneInString(p[i:])
+		}
+		if (r == utf8.RuneError && size == 1) || displaytext.IsHidden(r) {
+			if b.Cap() == 0 {
+				b.Grow(len(p))
+			}
+			b.WriteString(p[last:i])
+			last = i + size
+		}
+		i += size
+	}
+	if last == 0 {
+		return p
+	}
+	b.WriteString(p[last:])
+	return b.String()
 }
 
 // skipsPath tells whether the rules skip the path (a forbidden rule overrides).

@@ -356,7 +356,7 @@ func TestPrintAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: false, reason: seems safe, actions: [], details: []`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: "test_file.bin", sha256: , flagged: false, reason: seems safe, actions: [], details: []`,
 		},
 		{
 			name: "test malware",
@@ -370,7 +370,7 @@ func TestPrintAction_Handle(t *testing.T) {
 				path:   "test_file.bin",
 				report: &datamodel.Report{},
 			},
-			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: true, reason: , actions: [], details: []`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: "test_file.bin", sha256: , flagged: true, reason: , actions: [], details: []`,
 		},
 		{
 			name: "test malware quarantine",
@@ -388,7 +388,7 @@ func TestPrintAction_Handle(t *testing.T) {
 					QuarantineLocation: "/tmp/q/test.lock",
 				},
 			},
-			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: , flagged: true, reason: , actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: "test_file.bin", sha256: , flagged: true, reason: , actions: [quarantined deleted], details: ["eicar" "test_eicar" "/tmp/q/test.lock"]`,
 		},
 		{
 			name: "test malware full info",
@@ -428,7 +428,7 @@ func TestPrintAction_Handle(t *testing.T) {
 					GMalwareURL:        "https://gmalware.glimps.re/analysis/abc123",
 				},
 			},
-			wantOut: `time: 2050-01-01T00:00:00Z, file: test_file.bin, sha256: sha256, flagged: true, reason: malware-detected, actions: [quarantined deleted], details: [eicar test_eicar /tmp/q/test.lock]`,
+			wantOut: `time: 2050-01-01T00:00:00Z, file: "test_file.bin", sha256: sha256, flagged: true, reason: malware-detected, actions: [quarantined deleted], details: ["eicar" "test_eicar" "/tmp/q/test.lock"]`,
 		},
 	}
 	for _, tt := range tests {
@@ -655,6 +655,84 @@ func TestMoveAction_Handle_ErrorKeepsTheDetectionReport(t *testing.T) {
 			}
 			if renamed {
 				t.Error("a file in error must never be moved")
+			}
+		})
+	}
+}
+
+func TestPrintAction_Handle_hiddenRunes(t *testing.T) {
+	tests := []struct {
+		name      string
+		path      string
+		result    datamodel.Result
+		report    datamodel.Report
+		wantIn    []string
+		wantNotIn []string
+	}{
+		{
+			name:      "newline and override in the path",
+			path:      "x\n\u202Ey.exe",
+			result:    datamodel.Result{SHA256: "sha", Malware: true, Malwares: []string{"Bad"}},
+			wantIn:    []string{"file: \"x\uFFFD\uFFFDy.exe\","},
+			wantNotIn: []string{"\u202E", "x\n"},
+		},
+		{
+			name:      "a name that forges the next fields stays inside the quotes",
+			path:      "x, flagged: false",
+			result:    datamodel.Result{SHA256: "sha", Malware: true, Malwares: []string{"Bad"}},
+			wantIn:    []string{`file: "x, flagged: false", sha256: sha, flagged: true,`},
+			wantNotIn: []string{"file: x,"},
+		},
+		{
+			name:      "a name with a quote cannot close the quotes",
+			path:      `x", sha256: forged, y: "`,
+			result:    datamodel.Result{SHA256: "sha", Malware: true, Malwares: []string{"Bad"}},
+			wantIn:    []string{`file: "x\", sha256: forged, y: \"", sha256: sha,`},
+			wantNotIn: []string{`file: "x",`},
+		},
+		{
+			name:      "threat names and quarantine location",
+			path:      "/in/f",
+			result:    datamodel.Result{SHA256: "sha", Malware: true, Malwares: []string{"Evil\u202EX", "Bad\nname"}},
+			report:    datamodel.Report{QuarantineLocation: "/q/a\u200Bb\n.zip"},
+			wantIn:    []string{"Evil\uFFFDX", "Bad\uFFFDname", "/q/a\uFFFDb\uFFFD.zip"},
+			wantNotIn: []string{"\u202E", "\u200B", "name\n"},
+		},
+		{
+			name:      "moved destination",
+			path:      "/in/f",
+			result:    datamodel.Result{SHA256: "sha"},
+			report:    datamodel.Report{MovedTo: "/out/a\u2067b"},
+			wantIn:    []string{"/out/a\uFFFDb"},
+			wantNotIn: []string{"\u2067"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			a := &PrintAction{Out: &out, Verbose: true}
+			names := make([]string, len(tt.result.Malwares), len(tt.result.Malwares)+1)
+			copy(names, tt.result.Malwares)
+			tt.result.Malwares = names[:len(names):cap(names)]
+			if err := a.Handle(t.Context(), Source{Path: tt.path}, tt.result, &tt.report); err != nil {
+				t.Fatal(err)
+			}
+			got := out.String()
+			if strings.Count(got, "\n") != 1 || !strings.HasSuffix(got, "\n") {
+				t.Errorf("printed %q, want exactly one line", got)
+			}
+			for _, w := range tt.wantIn {
+				if !strings.Contains(got, w) {
+					t.Errorf("printed %q, want it to contain %q", got, w)
+				}
+			}
+			for _, w := range tt.wantNotIn {
+				if strings.Contains(got, w) {
+					t.Errorf("printed %q, want it not to contain %q", got, w)
+				}
+			}
+			if full := tt.result.Malwares[:cap(tt.result.Malwares)]; len(full) > len(tt.result.Malwares) && full[len(tt.result.Malwares)] != "" {
+				t.Errorf("the handler wrote %q after the threat names of the result", full[len(tt.result.Malwares)])
 			}
 		})
 	}

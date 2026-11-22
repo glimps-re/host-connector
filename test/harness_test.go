@@ -1,10 +1,5 @@
 //go:build linux
 
-// Package test holds the acceptance tests that run the real binary.
-//
-// A verdict counts as given by the fake GLIMPS Malware Detect only when its
-// answer was written and flushed and the request was still alive: what the
-// server cannot see is a connector that received the bytes and dropped them.
 package test
 
 import (

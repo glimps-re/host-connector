@@ -510,6 +510,20 @@ go test -cover
 find cmd/plugins -name "*_test.go" -execdir go test \;
 ```
 
+The end-to-end suite (`test/`, build tag `e2e`) runs the real binary against fake services. It takes longer than the default 10-minute timeout of `go test`, so set one:
+
+```bash
+go test -race -tags e2e -timeout 30m ./test/
+
+# A single scenario
+go test -race -tags e2e -timeout 30m -run 'TestE2E_archives$' ./test/
+
+# Lint, including the suite
+golangci-lint run --build-tags e2e ./test/...
+```
+
+It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it). The browser scenarios need Chromium or Chrome, run as a non-root user (Chrome refuses root); they are skipped when it is absent, or fail with `E2E_REQUIRE_BROWSER=1`. See `test/doc.go`.
+
 ### Security Considerations
 
 - **Sandboxing**: Plugins run in the same process space as GMHost

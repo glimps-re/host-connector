@@ -1,16 +1,5 @@
 //go:build linux && e2e
 
-// The end-to-end suite runs the real binary against a fake GLIMPS Malware
-// Detect and a fake console. It is not part of `go test ./...`:
-//
-//	go test -tags e2e ./test/...
-//	golangci-lint run --build-tags e2e ./test/...
-//
-// It needs the Go toolchain (the binary and the plugins are built once). The
-// scenarios that need Chrome or the embedded 7-Zip skip with a message when
-// they are absent. Every scenario ends with the OUTPUT invariant, which also
-// runs when the scenario fails early.
-
 package test
 
 import (

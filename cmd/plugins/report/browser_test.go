@@ -276,6 +276,12 @@ func TestRender_hardeningFlagsAndNoSandboxOption(t *testing.T) {
 	}
 }
 
+func TestRenderTimeout_defaultIsFiveMinutes(t *testing.T) {
+	if renderTimeout != 300*time.Second {
+		t.Errorf("renderTimeout = %s, want 5m0s", renderTimeout)
+	}
+}
+
 func TestRender_hungBrowserFailsWithinTheRenderTimeout(t *testing.T) {
 	prev := renderTimeout
 	renderTimeout = 2 * time.Second

@@ -120,7 +120,7 @@ type Config struct {
 }
 
 const (
-	defaultReportTimeout   = 2 * time.Minute
+	defaultReportTimeout   = 6 * time.Minute
 	defaultReportRetries   = 3
 	defaultInflightTimeout = 24 * time.Hour
 	defaultCleanupTimeout  = 2 * time.Minute

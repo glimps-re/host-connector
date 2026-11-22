@@ -252,6 +252,23 @@ func TestCheckConfig_aCleanupWithoutABudgetIsRefused(t *testing.T) {
 	}
 }
 
+func TestGetDefaultConfig_reportTimeoutOutlastsTheRendering(t *testing.T) {
+	// The report plugin gives a PDF rendering 5 minutes (renderTimeout); an
+	// attempt also waits for a browser slot and writes every export, so a
+	// shorter report_timeout would cut a render that is still within its bound.
+	const renderBound = 5 * time.Minute
+	c, ok := new(SessionPlugin).GetDefaultConfig().(*Config)
+	if !ok {
+		t.Fatalf("default config has type %T", new(SessionPlugin).GetDefaultConfig())
+	}
+	if c.ReportTimeout != 6*time.Minute {
+		t.Errorf("default report_timeout = %s, want 6m", c.ReportTimeout)
+	}
+	if c.ReportTimeout <= renderBound {
+		t.Errorf("default report_timeout = %s, want more than the %s rendering bound", c.ReportTimeout, renderBound)
+	}
+}
+
 func TestGetDefaultConfig_removesEmptyFoldersByDefault(t *testing.T) {
 	c, ok := new(SessionPlugin).GetDefaultConfig().(*Config)
 	if !ok || !c.RemoveEmptyDirs || c.CleanupTimeout != 2*time.Minute {

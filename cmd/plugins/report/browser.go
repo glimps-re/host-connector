@@ -100,7 +100,7 @@ const (
 )
 
 // renderTimeout bounds one rendering; a variable for tests.
-var renderTimeout = 2 * time.Minute
+var renderTimeout = 300 * time.Second
 
 // renderSlots bounds the browsers running at the same time.
 var renderSlots = make(chan struct{}, 2)

@@ -86,9 +86,10 @@ session:
     exports: []
 
     # Time given to each attempt to generate and write the report of one
-    # session (default: 2m). A failed attempt is retried at the next check
-    # report_retries times (default: 3), then a JSON report is written instead
-    # report_timeout: 2m
+    # session (default: 6m, it should exceed the 5 minutes the PDF rendering may
+    # take). A failed attempt is retried at the next check report_retries times
+    # (default: 3), then a JSON report is written instead
+    # report_timeout: 6m
     # report_retries: 3
 
     # Longest a session is held open, since its last activity, by files that

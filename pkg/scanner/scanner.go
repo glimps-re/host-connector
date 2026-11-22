@@ -817,6 +817,11 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	// A plugin may return another result: the file was restored all the same,
 	// unless the path rules or the plugins refused it.
 	res.Restored = refusal == nil
+	// Set after the plugins: a refusal, a detection or a reason a plugin gave is
+	// never replaced by it.
+	if res.Restored && !res.Malware && res.Error == nil && res.NotAnalyzedReason == "" {
+		res.NotAnalyzedReason = datamodel.NotAnalyzedRestored
+	}
 	if pathErr := c.checkPath(location); pathErr != nil {
 		refusePath(location, pathErr)
 		c.setFinal(location, run)

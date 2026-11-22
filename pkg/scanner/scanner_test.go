@@ -631,8 +631,8 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("unwanted error: %v", err)
 				}
 				c.Close(t.Context())
-				// File should not be acted upon (no output)
-				assertNoOutput(t, buff)
+				// Not acted upon, but listed as not analyzed
+				assertRestoredOutput(t, buff)
 				// File should still exist (not deleted)
 				if _, err := os.Stat(testFile); err != nil {
 					t.Fatalf("file %s should still exist but got error: %v", testFile, err)
@@ -669,7 +669,7 @@ func TestNewConnector(t *testing.T) {
 				}
 				c.Close(t.Context())
 				// Even if cache set fails, file should still be marked as restored
-				assertNoOutput(t, buff)
+				assertRestoredOutput(t, buff)
 			},
 		},
 		{
@@ -2796,5 +2796,12 @@ func TestFileToAnalyze_logicalPathNeutralizesControlCharactersAtTheTopLevel(t *t
 	}
 	if got := (fileToAnalyze{location: "/in/alice/a.exe"}).logical(); got != "/in/alice/a.exe" {
 		t.Errorf("logical() = %q, want the location unchanged", got)
+	}
+}
+
+func assertRestoredOutput(t *testing.T, buff *bytes.Buffer) {
+	t.Helper()
+	if out := buff.String(); strings.Count(out, "not analyzed (restored)") != 1 || strings.Contains(out, "seems safe") {
+		t.Errorf("inform output = %q, want one line, not analyzed (restored)", out)
 	}
 }

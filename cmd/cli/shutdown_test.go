@@ -327,3 +327,64 @@ func TestResolveShutdownTimes(t *testing.T) {
 		t.Errorf("times = %+v, error %v, want 30s and 15s", stopTimes, err)
 	}
 }
+
+func TestWaitConsole(t *testing.T) {
+	closed := make(chan struct{})
+	close(closed)
+	tests := []struct {
+		name     string
+		done     <-chan struct{}
+		deadline time.Time
+		want     bool
+	}{
+		{"ended", closed, time.Now().Add(time.Minute), true},
+		{"ended after the deadline", closed, time.Now().Add(-time.Second), true},
+		{"never ends, deadline passed", make(chan struct{}), time.Now().Add(-time.Second), false},
+		{"never ends, short deadline", make(chan struct{}), time.Now().Add(50 * time.Millisecond), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			start := time.Now()
+			if got := waitConsole(tt.done, tt.deadline); got != tt.want {
+				t.Errorf("waitConsole() = %v, want %v", got, tt.want)
+			}
+			if took := time.Since(start); took > 2*time.Second {
+				t.Errorf("waitConsole() took %s, want it bounded by the deadline", took)
+			}
+		})
+	}
+}
+
+func TestConsoleDeadline_countsFromTheSignal(t *testing.T) {
+	prevTimes, prevSignal := stopTimes, signalAt.Load()
+	t.Cleanup(func() { stopTimes = prevTimes; signalAt.Store(prevSignal) })
+	stopTimes.total = 8 * time.Second
+	at := time.Now().Add(-5 * time.Second)
+	signalAt.Store(&at)
+	if got, want := consoleDeadline(), at.Add(8*time.Second); !got.Equal(want) {
+		t.Errorf("consoleDeadline() = %v, want %v", got, want)
+	}
+}
+
+func TestConsoleDeadline_withoutASignalCountsFromNow(t *testing.T) {
+	prevTimes, prevSignal := stopTimes, signalAt.Load()
+	t.Cleanup(func() { stopTimes = prevTimes; signalAt.Store(prevSignal) })
+	stopTimes.total = 8 * time.Second
+	signalAt.Store(nil)
+	before := time.Now()
+	got := consoleDeadline()
+	if got.Before(before.Add(8*time.Second)) || got.After(time.Now().Add(8*time.Second)) {
+		t.Errorf("consoleDeadline() = %v, want 8s after now", got)
+	}
+}
+
+func TestWaitConsole_aConsoleLoopThatNeverEndsDoesNotHoldTheExit(t *testing.T) {
+	never := make(chan struct{})
+	start := time.Now()
+	if waitConsole(never, start.Add(100*time.Millisecond)) {
+		t.Fatal("waitConsole() = true for a loop that never ends")
+	}
+	if took := time.Since(start); took < 90*time.Millisecond || took > 2*time.Second {
+		t.Errorf("waitConsole() returned after %s, want about the deadline", took)
+	}
+}

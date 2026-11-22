@@ -178,6 +178,38 @@ func runStop(parent context.Context, stop stopper) {
 		slog.Duration("duration", took))
 }
 
+// consoleDeadline is the end of the delay of the stop, counted from the signal,
+// or from now when there is none: call it before the stop starts, so that the
+// delay is the one the stop itself gets. The console loop acknowledges the
+// tasks it will not run while the plugins close, so it only gets the time the
+// stop has left, never more than shutdown_timeout.
+func consoleDeadline() time.Time {
+	start := time.Now()
+	if at := signalAt.Load(); at != nil {
+		start = *at
+	}
+	return start.Add(stopTimes.total)
+}
+
+// waitConsole waits until done is closed or deadline passes, and reports which.
+// A closed done wins over a deadline already passed. It is the only wait of the
+// exit once the guard of the stop is released, so nothing else may block it.
+func waitConsole(done <-chan struct{}, deadline time.Time) bool {
+	select {
+	case <-done:
+		return true
+	default:
+	}
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
 func stopHandler(drain, closing context.Context) scanner.ShutdownSummary {
 	summary, err := hostHandler.Shutdown(drain, closing)
 	if err != nil {

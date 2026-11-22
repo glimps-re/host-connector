@@ -48,8 +48,18 @@ var agentCmd = &cobra.Command{
 				logger.Error("error starting host connector, wait for a reconfigure from connector manager...", slog.String("error", err.Error()))
 			}
 		}
-		defer runStop(cmd.Context(), stopHandler)
-		go console.Start(cmd.Context(), hostHandler)
+		consoleDone := make(chan struct{})
+		defer func() {
+			deadline := consoleDeadline()
+			runStop(cmd.Context(), stopHandler)
+			if !waitConsole(consoleDone, deadline) {
+				logger.Warn("the console loop did not end in time: tasks it fetched may be left to the console's timeout")
+			}
+		}()
+		go func() {
+			defer close(consoleDone)
+			console.Start(cmd.Context(), hostHandler)
+		}()
 		<-cmd.Context().Done()
 		return
 	},

@@ -112,6 +112,9 @@ func TestRestored_aRefusalStillWins(t *testing.T) {
 			if tt.name == "a refusal of a plugin, with an error only" && got.Error == nil {
 				t.Error("the refusal has no error")
 			}
+			if !tt.wantRestored && got.NotAnalyzedReason != "" {
+				t.Errorf("a refused result carries the reason %q, want none", got.NotAnalyzedReason)
+			}
 			if analyses != 0 {
 				t.Errorf("%d analyses, want none: a restored content is never analyzed", analyses)
 			}

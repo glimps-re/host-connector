@@ -267,13 +267,8 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 	for _, f := range extraction.Skipped {
 		reasons[f.Reason] = true
 		result.FilteredVolume = addVolume(result.FilteredVolume, f.Size)
-		if len(result.NotAnalyzedSubfiles) < datamodel.MaxListedSubfiles {
-			f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
-			result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
-		}
 	}
-	// A plugin may have set the count of the result already: it is added to without wrapping around.
-	result.NotAnalyzedSubfilesCount = datamodel.AddCount(result.NotAnalyzedSubfilesCount, count)
+	listNotAnalyzed(result, extraction.Skipped, count)
 	reason := strings.Join(sortedReasons(reasons), ",")
 	if policy == PolicyMitigate {
 		markMitigated(result, datamodel.TooBig)
@@ -282,6 +277,20 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 	}
 	logger.Warn("archive passed with members left out by the limits of the extraction", slog.String("file", location), slog.Int("members", count), slog.String(logReasonKey, reason))
 	return nil
+}
+
+// listNotAnalyzed adds members to the files not analyzed of a result, within
+// datamodel.MaxListedSubfiles, and their exact count. A plugin may have set the
+// count of the result already: it is added to without wrapping around.
+func listNotAnalyzed(result *datamodel.Result, members []datamodel.NotAnalyzedFile, count int) {
+	for _, f := range members {
+		if len(result.NotAnalyzedSubfiles) >= datamodel.MaxListedSubfiles {
+			break
+		}
+		f.FileName = datamodel.CutText(f.FileName, datamodel.MaxListedNameLen)
+		result.NotAnalyzedSubfiles = append(result.NotAnalyzedSubfiles, f)
+	}
+	result.NotAnalyzedSubfilesCount = datamodel.AddCount(result.NotAnalyzedSubfilesCount, count)
 }
 
 func sortedReasons(set map[datamodel.NotAnalyzedReason]bool) []string {

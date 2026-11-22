@@ -17,6 +17,7 @@ import (
 	"github.com/gabriel-vasile/mimetype"
 
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
+	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -621,7 +622,7 @@ func scanDocument(t *testing.T, policy Unanalyzable, check func() error) (*famil
 }
 
 // scanDocumentExtraction is scanDocument with the whole answer of the extractor.
-func scanDocumentExtraction(t *testing.T, policy Unanalyzable, check func() (plugins.Extraction, error)) (*familyRun, string) {
+func scanDocumentExtraction(t *testing.T, policy Unanalyzable, check func() (plugins.Extraction, error), tweak ...func(*Connector)) (*familyRun, string) {
 	t.Helper()
 	noOpenInputs(t)
 	run := &familyRun{anomalyRun: &anomalyRun{done: &outcomes{}}}
@@ -644,6 +645,9 @@ func scanDocumentExtraction(t *testing.T, policy Unanalyzable, check func() (plu
 		run.reports = append(run.reports, r)
 		run.mu.Unlock()
 	})
+	for _, f := range tweak {
+		f(run.conn)
+	}
 	path := filepath.Join(run.src, "report.docx")
 	if err := os.WriteFile(path, docxBytes(t), 0o600); err != nil {
 		t.Fatal(err)
@@ -1008,60 +1012,63 @@ func TestCheckZipFamily_isHeldToWhatIsLeftOfTheBudget(t *testing.T) {
 	}
 }
 
-// A document that finds no budget left to be checked is left out like any
-// archive the limits do not let open, not made damaged: the operator's too_big
-// policy decides, as for every other archive. Past the limits (a negative
-// remainder: the totals may pass them by what the last archive held) it is said
-// at once, as checkBeforeExtract does; with exactly nothing left the extractor is
-// asked, and every member being over the budget it leaves them out.
-func TestCheckZipFamily_noBudgetLeftLeavesTheDocumentOutLikeAnArchive(t *testing.T) {
+// A document that finds no budget left is not left out: the extractor is asked
+// with a budget of nothing, every member being over it, and the document goes on
+// as a plain file with its members listed as unchecked. Past the limits (a
+// negative remainder: the totals may pass them by what the last archive held) the
+// budget is clamped to nothing, as it is with exactly nothing left.
+func TestCheckZipFamily_noBudgetLeftAsksForAListingWithABudgetOfNothing(t *testing.T) {
 	tests := []struct {
-		name        string
-		files       int
-		size        int64
-		wantChecked bool
-		wantLimited bool
+		name      string
+		files     int
+		size      int64
+		wantFiles int
+		wantSize  int64
 	}{
-		{name: "budget left", files: 30, size: 400, wantChecked: true},
-		{name: "no file left: the extractor leaves the members out", files: 100, size: 400, wantChecked: true, wantLimited: true},
-		{name: "files over the limit", files: 130, size: 400, wantLimited: true},
-		{name: "no byte left: the extractor leaves the members out", files: 30, size: 1000, wantChecked: true, wantLimited: true},
-		{name: "bytes over the limit", files: 30, size: 1500, wantLimited: true},
+		{name: "budget left", files: 30, size: 400, wantFiles: 70, wantSize: 600},
+		{name: "no file left", files: 100, size: 400, wantSize: 600},
+		{name: "files over the limit", files: 130, size: 400},
+		{name: "no byte left", files: 30, size: 1000, wantFiles: 70},
+		{name: "bytes over the limit", files: 30, size: 1500},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var checked bool
+			var asked plugins.ExtractLimits
 			prev := ExtractFile
 			ExtractFile = func(_, _ string, limits plugins.ExtractLimits) (plugins.Extraction, error) {
-				checked = true
+				asked = limits
 				if limits.MaxFiles == 0 || limits.MaxTotalSize == 0 {
 					// What the extractor does with a budget of nothing: every member is over it.
-					return plugins.Extraction{SkippedCount: 1}, nil
+					return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "m", Reason: datamodel.NotAnalyzedExtractLimit}}, SkippedCount: 1}, nil
 				}
 				return plugins.Extraction{}, nil
 			}
 			t.Cleanup(func() { ExtractFile = prev })
 			got := checkedDocument(t, tt.files, tt.size)
-			if checked != tt.wantChecked {
-				t.Errorf("the extractor was asked = %t, want %t", checked, tt.wantChecked)
+			if !asked.CheckOnly || asked.MaxFiles != tt.wantFiles || asked.MaxTotalSize != tt.wantSize {
+				t.Errorf("limits = %+v, want a check with %d files and %d bytes", asked, tt.wantFiles, tt.wantSize)
 			}
-			if got.limitSkipped != tt.wantLimited {
-				t.Errorf("limitSkipped = %t, want %t", got.limitSkipped, tt.wantLimited)
+			if got.limitSkipped {
+				t.Error("a document is never limitSkipped: it is analyzed whole")
+			}
+			if wantUnchecked := tt.wantFiles == 0 || tt.wantSize == 0; (got.uncheckedCount == 1) != wantUnchecked {
+				t.Errorf("uncheckedCount = %d, want unchecked members: %t", got.uncheckedCount, wantUnchecked)
 			}
 		})
 	}
 }
 
-// A check that cannot hold every member to the budget leaves them out: the
-// document is not submitted whole as if it had been checked.
-func TestCheckZipFamily_membersLeftOutByTheBudgetLeaveTheDocumentOut(t *testing.T) {
+// A check that cannot hold every member to the budget does not test the document:
+// it goes on whole as a plain file, its members listed as unchecked.
+func TestCheckZipFamily_membersLeftOutByTheBudgetAreUncheckedNotAPolicyCase(t *testing.T) {
 	prev := ExtractFile
 	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 		return plugins.Extraction{SkippedCount: 3}, nil
 	}
 	t.Cleanup(func() { ExtractFile = prev })
-	if got := checkedDocument(t, 0, 0); !got.limitSkipped {
-		t.Error("a document whose members the check left out for the budget must be limitSkipped")
+	got := checkedDocument(t, 0, 0)
+	if got.limitSkipped || got.uncheckedCount != 3 || len(got.uncheckedMembers) != 0 {
+		t.Errorf("limitSkipped = %t, uncheckedCount = %d, listed = %d, want a plain file with 3 unchecked members", got.limitSkipped, got.uncheckedCount, len(got.uncheckedMembers))
 	}
 }
 
@@ -1088,58 +1095,98 @@ func checkedDocument(t *testing.T, files int, size int64) fileToAnalyze {
 
 // The check of a document uses what the extractor says was left out, by its count
 // or by its list: either is enough.
-func TestCheckZipFamily_theListOfMembersLeftOutIsEnoughToLeaveTheDocumentOut(t *testing.T) {
+func TestCheckZipFamily_theListOfMembersLeftOutIsEnoughToLeaveThemUnchecked(t *testing.T) {
 	prev := ExtractFile
+	member := datamodel.NotAnalyzedFile{FileName: "a", Reason: datamodel.NotAnalyzedExtractLimit}
 	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
-		return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{{FileName: "a", Reason: datamodel.NotAnalyzedExtractLimit}}}, nil
+		return plugins.Extraction{Skipped: []datamodel.NotAnalyzedFile{member}}, nil
 	}
 	t.Cleanup(func() { ExtractFile = prev })
-	if got := checkedDocument(t, 0, 0); !got.limitSkipped {
-		t.Error("a list of members left out, with a count of 0, must leave the document out")
+	got := checkedDocument(t, 0, 0)
+	if got.limitSkipped || got.uncheckedCount != 1 || len(got.uncheckedMembers) != 1 || got.uncheckedMembers[0] != member {
+		t.Errorf("file = %+v, want a plain file with its member unchecked", got)
 	}
 }
 
-// What becomes of a document left out by the budget is what any archive over the
-// limits becomes: the stricter of too_big and encrypted decides.
-func TestZipFamily_aDocumentOverTheBudgetFollowsTheStricterPolicy(t *testing.T) {
-	overBudget := func() (plugins.Extraction, error) { return plugins.Extraction{SkippedCount: 2}, nil }
-	tests := []struct {
-		name   string
-		policy Unanalyzable
-		want   string // "kept" (a failure, left in INPUT), "mitigated" (malware too-big) or "delivered"
-	}{
-		{"default", Unanalyzable{}, "kept"},
-		{"too_big pass, encrypted error", Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyError}, "kept"},
-		{"too_big error, encrypted pass", Unanalyzable{TooBig: PolicyError, Encrypted: PolicyPass}, "kept"},
-		{"too_big mitigate, encrypted pass", Unanalyzable{TooBig: PolicyMitigate, Encrypted: PolicyPass}, "mitigated"},
-		{"both pass", Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyPass}, "delivered"},
+// A document over the check limits is analyzed whole, as a plain file: no policy
+// applies to its members, and its members are listed as not analyzed.
+func TestZipFamily_aDocumentOverTheBudgetIsAnalyzedWholeWhateverThePolicy(t *testing.T) {
+	overBudget := func() (plugins.Extraction, error) {
+		return plugins.Extraction{
+			Skipped:      []datamodel.NotAnalyzedFile{{FileName: "a.xml", Reason: datamodel.NotAnalyzedExtractLimit}, {FileName: "b.xml", Size: 5, Reason: datamodel.NotAnalyzedExtractLimit}},
+			SkippedCount: 2,
+		}, nil
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			run, path := scanDocumentExtraction(t, tt.policy, overBudget)
+	for name, policy := range map[string]Unanalyzable{
+		"default":               {},
+		"error":                 {TooBig: PolicyError, Encrypted: PolicyError},
+		"mitigate":              {TooBig: PolicyMitigate, Encrypted: PolicyMitigate},
+		"pass":                  {TooBig: PolicyPass, Encrypted: PolicyPass},
+		"too_big mitigate only": {TooBig: PolicyMitigate, Encrypted: PolicyPass},
+	} {
+		t.Run(name, func(t *testing.T) {
+			run, _ := scanDocumentExtraction(t, policy, overBudget)
 			reports := run.reportList()
 			if len(reports) != 1 {
 				t.Fatalf("reports = %+v, want one", reports)
 			}
 			r := reports[0]
-			_, deliveredErr := os.Stat(filepath.Join(run.dst, "report.docx"))
-			_, inputErr := os.Stat(path)
-			switch tt.want {
-			case "kept":
-				if r.Error == "" || r.Malicious || deliveredErr == nil || inputErr != nil {
-					t.Errorf("report %+v, delivered %t, in INPUT %t, want a failure, nothing delivered, the document left in INPUT", r, deliveredErr == nil, inputErr == nil)
-				}
-			case "mitigated":
-				if !r.Malicious || r.MalwareReason != datamodel.TooBig || r.Error != "" || deliveredErr == nil {
-					t.Errorf("report %+v, delivered %t, want malware with the reason too-big, no error, and nothing delivered", r, deliveredErr == nil)
-				}
-			case "delivered":
-				if r.NotAnalyzedReason != datamodel.NotAnalyzedExtractLimit || r.Error != "" || r.Malicious || deliveredErr != nil {
-					t.Errorf("report %+v, delivered %t, want the document delivered, marked extract-limit", r, deliveredErr == nil)
-				}
+			if _, err := os.Stat(filepath.Join(run.dst, "report.docx")); err != nil {
+				t.Errorf("the document is not in OUTPUT: %v", err)
 			}
-			if run.extractions.Load() != 0 {
-				t.Error("a document was extracted")
+			if r.Error != "" || r.Malicious || r.NotAnalyzedReason != "" {
+				t.Errorf("report %+v, want an analyzed document", r)
+			}
+			if r.NotAnalyzedExtractedCount != 2 || len(r.NotAnalyzedExtractedFiles) != 2 || r.NotAnalyzedExtractedFiles[0].Reason != datamodel.NotAnalyzedExtractLimit {
+				t.Errorf("not analyzed members = %d %+v, want the 2 members, extract-limit", r.NotAnalyzedExtractedCount, r.NotAnalyzedExtractedFiles)
+			}
+			if r.FilteredVolume != 0 {
+				t.Errorf("filtered volume = %d, want nothing: the document was analyzed whole", r.FilteredVolume)
+			}
+			if run.submitted.Load() != 1 || run.extractions.Load() != 0 {
+				t.Errorf("submissions = %d, extractions = %d, want the document submitted once, never extracted", run.submitted.Load(), run.extractions.Load())
+			}
+		})
+	}
+}
+
+// What the analysis says of the document still decides: a detection quarantines
+// it, an analysis error follows analysis_error, the members are listed only for a
+// document that goes through.
+func TestZipFamily_aDocumentOverTheBudgetStillFollowsItsVerdict(t *testing.T) {
+	overBudget := func() (plugins.Extraction, error) { return plugins.Extraction{SkippedCount: 2}, nil }
+	tests := []struct {
+		name          string
+		verdict       gdetect.Result
+		wantMalicious bool
+		wantError     bool
+	}{
+		{"a detection", gdetect.Result{Malware: true, Malwares: []string{"m"}}, true, false},
+		{"an analysis error", gdetect.Result{Error: "engine failed"}, false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			run, _ := scanDocumentExtraction(t, Unanalyzable{}, overBudget, func(c *Connector) {
+				c.submitter = echoReader(&gdetectMock.MockGDetectSubmitter{
+					ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
+					WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
+						return tt.verdict, nil
+					},
+				})
+			})
+			reports := run.reportList()
+			if len(reports) != 1 {
+				t.Fatalf("reports = %+v, want one", reports)
+			}
+			r := reports[0]
+			if _, err := os.Stat(filepath.Join(run.dst, "report.docx")); err == nil {
+				t.Error("the document must not be delivered")
+			}
+			if r.Malicious != tt.wantMalicious || (r.Error != "") != tt.wantError {
+				t.Errorf("report %+v, want malicious %t, error %t", r, tt.wantMalicious, tt.wantError)
+			}
+			if r.NotAnalyzedExtractedCount != 0 {
+				t.Errorf("a document that is not delivered lists %d unchecked members, want none", r.NotAnalyzedExtractedCount)
 			}
 		})
 	}

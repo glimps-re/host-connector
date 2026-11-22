@@ -107,6 +107,9 @@ type extractResult struct {
 	// overBudget is set by a check that holds the listing to a budget it exceeds,
 	// with nothing else wrong: the members are left out, not damaged.
 	overBudget bool
+	// withinBudget holds, when overBudget is set, the names the listing kept within
+	// the budget: the check tests none of them either.
+	withinBudget []string
 	// encryptionExcluded is set, when there are anomalies, once it is proven that
 	// the archive holds no encrypted content.
 	encryptionExcluded bool
@@ -363,12 +366,12 @@ const technicalSeparator = "----------"
 // before the first separator is the archive's own (its comment is printed raw
 // and can hold any line): only its first "Type =" counts. After it, each member
 // is a block starting with "Path = ", of which only the first "Encrypted =" line
-// counts. The number of members must be the number the listing announced, when
+// counts, and any "Method =" line that names AES. The number of members must be the number the listing announced, when
 // that is known.
 func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath string, entries int) (info encryptionInfo, err error) {
 	var archiveType string
 	var records, separators, plain int
-	inBlock, sawEncrypted := false, false
+	inBlock, sawEncrypted, sawAES := false, false, false
 	_, runErr := sze.runStream(ctx, "", []string{"-spd", "-slt", "--", "l", archivePath}, func(r io.Reader) error {
 		sc := bufio.NewScanner(r)
 		sc.Buffer(make([]byte, 0, buffSize), maxListingLine)
@@ -403,6 +406,13 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 				}
 			case !inBlock && (bytes.HasPrefix(line, []byte("Type = ")) || bytes.HasPrefix(line, []byte("Encrypted = "))):
 				return fmt.Errorf("%w: a member field before the first member", errBadListing)
+			case inBlock && bytes.HasPrefix(line, []byte("Method = ")) && bytes.Contains(line, []byte("AES")):
+				// A zip member whose encryption flag is cleared in both headers still
+				// prints its method as AES-256 (7z reads it from the extra field). Any
+				// such line counts: a member comment is printed before the method and can
+				// forge an earlier line, which can only add a false positive.
+				sawAES = true
+				info.encrypted = true
 			case inBlock && !sawEncrypted && bytes.HasPrefix(line, []byte("Encrypted = ")):
 				sawEncrypted = true
 				switch string(line) {
@@ -424,7 +434,7 @@ func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath stri
 		return info, fmt.Errorf("%w: %d members in the technical listing, %d announced", errBadListing, records, entries)
 	}
 	info.zip = archiveType == "zip"
-	info.allPlain = plain == records
+	info.allPlain = plain == records && !sawAES
 	return info, nil
 }
 
@@ -529,8 +539,7 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 		return res, nil
 	case t.skipped.count > 0:
 		if len(res.anomalies) == 0 {
-			res.overBudget = true
-			return res, nil
+			return nopw.holdOverBudget(ctx, archivePath, res, t.selected)
 		}
 		res.anomalies = noteAnomaly(res.anomalies, "the listing announces more members or bytes than the extraction budget allows")
 		return res, nil
@@ -554,6 +563,46 @@ func (sze *sevenZipExtract) checkOnly(ctx context.Context, archivePath string, l
 		return res, runErr
 	}
 	return res, nopw.decideEncryption(ctx, archivePath, trace, res.listedEntries, runErr)
+}
+
+// isListingContentFailure tells a technical listing that cannot be trusted (not
+// as expected, too many members, output too large, a failure 7z recovers from or an
+// encryption hint) from a failure of the host.
+func isListingContentFailure(err error) bool {
+	return errors.Is(err, errBadListing) || errors.Is(err, errTooManyEntries) || errors.Is(err, errSevenZipOutputTooLarge) ||
+		errors.Is(err, errSevenZipRecoverable) || errors.Is(err, errEncryptionHint)
+}
+
+// holdOverBudget decides a listing over the budget with nothing else wrong, which
+// is not tested: the technical listing is read all the same (no decompression),
+// since a member that says Encrypted = + makes the file encrypted, and a listing
+// that does not say that every member is plain leaves an encryption possible. Only
+// a listing that is all plain is left out as over the budget, with the names of
+// the members within it.
+func (sze *sevenZipExtract) holdOverBudget(ctx context.Context, archivePath string, res extractResult, withinBudget []string) (extractResult, error) {
+	info, err := sze.encryptionInfo(ctx, archivePath, res.listedEntries)
+	switch {
+	case ctx.Err() != nil && err != nil:
+		return res, ctx.Err()
+	case err != nil && !isListingContentFailure(err):
+		// A failure of the host or of the extractor (a timeout, a cancelled context,
+		// an extractor that does not run, an I/O error) says nothing of the document:
+		// it is retried.
+		return res, err
+	case err != nil:
+		sze.logger.Warn("the technical listing of a document over the limits is not as expected", slog.String("error", err.Error()))
+		res.anomalies = noteAnomaly(res.anomalies, "the technical listing of a document over the limits cannot be read")
+		res.dataFailure = true
+	case info.encrypted:
+		return res, ErrInvalidPassword
+	case !info.allPlain:
+		res.anomalies = noteAnomaly(res.anomalies, "a member of a document over the limits is not marked plain")
+		res.dataFailure = true
+	default:
+		res.overBudget = true
+		res.withinBudget = withinBudget
+	}
+	return res, nil
 }
 
 // walkFolders walks the headers of an archive 7z listed as a zip (see

@@ -224,6 +224,12 @@ type fileToAnalyze struct {
 	// pathRefusal is the refusal that the path rules gave to a skipped archive for
 	// one of its members: the archive goes on as a file and ends with it.
 	pathRefusal *datamodel.Result
+	// uncheckedMembers lists the members of a zip-family document that the check
+	// could not cover because of the limits (at most datamodel.MaxListedSubfiles,
+	// reason extract-limit); uncheckedCount is their exact number. The document is
+	// analyzed whole and delivered as a plain file: these only go into its report.
+	uncheckedMembers []datamodel.NotAnalyzedFile
+	uncheckedCount   int
 }
 
 // named is the file with a name: the location of a deposited one.
@@ -819,7 +825,7 @@ func (c *Connector) handleRestoredFile(location string, sha256 string, size int6
 	res.Restored = refusal == nil
 	// Set after the plugins: a refusal, a detection or a reason a plugin gave is
 	// never replaced by it.
-	if res.Restored && !res.Malware && res.Error == nil && res.NotAnalyzedReason == "" {
+	if res.Restored && !res.Malware && res.Error == nil && res.AnalysisError == "" && res.NotAnalyzedReason == "" {
 		res.NotAnalyzedReason = datamodel.NotAnalyzedRestored
 	}
 	if pathErr := c.checkPath(location); pathErr != nil {
@@ -1836,17 +1842,16 @@ func (c *Connector) zipFamily(mtype *mimetype.MIME) bool {
 // encryption possible. Nothing is extracted: no depth is used, and the check is
 // held to what is left of the budget of the archive the document is a member of
 // (the whole budget for a deposit). A document that finds none left, or whose
-// members the check cannot all be held to it, is left out like any archive the
-// limits do not let open (limitSkipped, which the too_big policy decides).
+// members the check cannot all be held to it, is not tested: it is analyzed whole
+// as a plain file, no policy applies to its members, and they are listed as not
+// analyzed in its report.
 func (c *Connector) checkZipFamily(file fileToAnalyze, extractedFiles int, extractedSize int64, fileLogger *slog.Logger) error {
 	maxFiles := c.config.RecursiveExtractMaxFiles - extractedFiles
 	maxSize := c.config.RecursiveExtractMaxSize - extractedSize
-	// Exhausted as checkBeforeExtract says it: the totals went past the limits. With
-	// nothing left but not past, the extractor is asked: every member is then over
-	// the budget, and the document is left out by it.
+	// A spent budget (the totals went past the limits) is a budget of zero: the
+	// extractor lists every member as over it, so that the report names them.
 	if maxFiles < 0 || maxSize < 0 {
-		fileLogger.Debug("the budget of the extraction is spent, no document is checked")
-		return c.sendForAnalyze(file.limited(), fileLogger)
+		maxFiles, maxSize = 0, 0
 	}
 	outputDir, err := os.MkdirTemp(c.work.extractDir(), "x-")
 	if err != nil {
@@ -1865,7 +1870,11 @@ func (c *Connector) checkZipFamily(file fileToAnalyze, extractedFiles int, extra
 	}
 	switch {
 	case extractErr == nil && max(extraction.SkippedCount, len(extraction.Skipped)) > 0:
-		return c.sendForAnalyze(file.limited(), fileLogger)
+		file = file.named()
+		file.uncheckedMembers = extraction.Skipped
+		file.uncheckedCount = max(extraction.SkippedCount, len(extraction.Skipped))
+		fileLogger.Warn("zip-family document over the check limits: delivered with its members unchecked", slog.Int("members", file.uncheckedCount))
+		return c.sendForAnalyze(file, fileLogger)
 	case extractErr == nil:
 		return c.sendForAnalyze(file.named(), fileLogger)
 	case errors.Is(extractErr, plugins.ErrEncrypted):
@@ -2223,6 +2232,12 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 
 	defer func() {
 		fileLogger.Debug("file handled", slog.Any("result", result))
+	}()
+
+	defer func() {
+		if result.Error == nil && result.AnalysisError == "" && !result.Malware && input.uncheckedCount > 0 {
+			listNotAnalyzed(&result, input.uncheckedMembers, input.uncheckedCount)
+		}
 	}()
 
 	ctx, cancel := context.WithTimeout(c.workContext(), c.analysisTimeout())

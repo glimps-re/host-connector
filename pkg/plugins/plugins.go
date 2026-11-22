@@ -94,12 +94,20 @@ type ExtractLimits struct {
 	// bomb (MaxFileSize does not apply), and an integrity test of every member with a
 	// password that nobody knows. A member that needs one, a password the extractor
 	// knows included, makes the archive encrypted, since nothing is extracted and
-	// nothing would be analyzed. The Extraction is empty; the error says what was
+	// nothing would be analyzed. The Extraction is empty unless the listing is over
+	// the budget (see below); the error says what was
 	// found, with the same sentinels as an extraction (nil: readable and not
 	// encrypted); ErrUnsupportedFormat means the file is damaged. A listing over
-	// MaxFiles or MaxTotalSize, with nothing else wrong, is not tested: the members
-	// are given back as skipped (Extraction.Skipped or SkippedCount) with no error,
-	// and the caller decides what the file becomes. An extractor must honour the
+	// MaxFiles or MaxTotalSize, with nothing else wrong, is not tested: every
+	// member listed, within the budget or not, is given back as skipped
+	// (Extraction.Skipped, at most datamodel.MaxListedSubfiles entries, and
+	// SkippedCount, the exact total), with no error, and the caller decides what
+	// the file becomes. A MaxFiles or MaxTotalSize of 0 means that none is left:
+	// every member is over the budget, it is not unlimited. The technical listing of such a file is still read, with no
+	// decompression: a member it marks encrypted makes the file encrypted
+	// (ErrEncrypted), and a listing that does not mark every member as plain is
+	// damage with an encryption possible (ErrArchiveAnomaly joined to
+	// ErrEncryptionPossible). An extractor must honour the
 	// field: one that ignores it extracts into outputDir, which the caller removes,
 	// and a document would then be extracted, not only checked.
 	CheckOnly bool

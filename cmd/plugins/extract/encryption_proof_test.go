@@ -357,15 +357,20 @@ func TestCheckOnly_aListingOverTheBudgetIsNotTested(t *testing.T) {
 		// leftOut: the members are left out for the budget, which is no error (the
 		// caller decides what the file becomes); otherwise the listing is an anomaly.
 		leftOut bool
+		members int
 	}{
-		{"too many bytes", listing(nil, listingLine("a.bin", 2<<20)), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 20}, true},
-		{"too many members", listing(nil, listingLine("a", 1), listingLine("b", 1), listingLine("c", 1)), plugins.ExtractLimits{MaxFiles: 2, MaxTotalSize: 1 << 30}, true},
-		{"a ratio that is a bomb", listing(nil, bomb), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 40}, false},
+		{"too many bytes", listing(nil, listingLine("a.bin", 2<<20)), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 20}, true, 1},
+		{"too many members", listing(nil, listingLine("a", 1), listingLine("b", 1), listingLine("c", 1)), plugins.ExtractLimits{MaxFiles: 2, MaxTotalSize: 1 << 30}, true, 3},
+		{"a ratio that is a bomb", listing(nil, bomb), plugins.ExtractLimits{MaxFiles: 100, MaxTotalSize: 1 << 40}, false, 1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := filepath.Join(t.TempDir(), "calls")
-			sze := fakeWithListings(t, tt.table, techListing(""))
+			technical := techListing("")
+			if head, _, ok := strings.Cut(technical, "----------\n"); ok {
+				technical = head + "----------\n" + strings.Repeat("Path = m\nFolder = -\nEncrypted = -\nMethod = Store\n\n", tt.members)
+			}
+			sze := fakeWithListings(t, tt.table, technical)
 			sze.sevenZipPath = recordingWrapper(t, sze.sevenZipPath, calls)
 			tt.limits.CheckOnly = true
 			plugin := &SevenZipExtractPlugin{sze: sze, logger: sze.logger, consoleLogger: sze.logger}

@@ -697,7 +697,10 @@ func TestRealSevenZip_membersThatPackToNothingAreNoCrash(t *testing.T) {
 }
 
 // A bzip2 lists no size and no packed size: it is no bomb, whatever the limit on
-// the size of a member.
+// the size of a member. A check over the budget (a size that is not listed counts
+// as over it) reads the technical listing, which a bzip2 gives with no member
+// block: unreadable, so an anomaly, but never a bomb. The check is only asked for
+// zip-family documents, whose listing is always readable.
 func TestRealSevenZip_aBzip2IsNoBomb(t *testing.T) {
 	sample := fixture(t, "sample.bz2")
 	for mode, limits := range map[string]plugins.ExtractLimits{
@@ -705,8 +708,12 @@ func TestRealSevenZip_aBzip2IsNoBomb(t *testing.T) {
 		"check with a huge limit":    {MaxFileSize: 1 << 40, MaxFiles: 10, MaxTotalSize: 1 << 41, CheckOnly: true},
 		"check with the usual limit": {MaxFileSize: 100 << 20, MaxFiles: 10, MaxTotalSize: 1 << 30, CheckOnly: true},
 	} {
-		if _, err := realPlugin(t).ExtractFile(sample, t.TempDir(), limits); err != nil {
-			t.Errorf("%s: error = %v, want a clean archive", mode, err)
+		_, err := realPlugin(t).ExtractFile(sample, t.TempDir(), limits)
+		switch {
+		case err == nil:
+		case limits.CheckOnly && errors.Is(err, plugins.ErrArchiveAnomaly) && strings.Contains(err.Error(), "cannot be read") && !strings.Contains(err.Error(), "ZipBomb"):
+		default:
+			t.Errorf("%s: error = %v, want a clean archive, or for a check an unreadable technical listing", mode, err)
 		}
 	}
 }

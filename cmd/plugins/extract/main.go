@@ -234,9 +234,28 @@ func (p *SevenZipExtractPlugin) checkOnly(ctx context.Context, archiveLocation s
 		return p.anomalyOf(archiveLocation, result, plugins.Extraction{})
 	}
 	if result.overBudget {
-		// Members left out by the budget, as an extraction leaves them: the caller
-		// decides what the files left out become.
-		return plugins.Extraction{Skipped: result.skipped.entries, SkippedCount: result.skipped.count}, nil
+		return overBudgetExtraction(result), nil
 	}
 	return plugins.Extraction{}, nil
+}
+
+// overBudgetExtraction gives back every member of a listing over the budget as
+// skipped, the ones within it included: the check tested none of them. The list
+// is capped at datamodel.MaxListedSubfiles, the count is exact.
+func overBudgetExtraction(result extractResult) plugins.Extraction {
+	skipped := make([]datamodel.NotAnalyzedFile, 0, min(len(result.withinBudget)+len(result.skipped.entries), datamodel.MaxListedSubfiles))
+	for _, name := range result.withinBudget {
+		if len(skipped) == datamodel.MaxListedSubfiles {
+			break
+		}
+		skipped = append(skipped, datamodel.NotAnalyzedFile{FileName: truncateName(name), Reason: datamodel.NotAnalyzedExtractLimit})
+	}
+	for _, f := range result.skipped.entries {
+		if len(skipped) == datamodel.MaxListedSubfiles {
+			break
+		}
+		skipped = append(skipped, f)
+	}
+	count := datamodel.AddCount(len(result.withinBudget), result.skipped.count)
+	return plugins.Extraction{Skipped: skipped, SkippedCount: count}
 }

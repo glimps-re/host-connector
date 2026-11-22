@@ -28,6 +28,12 @@ func TestHandleRestoredFile_theNotAnalyzedReason(t *testing.T) {
 			datamodel.NotAnalyzedPolicySkipped, true,
 		},
 		{
+			"a plugin result with an analysis error", func(r datamodel.Result) *datamodel.Result {
+				return &datamodel.Result{Filename: r.Filename, Location: r.Location, SHA256: r.SHA256, AnalysisError: "engine failed"}
+			},
+			"", true,
+		},
+		{
 			"a plugin result in error", func(r datamodel.Result) *datamodel.Result {
 				return &datamodel.Result{Filename: r.Filename, Location: r.Location, SHA256: r.SHA256, Error: context.Canceled}
 			},

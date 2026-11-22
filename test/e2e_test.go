@@ -1865,7 +1865,7 @@ func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
 
 // T56: with forbidden_paths set, a restored ARCHIVE is listed (never analyzed):
 // a member that matches makes it malware again, with the member named; an
-// archive with no match is delivered, unanalyzed. EXPECTED RED until T56 v2.
+// archive with no match is delivered, unanalyzed.
 func TestE2E_aRestoredArchiveIsCheckedAgainstTheForbiddenPaths(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{agent: true, extract: true, config: pathFilter([]string{`\.exe$`}, nil)})
@@ -1927,8 +1927,7 @@ func encrypted7z(t *testing.T, password string, members map[string]string) []byt
 // T56: a restored 7z whose names cannot be listed (encrypted headers, no known
 // password) with forbidden_paths set stays in INPUT with an error and is not
 // submitted: a restore is the operator's decision, and analysis would only
-// quarantine it again. It is not retried on the next pass. EXPECTED RED until
-// T56 v2.
+// quarantine it again. It is not retried on the next pass.
 func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) {
 	gm := newGMalware(t, false)
 	in := startInstance(t, gm, options{agent: true, extract: true, config: mergeMaps(pathFilter([]string{`\.exe$`}, nil), map[string]any{

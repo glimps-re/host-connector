@@ -7,8 +7,12 @@
 // answer was written and flushed and the request was still alive: what the
 // server cannot see is a connector that received the bytes and dropped them.
 //
-// The suite needs the e2e build tag, so it is not part of `go test ./...`; it
-// takes longer than the default 10-minute timeout of go test, so set one:
+// The scenarios need the e2e build tag. The shutdown tests and the self-tests
+// of the invariant, the fakes and the helpers carry only the linux tag, so a
+// plain `go test ./test/` runs them too, and so does `go test ./...`: the 6
+// shutdown tests build GMHost and the plugins (cgo, 7zzs), and -short skips
+// them. The full suite takes longer than the default 10-minute timeout of go
+// test, so set one:
 //
 //	go test -race -tags e2e -timeout 30m ./test/
 //
@@ -20,4 +24,6 @@
 //
 // Each scenario ends with the OUTPUT invariant (invariant_test.go), even when
 // it fails early.
+//
+// The scenarios are described in docs/e2e-tests.md.
 package test

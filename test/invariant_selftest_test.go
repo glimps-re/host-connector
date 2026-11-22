@@ -265,6 +265,21 @@ func TestOutputViolations(t *testing.T) {
 			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
 			f.spec.release(content)
 		}, want: "in OUTPUT 2 times"},
+		{name: "two copies of a restored malware, two declared", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.deliver("b.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+			f.spec.releaseCopies(content, 2)
+		}},
+		{name: "three copies of a restored malware, two declared", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.deliver("b.txt", content)
+			f.deliver("c.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+			f.spec.releaseCopies(content, 2)
+		}, want: "in OUTPUT 3 times, 2 allowed"},
 		{name: "restored entry reporting a malicious member", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
@@ -626,6 +641,27 @@ func TestOutputViolations_lockReportOfARestoredMalware(t *testing.T) {
 
 // A lock report padded past the bound cannot hide data behind the cap of the
 // read, and a lock report that is itself a programmed malware is flagged.
+// With the quarantine off, the detection report of a file left in place names
+// no container: accepted only when the scenario declares the quarantine off.
+func TestOutputViolations_lockReportWithoutContainerWhenTheQuarantineIsOff(t *testing.T) {
+	bad := []byte("a malware")
+	sum := sha256Hex(bad)
+	report := `{"filename":"` + inputBadPath + `","sha256":"` + sum + `","malicious":true}`
+	for _, off := range []bool{false, true} {
+		f := newFixture(t)
+		f.gm.MarkMalicious(bad)
+		f.spec.quarantineOff = off
+		f.deliver("bad.txt-lockreport211126_0818.json", []byte(report))
+		got := f.violations()
+		if off && got != "" {
+			t.Errorf("quarantine off: violations = %q, want none", got)
+		}
+		if !off && !strings.Contains(got, "mitigation ID") {
+			t.Errorf("quarantine on: violations = %q, want the missing mitigation ID flagged", got)
+		}
+	}
+}
+
 func TestOutputViolations_lockReportTraps(t *testing.T) {
 	t.Run("padding past the bound", func(t *testing.T) {
 		f := newFixture(t)

@@ -19,6 +19,10 @@ import (
 	hcquarantine "github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
+// reasonAnalysisError is the not-analyzed reason of a file delivered under
+// analysis_error: pass.
+const reasonAnalysisError datamodel.NotAnalyzedReason = "analysis-error"
+
 // maxReportSize bounds the report the checker reads; a larger one is a
 // violation, not a truncated read that hides what follows.
 const maxReportSize = 64 << 20
@@ -33,8 +37,12 @@ type expectations struct {
 	reasons     map[datamodel.NotAnalyzedReason]bool
 	archives    map[string][][]byte
 	released    map[string]bool
-	flagged     map[string]bool
-	lostByCrash map[string]bool
+	copies      map[string]int
+	// quarantineOff tells that the quarantine action is off in the run: a
+	// detection report in OUTPUT then names no container.
+	quarantineOff bool
+	flagged       map[string]bool
+	lostByCrash   map[string]bool
 }
 
 // allow declares that files may be delivered with these not-analyzed reasons.
@@ -80,6 +88,17 @@ func (e *expectations) release(content []byte) {
 		e.released = map[string]bool{}
 	}
 	e.released[sha256Hex(content)] = true
+}
+
+// releaseCopies is release for a malware an operator restored that is delivered
+// in more than one place: n copies may be in OUTPUT, each with the restored
+// mark.
+func (e *expectations) releaseCopies(content []byte, n int) {
+	e.release(content)
+	if e.copies == nil {
+		e.copies = map[string]int{}
+	}
+	e.copies[sha256Hex(content)] = n
 }
 
 // archive declares the members of an archive the scenario delivers: the
@@ -133,8 +152,8 @@ func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
 		violations = append(violations, fileViolations(rel, sum, size, reports[sum], spec, gm)...)
 	}
 	for sum, n := range delivered {
-		if n > 1 && spec.released[sum] {
-			violations = append(violations, fmt.Sprintf("a restored malware (%s) is in OUTPUT %d times, once was allowed", sum[:12], n))
+		if n > max(1, spec.copies[sum]) && spec.released[sum] {
+			violations = append(violations, fmt.Sprintf("a restored malware (%s) is in OUTPUT %d times, %d allowed", sum[:12], n, max(1, spec.copies[sum])))
 		}
 	}
 	return violations
@@ -210,6 +229,9 @@ func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmal
 	if quarantineDir == "" || !isSHA256(r.SHA256) {
 		return append(violations, rel+": lock report with no verifiable SHA256")
 	}
+	if spec.quarantineOff && r.MitigationID == "" {
+		return violations
+	}
 	id := hcquarantine.ComputeCacheID(r.Filename, r.SHA256)
 	if r.MitigationID == "" || r.MitigationID != id {
 		violations = append(violations, rel+": the mitigation ID of the lock report is not the one of its file")
@@ -256,7 +278,7 @@ func (e *expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size in
 	case datamodel.NotAnalyzedTooBig:
 		return e.maxFileSize > 0 && size > e.maxFileSize
 	case datamodel.NotAnalyzedEncrypted, datamodel.NotAnalyzedExtractLimit, datamodel.NotAnalyzedExtractError,
-		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored:
+		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, reasonAnalysisError:
 		return e.reasons[reason]
 	default:
 		return false

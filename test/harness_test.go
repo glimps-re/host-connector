@@ -134,7 +134,16 @@ func (in *instance) waitFor(t *testing.T, what string, cond func() bool) {
 
 func write(t *testing.T, path string, data []byte) {
 	t.Helper()
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if e := root.Close(); e != nil {
+			t.Logf("close: %v", e)
+		}
+	}()
+	if err = root.WriteFile(filepath.Base(path), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

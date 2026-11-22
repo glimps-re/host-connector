@@ -17,9 +17,11 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	le "encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/png"
 	"io"
@@ -1473,5 +1475,908 @@ func TestE2E_aHeaderEncryptedSevenZipWithADefaultPassword(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// staysInInput waits until the connector has looked at the file (the log names
+// its path), then watches OUTPUT for the window: the file must never be
+// delivered and must still be in INPUT.
+func (in *instance) staysInInput(t *testing.T, path string, content []byte) {
+	t.Helper()
+	in.waitFor(t, "the connector to look at "+filepath.Base(path), func() bool { return in.logHas(path) })
+	deadline := time.Now().Add(notDeliveredWindow)
+	for time.Now().Before(deadline) {
+		if in.outputHas(t, content) {
+			t.Fatalf("%s was delivered", filepath.Base(path))
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if in.gone(path) {
+		t.Errorf("%s left INPUT", filepath.Base(path))
+	}
+}
+
+// quarantined waits for the file to leave INPUT into the quarantine and checks
+// that it was not delivered.
+func (in *instance) quarantinedFile(t *testing.T, path string, content []byte) {
+	t.Helper()
+	lock := filepath.Join(in.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(content))+".lock")
+	in.waitFor(t, "the quarantine of "+filepath.Base(path), func() bool { return !in.gone(lock) && in.gone(path) })
+	if in.outputHas(t, content) {
+		t.Errorf("%s was delivered", filepath.Base(path))
+	}
+}
+
+// pathFilter is the filepath_filter section of the configuration.
+func pathFilter(forbidden, skipped []string) map[string]any {
+	return map[string]any{"filepath_filter": map[string]any{"forbidden_paths": forbidden, "skipped_paths": skipped}}
+}
+
+// T51c: the paths rules of the core, with no plugin. A forbidden path (a file,
+// a member of an archive) is malware and is quarantined; a skipped folder is
+// delivered without analysis, marked policy-skipped; a refusal beats a skip.
+func TestE2E_corePathRules(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: pathFilter(
+		[]string{`/forbidden/`, `\.zip/secret/`},
+		[]string{`/tom/trusted/`},
+	)})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	plain := []byte("an ordinary file")
+	trusted := []byte("a file in a skipped folder")
+	forbidden := []byte("a file in a forbidden folder")
+	both := []byte("forbidden and in a skipped folder")
+	member := []byte(strings.Repeat("a member in a forbidden folder of an archive ", 40))
+	other := []byte(strings.Repeat("another member, in an allowed folder ", 40))
+	archive := zipOf(t, map[string]string{"secret/x.txt": string(member), "open/y.txt": string(other)})
+	cleanMember := []byte(strings.Repeat("the only member of the clean archive ", 40))
+	clean := zipOf(t, map[string]string{"open/z.txt": string(cleanMember)})
+	in.expect.flag(forbidden, both, member)
+	in.expect.archive(archive, member, other)
+	in.expect.archive(clean, cleanMember)
+	in.drop(t, "plain.txt", plain)
+	in.drop(t, "trusted/t.txt", trusted)
+	forbiddenPath := in.drop(t, "forbidden/f.txt", forbidden)
+	bothPath := in.drop(t, "trusted/forbidden/b.txt", both)
+	archivePath := in.drop(t, "bad.zip", archive)
+	in.drop(t, "clean.zip", clean)
+	in.waitFor(t, "the ordinary files to be delivered", func() bool {
+		return in.inOutput("plain.txt") && in.inOutput("trusted/t.txt") && in.inOutput("clean.zip")
+	})
+	for path, content := range map[string][]byte{forbiddenPath: forbidden, bothPath: both} {
+		in.quarantinedFile(t, path, content)
+	}
+	in.waitFor(t, "the archive with a forbidden member to be quarantined", func() bool { return in.gone(archivePath) })
+	if in.inOutput("bad.zip") {
+		t.Error("an archive with a member under a forbidden path was delivered")
+	}
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	if _, ok := gm.Given(sha256Hex(trusted)); ok {
+		t.Error("a file under a skipped path was analyzed")
+	}
+	if !slices.ContainsFunc(in.reportsOf(t, trusted), func(e datamodel.Report) bool { return e.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped }) {
+		t.Error("the file under a skipped path is not reported as skipped")
+	}
+}
+
+// T51c: a newline inside the name of an archive does not make it escape a
+// forbidden path. The rule `^/.*\.zip$` does not cross a newline with `.`, so the
+// raw name "pack\nx.zip" would slip under it: the archive is refused all the same.
+func TestE2E_aNewlineInAnArchiveNameDoesNotEscapeAForbiddenPath(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: pathFilter([]string{`^/.*\.zip$`}, nil)})
+	member := []byte(strings.Repeat("a member of an archive that a rule forbids ", 40))
+	archive := zipOf(t, map[string]string{"a.txt": string(member)})
+	in.expect.flag(archive)
+	path := in.drop(t, "pack\nx.zip", archive)
+	in.quarantinedFile(t, path, archive)
+}
+
+// T51c, Amendment 3 ("raw and sanitized names"): a path is matched in its raw
+// form and in the form the core prints (control characters replaced). When the
+// two differ, a forbidden rule is applied if either matches and a skip only if
+// both do. A name ending in a newline is refused by `\.exe[^/]*$` (Go's `$` is
+// the end of the text, so `\.exe$` alone would not match even the raw name). A
+// control character makes the raw and the sanitized names differ: a file whose
+// sanitized name matches the skip rule `a_b\.txt$` but whose raw name does not is
+// analyzed. An invalid UTF-8 byte does not: RE2 reads it as U+FFFD, and so does
+// the sanitized form, so both give the same verdict and the folder is skipped.
+func TestE2E_pathRulesMatchTheRawAndTheSanitizedName(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{config: pathFilter(
+		[]string{`\.exe[^/]*$`},
+		[]string{"/tom/trusted[_\\x{FFFD}]/", `a_b\.txt$`},
+	)})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	exe := []byte("a file whose name ends in .exe and a newline")
+	odd := []byte("a file in a folder whose name is not valid UTF-8")
+	ctrl := []byte("a file whose name holds a control character")
+	in.expect.flag(exe)
+	exePath := in.drop(t, "run.exe\n", exe)
+	in.drop(t, "trusted\xff/x.txt", odd)
+	in.drop(t, "a\x01b.txt", ctrl)
+	in.quarantinedFile(t, exePath, exe)
+	in.waitFor(t, "the file of the odd folder to be delivered", func() bool { return in.inOutput("trusted\xff/x.txt") })
+	in.waitFor(t, "the file with a control character to be delivered", func() bool { return in.inOutput("a\x01b.txt") })
+	in.waitFor(t, "the file with a control character to have been analyzed", func() bool {
+		_, ok := gm.Given(sha256Hex(ctrl))
+		return ok
+	})
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	skipped := func(content []byte) bool {
+		return slices.ContainsFunc(in.reportsOf(t, content), func(e datamodel.Report) bool { return e.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped })
+	}
+	if !skipped(odd) {
+		t.Error("the file of the folder with an invalid UTF-8 byte is not reported as skipped")
+	}
+	if _, ok := gm.Given(sha256Hex(odd)); ok {
+		t.Error("the file of the skipped folder was analyzed")
+	}
+	if skipped(ctrl) {
+		t.Error("the file whose raw name does not match the skip rule was skipped")
+	}
+}
+
+// T51c: a skipped archive refused because listed members match a forbidden path
+// names those members in its report, as if it had been extracted: each appears
+// among the malicious members of the archive.
+func TestE2E_aRefusedSkippedArchiveNamesItsForbiddenMembers(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: pathFilter([]string{`\.exe$`}, []string{`/tom/trusted/`})})
+	a := []byte(strings.Repeat("the first executable ", 40))
+	b := []byte(strings.Repeat("the second executable ", 40))
+	archive := zipOf(t, map[string]string{"a.exe": string(a), "b.exe": string(b)})
+	in.expect.flag(a, b)
+	in.expect.archive(archive, a, b)
+	path := in.drop(t, "trusted/x.zip", archive)
+	in.quarantinedFile(t, path, archive)
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	entries := in.reportsOf(t, archive)
+	if len(entries) == 0 {
+		t.Fatal("the archive is in no session report")
+	}
+	for _, name := range []string{"a.exe", "b.exe"} {
+		if !slices.ContainsFunc(entries, func(e datamodel.Report) bool {
+			return slices.ContainsFunc(e.MaliciousExtractedFiles, func(m datamodel.ExtractedFile) bool {
+				return strings.HasSuffix(m.FileName, "/"+name) || m.FileName == name
+			})
+		}) {
+			t.Errorf("the report does not name %s among the malicious members: %+v", name, entries)
+		}
+	}
+}
+
+// T51c, Amendment 3: a skip waives the analysis, never a refusal. An archive in
+// a skipped folder is listed, not extracted: a member under a forbidden path
+// makes it malware; without such a member it is delivered, policy-skipped, and
+// none of its members is analyzed.
+func TestE2E_aSkippedArchiveIsStillCheckedAgainstTheForbiddenPaths(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: pathFilter([]string{`\.exe$`}, []string{`/tom/trusted/`})})
+	in.expect.allow(datamodel.NotAnalyzedPolicySkipped)
+	exe := []byte(strings.Repeat("an executable member ", 40))
+	doc := []byte(strings.Repeat("a document member ", 40))
+	with := zipOf(t, map[string]string{"a.exe": string(exe), "b.txt": string(doc)})
+	// c.txt does not reuse the bytes of a.exe: what the test flags is keyed by
+	// content, and the archive without a forbidden member must not count as malware.
+	plainMember := []byte(strings.Repeat("a document too, with other bytes ", 40))
+	without := zipOf(t, map[string]string{"b.txt": string(doc), "c.txt": string(plainMember)})
+	in.expect.flag(exe)
+	in.expect.archive(with, exe, doc)
+	in.expect.archive(without, doc, plainMember)
+	withPath := in.drop(t, "trusted/with.zip", with)
+	in.drop(t, "trusted/without.zip", without)
+	in.waitFor(t, "the archive without a forbidden member to be delivered", func() bool { return in.inOutput("trusted/without.zip") })
+	in.quarantinedFile(t, withPath, with)
+	if _, ok := gm.Given(sha256Hex(doc)); ok {
+		t.Error("a member of a skipped archive was analyzed")
+	}
+}
+
+// analysisErrorCase is an analysis_error value and what must become of a file
+// the service failed to analyze.
+type analysisErrorCase struct {
+	value string
+	// mitigated: quarantined as a malware. delivered: in OUTPUT, marked. otherwise
+	// the file stays in INPUT.
+	mitigated, delivered bool
+}
+
+var analysisErrorCases = []analysisErrorCase{{value: "error"}, {value: "mitigate", mitigated: true}, {value: "pass", delivered: true}}
+
+// T51b: analysis_error decides what becomes of a file whose analysis failed:
+// error keeps it in INPUT, mitigate quarantines it as a malware (reason
+// analysis-error), pass delivers it marked not analyzed. A detection always
+// wins: with the error beside it, the file is a malware under every value.
+func TestE2E_analysisErrorPolicy(t *testing.T) {
+	for _, tt := range analysisErrorCases {
+		t.Run(tt.value, func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{agent: true, config: map[string]any{"unanalyzable_policy": map[string]any{"analysis_error": tt.value}}})
+			in.expect.allow(reasonAnalysisError)
+			broken := []byte("a file whose analysis fails")
+			gm.MarkAnalysisError(broken, "the analysis failed")
+			if tt.mitigated {
+				// mitigate turns the analysis error into a malware: it counts as one for
+				// the checker (under error and pass it must not).
+				in.expect.flag(broken)
+			}
+			detected := []byte("a malware whose analysis also fails")
+			gm.MarkMaliciousWithError(detected, "an engine crashed")
+			brokenPath := in.drop(t, "broken.txt", broken)
+			detectedPath := in.drop(t, "detected.txt", detected)
+			in.quarantinedFile(t, detectedPath, detected)
+			switch {
+			case tt.mitigated:
+				in.quarantinedFile(t, brokenPath, broken)
+			case tt.delivered:
+				in.waitFor(t, "the delivery of the file whose analysis failed", func() bool { return in.outputHas(t, broken) })
+				in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+				if !slices.ContainsFunc(in.reportsOf(t, broken), func(e datamodel.Report) bool { return e.NotAnalyzedReason == reasonAnalysisError }) {
+					t.Error("the file delivered under pass is not marked analysis-error")
+				}
+			default:
+				in.staysInInput(t, brokenPath, broken)
+			}
+		})
+	}
+}
+
+// T51b: an archive with a member whose analysis failed follows the same value:
+// under error it is counted in error (its report says members could not be
+// analyzed) and stays in INPUT; under mitigate it is malware; under pass it is
+// delivered, the member listed as not analyzed.
+func TestE2E_analysisErrorInAnArchiveMember(t *testing.T) {
+	for _, tt := range analysisErrorCases {
+		t.Run(tt.value, func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{extract: true, config: map[string]any{"unanalyzable_policy": map[string]any{"analysis_error": tt.value}}})
+			in.expect.allow(reasonAnalysisError)
+			broken := []byte(strings.Repeat("a member whose analysis fails ", 40))
+			fine := []byte(strings.Repeat("a member analyzed without problem ", 40))
+			gm.MarkAnalysisError(broken, "the analysis failed")
+			if tt.mitigated {
+				// mitigate turns the member in error into a malware, and the archive with it.
+				in.expect.flag(broken)
+			}
+			archive := zipOf(t, map[string]string{"broken.txt": string(broken), "fine.txt": string(fine)})
+			in.expect.archive(archive, broken, fine)
+			path := in.drop(t, "a.zip", archive)
+			switch {
+			case tt.mitigated:
+				in.quarantinedFile(t, path, archive)
+			case tt.delivered:
+				in.waitFor(t, "the delivery of the archive", func() bool { return in.outputHas(t, archive) })
+			default:
+				in.staysInInput(t, path, archive)
+				in.waitFor(t, "the report of the archive", func() bool { return len(in.reportsOf(t, archive)) > 0 })
+				if !slices.ContainsFunc(in.reportsOf(t, archive), func(e datamodel.Report) bool { return e.Error != "" }) {
+					t.Error("the archive with a member in analysis error is not reported in error")
+				}
+			}
+		})
+	}
+}
+
+// T51b: pass never bypasses another policy. With analysis_error pass, an
+// encrypted archive and a file above max_file_size still follow encrypted and
+// too_big (error: they stay in INPUT).
+func TestE2E_passNeverBypassesTheOtherPolicies(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true, config: map[string]any{
+		"max_file_size":       "1MiB",
+		"unanalyzable_policy": map[string]any{"analysis_error": "pass", "encrypted": "error", "too_big": "error"},
+	}})
+	enc := fixtureOf(t, "enc_zipcrypto.zip")
+	encPath := in.drop(t, "enc.zip", enc)
+	bigPath := in.create(t, "big.bin", 2<<20)
+	big, err := os.ReadFile(filepath.Clean(bigPath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.staysInInput(t, encPath, enc)
+	in.staysInInput(t, bigPath, big)
+}
+
+// quarantineThenRestore deposits a malware, waits for its quarantine, restores
+// it through the console and returns the ID of the container. The caller waits
+// for what follows.
+func (in *instance) quarantineThenRestore(t *testing.T, rel string, content []byte) {
+	t.Helper()
+	path := in.drop(t, rel, content)
+	id := hcquarantine.ComputeCacheID(path, sha256Hex(content))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine of "+rel, func() bool { return !in.gone(lock) && in.gone(path) })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("restore refused: %s", msg)
+	}
+}
+
+// quarantinedAt waits for the file at path to leave INPUT into the quarantine
+// and checks that nothing was delivered at rel: the same content may have been
+// delivered elsewhere, which is why this does not look at the content.
+func (in *instance) quarantinedAt(t *testing.T, path, rel string, content []byte) {
+	t.Helper()
+	lock := filepath.Join(in.quarantine, hcquarantine.ComputeCacheID(path, sha256Hex(content))+".lock")
+	in.waitFor(t, "the quarantine of "+rel, func() bool { return !in.gone(lock) && in.gone(path) })
+	if in.inOutput(rel) {
+		t.Errorf("%s was delivered", rel)
+	}
+}
+
+// stillInInputAt is staysInInput for a content that is delivered elsewhere:
+// it looks at the path, not at the content.
+func (in *instance) stillInInputAt(t *testing.T, path, rel string) {
+	t.Helper()
+	in.waitFor(t, "the connector to look at "+rel, func() bool { return in.logHas(path) })
+	deadline := time.Now().Add(notDeliveredWindow)
+	for time.Now().Before(deadline) {
+		if in.inOutput(rel) {
+			t.Fatalf("%s was delivered", rel)
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if in.gone(path) {
+		t.Errorf("%s left INPUT", rel)
+	}
+}
+
+// reportHas tells whether an entry of the reports for the content satisfies f.
+func (in *instance) reportHas(t *testing.T, content []byte, f func(datamodel.Report) bool) bool {
+	t.Helper()
+	return slices.ContainsFunc(in.reportsOf(t, content), f)
+}
+
+// T56: "restored" waives the analysis, never a refusal. A content that an
+// operator restored is delivered without analysis wherever it is deposited, but
+// under a forbidden path it is refused: quarantined, with the reason of the
+// path rule.
+func TestE2E_aRestoredFileIsStillHeldToThePathRules(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, config: pathFilter([]string{`/forbidden/`}, nil)})
+	bad := []byte("a malware that an operator restores")
+	gm.MarkMalicious(bad)
+	in.expect.releaseCopies(bad, 2)
+	in.quarantineThenRestore(t, "bad.txt", bad)
+	in.waitFor(t, "the restored file to be delivered", func() bool { return in.inOutput("bad.txt") })
+
+	refused := in.drop(t, "forbidden/y.txt", bad)
+	in.quarantinedAt(t, refused, "forbidden/y.txt", bad)
+	in.drop(t, "elsewhere/z.txt", bad)
+	in.waitFor(t, "the same content to be delivered elsewhere", func() bool { return in.inOutput("elsewhere/z.txt") })
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	if !in.reportHas(t, bad, func(e datamodel.Report) bool {
+		return e.Malicious && e.MalwareReason == datamodel.FilteredFilePath && strings.HasSuffix(e.Filename, "forbidden/y.txt")
+	}) {
+		t.Error("the report does not say the restored file was refused for its path")
+	}
+}
+
+// T56: a restored file of a forbidden type is quarantined again, never
+// delivered: the type rule is a refusal, which the restored mark does not waive.
+func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, more: map[string]map[string]any{
+		"filetype_filter": {"forbidden_types": []string{"image/png"}},
+	}})
+	pic := realPNG(t)
+	in.expect.flag(pic)
+	path := in.drop(t, "pic.png", pic)
+	id := hcquarantine.ComputeCacheID(path, sha256Hex(pic))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine of the image", func() bool { return !in.gone(lock) && in.gone(path) })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("restore refused: %s", msg)
+	}
+	in.waitFor(t, "the restored image to be quarantined again", func() bool { return !in.gone(lock) && in.gone(path) })
+	if in.outputHas(t, pic) {
+		t.Error("the restored image of a forbidden type was delivered")
+	}
+}
+
+// T56: with forbidden_paths set, a restored ARCHIVE is listed (never analyzed):
+// a member that matches makes it malware again, with the member named; an
+// archive with no match is delivered, unanalyzed. EXPECTED RED until T56 v2.
+func TestE2E_aRestoredArchiveIsCheckedAgainstTheForbiddenPaths(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, extract: true, config: pathFilter([]string{`\.exe$`}, nil)})
+	detected := []byte(strings.Repeat("a member the service detects ", 40))
+	other := []byte(strings.Repeat("an ordinary member ", 40))
+	exe := []byte(strings.Repeat("an executable member ", 40))
+	gm.MarkMalicious(detected)
+	in.expect.flag(exe)
+	with := zipOf(t, map[string]string{"run.exe": string(exe), "doc.txt": string(detected)})
+	without := zipOf(t, map[string]string{"a.txt": string(detected), "b.txt": string(other)})
+	in.expect.archive(with, exe, detected)
+	in.expect.archive(without, detected, other)
+	in.expect.release(without)
+
+	in.quarantineThenRestore(t, "without.zip", without)
+	in.waitFor(t, "the restored archive without a match to be delivered", func() bool { return in.outputHas(t, without) })
+
+	path := in.drop(t, "with.zip", with)
+	id := hcquarantine.ComputeCacheID(path, sha256Hex(with))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine of the archive with a forbidden member", func() bool { return !in.gone(lock) && in.gone(path) })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("restore refused: %s", msg)
+	}
+	in.waitFor(t, "the restored archive to be quarantined again", func() bool { return !in.gone(lock) && in.gone(path) })
+	if in.outputHas(t, with) {
+		t.Error("the restored archive with a forbidden member was delivered")
+	}
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	in.waitFor(t, "the report to name the forbidden member", func() bool {
+		return in.reportHas(t, with, func(e datamodel.Report) bool {
+			return slices.ContainsFunc(e.MaliciousExtractedFiles, func(m datamodel.ExtractedFile) bool { return strings.HasSuffix(m.FileName, "run.exe") })
+		})
+	})
+}
+
+// encrypted7z builds a 7z with the embedded 7-Zip whose headers and content are
+// encrypted with the given password.
+func encrypted7z(t *testing.T, password string, members map[string]string) []byte {
+	t.Helper()
+	bin := sevenZip(t)
+	src := t.TempDir()
+	paths := make([]string, 0, len(members))
+	for name, content := range members {
+		write(t, filepath.Join(src, name), []byte(content))
+		paths = append(paths, name)
+	}
+	archive := filepath.Join(t.TempDir(), "enc.7z")
+	if out, err := runCommand(src, bin, append([]string{"a", "-t7z", "-mhe=on", "-p" + password, archive}, paths...)...); err != nil {
+		t.Fatalf("cannot build the archive: %v\n%s", err, out)
+	}
+	raw, err := os.ReadFile(filepath.Clean(archive))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// T56: a restored 7z whose names cannot be listed (encrypted headers, no known
+// password) with forbidden_paths set stays in INPUT with an error and is not
+// submitted: a restore is the operator's decision, and analysis would only
+// quarantine it again. It is not retried on the next pass. EXPECTED RED until
+// T56 v2.
+func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, extract: true, config: mergeMaps(pathFilter([]string{`\.exe$`}, nil), map[string]any{
+		"unanalyzable_policy": map[string]any{"encrypted": "mitigate"},
+		"monitoring":          map[string]any{"period": "2s"},
+	})})
+	archive := encrypted7z(t, "not-a-default-password", map[string]string{"a.txt": strings.Repeat("a secret member ", 40)})
+	in.expect.flag(archive)
+	path := in.drop(t, "secret.7z", archive)
+	id := hcquarantine.ComputeCacheID(path, sha256Hex(archive))
+	lock := filepath.Join(in.quarantine, id+".lock")
+	in.waitFor(t, "the quarantine of the encrypted archive", func() bool { return !in.gone(lock) && in.gone(path) })
+	if msg := in.console.WaitAck(t, in.console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+		t.Fatalf("restore refused: %s", msg)
+	}
+	// The restore removes the container, not the detection report written when
+	// the archive was first mitigated: that report is history, and with its
+	// container gone it would fail the invariant, so the test removes it.
+	for _, report := range globOne(t, filepath.Join(in.output, "tom", "secret.7z-lockreport*.json")) {
+		if err := os.Remove(report); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := gm.submitted.Load()
+	in.staysInInput(t, path, archive)
+	if got := gm.submitted.Load(); got != before {
+		t.Errorf("the restored archive was submitted again (%d submissions, %d before)", got, before)
+	}
+}
+
+// T56: with the quarantine and the deletion off, a refused restored file stays
+// in INPUT, reported once and not retried at each pass. The restored mark is
+// set while the quarantine is on, then the actions are turned off by the console
+// and the content is deposited under a forbidden path.
+func TestE2E_aRefusedRestoredFileStaysInInputWithoutRetry(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{agent: true, config: mergeMaps(pathFilter([]string{`/forbidden/`}, nil), map[string]any{
+		"monitoring": map[string]any{"period": "2s"},
+	})})
+	bad := []byte("a malware that an operator restores, then is refused for its path")
+	gm.MarkMalicious(bad)
+	in.expect.release(bad)
+	in.quarantineThenRestore(t, "bad.txt", bad)
+	in.waitFor(t, "the restored file to be delivered", func() bool { return in.inOutput("bad.txt") })
+
+	in.console.SetConfig(in.withConf(t, map[string]any{"actions": map[string]any{"quarantine": false, "delete": false}}))
+	if msg := in.console.WaitAck(t, in.console.Push(t, "update-config", nil)); msg != "" {
+		t.Fatalf("the configuration was refused: %s", msg)
+	}
+	in.expect.quarantineOff = true
+	path := in.drop(t, "forbidden/y.txt", bad)
+	in.stillInInputAt(t, path, "forbidden/y.txt")
+	if n := len(globOne(t, filepath.Join(in.quarantine, "*.lock"))); n != 0 {
+		t.Errorf("%d containers in the quarantine, want none: the quarantine is off", n)
+	}
+	in.waitFor(t, "the session report", func() bool { return in.reportCount() > 0 })
+	count := 0
+	for _, e := range in.reportsOf(t, bad) {
+		if strings.HasSuffix(e.Filename, "forbidden/y.txt") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("the refused file is reported %d times, want once", count)
+	}
+}
+
+// rawEntry is one record of a hand-made ZIP: a file or a folder written stored,
+// with the sizes it says (declared ones may lie), possibly never listed in the
+// central directory, possibly followed by padding.
+type rawEntry struct {
+	name   string
+	data   string
+	folder bool
+	// unlisted: the local record is written but the central directory does not
+	// list it.
+	unlisted bool
+	// padAfter zero bytes follow the record.
+	padAfter int
+	// declared overrides the uncompressed size written in both headers (a lie
+	// about a member whose packed size is zero), when not zero.
+	declared uint32
+}
+
+// rawZip writes the entries as a ZIP, record by record, then the central
+// directory of the listed ones. trailing follows the end of directory; decoy
+// puts a copy of the directory and an end of directory that leads to it in the
+// comment of the real one.
+type rawZip struct {
+	entries  []rawEntry
+	trailing []byte
+	decoy    bool
+}
+
+// u16 and u32 keep the low bits of a length for a header field: the hand-made
+// archives of the tests are small.
+func u16(n int) uint16 { return uint16(n & 0xFFFF) }
+
+func u32(n int) uint32 { return uint32(n & 0xFFFFFFFF) }
+
+func (z rawZip) bytes() []byte {
+	var out, dir []byte
+	listed := 0
+	for _, e := range z.entries {
+		offset := u32(len(out))
+		data := []byte(e.data)
+		crc := crc32.ChecksumIEEE(data)
+		comp, uncomp := u32(len(data)), u32(len(data))
+		if e.declared != 0 {
+			uncomp = e.declared
+		}
+		name := e.name
+		if e.folder && !strings.HasSuffix(name, "/") {
+			name += "/"
+		}
+		out = le.LittleEndian.AppendUint32(out, 0x04034b50)
+		out = le.LittleEndian.AppendUint16(out, 20)
+		out = le.LittleEndian.AppendUint16(out, 0)
+		out = le.LittleEndian.AppendUint16(out, 0)
+		out = le.LittleEndian.AppendUint32(out, 0)
+		out = le.LittleEndian.AppendUint32(out, crc)
+		out = le.LittleEndian.AppendUint32(out, comp)
+		out = le.LittleEndian.AppendUint32(out, uncomp)
+		out = le.LittleEndian.AppendUint16(out, u16(len(name)))
+		out = le.LittleEndian.AppendUint16(out, 0)
+		out = append(out, name...)
+		out = append(out, data...)
+		out = append(out, make([]byte, e.padAfter)...)
+		if e.unlisted {
+			continue
+		}
+		listed++
+		dir = le.LittleEndian.AppendUint32(dir, 0x02014b50)
+		dir = le.LittleEndian.AppendUint16(dir, 20)
+		dir = le.LittleEndian.AppendUint16(dir, 20)
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint32(dir, 0)
+		dir = le.LittleEndian.AppendUint32(dir, crc)
+		dir = le.LittleEndian.AppendUint32(dir, comp)
+		dir = le.LittleEndian.AppendUint32(dir, uncomp)
+		dir = le.LittleEndian.AppendUint16(dir, u16(len(name)))
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint16(dir, 0)
+		dir = le.LittleEndian.AppendUint32(dir, 0)
+		dir = le.LittleEndian.AppendUint32(dir, offset)
+		dir = append(dir, name...)
+	}
+	cdOffset := u32(len(out))
+	eocd := func(offset uint32, comment []byte) []byte {
+		b := le.LittleEndian.AppendUint32(nil, 0x06054b50)
+		b = le.LittleEndian.AppendUint16(b, 0)
+		b = le.LittleEndian.AppendUint16(b, 0)
+		b = le.LittleEndian.AppendUint16(b, u16(listed))
+		b = le.LittleEndian.AppendUint16(b, u16(listed))
+		b = le.LittleEndian.AppendUint32(b, u32(len(dir)))
+		b = le.LittleEndian.AppendUint32(b, offset)
+		b = le.LittleEndian.AppendUint16(b, u16(len(comment)))
+		return append(b, comment...)
+	}
+	var comment []byte
+	if z.decoy {
+		copyAt := cdOffset + u32(len(dir)) + 22
+		comment = append(append([]byte(nil), dir...), eocd(copyAt, nil)...)
+	}
+	out = append(out, dir...)
+	out = append(out, eocd(cdOffset, comment)...)
+	return append(out, z.trailing...)
+}
+
+// T17d: the headers of a ZIP are walked. A record that the directory does not
+// list (hidden between two entries, or after an empty folder) is an anomaly: the
+// archive stays in INPUT, never delivered. The same archive without that record
+// (the control), zero padding between entries, and a stored jar inside a jar are
+// honest: the archive is delivered after each of its members was analyzed. A
+// second end of directory that also ends the file, hidden in the comment of the
+// real one, is a decoy: an anomaly, with or without a byte after the real end.
+// One byte after the end of the archive is an anomaly too.
+func TestE2E_theHeadersOfAZipAreWalked(t *testing.T) {
+	member := []byte(strings.Repeat("a plain member of the archive ", 40))
+	second := []byte(strings.Repeat("a plain member of the archive ", 40) + "!")
+	evil := strings.Repeat("a record the directory does not list ", 40)
+	manifest := []byte("Manifest-Version: 1.0\n")
+	inner := rawZip{entries: []rawEntry{{name: "Inner.class", data: string(member)}}}.bytes()
+	tests := []struct {
+		name string
+		zip  rawZip
+		// delivered: the archive is delivered, and each of members was analyzed;
+		// otherwise it stays in INPUT as damaged.
+		delivered bool
+		members   [][]byte
+	}{
+		{name: "an empty folder and a member, with no hidden record (the control)", zip: rawZip{entries: []rawEntry{
+			{name: "d", folder: true}, {name: "a.txt", data: string(member)},
+		}}, delivered: true, members: [][]byte{member}},
+		{name: "a record hidden after an empty folder", zip: rawZip{entries: []rawEntry{
+			{name: "d", folder: true}, {name: "evil.exe", data: evil, unlisted: true}, {name: "a.txt", data: string(member)},
+		}}},
+		{name: "a record hidden between two entries", zip: rawZip{entries: []rawEntry{
+			{name: "a.txt", data: string(member)}, {name: "evil.exe", data: evil, unlisted: true}, {name: "b.txt", data: string(second)},
+		}}},
+		{name: "zero padding between entries", zip: rawZip{entries: []rawEntry{
+			{name: "a.txt", data: string(member), padAfter: 64}, {name: "b.txt", data: string(second)},
+		}}, delivered: true, members: [][]byte{member, second}},
+		{name: "a stored jar inside a jar", zip: rawZip{entries: []rawEntry{
+			{name: "inner.jar", data: string(inner)}, {name: "META-INF/MANIFEST.MF", data: string(manifest)},
+		}}, delivered: true, members: [][]byte{member, manifest}},
+		{name: "one byte after the end of the archive", zip: rawZip{trailing: []byte{0}, entries: []rawEntry{
+			{name: "a.txt", data: string(member)},
+		}}},
+		{name: "a decoy end of directory alone", zip: rawZip{decoy: true, entries: []rawEntry{
+			{name: "a.txt", data: string(member)},
+		}}},
+		{name: "a decoy end of directory and one byte after the real one", zip: rawZip{decoy: true, trailing: []byte{0}, entries: []rawEntry{
+			{name: "a.txt", data: string(member)},
+		}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := newGMalware(t, false)
+			in := startInstance(t, gm, options{extract: true})
+			archive := tt.zip.bytes()
+			path := in.drop(t, "a.zip", archive)
+			if tt.delivered {
+				in.expect.archive(archive, tt.members...)
+				in.waitFor(t, "the archive to be delivered", func() bool { return in.outputHas(t, archive) })
+				for _, m := range tt.members {
+					if _, ok := gm.Given(sha256Hex(m)); !ok {
+						t.Errorf("a member (%d bytes) was not analyzed", len(m))
+					}
+				}
+				return
+			}
+			in.staysInInput(t, path, archive)
+			in.waitFor(t, "the report of the archive", func() bool { return len(in.reportsOf(t, archive)) > 0 })
+			for _, e := range in.reportsOf(t, archive) {
+				if !strings.Contains(e.Error, "damaged or inconsistent") {
+					t.Errorf("the report of the archive says %q, want it damaged or inconsistent", e.Error)
+				}
+			}
+		})
+	}
+}
+
+// maxWorkBytes bounds what the work directory may hold at any moment while an
+// archive that forges a bomb is judged: the embedded 7-Zip it holds is a few
+// MiB, a bomb written out would be gigabytes.
+const maxWorkBytes = 64 << 20
+
+// bombJudgmentBound bounds the time to judge a bomb.
+const bombJudgmentBound = 30 * time.Second
+
+// treeSize adds up the sizes of the regular files below dir, as they are on the
+// disk: a link (the plugin stages the archive it runs 7-Zip on as one) is not
+// followed and counts for nothing. A folder that does not exist, or any other
+// failure of the walk, is an error; an entry that goes away while it is
+// measured (a clean-up in progress) is not, and a walk that ends early for that
+// reason gives the partial total of that sample, which is harmless since only
+// the largest sample counts.
+func treeSize(dir string) (total int64, err error) {
+	if _, err = os.Lstat(dir); err != nil {
+		return 0, err
+	}
+	err = filepath.WalkDir(dir, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if path != dir && errors.Is(walkErr, fs.ErrNotExist) {
+				return nil
+			}
+			return walkErr
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		info, infoErr := d.Info()
+		switch {
+		case errors.Is(infoErr, fs.ErrNotExist):
+			return nil
+		case infoErr != nil:
+			return infoErr
+		}
+		total += info.Size()
+		return nil
+	})
+	return total, err
+}
+
+// sizeWatch samples the size of a folder from its start to its stop, so that a
+// file written and removed within one judgment is still seen.
+type sizeWatch struct {
+	max  atomic.Int64
+	mu   sync.Mutex
+	err  error
+	quit chan struct{}
+	done chan struct{}
+	once sync.Once
+}
+
+// watchSize samples the work directory of the run every 50 ms until stop or the end of the test.
+func watchSize(t *testing.T, in *instance) *sizeWatch {
+	t.Helper()
+	w := &sizeWatch{quit: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		for {
+			size, err := treeSize(in.work)
+			switch {
+			case err != nil:
+				w.mu.Lock()
+				if w.err == nil {
+					w.err = err
+				}
+				w.mu.Unlock()
+			case size > w.max.Load():
+				w.max.Store(size)
+			}
+			select {
+			case <-w.quit:
+				return
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}()
+	t.Cleanup(func() { _, _ = w.stop() })
+	return w
+}
+
+// stop ends the sampling and returns the largest size seen, and the first
+// failure of the walk if any.
+func (w *sizeWatch) stop() (largest int64, err error) {
+	w.once.Do(func() { close(w.quit) })
+	<-w.done
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.max.Load(), w.err
+}
+
+// assertNoBigWrite fails when the work directory was ever bigger than
+// maxWorkBytes, when it could not be measured, or when nothing was ever seen
+// there (the sampling would then prove nothing).
+func assertNoBigWrite(t *testing.T, w *sizeWatch) {
+	t.Helper()
+	largest, err := w.stop()
+	if err != nil {
+		t.Errorf("the work directory could not be measured: %v", err)
+	}
+	if largest == 0 {
+		t.Error("nothing was ever seen in the work directory: the sampling proves nothing")
+	}
+	if largest > maxWorkBytes {
+		t.Errorf("the work directory held %d bytes at some point: the archive was written out", largest)
+	}
+}
+
+// T48c: a ZIP that forges a bomb is refused, under the default limits, within a
+// bounded time and without being written out: 40 members of 90 MB, each declared
+// with no packed byte, stay under the per-member and total limits but cannot be
+// real.
+func TestE2E_aForgedZipOfEmptyPackedMembersIsABomb(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true})
+	work := watchSize(t, in)
+	entries := make([]rawEntry, 0, 40)
+	for i := range 40 {
+		entries = append(entries, rawEntry{name: fmt.Sprintf("zeros%02d.bin", i), declared: 90_000_000})
+	}
+	archive := rawZip{entries: entries}.bytes()
+	start := time.Now()
+	path := in.drop(t, "bomb.zip", archive)
+	in.waitFor(t, "the connector to call the archive a bomb", func() bool { return in.logHas("potential ZipBomb") })
+	if judged := time.Since(start); judged > bombJudgmentBound {
+		t.Errorf("the bomb was judged in %s, want at most %s", judged, bombJudgmentBound)
+	}
+	in.staysInInput(t, path, archive)
+	assertNoBigWrite(t, work)
+}
+
+// T48c: a solid 7z whose first member is larger than the limit for a member and
+// made of zeros (23 KB packed for 150 MiB) is left out by the limits of the
+// extraction: it stays in INPUT in error and the member is not written out. It
+// is not called a bomb: its members within the limit do not declare 3 GB.
+func TestE2E_aSolidSevenZipWithAHugeFirstMemberIsLeftOutAndNotWrittenOut(t *testing.T) {
+	gm := newGMalware(t, false)
+	in := startInstance(t, gm, options{extract: true})
+	work := watchSize(t, in)
+	bin := sevenZip(t)
+	src := t.TempDir()
+	f, err := os.OpenFile(filepath.Clean(filepath.Join(src, "a-zeros.bin")), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Truncate(150 << 20); err != nil {
+		t.Fatal(err)
+	}
+	if err = f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(src, "b-small.txt"), []byte(strings.Repeat("a small member after the bomb ", 40)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(t.TempDir(), "bomb.7z")
+	if out, runErr := runCommand(src, bin, "a", "-t7z", "-ms=on", archivePath, "a-zeros.bin", "b-small.txt"); runErr != nil {
+		t.Fatalf("cannot build the archive: %v\n%s", runErr, out)
+	}
+	archive, err := os.ReadFile(filepath.Clean(archivePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := in.drop(t, "bomb.7z", archive)
+	in.staysInInput(t, path, archive)
+	if !in.logHas("left out by the limits of the extraction") {
+		t.Error("the log does not say the member was left out by the limits of the extraction")
+	}
+	assertNoBigWrite(t, work)
+}
+
+// treeSize counts regular files only: a link is no failure and no size, a
+// missing folder is an error.
+func TestTreeSize(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "a.bin"), make([]byte, 1000))
+	if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "sub", "b.bin"), make([]byte, 24))
+	if err := os.Symlink(filepath.Join(dir, "a.bin"), filepath.Join(dir, "link-to-file")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "sub"), filepath.Join(dir, "link-to-dir")); err != nil {
+		t.Fatal(err)
+	}
+	total, err := treeSize(dir)
+	if err != nil || total != 1024 {
+		t.Errorf("treeSize = %d, %v; want 1024 and no error: links count for nothing and are no failure", total, err)
+	}
+	if _, err = treeSize(filepath.Join(dir, "missing")); err == nil {
+		t.Error("treeSize of a missing folder is not an error")
 	}
 }

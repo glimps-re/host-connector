@@ -342,7 +342,7 @@ func (sze *sevenZipExtract) decideEncryption(ctx context.Context, archivePath st
 // encryptionInfo is what the technical listing of an archive says.
 type encryptionInfo struct {
 	zip       bool // the archive is a zip
-	encrypted bool // a member says Encrypted = +
+	encrypted bool // a member says Encrypted = +, or names AES in a Method line
 	// allPlain is set when every member says Encrypted = -, and none says anything
 	// else or nothing.
 	allPlain bool
@@ -366,8 +366,8 @@ const technicalSeparator = "----------"
 // before the first separator is the archive's own (its comment is printed raw
 // and can hold any line): only its first "Type =" counts. After it, each member
 // is a block starting with "Path = ", of which only the first "Encrypted =" line
-// counts, and any "Method =" line that names AES. The number of members must be the number the listing announced, when
-// that is known.
+// counts, and any "Method =" line that names AES. The number of members must be
+// the number the listing announced, when that is known.
 func (sze *sevenZipExtract) encryptionInfo(ctx context.Context, archivePath string, entries int) (info encryptionInfo, err error) {
 	var archiveType string
 	var records, separators, plain int

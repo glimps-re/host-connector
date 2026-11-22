@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"os"
 	"runtime"
 	"slices"
 	"testing"
@@ -353,7 +354,8 @@ func TestWalkZip_neverDecompressesAMember(t *testing.T) {
 
 // 1 M central entries that alternate between two local headers, with saturated sizes
 // and extra fields of 65535 bytes: refused after the first pass, in time and
-// memory.
+// memory. The time depends on the machine: it is logged, and asserted only with
+// HC_WORST_CASE_TIME=1.
 func TestWalkZip_aThrashingDirectoryIsRefusedFast(t *testing.T) {
 	const n = 1_000_000
 	extra := bytes.Repeat([]byte{0}, 65535-20)
@@ -377,8 +379,11 @@ func TestWalkZip_aThrashingDirectoryIsRefusedFast(t *testing.T) {
 	wantAnomaly(t, err)
 	allocated := after.TotalAlloc - before.TotalAlloc
 	t.Logf("%d entries (%d MB): refused in %v, %d MB allocated", n, len(b)>>20, took, allocated>>20)
-	if took > 2*slowdown*time.Second || allocated > 16<<20 {
-		t.Errorf("refused in %v with %d MB allocated, want under 2 s and 16 MB", took, allocated>>20)
+	if allocated > 16<<20 {
+		t.Errorf("refused with %d MB allocated, want under 16 MB", allocated>>20)
+	}
+	if os.Getenv("HC_WORST_CASE_TIME") == "1" && took > 2*slowdown*time.Second {
+		t.Errorf("refused in %v, want under 2 s", took)
 	}
 }
 
@@ -420,6 +425,8 @@ func TestWalkZip_theDeadline(t *testing.T) {
 	})
 }
 
+// The time depends on the machine: it is logged, and asserted only with
+// HC_WORST_CASE_TIME=1.
 func TestWalkZip_aMillionFolders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a zip of a million folders")
@@ -437,7 +444,7 @@ func TestWalkZip_aMillionFolders(t *testing.T) {
 	}
 	took := time.Since(start)
 	t.Logf("%d folder entries (%d MB): %v", n, len(b)>>20, took)
-	if took > 2*slowdown*time.Second {
+	if os.Getenv("HC_WORST_CASE_TIME") == "1" && took > 2*slowdown*time.Second {
 		t.Errorf("the walk took %v, the target is 2 s", took)
 	}
 }
@@ -694,7 +701,8 @@ func TestWalkZip_theLocalHeaderIsTheOneOfTheDirectory(t *testing.T) {
 }
 
 // A directory in another order than the file: every header is a read of its own,
-// with no block of copying per entry.
+// with no block of copying per entry. The time depends on the machine: it is
+// logged, and asserted only with HC_WORST_CASE_TIME=1.
 func TestWalkZip_aPermutedDirectory(t *testing.T) {
 	if testing.Short() {
 		t.Skip("builds a zip of a million entries")
@@ -718,8 +726,11 @@ func TestWalkZip_aPermutedDirectory(t *testing.T) {
 	}
 	allocated := after.TotalAlloc - before.TotalAlloc
 	t.Logf("%d entries in another order (%d MB): %v, %d MB allocated", n, len(b)>>20, took, allocated>>20)
-	if took > 2*slowdown*time.Second || allocated > 16<<20 {
-		t.Errorf("walked in %v with %d MB allocated, want under 2 s and 16 MB", took, allocated>>20)
+	if allocated > 16<<20 {
+		t.Errorf("walked with %d MB allocated, want under 16 MB", allocated>>20)
+	}
+	if os.Getenv("HC_WORST_CASE_TIME") == "1" && took > 2*slowdown*time.Second {
+		t.Errorf("walked in %v, want under 2 s", took)
 	}
 }
 

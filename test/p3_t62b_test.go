@@ -198,8 +198,9 @@ func TestAESDocumentHasNoEncryptionFlag(t *testing.T) {
 	if got := localFlagsOf(t, doc, "secret.bin"); got&1 != 0 {
 		t.Errorf("the local header still says encrypted (flags %#x)", got)
 	}
-	if plain := bigDocumentWith(t, "docx", "aes", 10, aesZip(t), false); bytes.Equal(plain, doc) {
-		t.Error("clearing the flag changed nothing")
+	plain := bigDocumentWith(t, "docx", "aes", 10, aesZip(t), false)
+	if got := localFlagsOf(t, plain, "secret.bin"); got&1 == 0 {
+		t.Errorf("without clearing, the local header says not encrypted (flags %#x)", got)
 	}
 }
 

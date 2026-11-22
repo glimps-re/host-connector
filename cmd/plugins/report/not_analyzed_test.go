@@ -676,6 +676,7 @@ func TestCellText(t *testing.T) {
 		{"zero-width space", "a\u200bb", "a\ufffdb"},
 		{"tag character", "a\U000e0041b", "a\ufffdb"},
 		{"line separator and filler", "a\u2028b\u3164c", "a\ufffdb\ufffdc"},
+		{"halfwidth filler and variation selector", "a\uffa0b\ufe0fc", "a\ufffdb\ufffdc"},
 		{"replacement lengthens the text past the bound", strings.Repeat("\x01", 40), strings.Repeat("\ufffd", 16) + "…" + strings.Repeat("\ufffd", 16)},
 	}
 	for _, tt := range tests {

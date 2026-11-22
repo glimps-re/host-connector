@@ -16,13 +16,12 @@ import (
 	"maps"
 	"path/filepath"
 	"slices"
-	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/page"
 	"github.com/dustin/go-humanize"
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
@@ -441,7 +440,7 @@ func (d *ReportData) addError(name, text string) {
 // of package datamodel.
 func cellText(s string) string {
 	const ellipsis = "…"
-	s = strings.Map(displayable, s)
+	s = displaytext.Sanitize(s)
 	if len(s) <= maxCellBytes {
 		return s
 	}
@@ -455,21 +454,6 @@ func cellText(s string) string {
 		start++
 	}
 	return s[:head] + ellipsis + s[start:]
-}
-
-// displayable replaces the runes that must not reach the PDF as they are:
-// control characters, formatting characters (bidirectional controls, zero-width
-// and tag characters), line and paragraph separators, and the fillers that draw
-// as blanks.
-func displayable(r rune) rune {
-	if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) {
-		return utf8.RuneError
-	}
-	switch r {
-	case 0x2028, 0x2029, 0x115F, 0x1160, 0x3164, 0x180E:
-		return utf8.RuneError
-	}
-	return r
 }
 
 // threatNames is what a row shows of the threats of a file: the first

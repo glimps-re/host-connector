@@ -3,6 +3,8 @@ package quarantine
 import (
 	"strings"
 	"unicode/utf8"
+
+	"github.com/glimps-re/host-connector/internal/displaytext"
 )
 
 // maxEntryNameBytes caps a sanitised ZIP payload entry name.
@@ -16,28 +18,6 @@ var windowsReservedNames = map[string]bool{
 	"COM6": true, "COM7": true, "COM8": true, "COM9": true,
 	"LPT1": true, "LPT2": true, "LPT3": true, "LPT4": true, "LPT5": true,
 	"LPT6": true, "LPT7": true, "LPT8": true, "LPT9": true,
-}
-
-// isBidiControlRune reports whether r is a Unicode bidirectional
-// override/embedding/isolate control character. These can visually
-// disguise a filename (e.g. an RLO can make "exe.txt" display reversed as
-// "txt.exe") and have no legitimate purpose in a ZIP entry name. Zero width
-// and line separator characters are removed with them.
-func isBidiControlRune(r rune) bool {
-	// Written as \u escapes rather than literal characters: embedding the
-	// actual bidi control bytes in this source file would itself be
-	// flagged as a potential "Trojan Source" attack (gosec G116) - the
-	// exact class of trick this function defends filenames against.
-	switch r {
-	case '\u061c', // Arabic Letter Mark
-		'\u200e', '\u200f', // LRM, RLM
-		'\u202a', '\u202b', '\u202c', '\u202d', '\u202e', // LRE,RLE,PDF,LRO,RLO
-		'\u2066', '\u2067', '\u2068', '\u2069', // LRI,RLI,FSI,PDI
-		'\u200b', '\u200c', '\u200d', '\ufeff', // zero width space, non-joiner, joiner, BOM
-		'\u2028', '\u2029': // line and paragraph separators
-		return true
-	}
-	return false
 }
 
 // isASCIILetter reports whether b is an ASCII letter, used only to detect a
@@ -74,9 +54,7 @@ func sanitizeEntryName(original string) string {
 		switch {
 		case r == utf8.RuneError:
 			b.WriteRune('_')
-		case r < 0x20 || r == 0x7f: // C0 controls + DEL
-		case r >= 0x80 && r <= 0x9f: // C1 controls
-		case isBidiControlRune(r):
+		case displaytext.IsHidden(r):
 		default:
 			b.WriteRune(r)
 		}

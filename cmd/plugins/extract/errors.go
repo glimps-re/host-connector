@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unicode"
 	"unicode/utf8"
 
+	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
@@ -269,7 +269,7 @@ func (o *sevenZipOutput) classifyEchoing(label, rest string) {
 }
 
 // sanitizeOutput makes 7z's output fit to be logged or returned: valid UTF-8,
-// no control or bidirectional character, at most maxQuotedOutput bytes.
+// no hidden rune (displaytext.IsHidden), at most maxQuotedOutput bytes.
 func sanitizeOutput(s string) string {
 	s = strings.ToValidUTF8(s, "")
 	var b strings.Builder
@@ -277,7 +277,7 @@ func sanitizeOutput(s string) string {
 		switch {
 		case r == '\n':
 			b.WriteString(" | ")
-		case unicode.IsControl(r) || isBidi(r):
+		case displaytext.IsHidden(r):
 		default:
 			b.WriteRune(r)
 		}
@@ -294,14 +294,6 @@ func sanitizeOutput(s string) string {
 		out = out[:cut]
 	}
 	return strings.TrimSpace(out)
-}
-
-func isBidi(r rune) bool {
-	switch {
-	case r >= 0x202A && r <= 0x202E, r >= 0x2066 && r <= 0x2069:
-		return true
-	}
-	return r == 0x200E || r == 0x200F || r == 0x061C
 }
 
 // handleSevenZipError turns the end of a 7z run into an error. A refused link

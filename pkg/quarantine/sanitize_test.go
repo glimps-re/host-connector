@@ -49,6 +49,11 @@ func TestSanitizeEntryName(t *testing.T) {
 			want:     "invoice.exe",
 		},
 		{
+			name:     "soft hyphen, fillers and tag characters stripped",
+			original: "a\u00ad.ex\u3164e\uffa0\U000E0041",
+			want:     "a.exe",
+		},
+		{
 			name:     "LRM/RLM stripped",
 			original: "evil\u200e\u200f.exe",
 			want:     "evil.exe",

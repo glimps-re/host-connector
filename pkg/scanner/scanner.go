@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/alecthomas/units"
 	"github.com/gabriel-vasile/mimetype"
@@ -269,6 +270,19 @@ func (f fileToAnalyze) rawLogical() string {
 func sanitizeControl(p string) string {
 	return strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
+			return '_'
+		}
+		return r
+	}, p)
+}
+
+// submissionLabel is the name sent with a submission, which the service reads from
+// a header of the upload: control characters (C0, DEL, C1) and the line and
+// paragraph separators U+2028 and U+2029 become "_", and invalid UTF-8 becomes
+// U+FFFD, so that no server that splits lines refuses the file for its name.
+func submissionLabel(p string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || r == 0x2028 || r == 0x2029 {
 			return '_'
 		}
 		return r
@@ -2192,7 +2206,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 	defer cancel()
 
 	opts := c.config.WaitOpts
-	opts.Filename = input.location
+	opts.Filename = submissionLabel(input.location)
 
 	readLocation, locErr := c.readPath(input)
 	if locErr != nil {

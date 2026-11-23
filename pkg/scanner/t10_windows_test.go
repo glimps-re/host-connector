@@ -89,7 +89,7 @@ func TestT10_windows_filesAreMovedQuarantinedAndDeletedWithoutSharingErrors(t *t
 	}
 	c.Close(t.Context())
 
-	if b, rerr := os.ReadFile(filepath.Join(out, "clean.txt")); rerr != nil || string(b) != "harmless" {
+	if b, rerr := os.ReadFile(filepath.Clean(filepath.Join(out, "clean.txt"))); rerr != nil || string(b) != "harmless" {
 		t.Errorf("the clean file must be moved: %q, %v", b, rerr)
 	}
 	if _, serr := os.Stat(clean); !os.IsNotExist(serr) {

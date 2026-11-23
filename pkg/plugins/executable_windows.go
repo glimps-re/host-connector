@@ -16,10 +16,13 @@ func CheckExecutable(path string) (resolved string, warnings []string, err error
 		return "", nil, fmt.Errorf("%w: %s: the path is not absolute; give the absolute path of the binary", ErrUnsafeExecutable, path)
 	}
 	if resolved, err = filepath.EvalSymlinks(path); err != nil {
-		return "", nil, fmt.Errorf("%w: %s: not found: %v; install the binary or fix the configured path", ErrUnsafeExecutable, path, err)
+		return "", nil, fmt.Errorf("%w: %s: not found: %w; install the binary or fix the configured path", ErrUnsafeExecutable, path, err)
 	}
 	info, err := os.Stat(resolved)
-	if err != nil || !info.Mode().IsRegular() {
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %s: %w; point to the binary itself", ErrUnsafeExecutable, resolved, err)
+	}
+	if !info.Mode().IsRegular() {
 		return "", nil, fmt.Errorf("%w: %s: not a regular file; point to the binary itself", ErrUnsafeExecutable, resolved)
 	}
 	return resolved, nil, nil
@@ -30,7 +33,11 @@ func CheckPluginFile(path string) (warnings []string, err error) {
 	if !filepath.IsAbs(path) {
 		return nil, fmt.Errorf("%w: %s: the path is not absolute; give the absolute path of the file", ErrUnsafeExecutable, path)
 	}
-	if info, statErr := os.Stat(path); statErr != nil || !info.Mode().IsRegular() {
+	info, statErr := os.Stat(path)
+	if statErr != nil {
+		return nil, fmt.Errorf("%w: %s: %w; point to the file itself", ErrUnsafeExecutable, path, statErr)
+	}
+	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("%w: %s: not a regular file; point to the file itself", ErrUnsafeExecutable, path)
 	}
 	return nil, nil

@@ -154,3 +154,7 @@ func releaseFIFO(t *testing.T, path string) {
 		t.Logf("the named pipe could not be closed after its release: %v", err)
 	}
 }
+
+func removeContainer(dir, id string) error {
+	return os.Remove(filepath.Join(dir, id+".lock"))
+}

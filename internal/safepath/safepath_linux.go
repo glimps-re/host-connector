@@ -9,9 +9,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/sys/unix"
 )
+
+// File is a file opened below a root, with what Remove needs to delete exactly
+// that file.
+type File struct {
+	f *os.File
+	// parent is the directory the file was opened in, open for the lifetime of
+	// the File so that Remove acts on it rather than on a name.
+	parent *os.File
+	name   string
+	// path is the full path, for error messages.
+	path string
+	// once makes Close safe to call twice, and from two goroutines.
+	once     sync.Once
+	closeErr error
+}
 
 // useOpenat2 is false in tests that exercise the fallback for kernels older
 // than 5.6.

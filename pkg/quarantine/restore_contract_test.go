@@ -496,10 +496,6 @@ func TestRestore_aContainerThatIsALinkOrNotInTheTopLevelIsRefusedAndNotListed(t 
 	})
 }
 
-func removeContainer(dir, id string) error {
-	return os.Remove(filepath.Join(dir, id+".lock"))
-}
-
 func TestRestore_aFailedPublicationOfAContainerWithoutEntryWritesNoEntry(t *testing.T) {
 	q, dir := newE2EHandler(t, FormatTar)
 	path, id := quarantined(t, q, "f.bin", "content")

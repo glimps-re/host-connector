@@ -6,9 +6,20 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/glimps-re/host-connector/internal/pathutil"
 )
+
+// File is a file opened below a root. These platforms delete by name, after
+// checking that the name still is the opened file.
+type File struct {
+	f    *os.File
+	path string
+	// once makes Close safe to call twice, and from two goroutines.
+	once     sync.Once
+	closeErr error
+}
 
 // Open opens root/rel read-only after checking that no component below root is
 // a symbolic link. Without openat2 the check and the open are two steps, and
@@ -31,7 +42,7 @@ func Open(root, rel string) (*File, error) {
 	if !pre.Mode().IsRegular() {
 		return nil, &os.PathError{Op: "open", Path: full, Err: ErrNotRegular}
 	}
-	f, err := os.Open(full)
+	f, err := os.Open(filepath.Clean(full))
 	if err != nil {
 		return nil, err
 	}
@@ -41,7 +52,7 @@ func Open(root, rel string) (*File, error) {
 		}
 		return nil, &os.PathError{Op: "open", Path: full, Err: ErrNotRegular}
 	}
-	return &File{f: f, name: filepath.Base(full), path: full}, nil
+	return &File{f: f, path: full}, nil
 }
 
 // Remove deletes the file by name if it still is the file that was opened. The

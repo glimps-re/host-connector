@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 )
 
 var (
@@ -28,21 +27,6 @@ var (
 	// leaves the root.
 	ErrBadPath = errors.New("not a path below the root")
 )
-
-// File is a file opened below a root, with what Remove needs to delete exactly
-// that file.
-type File struct {
-	f *os.File
-	// parent is the directory the file was opened in, open for the lifetime of
-	// the File where the platform allows it.
-	parent *os.File
-	name   string
-	// path is the full path, for the platforms that work by name.
-	path string
-	// once makes Close safe to call twice, and from two goroutines.
-	once     sync.Once
-	closeErr error
-}
 
 // OS returns the opened file. It stays owned by the File: Close closes it.
 func (f *File) OS() *os.File { return f.f }

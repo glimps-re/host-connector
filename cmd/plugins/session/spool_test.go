@@ -132,6 +132,25 @@ func TestCreateSpool_errors(t *testing.T) {
 	}
 }
 
+func TestCreateSpool_refusesASymlinkedDir(t *testing.T) {
+	target := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "session")
+	if err := os.Symlink(target, dir); err != nil {
+		t.Fatal(err)
+	}
+	_, err := createSpool(dir, nil)
+	if err == nil || !strings.Contains(err.Error(), "is a symlink") {
+		t.Fatalf("err = %v, want a symlink refusal", err)
+	}
+	entries, err := os.ReadDir(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("link target holds %d entries, want none", len(entries))
+	}
+}
+
 func TestSpool_aMaxSizeReportIsReadBackIntact(t *testing.T) {
 	big := datamodel.Report{Filename: "big", Error: strings.Repeat("é", (datamodel.MaxReportSize-200)/2)}
 	line := mustLine(t, big)

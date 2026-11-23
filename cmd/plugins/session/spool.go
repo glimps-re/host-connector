@@ -67,6 +67,17 @@ func createSpool(dir string, logger *slog.Logger) (*spool, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	// Refuses a planted symlink or non-directory as the spool folder; a swap after this check is not covered.
+	fi, err := os.Lstat(dir)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("spool directory %q is a symlink", dir)
+	}
+	if !fi.IsDir() {
+		return nil, fmt.Errorf("spool directory %q is not a directory", dir)
+	}
 	for range 5 {
 		var b [16]byte
 		if _, err := rand.Read(b[:]); err != nil {

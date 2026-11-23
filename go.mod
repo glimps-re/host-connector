@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/chromedp v0.15.1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
-	github.com/glimps-re/connector-integration v0.10.0
+	github.com/glimps-re/connector-integration v0.9.2-0.20261122104756-f74f821dc90a
 	github.com/glimps-re/rfsnotify v0.2.0
 	github.com/go-playground/universal-translator v0.18.1
 	github.com/go-playground/validator/v10 v10.30.3
@@ -91,5 +91,3 @@ require (
 	golang.org/x/text v0.44.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1
 )
-
-replace github.com/glimps-re/connector-integration => ../connector-integration

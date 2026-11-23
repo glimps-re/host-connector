@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,9 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/chromedp/cdproto/page"
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
@@ -99,87 +96,6 @@ func assertNothingIn(t *testing.T, dir, what string) {
 	}
 	if len(names) != 0 {
 		t.Errorf("%s: %v left by the browser, want nothing", what, names)
-	}
-}
-
-// confinedRun runs run with a browser whose TMPDIR and HOME are empty folders
-// owned by the test, and checks that nothing is left in them, nor in the work
-// directory, once it returns.
-func confinedRun(t *testing.T, work string, run func(b *browserRunner)) {
-	t.Helper()
-	tmp, home := emptyDir(t), emptyDir(t)
-	t.Setenv("TMPDIR", tmp)
-	t.Setenv("HOME", home)
-	run(&browserRunner{execPath: realBrowser, workDir: work, logger: slog.New(slog.DiscardHandler)})
-	assertNothingIn(t, tmp, "the temporary folder")
-	assertNothingIn(t, home, "HOME")
-	assertNothingIn(t, filepath.Join(work, profilesDir), "the work directory")
-}
-
-// watchBrowser polls the work directory until the browser has made its folders
-// there and calls onSeen the first time. The returned function stops the poll
-// and tells whether the browser was seen.
-func watchBrowser(t *testing.T, work string, onSeen func()) (stop func() bool) {
-	t.Helper()
-	var seen atomic.Bool
-	quit, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case <-quit:
-				return
-			case <-time.After(5 * time.Millisecond):
-				m, err := filepath.Glob(filepath.Join(work, profilesDir, "profile-*", "tmp", "org.chromium.*"))
-				if err != nil {
-					t.Error(err)
-					return
-				}
-				if len(m) > 0 && seen.CompareAndSwap(false, true) {
-					onSeen()
-				}
-			}
-		}
-	}()
-	return func() bool {
-		close(quit)
-		<-done
-		return seen.Load()
-	}
-}
-
-// Everything the browser creates goes under the folders of its rendering, which
-// go with it: the temporary folder and the home of the connector stay empty.
-func TestRealBrowser_leavesNothingOutsideTheWorkDirWhateverTheOutcome(t *testing.T) {
-	skipWithoutBrowser(t)
-	for name, run := range map[string]func(t *testing.T, b *browserRunner){
-		"pdf": func(t *testing.T, b *browserRunner) {
-			if err := b.selfTest(t.Context()); err != nil {
-				t.Fatal(err)
-			}
-		},
-		"timeout": func(t *testing.T, b *browserRunner) {
-			prev := renderTimeout
-			renderTimeout = time.Millisecond
-			t.Cleanup(func() { renderTimeout = prev })
-			if _, err := b.render(t.Context(), "<html></html>", page.PrintToPDF(), maxTestPDFSize); err == nil {
-				t.Error("render() succeeded, want the timeout")
-			}
-		},
-		"browser killed once started": func(t *testing.T, b *browserRunner) {
-			ctx, cancel := context.WithCancel(t.Context())
-			defer cancel()
-			stop := watchBrowser(t, b.workDir, cancel)
-			_, err := b.render(ctx, "<html></html>", page.PrintToPDF(), maxTestPDFSize)
-			stop()
-			if err == nil {
-				t.Error("render() succeeded, want the cancellation")
-			}
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			confinedRun(t, t.TempDir(), func(b *browserRunner) { run(t, b) })
-		})
 	}
 }
 
@@ -397,32 +313,6 @@ func TestLinkBase_fallsBackWhenTheTemporaryFolderIsNotUsable(t *testing.T) {
 			if got, err := linkBase(); err != nil || got != fallback {
 				t.Errorf("linkBase() = %q, %v, want %q", got, err, fallback)
 			}
-		})
-	}
-}
-
-// The browser starts whatever the length of the work directory, and what it
-// creates is physically under it (never at the other end of the link, nor in the
-// temporary folder).
-func TestRealBrowser_startsWithAnyWorkDirLengthAndKeepsItsFilesInIt(t *testing.T) {
-	skipWithoutBrowser(t)
-	for _, n := range []int{64, 200} {
-		t.Run(strconv.Itoa(n), func(t *testing.T) {
-			work := filepath.Join(t.TempDir(), strings.Repeat("p", n), "gmhost-0000000000")
-			if err := os.MkdirAll(work, 0o700); err != nil {
-				t.Fatal(err)
-			}
-			confinedRun(t, work, func(b *browserRunner) {
-				stop := watchBrowser(t, work, func() {})
-				err := b.selfTest(t.Context())
-				seen := stop()
-				if err != nil {
-					t.Fatalf("the browser does not start with a work directory of %d bytes: %v", len(work), err)
-				}
-				if !seen {
-					t.Error("no folder of the browser was seen under the work directory")
-				}
-			})
 		})
 	}
 }

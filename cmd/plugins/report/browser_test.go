@@ -3,17 +3,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -142,91 +138,6 @@ func TestInit_noBrowserFoundRefuses(t *testing.T) {
 	err := p.Init(&Config{}, mock.NewMockHCContext())
 	if !errors.Is(err, errNoBrowser) {
 		t.Errorf("Init() error = %v, want errNoBrowser", err)
-	}
-}
-
-func TestRealBrowser_rendersAPDF(t *testing.T) {
-	skipWithoutBrowser(t)
-	b := runner(t, realBrowser)
-	if err := b.selfTest(t.Context()); err != nil {
-		t.Fatalf("the installed browser does not render a PDF: %v", err)
-	}
-}
-
-func TestRealBrowser_pageCannotScriptOrLoadResources(t *testing.T) {
-	skipWithoutBrowser(t)
-	var hits atomic.Int64
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		hits.Add(1)
-		w.WriteHeader(http.StatusNotFound)
-	}))
-	t.Cleanup(srv.Close)
-
-	var logs bytes.Buffer
-	b := runner(t, realBrowser)
-	b.logger = slog.New(slog.NewTextHandler(&logs, nil))
-	if err := b.selfTest(t.Context()); err != nil {
-		t.Fatalf("the installed browser does not render a PDF: %v", err)
-	}
-	logs.Reset()
-	b.settle = time.Second
-	html := `<html><head>
-<title>STATIC</title><script>document.title = "SCRIPT-RAN"; new Image().src = "` + srv.URL + `/script"; fetch("` + srv.URL + `/fetch")</script>
-<link rel="stylesheet" href="` + srv.URL + `/style.css">
-<link rel="stylesheet" href="file:///etc/hostname">
-</head><body><img src="` + srv.URL + `/image.png"><iframe src="file:///etc/passwd"></iframe></body></html>`
-	ctx, cancel := context.WithTimeout(t.Context(), renderTestTimeout)
-	defer cancel()
-	pdf, err := b.render(ctx, html, page.PrintToPDF(), maxTestPDFSize)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(string(pdf), pdfMagic) {
-		t.Error("the result is not a PDF")
-	}
-	if !strings.Contains(string(pdf), "/Title (STATIC)") {
-		t.Error("the script of the page ran")
-	}
-	if !strings.Contains(logs.String(), "refused") || !strings.Contains(logs.String(), "requests=2") {
-		t.Errorf("log %q must say that the 2 remote requests were refused", logs.String())
-	}
-	if n := hits.Load(); n != 0 {
-		t.Errorf("the page made %d outgoing requests, want none", n)
-	}
-}
-
-func TestRealBrowser_pageCannotReadLocalFiles(t *testing.T) {
-	skipWithoutBrowser(t)
-	css := filepath.Join(t.TempDir(), "witness.css")
-	if err := os.WriteFile(css, []byte("body{background:#f00}"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	b := runner(t, realBrowser)
-	b.settle = 500 * time.Millisecond
-	render := func(html string) []byte {
-		pdf, err := b.render(t.Context(), html, page.PrintToPDF().WithPrintBackground(true), maxTestPDFSize)
-		if err != nil {
-			t.Fatalf("the installed browser does not render a PDF: %v", err)
-		}
-		return pdf
-	}
-	base := render("<html><body>x</body></html>")
-	// The same style, inline, changes the PDF: the comparison can see it.
-	if inline := render("<html><head><style>body{background:#f00}</style></head><body>x</body></html>"); len(inline) == len(base) {
-		t.Skip("this browser renders the control style like the base page: the comparison proves nothing here")
-	}
-	linked := render(`<html><head><link rel="stylesheet" href="file://` + css + `"></head><body>x</body></html>`)
-	if len(linked) != len(base) {
-		t.Errorf("the PDF of a page linking a local style (%d bytes) differs from the base (%d): the file was read", len(linked), len(base))
-	}
-}
-
-func TestRender_pdfLargerThanTheCapIsRefused(t *testing.T) {
-	skipWithoutBrowser(t)
-	b := runner(t, realBrowser)
-	_, err := b.render(t.Context(), "<html><body>x</body></html>", page.PrintToPDF(), 100)
-	if err == nil || !strings.Contains(err.Error(), "larger than") {
-		t.Errorf("render() error = %v, want the size cap refusal", err)
 	}
 }
 

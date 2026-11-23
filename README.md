@@ -819,6 +819,15 @@ golangci-lint run --build-tags e2e ./test/...
 
 It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it). The browser scenarios need Chromium or Chrome, run as a non-root user (Chrome refuses root); they are skipped when it is absent, or fail with `E2E_REQUIRE_BROWSER=1`. See `test/doc.go`. The scenarios are described in [docs/e2e-tests.md](docs/e2e-tests.md).
 
+The tests of the report plugin that start a real Chromium (`cmd/plugins/report`) are opt-in with the build tag `realbrowser`: some CI runners (Ubuntu with AppArmor restricting unprivileged user namespaces) leave the browser no usable sandbox, and the plugin deliberately refuses `--no-sandbox`. They need Chromium or Chrome in `PATH` and a non-root user, and fail (not skip) when either is missing:
+
+```bash
+go test -race -tags realbrowser ./cmd/plugins/report/
+
+# Lint, including these tests
+golangci-lint run --build-tags realbrowser ./cmd/plugins/report/...
+```
+
 ### Security Considerations
 
 - **Sandboxing**: Plugins run in the same process space as GMHost

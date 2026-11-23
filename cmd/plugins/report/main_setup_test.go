@@ -5,23 +5,14 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"testing"
 )
-
-// realBrowser is the browser installed on the machine, "" when there is none.
-var realBrowser string
 
 // Mode of the fake browser scripts: named constant, they are test fixtures.
 const scriptMode os.FileMode = 0o700
 
 func TestMain(m *testing.M) {
-	if p, err := exec.LookPath("chromium"); err == nil {
-		realBrowser = p
-	} else if p, err := exec.LookPath("google-chrome"); err == nil {
-		realBrowser = p
-	}
 	dir, err := os.MkdirTemp("", "report-path-")
 	if err != nil {
 		panic(err)
@@ -57,14 +48,4 @@ func fakeBrowser(t *testing.T, body string) string {
 		t.Fatal(err)
 	}
 	return path
-}
-
-func skipWithoutBrowser(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("Chrome refuses its sandbox as root")
-	}
-	t.Helper()
-	if realBrowser == "" {
-		t.Skip("no browser installed")
-	}
 }

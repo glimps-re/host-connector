@@ -1,10 +1,9 @@
-//go:build linux
+//go:build linux && realbrowser
 
 package main
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"slices"
 	"strings"
@@ -66,10 +65,10 @@ func hostile(reports []datamodel.Report) []datamodel.Report {
 // asserted (half of the timeout) only with HC_WORST_CASE_TIME=1, which depends on
 // the machine.
 func TestRealBrowser_theWorstReportsStayUnderHalfTheLimits(t *testing.T) {
-	skipWithoutBrowser(t)
 	if testing.Short() {
 		t.Skip("renders big PDFs")
 	}
+	requireBrowser(t)
 	full := func() []datamodel.Report {
 		reports := notAnalyzedReports(maxRows)
 		reports = append(reports, errorReports(maxRows)...)
@@ -91,7 +90,7 @@ func TestRealBrowser_theWorstReportsStayUnderHalfTheLimits(t *testing.T) {
 			if err := p.Init(p.GetDefaultConfig(), mock.NewMockHCContext()); err != nil {
 				t.Fatal(err)
 			}
-			p.browser = &browserRunner{execPath: realBrowser, workDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
+			p.browser = runner(t, realBrowser)
 			data := mustReportData(t, scanContext(), reports)
 			start := time.Now()
 			pdf, err := p.generatePDFReport(t.Context(), data)

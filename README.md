@@ -55,30 +55,30 @@ Available Commands:
   scan        Scan folders
 
 Flags:
-      --config string                config file (default "/etc/gmhost/config.yml")
-  -d, --debug                        print debug strings
-      --extract                      Enable archive extraction (archives are unpacked and contents scanned)
-      --extract-min-size string      Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB) (default "8KB")
-      --extract-workers int          Number of concurrent workers for archive extraction (default: 2, used when extract is enabled) (default 2)
-      --follow-symlinks              Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
-      --gmalware-syndetect           Use syndetect API to analyze files
-      --gmalware-token string        GLIMPS Malware Detect token
-      --gmalware-url string          GLIMPS Malware Detect url (E.g https://gmalware.ggp.glimps.re)
-  -h, --help                         help for GMHost
-      --insecure                     do not check certificates
-      --max-file-size string         Maximum file size to scan directly (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected (default "100MiB")
-      --move-destination string      Target directory for moving clean files (preserves subdirectory structure)
-      --move-source string           Source directory filter (only clean files within this path are moved to destination)
-      --print-location string        File path for scan reports (leave empty to print to stdout)
-      --quarantine string            Directory path where quarantined files are stored (files are encrypted with .lock extension) (default "/var/lib/gmhost/quarantine")
-      --quarantine-registry string   Path to the database that store quarantined and restored file entry (leave empty for in-memory store, lost on restart)
-      --recursive-extract-max-depth int     Maximum depth for recursive archive extraction (default: 10) (default 10)
-      --recursive-extract-max-files int     Maximum total number of files for recursive archive extraction (default: 10000) (default 10000)
-      --recursive-extract-max-size string   Maximum total size for recursive archive extraction (default: 5GB) (default "5GB")
-
-      --timeout duration             Time allowed to analyze each file (default 0s)
-  -v, --verbose                      Report all scanned files, including clean files (not just malware detections)
-      --workers int                  Number of concurrent workers for file analysis (default: 4, affects CPU usage) (default 4)
+      --config string                       config file (default "/etc/gmhost/config.yml")
+  -d, --debug                               print debug strings
+      --extract                             Enable archive extraction (archives are unpacked and contents scanned)
+      --extract-min-size string             Minimum file size to attempt extraction (e.g., '8KB') (default "8KB")
+      --extract-workers int                 Number of concurrent workers for archive extraction (default 2)
+      --follow-symlinks                     Follow symbolic links when scanning directories (if disabled, symlinks are skipped)
+      --gmalware-syndetect                  Use syndetect API to analyze files
+      --gmalware-token string               GLIMPS Malware Detect token
+      --gmalware-url string                 GLIMPS Malware Detect url (E.g https://gmalware.ggp.glimps.re)
+  -h, --help                                help for GMHost
+      --insecure                            do not check certificates
+      --max-file-size string                Maximum file size to scan directly (e.g., '100MB') (default "100MiB")
+      --move-destination string             Target directory for moving clean files (preserves subdirectory structure)
+      --move-source string                  Source directory filter (only clean files within this path are moved to destination)
+      --print-location string               File path for scan reports (leave empty to print to stdout)
+      --quarantine string                   Directory path where quarantined files are stored (default "/var/lib/gmhost/quarantine")
+      --quarantine-registry string          Path to the database that store quarantined and restored file entry (leave empty for in-memory store, lost on restart)
+      --recursive-extract-max-depth int     Maximum depth for recursive archive extraction (default 10)
+      --recursive-extract-max-files int     Maximum total number of files for recursive archive extraction (default 10000)
+      --recursive-extract-max-size string   Maximum total size for recursive archive extraction (default "5GB")
+      --shutdown-timeout duration           Time allowed to stop on SIGTERM or SIGINT (at least 2s) (default 8s)
+      --timeout duration                    Time allowed to analyze each file (default 5m0s)
+  -v, --verbose                             Report all scanned files, including clean files (not just malware detections)
+      --workers int                         Number of concurrent workers for file analysis (default 4)
 
 Use "GMHost [command] --help" for more information about a command.
 ```
@@ -124,7 +124,6 @@ Flags:
       --pre-scan               Immediately scan all existing files in monitored paths when monitoring starts
       --disable-fs-watcher     Do not watch filesystem events, only pre-scan and periodic rescan (requires --scan-period)
       --scan-period duration   If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m') (default 0s - disabled)
-
 ```
 
 **Examples:**
@@ -162,8 +161,8 @@ GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c2
 
 ### Agent
 
-Start monitoring location with GLIMPS Malware Host under Connector Manager control
-Global config will not be used.
+Start monitoring location with GLIMPS Malware Host under Connector Manager control.
+The configuration is pushed by the Connector Manager and replaces the local one.
 
 ```bash
 GMHost agent [flags]
@@ -180,6 +179,323 @@ Flags:
 GMHost agent --console-url="http://localhost:8080" --console-api-key=apikey
 ```
 
+## Configuration
+
+The default configuration file is located at:
+- **Linux**: `~/.config/gmhost/config.yml` if it exists, otherwise `/etc/gmhost/config.yml`
+- **Windows**: `%APPDATA%\gmhost\config.yml`
+
+The file is read strictly: invalid YAML, a mistyped value or an unknown key makes the connector refuse to start, with an error naming the file and the key. A missing file is accepted: defaults and flags apply.
+
+In agent mode, a configuration pushed by the console is validated before it is applied. If it is refused, the connector keeps the previous one, keeps processing files and raises the console error `host-config-rejected` until a valid configuration is received. After a restart the connector does not start with a rejected configuration: fix it in the console. Keys unknown to this version are ignored and listed in the console error `host-config-unknown-keys`.
+
+### Example Configuration
+
+Every key, with its default value (except `paths`, the GMalware URL and token, and the path examples):
+
+```yaml
+# Analysis
+gmalware_api_url: https://gmalware.ggp.glimps.re
+gmalware_api_token: 00000000-00000000-00000000-00000000-00000000
+gmalware_expert_url: ""
+gmalware_timeout: 5m
+gmalware_user_tags: []
+gmalware_no_cert_check: false
+gmalware_syndetect: false
+gmalware_bypass_cache: false
+
+# Global
+paths:
+  - /home/user/Downloads
+workers: 4
+max_file_size: 100MiB
+follow_symlinks: false
+work_dir: ""                     # system temporary directory
+shutdown_timeout: 8s
+plugins_config: ""               # e.g. /etc/gmhost/plugins.yml
+debug: false
+
+# Archive extraction
+extract: false
+extract_workers: 2
+extract_min_size: 8KB
+recursive_extract_max_depth: 10
+recursive_extract_max_size: 5GB
+recursive_extract_max_files: 10000
+
+# Files that cannot be fully analyzed
+unanalyzable_policy:
+  too_big: error
+  encrypted: error
+  empty: pass
+  analysis_error: error
+  extract_error: error
+
+# Path rules
+filepath_filter:
+  forbidden_paths: []
+  skipped_paths: []
+
+actions:
+  delete: true
+  quarantine: true
+  move: false
+  print: true
+  log: true
+
+monitoring:
+  prescan: false
+  period: 0s
+  modification_delay: 30s
+  disable_fs_watcher: false
+  max_tracked_memory: 256MiB
+  max_tracked_dir_percent: 25
+
+quarantine:
+  location: /var/lib/gmhost/quarantine
+  password: infected
+  registry: ""                   # in memory
+  format: tar
+
+move:
+  source: ""
+  destination: ""
+  mode: copy
+  min_throughput: 10MiB
+
+print:
+  location: ""                   # stdout
+  verbose: false
+
+# Connector Manager (agent command)
+console:
+  url: ""
+  api-key: ""
+  insecure: false
+```
+
+Sizes accept units such as `8KB`, `100MiB` or `5GB`. Durations use Go syntax (`30s`, `5m`, `1h`).
+
+### Configuration Options
+
+#### GLIMPS Malware Detect
+
+- **`gmalware_api_url`** (required, flag `--gmalware-url`, env `GMALWARE_URL`): URL of the GLIMPS Malware API. At every start and configuration the service must answer `GET /api/lite/v2/status` (`GET /api/v1/status` with syndetect) with HTTP 200. With go-gdetect v1.6.6, a `404` on that endpoint makes the configuration hang and blocks submissions.
+- **`gmalware_api_token`** (required, flag `--gmalware-token`, env `GMALWARE_TOKEN`): API token.
+- **`gmalware_expert_url`**: URL of the GLIMPS Malware expert interface (optional).
+- **`gmalware_timeout`** (default `5m`, flag `--timeout`): Time allowed to analyze each file.
+- **`gmalware_user_tags`**: Tags added to every submission.
+- **`gmalware_no_cert_check`** (default `false`, flag `--insecure`): Skip TLS certificate verification.
+- **`gmalware_syndetect`** (default `false`, flag `--gmalware-syndetect`): Use the syndetect API.
+- **`gmalware_bypass_cache`** (default `false`): Ask GMalware to analyze again instead of answering from its cache.
+
+A file is submitted under its host path. A member of an archive is submitted as `<archive path>/<member path>`.
+
+#### Global Settings
+
+- **`paths`** (required, at least 1): Directories or files to monitor and scan. On the command line, they are given as arguments.
+- **`workers`** (default `4`, flag `--workers`): Number of files analyzed concurrently.
+- **`max_file_size`** (default `100MiB`, flag `--max-file-size`): Largest file submitted to GMalware. A larger file is extracted if it is an archive and `extract` is on. Otherwise it follows `unanalyzable_policy.too_big`.
+- **`follow_symlinks`** (default `false`, flag `--follow-symlinks`): Follow symbolic links. When off, links are skipped, and a file whose path crosses a link is left in place with a warning. Turning it on disables this protection, and a warning is logged when move, delete or quarantine is active.
+- **`work_dir`** (default: system temporary directory, `TMPDIR` honored): Base of the private working directory used for extractions and plugin files. A `gmhost-<random>` sub-directory is created there and removed at stop. The connector refuses to start if it is a monitored path or lies under one. Use a local disk: `tmpfs` uses RAM, and locks are unreliable on network file systems.
+- **`shutdown_timeout`** (default `8s`, at least `2s`, flag `--shutdown-timeout`, local only: not managed by the console): Time allowed to stop on `SIGTERM`/`SIGINT`. Files being processed may finish during part of this time, then they are left in place and processed again at the next start. Set it below the orchestrator's stop delay (`docker stop -t`, systemd `TimeoutStopSec`). A second signal stops at once. The exit code is `1` if the delay was exceeded.
+- **`plugins_config`**: Path to the plugins configuration file (GNU/Linux only, see [Plugin System](#plugin-system)).
+- **`debug`** (default `false`, flag `-d`): Enable debug logging.
+
+On Linux, `/proc` must be available: the connector refuses to start without it.
+
+#### Extraction Settings
+
+- **`extract`** (default `false`, flag `--extract`): Extract archives and analyze their members (see [Archive Extraction](#archive-extraction)).
+- **`extract_workers`** (default `2`, flag `--extract-workers`): Number of archives extracted concurrently. Keep it well below `workers` (1:10 to 1:20).
+- **`extract_min_size`** (default `8KB`, flag `--extract-min-size`): Files at or below this size are analyzed whole instead of being extracted. Archives of a known format are extracted whatever their size.
+- **`recursive_extract_max_depth`** (default `10`): Maximum nesting level. Deeper archives are not opened and follow `unanalyzable_policy.too_big`.
+- **`recursive_extract_max_size`** (default `5GB`): Maximum total size extracted from one top-level file, across all levels.
+- **`recursive_extract_max_files`** (default `10000`): Maximum number of files extracted from one top-level file, across all levels.
+
+Members left out by these limits, or larger than `max_file_size`, follow `unanalyzable_policy.too_big`.
+
+#### Unanalyzable Policy
+
+`unanalyzable_policy` decides what happens to a file that cannot be fully analyzed. `error` leaves the file in place (in INPUT) and reports it. `pass` delivers it, marked with the reason in the reports. `mitigate` treats it as malware (quarantined or deleted).
+
+- **`too_big`** (`error` | `pass` | `mitigate`, default `error`): Files larger than `max_file_size` that are not extracted, and archive members left out by the extraction limits.
+- **`encrypted`** (`error` | `pass` | `mitigate`, default `error`): Archives protected by an unknown password. This also covers damaged archives that may hide encrypted content.
+- **`empty`** (`pass` | `skip` | `mitigate`, default `pass`): Files of size 0. `pass` delivers a new empty file, `skip` leaves the file in place with a warning. `pass` is refused with `move.mode: rename`. If the key is absent with `rename`, `skip` is used.
+- **`analysis_error`** (`error` | `pass` | `mitigate`, default `error`): Files GMalware failed to analyze. A file with a detection is always malware, whatever this value.
+- **`extract_error`** (`error` | `as_file`, default `error`): Archives the extractor finds damaged or inconsistent. `error` leaves them in place and does not retry until they change. `as_file` analyzes the archive as a plain file, but only when the extractor proved it holds no encrypted content. Otherwise the archive follows `encrypted`. A console warning `extract-error-as-file` is raised while `as_file` is set.
+
+**Risk of `pass`:** a depositor can often make an analysis fail or an archive unreadable on purpose. `pass` then lets unverified files through. Prefer `error` or `mitigate`.
+
+Files that reach the output without a full analysis are listed in the log, in the `print` output and in the reports (`not-analyzed-reason`).
+
+#### Path Rules
+
+`filepath_filter` applies Go regular expressions (RE2, unanchored unless anchored) to the path of every file, and to `<archive path>/<member path>` for archive members. The rules run before analysis and before the plugins.
+
+- **`forbidden_paths`**: Matching files are treated as malware. A forbidden path always wins over a skipped one.
+- **`skipped_paths`**: Matching files are delivered without analysis, marked `policy-skipped`. A skipped archive is not extracted. Forbidden types and forbidden paths still apply to it.
+
+Limits, which refuse the configuration if exceeded:
+- 256 patterns per list, 1024 bytes per pattern and 32 KiB in all
+- no empty pattern, no pattern in both lists, and no pattern that matches the empty string
+- counted repeats of at most 100
+- an estimated 512 instructions per pattern and 4096 in all (about 125 three-letter alternatives fit in one pattern)
+
+A path longer than 4096 bytes is never skipped. When `forbidden_paths` is set, such a file stays in INPUT with an error.
+
+**Risk of `skipped_paths`:** depositors choose their file, folder and member names. Anchor patterns on folders depositors cannot create (`^/srv/in/trusted/`), never on a bare name or extension. To catch hidden trailing characters, write extension rules as `\.exe[^/]*$`. `(?i)` makes a pattern case-insensitive.
+
+```yaml
+filepath_filter:
+  forbidden_paths:
+    - '\.exe[^/]*$'
+  skipped_paths:
+    - '^/srv/in/trusted/'
+```
+
+#### Actions
+
+What happens after a file is analyzed:
+- **`delete`** (default `true`): Delete malicious files (after quarantine if enabled).
+- **`quarantine`** (default `true`): Store malicious files encrypted in the quarantine directory.
+- **`move`** (default `false`): Move clean files from `move.source` to `move.destination`.
+- **`print`** (default `true`): Print scan results (see `print`).
+- **`log`** (default `true`): Log detections in the connector logs.
+
+#### Monitoring
+
+- **`prescan`** (default `false`, flag `--pre-scan`): Scan existing files when monitoring starts.
+- **`period`** (default `0s`: disabled, flag `--scan-period`): Interval between periodic rescans. Temporary failures (network, timeout, disk full) are retried with growing delays. Without a period, a failed file is only retried when it is written to again.
+- **`modification_delay`** (default `30s`, flag `--mod-delay`): A file is analyzed only once it has stayed unchanged for this delay. This prevents analyzing incomplete writes. A value under `1s` logs a warning. A console configuration without the key gives `0`.
+- **`disable_fs_watcher`** (default `false`, flag `--disable-fs-watcher`): Do not watch file system events, and rely on pre-scan and periodic rescan. Requires `period`. Meant for network file systems (e.g. CephFS).
+- **`max_tracked_memory`** (default `256MiB`, at least `1MiB`): Memory bound of the table of files waiting for their `modification_delay`. When it is full, the user folder that holds the most files yields first. Files refused this way are picked up again at the next rescan, so set a `period` if the table can overflow.
+- **`max_tracked_dir_percent`** (default `25`, 0–100): Share of the table above which a user folder yields first when the table is full.
+
+#### Quarantine
+
+- **`location`** (default `/var/lib/gmhost/quarantine` on Linux, `%APPDATA%\gmhost\quarantine` on Windows, flag `--quarantine`): Directory of quarantined files (`<sha256>.lock`). It is created with mode `0700` if missing. It must belong to the connector account (or root), must not be writable by group or others, and must not overlap a monitored path, `move.destination` or the work directory. Otherwise the configuration is refused. Avoid `/tmp`, which may be cleaned automatically.
+- **`password`** (default `infected`): Password used to encrypt quarantined files. It is needed to restore them.
+- **`registry`** (default: in memory, lost on restart, flag `--quarantine-registry`): Database of quarantined and restored files. A restored content is not analyzed again wherever it reappears, but path and type rules still apply to it.
+- **`format`** (`tar` | `zip`, default `tar`): Container for new quarantined files. `zip` uses traditional PKWARE encryption and opens with Windows Explorer or 7-Zip. Existing files of both formats stay restorable. With `zip`, consider the password **public**, since ZipCrypto is easily broken: don't reuse it elsewhere. A warning is logged at each configuration.
+
+#### Move
+
+- **`source`** (flag `--move-source`): Only clean files under this directory are moved.
+- **`destination`** (flag `--move-destination`): Target directory. The subdirectory structure is preserved.
+- **`mode`** (`copy` | `rename`, default `copy`): `copy` copies the analyzed content, checks its SHA256, then removes the source, so exactly what was analyzed is delivered. `rename` moves the file itself: it is cheaper, but a writer holding the file open can still change it. A console warning `host-move-rename` is raised while `rename` is set.
+- **`min_throughput`** (default `10MiB`): Minimum copy speed per second in `copy` mode. A copy that takes longer than `size / min_throughput + 1 minute` is abandoned and retried.
+
+#### Print
+
+- **`location`** (default: stdout, flag `--print-location`): File the scan results are written to.
+- **`verbose`** (default `false`, flag `-v`): Also report clean files.
+
+#### Console
+
+Connector Manager connection, used by the `agent` command:
+- **`url`** (flag `--console-url`): Connector Manager URL.
+- **`api-key`** (flag `--console-api-key`): Connector Manager API key.
+- **`insecure`** (default `false`, flag `--console-insecure`): Skip TLS certificate verification.
+
+## Archive Extraction
+
+When `extract` is enabled, archives are unpacked and each member is analyzed. Archives inside archives are extracted too, within the [extraction limits](#extraction-settings).
+
+**Supported formats:** ZIP, GZIP, TAR, BZIP2, RAR, 7Z, ISO, Brotli, LZ4, XZ, Zstandard, S2, Snappy, Zlib, LZW, plus the formats of the extract plugin (7-Zip).
+
+**Conditions to attempt extraction:**
+- file size must be > `extract_min_size`, unless the file is an archive of a known format
+- file's MIME type must be in the list below
+
+Allowed types for extraction:
+```go
+"application/x-archive"              // .ar
+"application/x-arj"                  // .arj
+"application/vnd.ms-cab-compressed"  // .cab
+"application/x-cpio"                 // .cpio
+"application/x-iso9660-image"        // .iso
+"application/x-qemu-disk"            // .qcow, .qcow2
+"application/x-lha"                  // .lha
+"application/x-lzh-compressed"       // .lzh
+"application/vnd.rar"                // .rar
+"application/x-virtualbox-vhd"       // .vhd, .vhdx
+"application/x-7z-compressed"        // .7z
+"application/x-xz"                   // .xz, .tar.xz
+"application/x-bzip2"                // .bz2, .tar.bz2
+"application/gzip"                   // .gz, .tar.gz, .tgz
+"application/x-tar"                  // .tar
+"application/x-lzma"                 // .lzma, .tar.lzma
+"application/vnd.ms-htmlhelp"        // .chm
+"application/x-ms-wim"               // .wim
+"application/x-compress"             // .Z
+"application/zip"                    // .zip
+"application/x-rpm"                  // .rpm
+"application/x-apple-diskimage"      // .dmg
+"application/vnd.debian.binary-package" // .deb
+"application/zstd"                   // .zst, .tar.zst
+"application/x-xar"                  // .xar, .pkg
+"application/vnd.squashfs"           // .squashfs, .snap, .appimage
+"application/x-squashfs"             // .squashfs
+"application/x-lz4"                  // .lz4, .tar.lz4
+
+// default MIME type, kept in case identification failed, or for specific raw file formats like flat VMDK
+"application/octet-stream"
+
+// MIME types absent from default libmagic database
+"application/x-vmdk"                 // .vmdk
+"application/x-lzh"                  // .lzh
+"application/x-lzh-archive"          // .lzh
+"application/x-rar-compressed"       // .rar
+"application/x-vhd"                  // .vhd, .vhdx
+"application/x-virtualbox-vdi"       // .vdi
+```
+MIME type detection is done using https://github.com/gabriel-vasile/mimetype.
+
+**Important notes:**
+- If any member is malicious, the whole archive is malicious. Members are never removed from an archive.
+- Members are extracted to the work directory and cleaned up after analysis.
+- An archive with a member that could not be analyzed stays in place, unless `unanalyzable_policy` decides otherwise.
+- A file typed as an archive that cannot be opened (truncated, corrupted) is handled as damaged (`extract_error`). It stays in INPUT by default.
+- Office documents and packages (docx, xlsx, pptx, odt, epub, jar, apk) are analyzed whole. They are first checked for encrypted members, which follow `encrypted`.
+- Zip bombs (members declaring more than 3 GB with a ratio over 100) are reported and not extracted.
+
+## Actions
+
+Each sequence of actions has a timeout of **30 seconds per GB** (rounded up to the next GB, minimum 30 seconds).
+Examples: 1MB -> 30s ; 500MB -> 30s ; 1,2GB -> 60s ; 2GB -> 60s
+
+### Quarantine
+
+- **When**: Malware is detected
+- **Effect**: Stores an encrypted copy of the file in the quarantine directory, with its metadata
+
+### Delete
+
+- **When**: Malware is detected (after quarantine if enabled)
+- **Effect**: Removes the original malicious file
+
+### Move
+
+- **When**: The file is under `move.source`
+- **Effect**:
+  - **Clean files**: Moved to the destination, preserving the directory structure. Files are published atomically through a `.gmhost-staging` folder at the root of the destination: consumers must ignore it.
+    - A file never replaces an existing one. It is stored next to it as `<name>.conflict-<UTC time>[-n]<ext>`, with a warning. After 6 conflicting names, the file stays in place with an error.
+    - Setuid and setgid bits are never copied.
+    - A file named `report-session-*` (any case, any depth) is never moved: it stays in place with an error.
+  - **Malicious files**: Not moved. A `.locked.json` report is written at the destination path.
+  - **Files in error**: Not moved, and neither is an archive with a member that could not be analyzed. The report lists the failed members (`error-subfiles`).
+
+### Print
+
+- **When**: Always (`print.verbose` to include clean files)
+- **Effect**: Outputs scan results to stdout or `print.location`
+
+### Log
+
+- **When**: Always
+- **Effect**: Logs scan information using structured logging
+
 ## Plugin System
 
 GMHost features an extensible plugin architecture that allows for specialized processing of files during the scanning pipeline. Plugins can intercept files at various stages, perform custom analysis, generate reports, and integrate with external systems.
@@ -195,174 +511,152 @@ GMHost includes several built-in plugins (**GNU/Linux only**):
 
 ### Plugin Configuration
 
-Plugins are configured via a separate YAML file referenced in the main configuration:
+Plugins are configured in a separate YAML file referenced by `plugins_config`. Each entry has two keys:
+- **`file`**: The plugin shared object (e.g. `extract.so`)
+- **`config`**: The plugin options (see below)
 
 ```yaml
 # In config.yml
 plugins_config: /etc/gmhost/plugins.yml
 ```
 
-Plugins are loaded in the order of the file, and that order is the callback order: with the same file, the verdict is always the same. A plugin name must appear only once. Recommended order: filters, then `session`. An entry of a removed plugin (`filesize_filter`, `filepath_filter`, `error_filter`) is ignored with a warning and a console error, and is never carried over (see `unanalyzable_policy` and `filepath_filter`); a plugins file that holds only removed plugins is refused. An empty plugins file, a duplicate name, YAML anchors, aliases and merge keys, unknown keys (only `file` and `config` per plugin, and the options each plugin documents), the same plugin file declared twice, and files over 1 MiB are refused at startup, with an error naming the key and never quoting a value; on Windows, which does not support plugins, a configured plugin also refuses to start.
+Plugins are called in the order of the file. The recommended order is filters first, then `session`. The connector refuses to start if:
+- the file is empty or larger than 1 MiB
+- a plugin name or plugin file is declared twice
+- the file uses YAML anchors, aliases or merge keys
+- a key is unknown
+- a plugin is configured on Windows, which does not support plugins
 
-A complete example configuration is available at `rsc/plugin_config.yml`. Below are the configuration options for each built-in plugin:
+Entries named `filesize_filter`, `filepath_filter` or `error_filter` (or pointing to their `.so` files) are not plugins: they are ignored with a warning and a console error. Use `unanalyzable_policy` and `filepath_filter` instead. A file that holds only such entries is refused.
+
+A complete example is available at `rsc/plugin_config.yml`.
 
 #### Extract Plugin
 
-Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.).
+Extracts archives with an embedded 7-Zip (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, disk images, etc.). Size limits are the global ones (`max_file_size`, `recursive_extract_*`).
 
-Extraction size limits are the global ones (`max_file_size`, `recursive_extract_max_files`, `recursive_extract_max_size`); the former `max_file_size`, `max_extracted_files` and `max_total_extracted_size` keys of this plugin are removed and refused at start. The plugin configuration:
+| Key | Default | Description |
+|---|---|---|
+| `default_passwords` | `["infected"]` | Passwords tried on encrypted archives |
+| `seven_zip_path` | `""` (embedded binary) | Absolute path of a 7-Zip binary |
 
 ```yaml
 extract:
   file: extract.so
   config:
-    default_passwords:                # Passwords for encrypted archives
+    default_passwords:
       - infected
-      - password
-    seven_zip_path: ""                # Absolute path of a 7-Zip binary (the embedded one, deployed in the work directory, if empty)
+    seven_zip_path: ""
 ```
 
-**When upgrading:** check `seven_zip_path`. A `7zzs` found in `PATH` is no longer used, and a 7-Zip older than 25.01 is refused at start.
-
-**Key Features:**
-- Uses the embedded 7-Zip binary, deployed in the private work directory (a `7zzs` found in `PATH` is never used); the binary is checked and run on a reference archive at every start and configuration, and the connector refuses to start if it is missing, unsafe, cannot run (for example `work_dir` on a `noexec` file system) or is not a supported version (the check also runs the technical listing, `-slt`, on the reference archive and requires it to report the data after its end)
-- Prevents extraction bombs through size and count limits (centralized in host connector config), applied to the bytes really written: the kernel limits each file (`RLIMIT_FSIZE`) and the output folder is measured every 250 ms while 7-Zip writes, so an archive that lies about its sizes (gzip, bzip2) is stopped during the write
-- Handles symlinks securely
-- Hard links: the size of each name counts in the budget, so an archive of many hard links to one big file can exceed the budget and end in `extract-error` (strict on purpose)
-- Supports password-protected archives
-
-**Known limitations** (what 7-Zip does not list, the check cannot see; standard readers such as `unzip`, `7z` or Python do not see it either):
-- Junk put in front of a plain zip is not examined, but it is refused: the walk of the zip headers finds the first record anywhere but at the start of the file (a self-extracting zip is refused for the same reason).
-- An encrypted blob hidden in the slack of a container (covered by the end-of-archive comment, or in a gap of a 7z before its next header; in a zip, a gap between the entries or before the central directory is refused, see below) is delivered normally under every `unanalyzable_policy`. Only signature carving would find it.
-- A zip comment that holds a line of exactly `----------` makes an anomalous archive impossible to prove: it is kept as an error, never delivered (fail safe).
-- Plain single-stream archives (gzip, xz, bzip2) with data after their end never complete: they stay in INPUT as errors (fail safe).
-- An entry flagged as a folder that holds data is an anomaly in every format except the file systems and disk images (APFS, APM, CramFS, Dmg, Ext, FAT, GPT, HFS, Iso, LP, MBR, NTFS, QCOW, Sparse, SquashFS, Udf, VDI, VHD, VHDX, VMDK, WIM), whose folders may have the size of their own records: a folder with hidden data in one of those is not seen (known limit). A folder entry is empty only if it declares no size and packs to nothing; a zip may also pack it to the 2 bytes of an empty Deflate block (a folder deflated on its own), which the walk of its headers confirms. Anything else is an anomaly, as readers other than 7-Zip do not stop at the declared size. The same holds for a folder with no name or with a name no file system takes (over 255 bytes in a component, over the limit of a path). A folder with a blank size (xar) is taken as empty by the listing; tar, 7z and the other formats have one header per entry and are checked by the listing alone.
-- **The header walk applies to every zip** (the archives 7-Zip types as `Type = zip`; documents and packages such as docx, xlsx, jar and apk included, in extraction and in check-only mode). 7-Zip lists the central directory of a zip, while unzip and the streaming readers read the local records one after the other, so a record the directory does not list, or data behind a folder it shows empty, is seen by them and not by 7-Zip. The plugin walks the headers itself (no decompression beyond 16 bytes of a folder, no password) and refuses the archive (an anomaly, the encryption possible) when: the end of directory is not unique (the last record of the tail must be the one whose comment ends exactly at the end of the file, and no other such record may exist; a zip stored in a zip, as in a fat jar, does not count: its end of directory is data followed by more data), or its directory is not the one the listing of 7-Zip gives (another count, fewer folders; the entries of the directory must fill it exactly, and the count 7-Zip lists is the entries of the directory, plus one for each record the directory does not list when one of them comes before the first entry, as counted with 7-Zip 25.01, and no more); two entries start at the same place; a record does not start where the previous one ends (or the first one at 0): a gap with a byte that is not zero, with or without folders, is refused, while a gap of zeros (what APK signing tools and aligners leave) is accepted between records and before the signing block or the directory, though not before the first record; an APK Signing Block is parsed exactly (at most 1 MiB, where honest blocks measured 1.4 to 18 KB; [size][pairs][size][magic], the sizes equal and matching its extent, the pairs filling it with nothing left over, no local signature inside, the first dword not the signature of a record, ending at the directory); a local header does not say what the directory says (the name, and the sizes of an entry with no data descriptor), or the method or the encryption bit of a local header is not the one of the directory, or a data descriptor is not the one of the directory; names are compared with the ASCII letters folded and nothing else (Office writes `customXML` locally and `customXml` in the directory); a folder is not stored with no byte, nor deflated in an empty stream that fills what the directory gives it (a folder in another method is refused, as is a deflate folder with data behind it, whatever sizes it declares). A folder is an entry that 7-Zip takes for one: a name that ends with a slash, or with a backslash for the hosts that write them, the directory attribute, the Unix mode of a directory, or the directory bit of an Amiga entry. The walk takes at most 10 s, and an archive that needs more is an anomaly. Measured by its tests on a laptop, for a million entries: 0.2 s in the order of the file and 0.7 s with a directory in another order, 7 MB allocated. Two kinds of local record that the directory does not list are accepted, since honest APKs carry them: a record of nothing (stored, sizes 0, no descriptor, no encryption, a name and an extra field made of zero bytes, of any length) anywhere, offset 0 included, and one Google Play source stamp (`stamp-cert-sha256`, stored, 32 bytes, an extra field of at most 8 bytes: the name is checked, the 32 bytes and the extra field, 40 in all, are not inspected); a second stamp or any difference refuses the archive. Honest archives that stay refused: a zip with unused space that is not zeros between its entries or before its directory (produced by tools that edit an archive in place without leaving it compact), a self-extracting zip, an APK whose signing block is not made of pairs or is over 1 MiB, a folder compressed with a method other than Stored or Deflate, bytes after the comment of the end of directory, bytes between the last entry and the central directory that are not a signing block (a digital-signature record, for instance), an entry whose local header differs from its central record beyond the case of ASCII letters in the name (method, encryption bit, sizes), and any zip that a 7-Zip other than 25.01 counts differently from the walk.
-- A member whose path has a component longer than 255 bytes (what a file system takes), a name over 4096 bytes or a path of 64 folders is an anomaly, and so is a member that the file system refuses to create at extraction (two members of 255 bytes with the same name, one of them renamed on the clash; a total path over `PATH_MAX`): the archive is handled as damaged, with an encryption possible, and is not retried, since the extraction could never create it. A member left out this way is never extracted nor tested, so the archive is never proven free of encryption.
-- A hard link in a tar toward a member that the extraction leaves out because it is over `max_file_size` cannot be created, and 7-Zip then reports the same error as for a missing target: the archive is an anomaly (no retry), whatever else it holds, although it is sound (fail safe; it follows `extract_error`).
-- When 7-Zip refuses a link of an archive, any other error it prints in the same run counts as damage of the archive, even a failure of the host that a retry would have cured: the archive is a definitive anomaly instead of being retried (fail safe).
-
-**Important note:**
-- Files exceeding following limits will be skipped (not extracted):
-  - `recursive_extract_max_size` (`--recursive-extract-max-size`)
-  - `recursive_extract_max_files` (`--recursive-extract-max-files`)
-- Zip bomb protection: an archive is considered a zip bomb if the members that would be extracted (within `max_file_size`) declare more than 3 GB and the ratio between what they declare and what the archive packs to (every member counted, the ones over `max_file_size` too: a solid 7z lists its block on its first member) is over 100, or there is no packed byte at all. What the members pack to never counts for more than the archive file holds, so a forged entry that declares tens of gigabytes of packed bytes cannot hide the ratio of the others (a multi-volume archive is capped at the size of the volume it is given: more bombs are found, never fewer; an archive file whose size cannot be read is a failure of the host, an error that is retried). File systems and disk images are exempt from both cases: a sparse image of a few kilobytes (an empty 10 GiB QCOW2 is 196 KB) declares gigabytes honestly. Known limitation: their type is the one the container says it is, and some of them are real compressors (wim, Dmg, SquashFS, CramFS, QCOW), so what they hold is bounded by `max_file_size`, the budget of the extraction and its guard, not by a ratio. An archive whose listing gives no packed size (bzip2, and Cab or Compound when they give none: MSI, .doc, .xls) has no ratio and is no bomb here: what a forged one declares is bounded by the failure of 7-Zip and by the guard of the extraction. A member of 1 TB or more cannot be listed (the size does not fit its column) and is an anomaly of the archive. A sparse tar made only of holes lists gigabytes and packs to nothing: it is taken for a bomb (a false positive that is reported, not extracted).
+Behavior that can block files or the start:
+- 7-Zip is checked at every start and configuration. The connector refuses to start if the binary is missing, unsafe (not owned by root or the connector account, or writable by others), older than 25.01, or cannot run (for example `work_dir` on a `noexec` file system). A `7zzs` found in `PATH` is never used.
+- Malformed or suspicious archives are refused and stay in INPUT (by default, see `extract_error`):
+  - zips with junk before them, gaps or inconsistent headers, and self-extracting zips
+  - archives with data after their end
+  - member names a file system cannot hold
+- An archive with many hard links to one big file counts each link in the extraction budget, and can exceed it.
 
 #### FileType Filter Plugin
 
-Filters files based on MIME type detection using libmagic.
+Filters files by MIME type, as detected by libmagic. `libmagic` must be installed (see [Installation](#linux)).
+
+| Key | Default | Description |
+|---|---|---|
+| `forbidden_types` | `[]` | MIME types treated as malware |
+| `skipped_types` | `[]` | MIME types delivered without analysis |
 
 ```yaml
 filetype_filter:
   file: filetype_filter.so
   config:
-    forbidden_types:                  # MIME types to flag as malicious (Score=1000)
+    forbidden_types:
       - application/x-executable
-      - application/x-msdos-program
       - application/x-msdownload
-    skipped_types:                    # MIME types to mark as safe (Score=-500)
+    skipped_types:
       - text/plain
-      - image/jpeg
       - image/png
 ```
 
-**Key Features:**
-- Real-time MIME type detection
-- Early filtering reduces processing load
-- Configurable allow/deny lists
-- The type is the one libmagic (`file`) gives the file: it is typed through the descriptor the connector holds (`/proc/self/fd/<N>`), so a large MSI, Office file, APK or PIE executable is typed as `file` types it, not by its first megabytes only (`file` itself reads a file within the limits of libmagic: see the next point for what that means above 7 MiB). `forbidden_types` and `skipped_types` match on the type without its parameters (`application/grib;edition=1` is `application/grib`), whatever the case of the letters (libmagic answers `application/SIMH-tape-data` for 7 MiB of spaces, and a list entry `application/simh-tape-data` matches it); list a type as `type/subtype`, without parameters: an entry that has a parameter, a space, or is not a MIME type is refused at validation, since it could never match
-- libmagic reads at most `bytes_max` bytes of a file (set to 7 MiB, the default of the library, so that an upgrade cannot change it silently) plus the places its formats seek to. **A file larger than 7 MiB is never waived by `skipped_types`**: it goes to the analysis whatever its type (`forbidden_types` still applies to the type found), because a type found from a part of the file can be chosen by whoever built it (a text, a PE with a far header, an OLE container with a far directory). Files above 7 MiB whose type is in `skipped_types` are therefore analyzed, which costs analysis time and GMalware quota
-- Typing is done by a pool of up to 8 libmagic handles, created as concurrent calls need them and kept, for reuse, until the plugin is closed, one per call, never one lock for all. A call waits at most 5 seconds, the wait for a free handle and the opening of a handle included, and is then an error (see below); a call that has less than 50 ms left starts no typing; a handle goes back to the pool only when its call ends, so calls that are stuck take at most the handles they hold and the others keep typing. Measured on a 6-core laptop with a warm cache (`HC_FILETYPE_BENCH=1 HC_FILETYPE_CORPUS=<dir> go test ./cmd/plugins/filetype_filter -run '^$' -bench TypeOf -cpu 1,6`): a 1 GiB zip 4 ms, a 100 MiB PIE 8 ms, a 200 MiB MSI 2 to 4 ms (the PIE and the MSI are a binary and an MSI padded with zeros to that size: they measure the cost of a file of that size, not of a genuine one); worst-case contents of 7 MiB: spaces 26 to 30 ms, short text lines 7 to 12 ms, random bytes 5 to 7 ms; with all 6 workers busy on the 7 MiB text lines, 6.3 ms per file (15 ms with one worker). With a fixed pool of 8 handles and a bound of 5 seconds, more than about 200 workers typing large hostile files at the same time can make typings wait longer than the bound: they are then errors, which are refusals when `forbidden_types` is set
-- A content libmagic does not recognize, or types `application/octet-stream`, is of that generic type: `forbidden_types` applies to it, `skipped_types` never does (it would waive content made not to be recognized), and the configuration is refused when `skipped_types` lists it. Only a well-formed `type/subtype`, with the optional `;name=value` parameters libmagic adds, of at most 127 bytes and with no space or comma, is a type: anything else libmagic says (its text when it cannot read a file, such as "regular file, no read permission") is an error
-- `skipped_types` waives the analysis of a file on its type alone: list only types you accept to let through unanalyzed. Known risk: a file built as a polyglot is typed as libmagic finds it (a text followed by a zip is typed as a zip when libmagic reads the end of the zip, which it does within 7 MiB), but a hidden second format that libmagic does not look for is not seen; skipping by type, like skipping by path, is a decision to trust what the depositor can make
-- A file that cannot be typed (the deposit was made unreadable after the connector opened it, libmagic fails or takes more than 5 seconds) is not filtered by type and is analyzed, the error being reported, when `forbidden_types` is empty. When `forbidden_types` is not empty it is refused: it stays in its folder, in error, and nothing is delivered
-- At start the plugin checks that libmagic opens and recognizes a known image, with the handle that types the files: when it does not, the configuration is refused if `forbidden_types` is not empty (the filter would refuse nothing), and a warning is logged otherwise
-
-#### Path rules (`filepath_filter`, main configuration)
-
-The `filepath_filter` and `error_filter` plugins are removed. Their entries in the plugins file are ignored, with a warning in the log and a console error until they are gone (nothing is carried over: set the new keys yourself; an entry is the one of a removed plugin by its name or by the base name of its file, `filepath_filter.so`, `filepath.so`, `error_filter.so` (or the binaries `filepath_filter` and `error_filter` of the packages), so another plugin whose file has one of these names is dropped too; an entry is never refused on its own, while a plugins file with nothing else is). When a dropped entry had `forbidden_paths` and the main configuration has none, the warning says that the deny-list is NOT enforced. `forbidden_paths` and `skipped_paths` are now keys of the main configuration, applied by the connector itself, and the files whose analysis fails are handled by `unanalyzable_policy.analysis_error` (`error` by default: they stay in INPUT; `mitigate` quarantines them as the plugin did; `pass` delivers them, marked).
-
-```yaml
-# In config.yml
-filepath_filter:
-  forbidden_paths:                  # Go regular expressions, matched on the logical path: flagged as malicious
-    - '\.exe[^/]*$'
-  skipped_paths:                    # delivered without analysis, marked policy-skipped
-    - '^/srv/in/trusted/'
-unanalyzable_policy:
-  analysis_error: mitigate          # what the removed error_filter plugin did
-```
-
-**Known risk of `skipped_paths`.** Depositors choose the names of their files, folders and archive members, and a skip pattern also matches the path of a member of an archive (`<archive path>/<member path>`): a pattern that is not anchored on a folder that depositors cannot create (for instance `\.png$`, or `/docs/`) lets a depositor name a file or a member so that it is not analyzed. A skipped path waives the analysis only, never a refusal (a forbidden path, a forbidden type), and the files it waives are listed `policy-skipped` in the reports. Anchor the patterns on real folders (`^/srv/in/trusted/`), never on a bare name or extension.
-
-**How they apply.** The connector applies `forbidden_paths` and `skipped_paths` itself, to the logical path of every file and archive member, before the plugins (a refusal of a plugin, such as a forbidden type, still wins over a skipped path). They are Go regular expressions (RE2, linear time), unanchored unless you anchor them, and a forbidden path always beats a skipped one.
-- Bounds, refused when the configuration is applied (by the validation of the console, and again by the connector): 256 patterns per list, 1024 bytes per pattern and 32 KiB in all, no empty pattern, none in both lists, none that matches the empty string, counted repeats (`{n}`, `{n,m}`) of 100 at most, and a size estimated from the parse tree (nothing is compiled before it passes) of 512 instructions per pattern, 4096 in all, and 4096 rune ranges of character classes in all. A path is matched up to 4096 bytes and never truncated: a longer one is never skipped, and with `forbidden_paths` set it fails with an error (it stays in INPUT) instead of being delivered unchecked. A pattern of more than about 125 alternatives of three letters (`\.(abc|def|…)$`) exceeds 512 and must be split (an alternative costs about 4 instructions, with or without `(?i)`); `\pL` counts 684 ranges, so 5 fit in all, `\p{Han}` counts 21, so about 195 fit; about 120 patterns of 35 instructions fit.
-- Cost, measured on one core of a laptop (Intel i9-10885H) by the benchmarks of `pkg/scanner`, for a path of 4 KiB with the forms of a name that has a control character: a realistic set of 50 patterns (extensions, folders, anchored prefixes) takes about 20 µs; a set of 15 patterns of 270 instructions made to be slow (`(?:[a/]{50}){5}z`) takes about 30 ms; the worst accepted set measured, 23 patterns of the form `(?:[a/]{100}){1}[a/]{60}X`, takes about 0.5 s per path and per form, so about 1.5 s with three forms. Compiling the 15 slow patterns takes about 0.5 ms and 0.4 MB. Keep the patterns short.
-- Three forms of the path are matched: the logical one, where control characters become `_`, the raw one as the file system gives it, and the folded one, the raw form without its hidden characters (the Unicode default-ignorable characters, such as bidirectional and zero-width characters, the soft hyphen and variation selectors; the controls; U+2028, U+2029 and the braille blank U+2800) and without its bytes of invalid UTF-8; the folded form exists only for a name that has one. A forbidden rule that matches any form forbids; a skipped rule must match all of them. `\.exe$` therefore catches `run.exe` followed by a zero-width space, a bidirectional override before the extension or a trailing newline, but it is not a guarantee against every invisible character, and still not against trailing spaces: write `\.exe[^/]*$`, which is the recommended form. A forbidden rule can match a folded name that the visible name does not (`^ab$` catches `a`, a zero-width space, `b`): this is intended. Not covered: spaces that pad a name before its extension and look-alike letters (a Cyrillic `е` for a Latin `e`). RE2 reads an invalid UTF-8 byte as U+FFFD, so a rule cannot tell it from its replacement. A skipped rule written for a name with an invalid UTF-8 byte (`trusted[_\x{FFFD}]/`) therefore no longer skips it, since the folded form lacks the byte: the file is analyzed.
-- `(?i)` makes a pattern case-insensitive. A pattern such as `.` or `^/` matches every path: it is accepted, and skips or forbids everything.
-- A content restored from quarantine is not analyzed again, but it is not exempt from the rules: `forbidden_paths` and the plugins (a forbidden type) run for it first and a refusal wins; a skipped path or a plugin waiver changes nothing. A restored file that is delivered carries `not-analyzed-reason: restored` in the reports, the PDF and the `inform` console line (printed even without `--verbose`, as "not analyzed (restored)"), since it was not analyzed; a refused one, or one a plugin found malicious, does not. A restored archive is also listed (never extracted nor analyzed) when `forbidden_paths` is set: a member at a forbidden path refuses and quarantines it (the member is named in its report), and when its members cannot be known it is refused with an error ("restored archive could not be checked against forbidden_paths"), left in INPUT and not analyzed again; an extractor that is down is a retry. Restored members of an archive are analyzed as any member.
-- A skipped archive is not extracted and none of its members is analyzed. When `forbidden_paths` is set, the extractor lists the names of its members (the technical listing, and for a zip the walk of its headers; nothing is tested, written or decompressed, and the sizes of the archive do not count) and each member, at any depth of its folders, is matched against `forbidden_paths` only, on the path where the extractor would write it (`..` and `.` components of a declared name are dropped, as 7-Zip does): every match is named in the report (`filtered-filepath`, up to 1000 members; the exact count is in the log) and refuses the archive as malware. Archives nested in it are not opened. If the names cannot be known (no extract plugin, a listing that fails, headers that need a password, more members than `recursive_extract_max_files`, or anything wrong with the archive: data before or after it, a name no file system takes, a zip whose headers say more than its listing), **the skip is withdrawn**: the archive is processed as if no skipped path covered it (extracted, analyzed, under the policies of the unanalyzable files), and `forbidden_paths` then applies to its extracted members as usual. An extractor that is down is a retry, and matching that takes over 30 s for all the archives of one file is an error that leaves the file in INPUT. Each listing takes at least one file, failed or not, from `recursive_extract_max_files` of its top-level file, like an extraction; when that budget is spent the remaining skipped archives follow the policy of the limits (`extract-limit`), and with `forbidden_paths` set a limit-skipped archive is not waived by a skipped path. A withdrawn archive that the policies then deliver whole (`encrypted: pass`, or `extract_error: as_file`) reaches OUTPUT without `forbidden_paths` having seen its members: the withdrawal only restores what happens to an archive no skipped path covers. With `forbidden_paths` empty nothing is listed. Trailing spaces at the end of a name still defeat a rule that ends with `$`: write `[^/]*$` (see above). Known limit: 7-Zip lists a line feed in a member name as an underscore, so for the members of a skipped archive a forbidden rule that mentions a line feed is matched against the listed name; a rule written as above (`[^/]*$`) matches either way.
+- List types as `type/subtype`, case-insensitive, without parameters. Any other entry is refused.
+- `application/octet-stream` (unrecognized content) cannot be in `skipped_types`.
+- A file larger than 7 MiB is never skipped by `skipped_types`, because its type is detected from part of the file only. It is analyzed.
+- When `forbidden_types` is set, a file whose type cannot be detected (unreadable, timeout after 5 s) is refused and stays in INPUT. Without it, the file is analyzed.
+- **Risk:** `skipped_types` lets files through on their type alone, and a crafted file can fake its type. List only types you accept unanalyzed.
 
 #### Session Plugin
 
-Manages scanning sessions by grouping files based on directory structure.
+Groups files into sessions by folder, and writes one consolidated report per session when it closes.
+
+| Key | Default | Description |
+|---|---|---|
+| `root_folder` | — (required) | Absolute base path the sessions are computed from |
+| `depth` | `1` | Number of folder levels under `root_folder` that identify a session |
+| `delay` | `15m` | Inactivity delay before a session is closed |
+| `exports` | `[]` | Directories where session reports are written |
+| `report_timeout` | `6m` | Time given to each attempt to write a report (must be positive) |
+| `report_retries` | `3` | Failed attempts retried before writing a JSON report instead |
+| `inflight_timeout` | `24h` | Longest a session is held open by files still waiting or processing |
+| `max_duration` | `24h` | Longest a session stays open, whatever its activity |
+| `max_spool_size` | `1GiB` | Size of a session's pending reports on disk that closes it (at least `1MiB`) |
+| `remove_empty_dirs` | `true` | Remove empty folders below a session once its report is written (Linux only) |
+| `cleanup_timeout` | `2m` | Time given to that removal for one session |
 
 ```yaml
 session:
   file: session.so
   config:
-    depth: 2                          # Directory depth for session grouping
-    delay: 30s                        # Delay before closing inactive sessions
-    root_folder: /tmp/samples/        # Base path for session ID calculation (required)
-    exports: []                       # Base directories for session reports (e.g., ["/var/reports"])
-    report_timeout: 6m                # Time given to each attempt to write the report of a session
-    report_retries: 3                 # Failed attempts retried before the JSON fallback
-    inflight_timeout: 24h             # Longest a session is held open by files that do not end or wait
-    remove_empty_dirs: true           # Remove the empty folders left below a session (default: true)
-    cleanup_timeout: 2m               # Time given to that removal for one session
-    max_duration: 24h                 # Longest a session stays open, whatever its activity
-    max_spool_size: 1GiB              # Size of the reports of a session on disk that closes it (at least 1MiB)
+    root_folder: /tmp/samples/
+    depth: 2
+    delay: 30s
+    exports: ["/var/reports"]
 ```
 
-**Session ID Examples** (with `depth: 2` and `root_folder: /tmp/samples/`):
+**Session ID examples** (with `depth: 2` and `root_folder: /tmp/samples/`):
 - `/tmp/samples/user_a/batch1/file1.txt` → session `user_a/batch1`
 - `/tmp/samples/user_b/upload/file2.txt` → session `user_b/upload`
 
-**Key Features:**
-- Thread-safe file tracking
-- Automatic session closure with configurable delay: a session stays open while one of its files is being processed, and while files detected under its folder still wait (for their stability delay, for a worker): a long analysis of another user's file no longer cuts a session in two. A waiting file does not count as activity: a session that has been idle for `inflight_timeout` is closed whatever waits, with a warning, and the files still waiting open a new session. A file whose processing failed appears once, with its error, in the report of its session, and its retries neither keep the session open nor open another one; a report that comes after its session was closed opens a new one, which writes a complementary report
-- Consolidated report generation, never lost: each attempt is bounded by `report_timeout`, a failed attempt is retried at the next check (`report_retries` times), then a JSON report is written instead (console error `session-report-fallback` until a normal report succeeds). At most 64 sessions are kept waiting for their report after an attempt: past that, the oldest get their JSON report at once, with the console error `session-report-backlog`. A report that cannot be written at all (JSON included) is lost loudly: an Error log and the console error `session-report-lost` name the session, and it is not tried again. A report is written to each export on its own: one that fails is said with its own error and only the missing exports are retried. At a stop with a deadline (see `shutdown_timeout`), the attempts of the monitor are cut (it is waited for up to half of the time left for the fallbacks, one second at most) and every open session gets its report: the generators get the stop deadline less a reserve (half of what is left, at most 10 s), and the JSON fallbacks are written until the end of the stop plus the short grace the connector gives its plugins, less a margin (at least 250 ms are given even when the deadline has expired already). The sessions not reached by then, or still held by the monitor, are lost, named one by one in the log, with one notification for all of them (see `shutdown_timeout`). A summary is logged. The name of a report is cut, with a short hash of the session, when the folder name is long, so that the report keeps a valid file name. The reports of an open session are kept on disk (see the spool below) A plugins file that sets `report_timeout` (older README examples showed `2m`) keeps its value: raise it to `6m` or remove it, since an attempt also covers the PDF rendering (5 minutes at most).
-- A report is written atomically and never replaces a file: it goes to a temporary file (`.gmhost-tmp-*`, mode `0644`: a report is meant to be read by others) in the export folder, is synced, then takes its final name `report-session-<id>-<start>.<ext>` only if that name is free. An existing file of that name is never opened, truncated or removed, whatever fails; if the name is taken anyway (nobody else can create it) it is an anomaly, logged and raised in the console, and the report is written under a conflict name. After each report a console message gives its path and SHA256, so it can be authenticated from the console and not from the folder
-- **Empty folders** (`remove_empty_dirs`, **on by default**, Linux only): once the report of a session is written, the empty folders below the session folder are removed, deepest first, within `cleanup_timeout`, one session at a time. The root folder and the session folder itself are never removed, nor is a folder changed less than `delay` ago (that is the grace period: a folder prepared by a user before a deposit is removed once it has been empty and untouched for `delay`), nor the work directory (recognized by its device and inode, read at the start of each removal, so a differently spelled path or a link to it does not matter; it is never entered). Nothing is followed: every folder is opened from its parent without following links and removed with `unlinkat(AT_REMOVEDIR)`, which removes folders only and refuses one that is not empty, so a link, a file or a folder swapped in during the walk is never removed and nothing outside the session is reached. The removal runs in a goroutine of its own, after the report is written and never at stop, so a slow or stuck file system cannot delay a report (at most 64 sessions wait; past that the removal is skipped for the newest, with a warning). The walk holds one descriptor per level, at most 129 open at once (the session folder and 128 levels below it; a deeper part is left, with a warning), and logs one line per session with what it removed, kept and failed to remove, and reads a folder about a thousand names at a time. A file left in place keeps its folder. `remove_empty_dirs: false` restores the previous behavior
-- **Spool on disk** (`max_duration`, `max_spool_size`): the reports of an open session are written, one JSON line each, to `<work_dir>/session/<random>.jsonl` (mode `0600`) instead of being kept in memory, so the RAM used does not grow with the session (measured: a constant heap for a million reports without error in one session). Only the reports in error stay in memory, so that a later report of the same file replaces them, up to 16 MiB for the whole plugin, each report being charged its encoded size plus 600 bytes for what it costs in memory (measured: about 9 MiB of RAM when the budget is full of minimal reports, with one report in five in error; the heap then stays flat); past that they go to the spool with a warning, and such a file is not remembered as failed: a later retry of it that fails again may open a new session. A later success of the same file then adds a second line to the report, and each repeated failure adds a line and counts as activity (`max_duration` bounds it). In the report the reports of the spool come first, in the order they came, then the reports in error held in memory, by file name. A session is closed at once, whatever its activity, when it has been open for `max_duration` (default `24h`, so a regular depositor does not hold one open for ever) or when its spool reaches `max_spool_size` (default `1GiB`, at least `1MiB`); the next deposit opens a new session and writes a complementary report. Size the machine for about 16 KiB of memory times the number of sessions open at once (the write buffer of each spool), and the work directory for `max_spool_size` times the number of sessions open at once. When a spool cannot be written (disk full) the session is closed at once and reported with what it holds, with the console error `session-spool-error`, resolved at the next successful write; the next deposits open new sessions. If even the JSON report cannot be made, the spool is copied as it is (`report-session-<id>-<start>.jsonl`). A spool is deleted once the report is written or declared lost. Reports of sessions open when the connector crashed are lost: at the next start the orphan work directory is removed with a warning that gives the number of session reports lost (no recovery)
-- The session reads `HCContext.PendingFiles(dir)` (new): plugins can ask the core how many files detected under the owner whose folder is `dir` (root followed by depth directories, as declared with `SetTrackingOwners`) have not finished processing; any other folder gives 0. `report_timeout`, `inflight_timeout` must be positive and `report_retries` not negative, otherwise the configuration is refused; a Warn is logged when `inflight_timeout` is shorter than `delay`, which disarms the waiting files
+- A report is named `report-session-<id>-<start>.<ext>`. It is written atomically and never replaces an existing file. A console message gives its path and SHA256.
+- If a report cannot be generated (PDF failure, timeout), a JSON report is written instead (console error `session-report-fallback`). If nothing can be written, the console error `session-report-lost` names the session.
+- Pending reports are kept on disk in `<work_dir>/session`. Size the work directory for `max_spool_size` × the number of sessions open at once. On a full disk, the session is closed at once (console error `session-spool-error`).
+- `root_folder` must not be the base of the work directory.
+- Reports of sessions still open when the process is killed (`SIGKILL`, crash) are lost.
 
 #### Report Plugin
 
-Generates comprehensive scan reports in PDF format.
+Renders session reports as PDF from an HTML template, using Chrome or Chromium.
+
+| Key | Default | Description |
+|---|---|---|
+| `template_path` | `""` (embedded template) | Custom HTML template (Go `html/template`) |
+| `chrome_path` | `""` (found in `PATH`) | Absolute path of Chrome/Chromium |
 
 ```yaml
 report:
   file: report.so
   config:
-    template_path: ""                  # Path to custom HTML template (uses embedded default if empty)
-    chrome_path: ""                    # Absolute path of Chrome/Chromium (found in PATH if empty)
+    template_path: ""
+    chrome_path: ""
 ```
 
 **Prerequisites:**
-- Google Chrome or Chromium must be installed on the host to generate PDF reports. On Debian:
+- Google Chrome or Chromium must be installed. On Debian:
 ```bash
   sudo apt update && sudo apt install chromium
 ```
+- The browser is checked at every start and configuration. It must be owned by root or the connector account, not writable by others, and render a test page within 30 s. Otherwise the connector refuses to start.
+- Chrome keeps its sandbox and refuses to run as root: run the connector under a dedicated service account.
+- JavaScript and all network or `file:` requests are blocked. A custom template must embed its images and styles (`data:` URIs, inline `<style>`).
 
-- The browser is checked at every start and every configuration: it must pass the executable checks (absolute path, owned by root or the connector account, not writable by others) and render an empty page to a PDF within 30 s, otherwise the connector refuses to start (or keeps its previous configuration). The Chrome sandbox stays on, so a connector running as root is refused: run it under a dedicated service account.
-- The browser is restricted: JavaScript is off and every network or `file:` request of the page is refused. A custom template must embed its images and styles (`data:` URIs, inline `<style>`).
+**Template data:**
+- `ScanID`, `ScanStartTime`, `Duration`
+- `NbFileSubmitted`, `NbFileAnalyzed`, `NbFileNotAnalyzed`
+- `FileVolume`, `AnalyzedVolume`, `FilteredVolume`
+- `TotalMitigated`, `TotalMalware`, `TotalErrors`
+- `MitigatedFiles`, `MitigatedArchives`, `ErrorFiles`, `NotAnalyzedFiles`
+- `MoreMitigatedFiles`, `MoreMitigatedArchives`, `MoreErrorFiles`, `MoreNotAnalyzed`: the number of entries left out of each list, which stops at 300 rows
 
-**Key Features:**
-- PDF report generation
-- Reports are rendered from an HTML template, then converted to PDF using chromedp
-- Customizable templates using Go's html/template syntax
-- A section "Fichiers non analysés" and a counter list the files and the members of archives that reached the output without a complete analysis (too big, empty, encrypted, left out by the extraction, anomaly of the extraction, let through by a filter plugin, restored), with the reason in plain words and the archive of origin; a size the archive does not give is shown as "—". A file whose analysis or action failed carries an error: it is listed among the files in error and is not counted among the analyzed files (so a file blocked and then failing to be quarantined is blocked and in error, not analyzed: when quarantining, moving or removing a file fails, its report says "the file could not be quarantined", "moved to the destination" or "removed", and when its analysis failed "the file could not be analyzed"; the log has the cause). An archive whose members failed only in their analysis counts as analyzed, while its failed members are listed and counted as errors. The failed members of an archive are listed and counted one by one, and their archive's summary error is not counted again; the count is exact, however many members failed, up to 2^30 (the report of an archive lists 1000 of them and counts the others). Every section of the PDF (blocked files, blocked archives, files in error, files not analyzed) stops at 300 rows, followed by "… et N autres"; the counters stay exact. The blocked archives and their malicious members share the 300 rows of their section, an archive costing 3 rows (its title, its details, the head of its table) plus one per member shown, and the members left out of an archive are counted under it. Every name, error and threat shown in the PDF is cut to 100 bytes (head and tail around "…"), so that the time to render does not depend on the length of a depositor's names (control, invisible and bidirectional characters become "�" in the PDF, ZWNJ and ZWJ included, so some Persian or Indic names and emoji sequences show "�" there; a file shows at most 2 threat names, then the count of the others); the JSON report keeps more: up to 64 threat names per file, each text up to 1024 bytes, within its 4 MiB bound. The worst cases are measured with the real browser by a test, and stay under half of the limits (5 minutes, 64 MiB) on a machine that is not overloaded. Under heavy CPU load (the render time depends on the machine), rendering the worst case can exceed the 5 minutes of the rendering timeout: that attempt then fails like any failed generation, and the session gets its JSON report instead. The session plugin makes 1 + `report_retries` attempts, one per check, each bounded by `report_timeout` (default 6 minutes, which leaves one minute to write the PDF after a rendering of 5 minutes) as well as by the rendering timeout (5 minutes): with the defaults, about 24 minutes pass before the JSON report of a session alone, and more when other sessions wait, since their attempts follow one another. The real-browser test of the worst cases can fail on an overloaded machine: it checks the size always and the time only with `HC_WORST_CASE_TIME=1` (which also gates the time checks of the test of `Bound` in `pkg/datamodel` and of the zip-walk tests of the extract plugin on a million entries), but a rendering that does not end fails it in any case. A custom template does not show these files until it uses the new fields (`NbFileNotAnalyzed`, `NotAnalyzedFiles`, `MoreNotAnalyzed`, `MoreMitigatedFiles`, `MoreMitigatedArchives`, `MoreErrorFiles`, and `MoreExtracted` of an archive) and its lists may now be cut
+Long names are shortened in the PDF. The JSON report keeps more detail.
 
 ### Plugin Development
 
@@ -412,12 +706,13 @@ type HCContext interface {
     DeclareExecutable(path string) error
     DeclareOutputDir(path string) error
     SetTrackingOwners(root string, depth int) error
+    PendingFiles(dir string) int
     NotifyError(ctx context.Context, key string, err error)
     NotifyResolution(ctx context.Context, key string, message string)
 }
 ```
 
-`SetTrackingOwners(root, depth)` lets a plugin that lays files out in sub-folders of `root` (such as `session`) tell the monitor that its owners are the folders `depth` levels below `root`, absolute path required; it is accepted during `Init` only, and a malformed declaration makes `Init` fail. Without any declaration, an owner is the first folder below the shortest monitored path.
+`SetTrackingOwners(root, depth)` lets a plugin that lays files out in sub-folders of `root` (such as `session`) tell the monitor that its owners are the folders `depth` levels below `root`, absolute path required; it is accepted during `Init` only, and a malformed declaration makes `Init` fail. Without any declaration, an owner is the first folder below the shortest monitored path. `PendingFiles(dir)` gives the number of files detected under the owner folder `dir` that have not finished processing (0 for any other folder).
 
 #### Callback Types
 
@@ -532,266 +827,6 @@ It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extrac
 - **Logging**: Use structured logging for audit trails
 - **Error Handling**: Robust error handling prevents plugin failures from affecting the main application
 
-
-
-## Configuration
-
-The default configuration file is located at:
-- **Linux**: `/etc/gmhost/config.yml` or `~/.config/gmhost/config.yml`
-- **Windows**: `%APPDATA%\gmhost\config.yml`
-
-The file is read strictly: invalid YAML, a mistyped value or a key the connector does not know (a typo such as `too_bg: pass`, or an option removed from an older version) makes the connector refuse to start, with an error naming the file and the key. Only an absent file is accepted, and the defaults and flags apply.
-
-### Example Configuration
-
-```yaml
-workers: 4
-extract: true
-extract_workers: 2
-extract_min_size: 8KB
-max_file_size: 100MiB
-follow_symlinks: false
-paths:
-  - C:\Users\YourUser\Documents
-  - /home/user/Downloads
-actions:
-  delete: true
-  quarantine: true
-  move: false
-  print: true
-  log: true
-monitoring:
-  prescan: true
-  period: 1h
-  modification_delay: 30s
-gmalware_api_url: https://gmalware.ggp.glimps.re
-gmalware_api_token: 00000000-00000000-00000000-00000000-00000000
-gmalware_timeout: 5m
-gmalware_user_tags: ["Server1"]
-gmalware_no_cert_check: false
-gmalware_syndetect: false
-gmalware_bypass_cache: false
-quarantine:
-  location: C:\Program Files\GMHost\quarantine
-  password: infected
-  registry: C:\Program Files\GMHost\quarantine.db
-move:
-  source: C:\path\to\source
-  destination: C:\path\to\destination
-print:
-  location: C:\Program Files\GMHost\reports.log
-  verbose: false
-plugins_config: /etc/gmhost/plugins.yml
-debug: false
-```
-
-### Configuration Options
-
-A configuration is validated before it is applied. When the console sends one that cannot be applied, the connector keeps the previous configuration, keeps processing files, and raises the console error `host-config-rejected`; the error stays until a `Configure` succeeds, and a reminder is logged every hour. After a restart the connector receives the rejected configuration again and does not start: fix it in the console. Keys unknown to this version of the connector (the console is newer) are applied without effect and listed in the console error `host-config-unknown-keys`: update the connector for them to apply.
-
-#### Global Settings
-
-- **`workers`**: Number of concurrent workers for file analysis (default: 4, affects CPU usage)
-- **`extract_workers`**: Number of concurrent workers for archive extraction (default: 2, used when extract is enabled)
-- **`extract`**: Enable archive extraction (archives are unpacked and contents scanned)
-- **`extract_min_size`**: Minimum file size to attempt extraction (e.g., '8KB'). Files at or below this size are sent for analysis instead of being extracted (default: 8KB), except the archives of a known format (zip, 7z, tar, rar, ...), which are extracted, or listed to find out they are encrypted, whatever their size; a small unknown binary is not looked at by the extractor
-- **`max_file_size`**: Maximum file size to send for analyze (e.g., '100MB'). Files exceeding this are extracted if 'extract' is enabled, otherwise rejected
-- **`unanalyzable_policy`**: what becomes of a file that is not analyzed in full. Each key takes `error`, `pass` or `mitigate` (`empty` takes `pass`, `skip` or `mitigate`). `too_big` (default `error`) applies to a file larger than `max_file_size` that is not extracted, to a member of an archive that is, and to an archive the depth or the budget of the extraction does not let open (listed as `extract-limit`), to the members the extraction leaves out because of its limits (a member over `max_file_size`, too many members, too large a total; they are listed as `extract-limit` or `too-big`): `error` keeps a file too big as an error that stays in INPUT, as before; an archive with a member too big, which used to be moved as if it were clean, now stays in INPUT as well, definitively and without being extracted again (use `pass` or `mitigate` to decide otherwise), `pass` lets the file through (it is moved, deleted or reported as any other file) and marks it `not-analyzed-reason: too-big`, `mitigate` treats it as malware with the reason `too-big` (what the `filesize_filter` plugin, which was removed, gave; an entry of the plugins file named `filesize_filter`, or whose file is `filesize_filter.so` or `filesize.so`, is ignored: the warning in the log and the console error `plugin-removed-filesize-filter` name each entry ignored and say that its configuration is not carried over and which policy of `too_big` applies; a plugins file that has nothing but such entries is refused, since loading no plugin would silently drop every filter). A file too big that `pass` lets through is moved as in `rename` mode: its content was not verified, and the console line says "content not verified". `encrypted` (default `error`) does the same for an archive whose password is unknown (7-Zip says `Unsupported Method` for an encryption it cannot name as well as for an unsupported compression: that line, like a data error in an encrypted member, only makes an archive `encrypted` when its technical listing marks a member encrypted and no password opened it; in a zip it is always an extraction error); an archive of which only some members resist the passwords is treated as encrypted as a whole, unless a known password opened it and it failed on a corrupted one, which is an extraction error (a run of hint lines, that is data errors, that named fewer members than the batch held, or in a zip a password accepted by the check of its members); a member refused with `Wrong password` is partial encryption, even after members were extracted: the archive is `encrypted`; a 7z archive every member of which is corrupted, with a known password, cannot be told from an unknown password and stays `encrypted`, while a 7z archive that mixes a member with an unknown password and a plain one (which the known password extracts) is an extraction error; the same goes for members that share a name, of which one cannot be decrypted: the archive is an extraction error, not `encrypted`. Under `encrypted: pass`, a 7z archive whose members all fail their check with a known password (corrupted, or a tampered checksum) is passed as encrypted, with the same exposure as one with an unknown password: its content was not analyzed; the classification relies on the output of 7-Zip 25.01, the version embedded (older versions, p7zip 16.02 for instance, print member names unescaped and are not supported); an encrypted archive inside an archive is a member under the same policy: it is submitted first when it is within `max_file_size` (a malicious verdict wins whatever the policy), then `error` keeps it in INPUT, `pass` marks it `encrypted`, `mitigate` makes it malware with the reason `encrypted`. `empty` (default `pass`) applies to a file of size 0: `pass` delivers it, as a new empty file made in the destination by the move in `copy` mode, marked `empty` in the reports, and removes the source; it is refused with `move.mode: rename`, and when the key is left out with `rename` the files are skipped instead, with a warning at each start; a file that receives data between the check of its size and its removal is left in place and the empty copy is taken back (it is analyzed at the next scan); with `follow_symlinks: true`, a link to an empty file is reported as passed but, like any link, is neither moved nor deleted; `skip` ignores the file with a warning in the log (once per file) and leaves it in place; `mitigate` makes it malware with the reason `empty` (quarantined, and restorable). `analysis_error` (default `error`, or `pass` or `mitigate`) is the policy of a file GMalware failed to analyze and found no detection in (the service answered with an error): `error` leaves the file in INPUT, reported as an analysis error, and an archive with a member in that case is an error too ("N extracted file(s) could not be analyzed", counted in error and not analyzed in the reports), `mitigate` makes it malware with the reason `analysis-error` (quarantined or deleted, restorable; what the `error_filter` plugin gave), `pass` delivers it (in `copy` mode by verified copy, since its SHA256 is known) marked `not-analyzed-reason: analysis-error`, with "content not verified" on the console line and a warning in the log; a member under `pass` is listed among the files not analyzed of its archive, and the archive is delivered if nothing else holds it. A file with a detection is always malware, whatever the error that comes with it and whatever this policy: `pass` never delivers it and `error` never leaves it in INPUT. A file that cannot be analyzed by nature (an encrypted archive, one the limits of the extraction leave unopened) follows its own policy first (`encrypted`, `too_big`): `analysis_error` only decides what that policy lets through. **Known risk of `pass`:** a depositor can usually make the analysis fail (a file crafted to make the engine fail, or a file deposited while the service is overloaded), so `pass` lets a depositor have unverified files delivered at will; use it only where that is acceptable, and prefer `mitigate` or `error`. `extract_error` (default `error`, or `as_file`) is the policy of an archive that the extractor found damaged or inconsistent (data error or failed checksum, truncation, a listing that does not match what was extracted, data after the end, members that share a name, a member name with a control character). With `error` every such archive is a definitive failure: one report with the error (a fixed text, the cause is in the log), the archive stays in INPUT, nothing is retried until it changes, and what was extracted is discarded. With `as_file` the archive is discarded of what was extracted and, **only when the extractor proved that it holds no encrypted content**, analyzed as a plain file: a detection wins, otherwise it is delivered (in `copy` mode by verified copy) marked `extract-error` in the reports, and a sub-archive is submitted as is and listed among the files not analyzed of its archive. The proof is that the listing was complete, 7-Zip reported no failure on the data of any member (no failed checksum, no data error, no wrong password, no hint of encryption, even one a later password cured), every listed member was extracted, and the technical listing, complete and parsed, says that no member is encrypted and that there is no data after the archive (`Tail Size`) nor before it (`Offset`, `Embedded Stub Size`, an archive open with an offset), since 7-Zip does not list an archive hidden there (a plain archive followed by an encrypted one is listed as plain); a value of those lines that cannot be read counts as data. So `as_file` covers little: warnings of the headers, members that share a name and names with a control character (7-Zip extracts them under another name), with every other member plain and extracted. A member left out as an anomaly (a name over 4096 bytes, a path component over 255 bytes, a path of 64 folders, an entry flagged as a folder that holds data) is never extracted nor tested, and so are data after the end of an archive, a stub in front of it and members that are lost: they are not covered, and follow the encrypted policy. Any other damaged archive may hide an encryption, which the archive itself can forge (a flag cleared in a header, a password check that collides): it follows `unanalyzable_policy.encrypted` (`error` keeps it in INPUT, `pass` delivers it marked `encrypted`, `mitigate` makes it malware `encrypted`), and the `encrypted` label then covers "encrypted, or damaged and it cannot be told which" (the report says so). A damaged archive that is over `max_file_size` follows `too_big` and is reported `too-big`. A warning is logged and the console error `extract-error-as-file` is raised at each configuration applied with `as_file` (resolved by the next one without it), because what the damage hides from the extraction is not analyzed. Only what the extractor positively reports as damage counts: a 7-Zip killed, cut by its timeout or interrupted, a failure of the host (the output folder cannot be read, measured or cleaned), and an extractor that is down are retried as before and never become `as_file`; a breach of a limit of the extraction (a member past the size limit, too many relaunches, more bytes than the budget) leaves the members out as `extract-limit` or `too-big` and follows `too_big`; an output flood of 7-Zip is an anomaly, deterministic and not retried. A file whose content is typed as an archive that the extractor refuses ("not an archive") is no longer a plain file: a zip cut before its central directory, or a 7z with a byte of its start header changed, keeps its signature and what its entries hold (an encrypted one included) is recoverable, so it is treated as damaged with an encryption possible (`error`: definitive failure, kept in INPUT; `as_file`: the `encrypted` policy decides), also as a sub-archive. The type is read once, from the verified descriptor, before the extractor works; a type that cannot be read counts as an archive. The types covered are the ones the type detector reports among those to extract: zip, 7z, rar, gzip, bzip2, xz, zstd, tar, cab, cpio, ar, deb, rpm, xar and chm; arj, lha, lzh, lzma, .Z, lz4, wim, iso, dmg, vhd, vdi, vmdk, qcow and squashfs are not reported by it, so a damaged password-protected archive of those formats is still a plain file. The zip-derived types (docx, xlsx, pptx, odt, epub, apk, jar), which the detector types from the first entries of the zip, are not among the types to extract and are not covered by this rule: the check described below covers them. Accepted false positives (fail closed): any file typed as an archive that 7-Zip cannot open stays in INPUT with the error, a truncated download, a text that starts with `BZh`, `PK\x03\x04` or `070707`, an unusual deb, rpm, cab or xz; `extract_error: as_file` with `encrypted: pass` delivers such a file marked `encrypted`. Without the extract plugin, a valid tar, cpio, cab or xar that the built-in extractor cannot open stays in INPUT as well: install the extract plugin. Limit: bytes in front of a complete archive (an MZ or ELF stub of a self-extracting archive, a junk header) make the file typed as something else and analyzed as such; the embedded archive is neither listed, extracted nor checked for encryption. A file that is not typed as an archive stays a plain file when the extractor refuses it (an image, a binary). The documents and packages typed from the names of the first entries of a zip (`docx`, `xlsx`, `pptx`, `jar`, `apk`, `odt`, `epub`) are not extracted and are submitted whole, but when the extraction is on they are first checked by the extractor, whatever their size (`extract_min_size` does not spare them): it lists them, holds the listing to what is left of `recursive_extract_max_files` and `recursive_extract_max_size` (the budget of the archive it is a member of, the whole of it for a deposit) and to a ratio that is not a bomb (a bomb is damage with an encryption possible, and nothing is read; a document over the budget is not tested for encryption: it is analyzed whole as a plain file, no policy applies to its members, and it is delivered when GMalware finds nothing, its members listed among the files not analyzed with the reason `extract-limit` (at most 1000 in the reports, the count is exact); a detection or an analysis error decide as for any file), and tests every member with a password that nobody knows (a random one, drawn once per process: 7-Zip reads `-p-` as the literal password `-`, which an archive can be encrypted with, so `-p-` is never used) without writing anything (`ExtractLimits.CheckOnly`). A member that needs a password, one the connector knows (`infected`), `-` or an empty one included, is an encrypted member: nothing is extracted, so nothing would be analyzed. The same random password is the first attempt of every extraction and of every listing, before the known passwords. It is on the command line of 7-Zip, readable in `/proc` by the users of the account of the connector, as the known passwords are: it is not a secret, only a password that no archive can have been encrypted with. **Known risk:** A document typed from the names of its first entries (docx, xlsx, pptx, odt, epub, jar, apk) that the check cannot hold to its budget is no longer tested member by member: this happens when it has more than `recursive_extract_max_files` entries or `recursive_extract_max_size` bytes, or when it is a member of an archive that has used up most of that budget. It is then analyzed whole by GMalware and delivered with its members listed as `extract-limit`, but only if its technical listing marks every member as plain. A member marked encrypted follows `unanalyzable_policy.encrypted`, and a listing that cannot be read follows `extract_error`. Remaining risk: a ZipCrypto member whose encryption flag is cleared in both its central and its local header is not seen. A flag cleared in only one of the two headers is caught, and so is an AES member, which 7-Zip names by its method. The same goes for data hidden before or after the document. In both cases the document is delivered with that content unchecked. Catching such a member would mean testing the data of every member, which the check does not do over the limits. Inside an archive this needs no padding: filling the parent archive to the limit is enough. A document whose test does not end within the extraction timeout is still blocked (it is retried at each scan). Limits: a local entry that the central directory does not list (a zip spliced after its directory) and an encrypted directory entry are not seen by this check, as by the extraction; a password-protected Office document (`EncryptedPackage` in an OLE container) is not a zip and out of scope. Nothing wrong: the file goes on as it is, no mark. An encrypted member follows `encrypted` applied to the whole file; damage follows `extract_error` as for an archive; a document cut short, which 7-Zip cannot open, is damaged with an encryption possible; an extractor that is down, a host failure or a timeout is retried and the file is never submitted unchecked. A zip named like a document no longer lets its encrypted members through, except one over the limits (known risk above). Limits: an archive embedded in a document (an encrypted zip, 7z or docx in `embeddings/`) is tested as an opaque member and is not looked into; without the extract plugin the built-in extractor checks nothing and the documents are submitted as before; the extractor reads the file once (CPU, nothing written), at about 2.8 GB/s of stored media from the cache of the system on the test machine (`go test ./cmd/plugins/extract -run '^$' -bench BenchmarkCheckOnly -benchtime 3x`: 0.07 s for 200 MiB, 0.4 s for 1 GiB) and slower when the members are compressed, within the extraction timeout. An archive whose password is unknown follows `encrypted`, and an extractor plugin that never reports anomalies (`plugins.ErrArchiveAnomaly`) only gets retries. Every file that reaches the output without a full analysis, a file let through by an `OnScanFile` plugin included (`policy-skipped`), is written in the log, in the console line of the `inform` action (even without `--verbose`) and in the JSON reports (`not-analyzed-reason`, `not-analyzed-subfiles` with an exact count); the lists of a report are capped at 1000 entries and a report never exceeds 4 MiB. A plugin cannot erase these marks in `OnFileScanned`
-- **`follow_symlinks`**: Follow symbolic links when scanning directories (default: false: symlinks are skipped, and a file whose path crosses a symlink below its monitored path is refused when it is prepared and again right before the action, so a user cannot make the connector read, move, delete or quarantine another tree's files by swapping a folder for a link; a refused file is left in place with a warning). Enabling it switches these checks off: a warning is logged at start when move, delete or quarantine are active
-- **`paths`**: List of directories or files to monitor and scan (can be absolute or relative paths, required, minimum 1)
-- **`plugins_config`**: Path to plugins configuration file (required for host connector plugin functionality, GNU/Linux only)
-- **`debug`**: Enable debug logging (default: false)
-- **`work_dir`**: Base directory of the connector private working directory (default: the system temporary directory, `TMPDIR` honored). A `gmhost-<random>` sub-directory (mode `0700`) is created there for archive extractions and plugin files, and removed at stop; the directories left by a crashed process are purged at the next start (only a real `gmhost-*` directory of the same user, mode `0700`, with a free `.lock`). The connector never scans this directory and plugins ignore it. On Unix, Chrome gets a `data`, a `tmp` and a `home` folder per rendering inside the work directory (`TMPDIR`, `HOME` and the `XDG_*` folders point there), so it leaves nothing in the temporary folder of the system. Its `TMPDIR` is a short link `gmhc-<random>` made in the temporary folder of the system (or `/tmp` when that folder is longer than 38 bytes, or not owned by root or the connector account, or writable by its group or by other accounts without the sticky bit; only that folder is checked, not the ones above it: the start of a rendering fails if `/tmp` is not usable either) and pointing to the `tmp` folder of the rendering: Chrome puts a Unix socket there, which a path of more than about 100 bytes would break, so `work_dir` may be as long as needed. The link is removed after the browser exits, and the links of a connector that did not stop cleanly (dangling, named `gmhc-*`, owned by the connector account) are removed at start. Do not share the temporary folder between connectors of the same account that cannot see each other's `work_dir` (containers): each would remove the other's links in use. It must not be a monitored path, nor lie under one (the start is refused: each extraction folder would get an inotify watch): a site that monitors `/tmp` must set `work_dir` elsewhere. A warning is logged when `move.destination` is under a monitored path. On Windows there is no orphan purge, no real lock, and the folder inherits the ACLs of its parent: choose a dedicated, restricted base. Use a local disk: a memory filesystem (`tmpfs`) uses RAM (warning at start), and file locks are unreliable on network filesystems (CephFS)
-- **`shutdown_timeout`**: Time allowed to stop on `SIGTERM` or `SIGINT` (flag `--shutdown-timeout`, default `8s`, at least `2s`; local to the machine, the console does not manage it). Set it under the delay of the orchestrator (`docker stop -t`, systemd `TimeoutStopSec`). A signal stops the connector the way the console does: no new file is accepted, the files being processed may finish for `shutdown_timeout` minus a reserve of half of it (at most 30 s), then they are cut and left where they are (they are processed again at the next start), then the sessions get their report, the plugins are closed all at once (an extraction running is killed with its 7-Zip) and the work directory is removed, all within `shutdown_timeout`. A second signal stops the process at once. The log gets `stop requested, closing` when the signal arrives and `stop finished` at the end, with the files abandoned or still running, the plugins in error and the work directory removal; the exit code is `0` if the delay was kept, `1` otherwise (a guard ends the process one second after the delay if a plugin does not return). `scan` stops the same way on Ctrl+C. A signal received while a stop ordered by the console is already in progress ends at the guard of the process (code `1`) if that stop outlasts `shutdown_timeout`. The stop of a signal waits for the stop or the configuration of the console already running, with no bound of its own: the guard of the process is what ends it. A plugin that ignores its context is given up on at the end of the closing time (a short grace is kept for the plugins still finishing) and its goroutine stays until the process ends. A stop that runs past its time still writes the JSON fallbacks of the sessions within that grace, shared by all of them: a session reached too late, a very large one (more than about 100k files) or a slow export may lose its report, which the log then names, as it does for a session the monitor still held when the stop came (one notification names at most 10 of them). On Windows only the console version receives Ctrl+C (`os.Interrupt`); the `windowsgui` version gets no signal. Limits: `SIGKILL`, a power cut or an orchestrator delay shorter than `shutdown_timeout` run nothing: the work directory is purged at the next start, and the reports of the sessions still open are lost
-
-#### Actions
-
-Configure what happens when malware is detected:
-- **`delete`**: Delete detected malware files automatically (default: true)
-- **`quarantine`**: Move malware files to encrypted quarantine storage (requires quarantine configuration, default: true)
-- **`move`**: Move clean files from source to destination after scanning (requires move configuration, default: false)
-- **`print`**: Output scan results to console or file (see print configuration, default: true)
-- **`log`**: Log malware detections (written to connector logs, default: true)
-
-#### Monitoring
-
-- **`prescan`**: Immediately walk all existing files in monitored paths when monitoring starts (default: false). They are tracked like any other file (within `max_tracked_memory`) and handed to the analysis once stable for `modification_delay`: a file still being written is not analyzed early. A folder that appears later is walked the same way, one walk at a time
-- **`disable_fs_watcher`**: Do not watch filesystem events: files are found by the pre-scan and the periodic rescan only (default: false). Requires `period`. Meant for network filesystems (e.g. CephFS) where inotify watches are unavailable or too numerous; it also makes the start immediate. A configuration pushed by the console replaces the whole local configuration, so the key must be set there in agent mode
-- **`max_tracked_memory`**: Memory bound of the table of files the monitor tracks while they wait for their `modification_delay` (default: `256MiB`, counted in bytes: path lengths included). The table never exceeds it. Below the bound nobody is limited; when it is full, the owner that holds the most (files are grouped into owners: one per user folder, or per session folder at the `depth` of the `session` plugin) yields first, so a flood by one user does not starve the others. A refused or evicted file is not forgotten by the disk: with a periodic rescan it is found again at the next rescan; without one (`period: 0`) it is only found again when it is written to again, so set a `period` on a folder that can overflow. A warning names the owners concerned (at most 32, the others are counted), with a console event raised at the end of a rescan, or, without periodic rescan (`period: 0`), as soon as a file is refused or evicted and then at most once a minute; its resolution is raised after a minute without pressure, with the next file event. Minimum: `1MiB`
-- **`max_tracked_dir_percent`**: Share of the table, in percent (default: `25`), above which an owner is visited first when the table is full; it is not a ceiling
-- **`period`**: If set, enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m', default: 0, disabled). A file that was processed and is still in INPUT is not read nor sent to the analysis again at each rescan: the rescan only compares its metadata (one stat), and processes it again when it changed. A failure that may go away (analysis timeout, network, I/O, an action that failed) is retried after `2 × period` the first time, then twice as long after each new failure, up to `64 × period` and never more than one hour, shifted randomly by ±20 % so that files that failed together do not come back together; the 8th failure makes it final (log and console message "giving up"). A failure of a resource (an action that timed out or found the disk full, an extractor that is down) is retried the same way but never given up. Definitive outcomes (action done, analysis error, file too big, permanent action failure, restored file, inconsistent plugin result) are never retried. Without `period` (`0`) nothing comes back to a file by itself: a retry waits for the next event on the file that comes after its delay, which starts from one minute. When an action fails after touching the file (a link then an unlink moves its change time), the connector reports the state it left the file in, so that the failure is counted with its delay and not taken for a change made by someone else. A file that its owner rewrites during every analysis waits for stability again each time: the first two reopenings are immediate, the next ones are spaced up to one hour, and it is never given up. A removal of the source refused for a lasting reason (permission, read-only file system) is a definitive failure. When the table is full, a file waiting for a retry can be evicted to make room and its count of failures is then forgotten: under that pressure a file can be attempted more than 8 times. The table is in memory: after a restart the files left in INPUT are processed once again
-- **`modification_delay`**: Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes, default: 30s). It must exceed the timestamp granularity of the file system: a value under 1s is accepted but logs a warning each time the configuration is applied (at start, and at a reconfiguration by the console), since a file still being written may then be analyzed incomplete, and a rewrite of the same size within one timestamp tick of the file system is not seen by the identity check. The default of 30s applies to the command line and the configuration file; a console configuration without the key gives 0, which warns. A file is identified by its device, inode, size, modification time and change time (size and modification time only on Windows and other systems that give no inode or change time), and only handed to the analysis once its identity has been unchanged for this delay; a file still being written restarts the delay. The connector then opens the file once and reads everything through that descriptor: its hash, its analysis (the content is sent to the service from the descriptor, without any temporary copy, and the service must report the same SHA256), the plugins (`location` is a `/proc/<pid>/fd/<N>` path on Linux) and the extraction of archives (through a link to the descriptor). On Linux `/proc` must be usable: it is checked at start and the connector refuses to start without it. Elsewhere plugins and the extractor read the path the file was deposited at, which is logged at start. It checks the descriptor and the name again after the last read. On Linux the descriptor, opened without following any symbolic link below the monitored path, stays open during the actions: a quarantine reads the file from it, a deletion removes that file by name in the folder it was opened in only if the name still is that inode, and the move of a clean file by rename links that same inode into the destination from the descriptor (a copy read from it when the file system refuses links) then removes the old name through the handle, so that swapping the file or one of its folders for another between the check and the action cannot make the connector read, move or delete another file. With `follow_symlinks: true`, a deposited link may be analyzed and quarantined but is never deleted nor moved (the link and its target stay and the report says so). Elsewhere the descriptor is closed before the actions, which re-open the file and compare its identity. A file replaced, rewritten or swapped (even by swapping one of its folders) meanwhile is left in place; it is analyzed again once stable at the next rescan, or at the next event on the file (never with `period: 0` and no further write). Limits: a descriptor open for writing held by the depositor, or a hard link it keeps to the same inode, is not detectable by the connector (it can still change the content after the check; a hard link makes the connector publish a private copy instead of linking), the dates of a CephFS or NFS file are given by the writing client or cached (an identical size and dates can hide a change), FAT and exFAT keep coarse dates, and a FUSE file system without `use_ino` may reuse inode numbers. Elsewhere than on Linux only a few microseconds remain between the final check and the action. A FIFO or a device put in place of a file is refused without blocking. With `follow_symlinks: true`, a link to a folder is never walked.
-
-#### GLIMPS Malware Detect
-
-Top-level configuration fields:
-- **`gmalware_api_url`**: GLIMPS Malware API URL (required)
-- **`gmalware_api_token`**: GLIMPS Malware API Token (required)
-- **`gmalware_timeout`**: gmalware submission timeout (default: 5m)
-- **`gmalware_user_tags`**: List of tags set by connector on GLIMPS Malware detect submission
-- **`gmalware_no_cert_check`**: Disable certificate check for GLIMPS Malware (default: false)
-- **`gmalware_syndetect`**: use syndetect (default: false)
-- **`gmalware_bypass_cache`**: bypass gmalware (default: false)
-
-The GLIMPS Malware service must answer `GET /api/lite/v2/status` (`GET /api/v1/status` when `gmalware_syndetect` is `true`) with HTTP 200. The connector calls it each time a configuration is applied (at start, and when the console pushes one). With go-gdetect v1.6.6, a `404` on that endpoint makes the configuration hang: the client holds its write lock while it applies the configuration and, on a 404, asks for the API version, which waits for the same lock. From then on the connector applies no further configuration and its submissions wait. A service that does not expose the endpoint must be fixed or upgraded.
-
-Name sent with a submission: the host path of the file for a plain file, and for a member of an archive the path of the archive followed by the path of the member (`/in/a.zip/d/evil.exe`, `/in/a.zip/sub.zip/x.exe` for a nested archive), never the path in the work directory. Control characters, line and paragraph separators become `_` and invalid UTF-8 becomes `U+FFFD`. A name longer than 4096 bytes keeps its end, preceded by `…`. A content GMalware already knows by its SHA256 is not submitted again, so its name in GMalware stays the first one it received.
-
-#### Quarantine
-
-- **`location`**: Directory path where quarantined files are stored (files are encrypted with .lock extension)
-- **`password`**: Password for encrypting quarantined files (required to restore files later, default: "infected")
-- **`registry`**: Path to the database that stores quarantined and restored file entries (leave empty for in-memory store which would be lost on restart). A restored content is not analyzed again wherever it is deposited, by anyone, from then on: the registry is searched by the SHA256 of the content, not by the place it was quarantined from (a global allow list of that content, by design). The restored mark waives the analysis only, never the path or type rules: a restored content at a forbidden path, or of a forbidden type, is refused and quarantined all the same, and its restored mark is kept. With `delete` on and the quarantine off, such a refused file is deleted and the restored content is destroyed. The copies of that content still in quarantine are restored one by one. A quarantine refused because the content was restored meanwhile is a retry: nothing is written, moved or deleted for the file on that pass (no detection report next to it), and it is delivered as restored at the next one. A narrow window remains: a restoration of the content at one place and a quarantine of the same content at another do not wait for each other (the locks are per entry); the outcome stays closed, the second copy is quarantined and nothing is delivered. The empty content is the exception: it is matched per location only, restoring one empty file does not make every empty file safe. The report of a restored file says so (`has-been-restored`). A registry made by an older version gets the index of this search at the next start. A restoration never replaces a file: it is published with a hard link, else with `RENAME_NOREPLACE` through the descriptor of the destination folder (both refused by the kernel when the name is taken, whoever took it), and only on a system or file system that offers neither, by a rename after a check under a lock of the connector, which does not stop another process from writing the destination in between (a narrow window, the one of the move without links). It fails with "destination already exists" when the destination exists, whatever it is; the registry entry of a registered container is marked restored before the publication and put back as it was if the publication fails; when it cannot be put back, the content stays allowed by its SHA256 although nothing was restored, and the console error `quarantine-restore-unmark-failed` says so (never resolved; the `.lock` is kept and can be restored again). A container without entry is published first and registered after, so that no entry allows a content with no file; when the registry then fails, the file is there and unknown to it, its content will be detected and quarantined again at the next pass, and the console error `quarantine-restore-not-registered` says so (never resolved). A restoration is refused toward the quarantine folder, the work directory, the staging area and the temporary names of the connector, toward a NUL and toward a path with a `..` element. The `.lock` file is opened in one step without following a link and without blocking (a link, a named pipe or any file that is not a regular file is refused), and the restored content must match the id of the file (a `.lock` that was altered is refused). A `.lock` that has no registry entry (a registry in memory lost at a restart, or an entry removed) is still restored, by id and content: this is a decision of the product, announced by a console warning `quarantine-restore-unregistered` (never resolved), and the restored content is then known as restored in the registry. Such a restoration goes only to the path its own index records, only below a monitored path and never over a file; elsewhere it is refused (`ErrRestoreDestinationUnsafe`) and the file must be restored with a registry entry, because the id proves the integrity of the index and not who wrote it. A path that is not valid UTF-8 never passes it (the index would not give the id back): it fails safe. The `quarantine list` command reads the top level of the folder only, by batches, and lists the files named `<64 hex>.lock`. A file that is restored but whose `.lock` cannot be removed is reported as a success, with a warning and the console error `quarantine-restore-lock-kept` (never resolved): remove the `.lock` by hand, it stays listed until then, and restoring it again fails with a destination that exists; the `quarantine restore` command goes on with the next ids. The registry takes its lock with the context of each call, so that a restoration gives up after 30 s of reads or writes instead of waiting behind a write that is stuck; a system call that never returns (a hung disk or network file system) still holds it. The `quarantine restore` command warns when it runs without `--quarantine-registry`: its registry is in memory, so the monitoring process does not learn of the restoration
-- **`format`**: Container written for new quarantined files: `tar` (default, encrypted tar) or `zip` (ZIP protected by a password with traditional PKWARE encryption, openable with Windows Explorer, 7-Zip and other common tools). Existing `.lock` files stay restorable whatever the value, and both formats can live in the same directory.
-
-A restoration opens its destination folder one level at a time without following any symbolic link (from the monitored path, or from the root of the file system once the trusted system links of a destination outside the monitored paths are resolved) and writes the temporary file and publishes it inside that opened folder: a link swapped in meanwhile makes it fail, and the `.lock` file is kept.
-
-The quarantine directory is created with mode `0700` when missing. At every start and reconfiguration it must belong to the connector account (or root), must not be writable by its group or by others, and must not be, be under, or contain a monitored path, `move.destination` or the work directory. Otherwise the configuration is refused and the error gives the fix: `chown <connector account> <dir> ; chmod 700 <dir>`. A quarantine directory under the base of the work directory (often `/tmp`) may be erased by an automatic clean-up of `/tmp`: prefer a dedicated directory. Changing the directory, the registry, the format or the password is all or nothing: on any error the files are put back and the previous registry and password stay in service.
-
-**Using `format: zip`**
-- The quarantine password must be considered **public**. ZipCrypto can be broken with a few known plaintext bytes, and whoever deposited a quarantined file knows its content. Do not reuse this password anywhere else, and do not consider the existing `tar` files of the same directory confidential anymore. A warning is logged, and sent to the console, each time the configuration is applied with this format.
-- The entry in the ZIP keeps the name and extension of the original file (the name is sanitized). Opening the archive with the password therefore exposes the original file, executable included: handle it as malware.
-- Only ZIP files written by GMHost are read back: exactly the index and the payload, without compression.
-
-#### Move Action
-
-- **`source`**: Source directory filter (only clean files within this path are moved to destination)
-- **`destination`**: Target directory for moving clean files (preserves subdirectory structure)
-- **`mode`**: `copy` (default) or `rename`, see Move below
-- **`min_throughput`**: Minimum copy throughput per second in `copy` mode (default `10MiB`); a copy takes at most `size / min_throughput + 1 minute`
-
-#### Print/Report
-
-- **`location`**: File path for scan reports (leave empty to print to stdout)
-- **`verbose`**: Report all scanned files, including clean files (not just malware detections, default: false)
-
-## Archive Extraction
-
-GMHost can extract and analyze files from various archive formats when the `extract` option is enabled:
-
-**Supported formats:**
-
-- ZIP
-- GZIP
-- TAR
-- BZIP2
-- RAR
-- 7Z
-- ISO
-- Brotli
-- LZ4
-- XZ
-- Zstandard
-- S2
-- Snappy
-- Zlib
-- LZW
-
-**Conditions to attempt extraction:**
-- file size must be > `extract_min_size` (`--extract-min-size`, default 8KB), unless the file is an archive of a known format: those are extracted whatever their size (an archive of an unknown type, seen as a plain binary, still needs the size)
-- file's MIME type must belong to list of allowed types (see below)
-
-Allowed types for extraction:
-```go
-"application/x-archive"              // .ar
-"application/x-arj"                  // .arj
-"application/vnd.ms-cab-compressed"  // .cab
-"application/x-cpio"                 // .cpio
-"application/x-iso9660-image"        // .iso
-"application/x-qemu-disk"            // .qcow, .qcow2
-"application/x-lha"                  // .lha
-"application/x-lzh-compressed"       // .lzh
-"application/vnd.rar"                // .rar
-"application/x-virtualbox-vhd"       // .vhd, .vhdx
-"application/x-7z-compressed"        // .7z
-"application/x-xz"                   // .xz, .tar.xz
-"application/x-bzip2"                // .bz2, .tar.bz2
-"application/gzip"                   // .gz, .tar.gz, .tgz
-"application/x-tar"                  // .tar
-"application/x-lzma"                 // .lzma, .tar.lzma
-"application/vnd.ms-htmlhelp"        // .chm
-"application/x-ms-wim"               // .wim
-"application/x-compress"             // .Z
-"application/zip"                    // .zip
-"application/x-rpm"                  // .rpm
-"application/x-apple-diskimage"      // .dmg
-"application/vnd.debian.binary-package" // .deb
-"application/zstd"                   // .zst, .tar.zst
-"application/x-xar"                  // .xar, .pkg
-"application/vnd.squashfs"           // .squashfs, .snap, .appimage
-"application/x-squashfs"             // .squashfs
-"application/x-lz4"                  // .lz4, .tar.lz4
-
-// default MIME type, kept in case identification failed, or for specific raw file formats like flat VMDK
-"application/octet-stream"
-
-// MIME types absent from default libmagic database
-"application/x-vmdk"                 // .vmdk
-"application/x-lzh"                  // .lzh
-"application/x-lzh-archive"          // .lzh
-"application/x-rar-compressed"       // .rar
-"application/x-vhd"                  // .vhd, .vhdx
-"application/x-virtualbox-vdi"       // .vdi
-```
-MIME type detection is done using https://github.com/gabriel-vasile/mimetype.
-
-**Recursive extraction:**
-
-GMHost uses recursive extraction, meaning archives within archives are automatically extracted.
-
-It is limited by:
-
-- **`recursive_extract_max_depth`**: Maximum nesting level for extraction (default: 10). Beyond it, files are directly sent for analysis.
-- **`recursive_extract_max_size`**: Maximum total size of all extracted files across all nesting levels from one root archive (default: 5GB). When reached, remaining files are directly sent for analysis. Note: this limit is checked before each extraction but the size is counted after, so the actual total may exceed this limit by the size of one archive's extracted content.
-- **`recursive_extract_max_files`**: Maximum total number of files extracted across all nesting levels from one root archive (default: 10000). When reached, remaining files are directly sent for analysis.
-
-**Important notes:**
-
-- The extractor does not remove malicious files from archives
-- If any file in an archive is malicious, the entire archive is considered malicious
-- Archive contents are extracted to temporary directories and cleaned up after analysis
-- Files larger than `max_file_size` within archives are skipped
-
-## Actions
-
-When a file is scanned, multiple actions can be triggered based on the results (see below).
-
-Each sequence of actions is limited by a timeout proportional to the file size (to adapt to costly operations like quarantine (read + encrypt + write)). Timeout is **30 seconds per GB**, rounded up to the next GB with a minimum of 30 seconds in any case.  
-Examples: 1MB -> 30s ; 500MB -> 30s ; 1,2GB -> 60s ; 2GB -> 60s
-
-### Quarantine
-
-- **When**: Malware is detected
-- **Effect**: Creates an encrypted, protected copy of the malicious file in the quarantine folder
-- **Details**: Files are encrypted using AES with a password and stored with metadata
-
-### Delete
-
-- **When**: Malware is detected (after quarantine if enabled)
-- **Effect**: Removes the original malicious file from the filesystem
-
-### Move
-
-- **When**: File is in the source directory
-- **Effect**:
-  - **Legitimate files**: Moves the file to the destination folder, preserving directory structure
-    - A file never replaces one already at the destination: the new one is stored next to it as `<name>.conflict-<UTC time>[-n]<ext>` (the name is cut, never the suffix, to stay within 255 bytes), `moved-to` gives the real path, `move-conflict-of` the original name, and a warning is logged and sent to the console (the first file may have been partial). After 6 names taken, or when the destination is a directory or a parent is a file, the file stays in place with an error: nothing is retried
-    - **`move.mode`** (`copy` by default, or `rename`): in `copy` mode nothing reaches the destination by link or rename of the source inode: the connector copies the file it analyzed through its verified descriptor into `.gmhost-staging`, checks that the copy has the SHA256 that was analyzed, publishes it under its final name, and removes the source only if the name still is the analyzed file. What lands in the destination is exactly what was analyzed, whatever a writer that kept the file open does afterwards; a file rewritten during the copy is not published and stays in place. The cost is one more read and one more write of each moved file. Empty files are created new, empty. The copy keeps the permission bits of the source without setuid, setgid, sticky or write for others (write for the group is kept), and the destination folder is flushed to disk before the source is removed, so that a crash cannot lose both. A copy the source name is renamed away from by its depositor between the analysis and the removal can leave the file both at the destination and under its new name: the destination holds exactly what was analyzed. The only exception is a file the pipeline itself declared too big to be analyzed (above `max_file_size`, not analyzed) that `unanalyzable_policy.too_big: pass` lets through: it is moved as in `rename` mode (no analyzed content to check); the decision is the pipeline's, never what a plugin or a member of an archive says, and a large archive that was extracted and analyzed is copied. The copy has a time limit of `size / move.min_throughput + 1 minute` (`move.min_throughput`, default `10MiB`, per second); a copy that exceeds it, or that finds the destination full or its quota used up, is abandoned (the transit file is removed, the source stays), a console error `host-move-resource` is raised until a file is moved again, and the file is retried like any failure of a resource (never given up). `rename` moves the inode itself (link then removal of the old name, a copy only where links are refused): cheaper, but a writer holding the file open can still change what reached the destination. Limit: a destination on a network file system that blocks has no I/O deadline of its own, only the time limit of the copy. `rename` is accepted, with a warning in the log and a console event `host-move-rename` at each configuration applied while the move action is active
-    - Files are moved atomically, also across file systems: a copy is first made in the private `.gmhost-staging` folder at the root of the destination, then linked to its final name. Whoever consumes the destination must ignore `.gmhost-staging`. Setuid and setgid bits are never copied
-    - **Reserved names**: a file whose name starts with `report-session-`, in any letter case and at any depth, is never moved; it stays in the source folder and the error is reported (`error` of its report). A fake report could otherwise reach the destination. To authenticate a session report, rely on the console event (name and SHA256), not on the file name alone. A file with that name found malicious is quarantined or deleted like any other
-  - **Malicious files**: Does not move the file, but creates a `.locked.json` report file at the destination path containing analysis details
-  - **Files in error**: Does not move the file. This includes an archive in which an extracted file could not be analyzed (submission failure, timeout, unreadable or lost file, inconsistent plugin result): the archive stays in place, the failed files are listed in the report (`error-subfiles`: 1000 failed files plus a count of the others). Empty files in an archive are still ignored, and files too big follow their own handling
-
-### Print
-
-- **When**: Always (configurable verbosity)
-- **Effect**: Outputs scan results to console or specified log file
-
-### Log
-
-- **When**: Always
-- **Effect**: Logs detailed scan information using structured logging
-
 ## Installation
 
 ### Windows
@@ -866,6 +901,10 @@ GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c2
 GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c26933f1becb.lock
 ```
 
+- A restoration never overwrites a file: it fails with "destination already exists".
+- Use `--quarantine-registry` with the same registry as the monitoring process. Otherwise the monitoring process is not told about the restoration and quarantines the file again.
+- A content restored once is not analyzed again (see `quarantine.registry`).
+
 **Warning**: Only restore files if you are certain they are safe. Restored files will be in their original, unencrypted form.
 
 ## Environment Variables
@@ -873,7 +912,7 @@ GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c2
 GMHost respects the following environment variables:
 - **`GMALWARE_TOKEN`**: GLIMPS Malware Detect authentication token (used by `--gmalware-token` flag)
 - **`GMALWARE_URL`**: GLIMPS Malware Detect API endpoint (used by `--gmalware-url` flag)
-- **`TMPDIR`**: Temporary directory for archive extraction (Unix)
+- **`TMPDIR`**: Base of the work directory when `work_dir` is not set (Unix)
 
 ## Logging
 

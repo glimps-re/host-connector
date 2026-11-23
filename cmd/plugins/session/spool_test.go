@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -432,5 +433,62 @@ func TestSession_reportsStopsWhenTheContextEndsMidSpool(t *testing.T) {
 	}
 	if !errors.Is(gotErr, context.Canceled) || n != 5 {
 		t.Errorf("read %d reports, error %v: want 5 and context.Canceled", n, gotErr)
+	}
+}
+
+func symlinkedSpool(t *testing.T, victimContent string) (sp *spool, victim string) {
+	t.Helper()
+	sp, err := createSpool(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim = filepath.Join(t.TempDir(), "victim")
+	if err := os.WriteFile(victim, []byte(victimContent), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(sp.path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(victim, sp.path); err != nil {
+		t.Fatal(err)
+	}
+	return sp, victim
+}
+
+func TestSpool_flushRefusesASymlink(t *testing.T) {
+	sp, victim := symlinkedSpool(t, "victim\n")
+	sp.buf = []byte("{\"filename\":\"a\"}\n")
+	if err := sp.flush(); !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("flush through a symlink: err = %v, want ELOOP", err)
+	}
+	got, err := os.ReadFile(filepath.Clean(victim))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "victim\n" {
+		t.Errorf("victim file was written: %q", got)
+	}
+	if sp.durable != 0 || len(sp.buf) == 0 {
+		t.Errorf("durable = %d, buffered = %d: a failed flush must keep the lines buffered", sp.durable, len(sp.buf))
+	}
+}
+
+func TestSpool_openRefusesASymlink(t *testing.T) {
+	line := mustLine(t, datamodel.Report{Filename: "secret"})
+	sp, _ := symlinkedSpool(t, string(line))
+	sp.durable = int64(len(line))
+	r, err := sp.open()
+	if err == nil {
+		_ = r.Close()
+	}
+	if !errors.Is(err, syscall.ELOOP) {
+		t.Fatalf("open through a symlink: err = %v, want ELOOP", err)
+	}
+	reps, err := collect(t, sp.reports(t.Context()))
+	if !errors.Is(err, syscall.ELOOP) {
+		t.Errorf("reports through a symlink: err = %v, want ELOOP", err)
+	}
+	if len(reps) != 0 {
+		t.Errorf("reports read through a symlink: %v", reps)
 	}
 }

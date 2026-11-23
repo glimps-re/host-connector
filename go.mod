@@ -14,7 +14,7 @@ require (
 	github.com/chromedp/chromedp v0.15.1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/gabriel-vasile/mimetype v1.4.13
-	github.com/glimps-re/connector-integration v0.9.2-0.20261122104756-f74f821dc90a
+	github.com/glimps-re/connector-integration v0.9.2-0.20261123133504-e74871f47cc1
 	github.com/glimps-re/rfsnotify v0.2.0
 	github.com/go-playground/universal-translator v0.18.1
 	github.com/go-playground/validator/v10 v10.30.3
@@ -49,10 +49,8 @@ require (
 	github.com/icza/bitio v1.1.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/klauspost/compress v1.20.2 // indirect
-	github.com/labstack/echo/v4 v4.16.1 // indirect
-	github.com/labstack/gommon v0.5.0 // indirect
+	github.com/labstack/echo/v5 v5.4.7 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
-	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mewkiz/flac v1.0.13 // indirect
 	github.com/mewkiz/pkg v0.0.0-20260703220044-4fb89b18cc87 // indirect
@@ -68,11 +66,8 @@ require (
 	github.com/stangelandcl/ppmd v0.1.1 // indirect
 	github.com/therootcompany/xz v1.0.1 // indirect
 	github.com/ulikunitz/xz v0.5.15 // indirect
-	github.com/valyala/bytebufferpool v1.0.0 // indirect
-	github.com/valyala/fasttemplate v1.2.2 // indirect
 	go4.org v0.0.0-20260112195520-a5071408f32f // indirect
 	golang.org/x/crypto/openpgp v0.1.0-deprecated // indirect
-	golang.org/x/net v0.62.0 // indirect
 	golift.io/udf v0.0.1 // indirect
 	modernc.org/libc v1.73.5 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

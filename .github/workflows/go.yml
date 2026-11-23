@@ -21,7 +21,10 @@ jobs:
       # chromium is preinstalled on the runner image (apt's chromium is a flaky snap wrapper)
       - name: check chromium
         run: chromium --version
-      
+
       - uses: glimps-re/go-actions@v0.4.0
         with:
           go-version: '1.27'
+
+      - name: vet for windows
+        run: GOOS=windows go vet ./...

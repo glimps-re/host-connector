@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package main implements a MIME type-based file filtering plugin.
 //
 // Filters files based on MIME types detected via libmagic. Forbidden types are

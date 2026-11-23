@@ -20,8 +20,6 @@ const (
 	direntBuffer = 32 << 10
 )
 
-const cleanupSupported = true
-
 // afterList is called once the names of a folder are read, before they are
 // processed. Replaced in tests.
 var afterList = func(path string) {}

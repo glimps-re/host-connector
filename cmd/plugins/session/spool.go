@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -15,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 )
@@ -70,7 +73,7 @@ func createSpool(dir string, logger *slog.Logger) (*spool, error) {
 			return nil, err
 		}
 		path := filepath.Join(dir, hex.EncodeToString(b[:])+datamodel.SessionSpoolExt)
-		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL|openNoFollow, 0o600)
+		f, err := os.OpenFile(filepath.Clean(path), os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
 		if err == nil {
 			if err = f.Close(); err != nil {
 				return nil, errors.Join(err, os.Remove(path))
@@ -106,7 +109,7 @@ func (s *spool) flush() error {
 	if len(s.buf) == 0 {
 		return nil
 	}
-	f, err := os.OpenFile(filepath.Clean(s.path), os.O_WRONLY|os.O_APPEND|openNoFollow, 0)
+	f, err := os.OpenFile(filepath.Clean(s.path), os.O_WRONLY|os.O_APPEND|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return err
 	}
@@ -126,7 +129,7 @@ func (s *spool) flush() error {
 // open returns a reader on every line of the spool: what is on disk, then what
 // is still buffered. The spool must not change while it is read.
 func (s *spool) open() (io.ReadCloser, error) {
-	f, err := os.OpenFile(filepath.Clean(s.path), os.O_RDONLY|openNoFollow, 0)
+	f, err := os.OpenFile(filepath.Clean(s.path), os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
 	}

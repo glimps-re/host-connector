@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package main implements a PDF/HTML report generation plugin.
 //
 // Generates scan reports from templates using chromedp for PDF conversion.

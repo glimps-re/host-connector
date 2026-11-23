@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -796,7 +798,8 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 
 const (
 	// maxNamesPerRun and maxArgBytesPerRun bound one 7z command line: the
-	// system limit on arguments is far above, but Windows' is 32 KiB.
+	// system limit on arguments is far above, but a short command line keeps
+	// one run, and the memory 7-Zip spends listing its names, small.
 	maxNamesPerRun    = sevenZipMaxFile
 	maxArgBytesPerRun = 24 << 10
 )

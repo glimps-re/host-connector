@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package main implements an archive extraction plugin using 7-Zip.
 //
 // Extracts archives with configurable limits to prevent extraction bombs.

@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -10,7 +12,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -130,15 +131,7 @@ type browserDirs struct {
 	data, tmp, home string
 	// tmpLink is the short name the browser is given as its temporary folder:
 	// a Unix socket path is limited to about 100 bytes, a work directory is not.
-	// Empty where the real folder is used.
 	tmpLink string
-}
-
-func (d browserDirs) tmpDir() string {
-	if d.tmpLink != "" {
-		return d.tmpLink
-	}
-	return d.tmp
 }
 
 func createBrowserDirs(profile string) (browserDirs, error) {
@@ -154,12 +147,9 @@ func createBrowserDirs(profile string) (browserDirs, error) {
 // browserEnv is what the browser is given on top of the environment of the
 // connector (which it keeps): everything it would write under the temporary
 // folder, the home or the XDG folders goes under the folders of its rendering.
-func browserEnv(d browserDirs, goos string) []string {
-	if goos == "windows" {
-		return []string{"TMP=" + d.tmpDir(), "TEMP=" + d.tmpDir(), "USERPROFILE=" + d.home}
-	}
+func browserEnv(d browserDirs) []string {
 	return []string{
-		"TMPDIR=" + d.tmpDir(),
+		"TMPDIR=" + d.tmpLink,
 		"HOME=" + d.home,
 		"XDG_CONFIG_HOME=" + filepath.Join(d.home, ".config"),
 		"XDG_CACHE_HOME=" + filepath.Join(d.home, ".cache"),
@@ -175,7 +165,7 @@ func browserOptions(execPath string, d browserDirs) []chromedp.ExecAllocatorOpti
 	return append(opts,
 		chromedp.ExecPath(execPath),
 		chromedp.UserDataDir(d.data),
-		chromedp.Env(browserEnv(d, runtime.GOOS)...),
+		chromedp.Env(browserEnv(d)...),
 		chromedp.ModifyCmdFunc(confineBrowser),
 	)
 }

@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -12,7 +14,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -101,9 +102,6 @@ type t17Setup struct {
 // 7-Zip on one deposited archive.
 func runT17(t *testing.T, s t17Setup) *t17Run {
 	t.Helper()
-	if runtime.GOOS != "linux" {
-		t.Skip("descriptor links need /proc")
-	}
 	plugin := realPlugin(t)
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 	root := t.TempDir()

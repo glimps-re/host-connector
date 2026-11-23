@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -7,7 +9,6 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 
@@ -22,9 +23,6 @@ import (
 // extract a sound archive from it, its members must be analyzed, and nothing
 // may be reported as an extraction error.
 func TestCore_realExtractionPluginExtractsADepositedZipThroughTheDescriptorLink(t *testing.T) {
-	if runtime.GOOS != "linux" {
-		t.Skip("descriptor links need /proc")
-	}
 	plugin := realPlugin(t)
 	in := t.TempDir()
 	deposit := filepath.Join(in, "alice", "a.zip")

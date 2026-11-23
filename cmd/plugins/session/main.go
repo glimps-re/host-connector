@@ -1,3 +1,5 @@
+//go:build linux
+
 // Package main implements a session-based file grouping and reporting plugin.
 //
 // Groups files by directory structure, tracks their processing, and generates
@@ -107,7 +109,7 @@ type Config struct {
 	// worker, can hold a session open since its last activity.
 	InflightTimeout time.Duration `mapstructure:"inflight_timeout"`
 	// RemoveEmptyDirs removes the empty folders left below a session once its
-	// report is written (Linux only).
+	// report is written.
 	RemoveEmptyDirs bool `mapstructure:"remove_empty_dirs"`
 	// CleanupTimeout bounds the removal of the empty folders of one session.
 	CleanupTimeout time.Duration `mapstructure:"cleanup_timeout"`
@@ -318,11 +320,6 @@ func checkConfig(config *Config, vc plugins.ValidationContext, warn bool) error 
 	}
 	if _, err := parseSpoolSize(config.MaxSpoolSize); err != nil {
 		return err
-	}
-	if warn && config.RemoveEmptyDirs && !cleanupSupported {
-		msg := "session: remove_empty_dirs is not supported on this system: the empty folders are left"
-		vc.GetLogger().Warn(msg)
-		vc.GetConsoleLogger().Warn(msg)
 	}
 	if warn && config.InflightTimeout < config.Delay {
 		msg := fmt.Sprintf("session: inflight_timeout %s is shorter than delay %s: files waiting never hold a session open", config.InflightTimeout, config.Delay)
@@ -1091,9 +1088,9 @@ func (p *SessionPlugin) freeSession(s *Session) {
 }
 
 // startCleanup starts the goroutine that removes empty folders, if the option
-// is set and the system supports it.
+// is set.
 func (p *SessionPlugin) startCleanup() {
-	if !p.config.RemoveEmptyDirs || !cleanupSupported {
+	if !p.config.RemoveEmptyDirs {
 		return
 	}
 	p.removeDirs = removeEmptyDirs

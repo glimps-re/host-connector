@@ -2274,7 +2274,7 @@ func (c *Connector) analyze(input fileToAnalyze, tooBig *bool) (result datamodel
 		if state, ok := c.stateOf(input); ok && state.reason != datamodel.NotAnalyzedExtractError {
 			return c.unanalyzedResult(input, state.reason, state.policy, state.failure)
 		}
-		return c.unanalyzedResult(input, datamodel.NotAnalyzedTooBig, c.config.Unanalyzable.TooBig, errFileTooBig)
+		return c.unanalyzedResult(input, datamodel.NotAnalyzedTooBig, c.config.Unanalyzable.TooBig, tooBigError(input.size, c.config.MaxFileSize))
 	}
 
 	// report metrics for every file actually analyzed.

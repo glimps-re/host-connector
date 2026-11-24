@@ -1396,7 +1396,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 					t.Errorf("handleFile() result Error = %v, want %v", gotResult.Error, tt.wantResult.Error)
 					return
 				}
-				if !errors.Is(tt.wantResult.Error, gotResult.Error) {
+				if !errors.Is(gotResult.Error, tt.wantResult.Error) {
 					if tt.wantResult.Error.Error() != gotResult.Error.Error() {
 						t.Errorf("handleFile() result Error = %v, want %v", gotResult.Error, tt.wantResult.Error)
 					}

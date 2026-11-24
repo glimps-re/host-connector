@@ -49,6 +49,33 @@ func TestUnanalyzable_defaultsAndValidation(t *testing.T) {
 	}
 }
 
+func TestAnalyzeFile_tooBigErrorTextNamesBothSizes(t *testing.T) {
+	const mib = 1 << 20
+	tests := []struct {
+		name    string
+		size    int64
+		maxSize int64
+		want    string
+	}{
+		{"mebibytes", 150*mib + 1, 100 * mib, "file is too big to be analyzed: size 150 MiB exceeds max_file_size 100 MiB"},
+		{"bytes", 500, 100, "file is too big to be analyzed: size 500 B exceeds max_file_size 100 B"},
+		{"fractional", 1536, 1024, "file is too big to be analyzed: size 1.5 KiB exceeds max_file_size 1 KiB"},
+		{"same rounded value", 100*mib + 1, 100 * mib, "file is too big to be analyzed: size 104857601 B exceeds max_file_size 104857600 B"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := policyConnector(t, Unanalyzable{TooBig: PolicyError}, tt.maxSize, cleanSubmitter())
+			r := c.analyzeFile(fileToAnalyze{filename: "f", location: "/in/f", sha256: "sha", size: tt.size})
+			if r.Error == nil || r.Error.Error() != tt.want {
+				t.Errorf("Error = %v, want %q", r.Error, tt.want)
+			}
+			if !errors.Is(r.Error, errFileTooBig) {
+				t.Errorf("Error = %v, want errors.Is errFileTooBig", r.Error)
+			}
+		})
+	}
+}
+
 func TestAnalyzeFile_tooBigPolicies(t *testing.T) {
 	in := fileToAnalyze{filename: "f", location: "/in/f", sha256: "sha", size: 500}
 	tests := []struct {

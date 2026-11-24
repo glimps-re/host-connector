@@ -805,19 +805,23 @@ go test -cover
 find cmd/plugins -name "*_test.go" -execdir go test \;
 ```
 
-The end-to-end suite (`test/`) runs the real binary against fake services. Its scenarios need the build tag `e2e`. The shutdown tests and the self-tests of the invariant, fakes and helpers carry only the `linux` tag, so a plain `go test ./test/` runs them too, and so does `go test ./...`: the 6 shutdown tests build GMHost and the plugins (cgo, `7zzs`), and `-short` skips them. The full suite takes longer than the default 10-minute timeout of `go test`, so set one:
+The end-to-end suite (`test/`) runs the real binary against fake services. Its scenarios are split into `test/core` (tag `e2e_core`) and `test/plugins` (tag `e2e_plugins`); the tag `e2e` selects both. A plain `go test ./test/...` runs only the self-tests of the harness and the fakes, without building GMHost. The full suite takes longer than the default 10-minute timeout of `go test`, so set one:
 
 ```bash
-go test -race -tags e2e -timeout 30m ./test/
+go test -race -tags e2e -timeout 30m ./test/...
+
+# One side
+go test -race -tags e2e_core -timeout 30m ./test/core/
+go test -race -tags e2e_plugins -timeout 30m ./test/plugins/
 
 # A single scenario
-go test -race -tags e2e -timeout 30m -run 'TestE2E_archives$' ./test/
+go test -race -tags e2e_plugins -timeout 30m -run 'TestE2E_archives$' ./test/plugins/
 
 # Lint, including the suite
-golangci-lint run --build-tags e2e ./test/...
+golangci-lint run --build-tags e2e,realbrowser ./test/...
 ```
 
-It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it). The browser scenarios need Chromium or Chrome, run as a non-root user (Chrome refuses root); they are skipped when it is absent, or fail with `E2E_REQUIRE_BROWSER=1`. See `test/doc.go`. The scenarios are described in [docs/e2e-tests.md](docs/e2e-tests.md).
+It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it). The two browser scenarios also need the tag `realbrowser`, Chromium or Chrome in `PATH` and a non-root user, and fail when either is missing. See `test/doc.go`. The scenarios are described in [docs/e2e-tests.md](docs/e2e-tests.md).
 
 The tests of the report plugin that start a real Chromium (`cmd/plugins/report`) are opt-in with the build tag `realbrowser`: some CI runners (Ubuntu with AppArmor restricting unprivileged user namespaces) leave the browser no usable sandbox, and the plugin deliberately refuses `--no-sandbox`. They need Chromium or Chrome in `PATH` and a non-root user, and fail (not skip) when either is missing:
 

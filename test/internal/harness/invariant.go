@@ -1,6 +1,6 @@
 //go:build linux
 
-package test
+package harness
 
 import (
 	"crypto/sha256"
@@ -17,36 +17,37 @@ import (
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	hcquarantine "github.com/glimps-re/host-connector/pkg/quarantine"
+	"github.com/glimps-re/host-connector/test/internal/fakes/gmalware"
 )
 
-// reasonAnalysisError is the not-analyzed reason of a file delivered under
+// ReasonAnalysisError is the not-analyzed reason of a file delivered under
 // analysis_error: pass.
-const reasonAnalysisError datamodel.NotAnalyzedReason = "analysis-error"
+const ReasonAnalysisError datamodel.NotAnalyzedReason = "analysis-error"
 
 // maxReportSize bounds the report the checker reads; a larger one is a
 // violation, not a truncated read that hides what follows.
 const maxReportSize = 64 << 20
 
-// expectations are what a scenario declares to the checker: the not-analyzed
+// Expectations are what a scenario declares to the checker: the not-analyzed
 // reasons it expects (empty and too-big need no declaration, they are checked
 // against the file), the largest file the analysis accepts, and the members of
 // the archives it delivers. The sizes the checker holds a member to are the ones
 // the report declares for it.
-type expectations struct {
+type Expectations struct {
 	maxFileSize int64
 	reasons     map[datamodel.NotAnalyzedReason]bool
 	archives    map[string][][]byte
 	released    map[string]bool
 	copies      map[string]int
-	// quarantineOff tells that the quarantine action is off in the run: a
+	// QuarantineOff tells that the quarantine action is off in the run: a
 	// detection report in OUTPUT then names no container.
-	quarantineOff bool
+	QuarantineOff bool
 	flagged       map[string]bool
 	lostByCrash   map[string]bool
 }
 
-// allow declares that files may be delivered with these not-analyzed reasons.
-func (e *expectations) allow(reasons ...datamodel.NotAnalyzedReason) {
+// Allow declares that files may be delivered with these not-analyzed reasons.
+func (e *Expectations) Allow(reasons ...datamodel.NotAnalyzedReason) {
 	if e.reasons == nil {
 		e.reasons = map[datamodel.NotAnalyzedReason]bool{}
 	}
@@ -55,66 +56,79 @@ func (e *expectations) allow(reasons ...datamodel.NotAnalyzedReason) {
 	}
 }
 
-// flag declares contents that a plugin treats as malware without the service
+// Flag declares contents that a plugin treats as malware without the service
 // (a forbidden path or type): they count as malware for the checker, as the
 // ones the test programmed in the fake service. It only adds to that set.
-func (e *expectations) flag(contents ...[]byte) {
+func (e *Expectations) Flag(contents ...[]byte) {
 	if e.flagged == nil {
 		e.flagged = map[string]bool{}
 	}
 	for _, c := range contents {
-		e.flagged[sha256Hex(c)] = true
+		e.flagged[gmalware.SHA256Hex(c)] = true
 	}
 }
 
-// crashLost declares contents whose session report a crash of the connector
+// FlagSHA256 is Flag for a content known by its SHA256 only.
+func (e *Expectations) FlagSHA256(sum string) {
+	if e.flagged == nil {
+		e.flagged = map[string]bool{}
+	}
+	e.flagged[sum] = true
+}
+
+// CrashLost declares contents whose session report a crash of the connector
 // lost, which the connector documents (the spool of a crashed run is not
 // recovered): they may be in OUTPUT with no report, but only if the service
 // analyzed them clean, with no analysis error.
-func (e *expectations) crashLost(contents ...[]byte) {
+func (e *Expectations) CrashLost(contents ...[]byte) {
 	if e.lostByCrash == nil {
 		e.lostByCrash = map[string]bool{}
 	}
 	for _, c := range contents {
-		e.lostByCrash[sha256Hex(c)] = true
+		e.lostByCrash[gmalware.SHA256Hex(c)] = true
 	}
 }
 
-// release declares that an operator restored this malware from the quarantine:
+// Release declares that an operator restored this malware from the quarantine:
 // the connector then delivers it on purpose, with the restored mark, and the
 // detection it made earlier stays in the reports.
-func (e *expectations) release(content []byte) {
+func (e *Expectations) Release(content []byte) {
+	e.ReleaseSHA256(gmalware.SHA256Hex(content))
+}
+
+// ReleaseSHA256 is Release for a content known by its SHA256 only.
+func (e *Expectations) ReleaseSHA256(sum string) {
 	if e.released == nil {
 		e.released = map[string]bool{}
 	}
-	e.released[sha256Hex(content)] = true
+	e.released[sum] = true
 }
 
-// releaseCopies is release for a malware an operator restored that is delivered
+// ReleaseCopies is Release for a malware an operator restored that is delivered
 // in more than one place: n copies may be in OUTPUT, each with the restored
 // mark.
-func (e *expectations) releaseCopies(content []byte, n int) {
-	e.release(content)
+func (e *Expectations) ReleaseCopies(content []byte, n int) {
+	e.Release(content)
 	if e.copies == nil {
 		e.copies = map[string]int{}
 	}
-	e.copies[sha256Hex(content)] = n
+	e.copies[gmalware.SHA256Hex(content)] = n
 }
 
-// archive declares the members of an archive the scenario delivers: the
+// Archive declares the members of an archive the scenario delivers: the
 // checker does not extract archives, it trusts the contents the scenario built.
-func (e *expectations) archive(content []byte, members ...[]byte) {
+func (e *Expectations) Archive(content []byte, members ...[]byte) {
 	if e.archives == nil {
 		e.archives = map[string][][]byte{}
 	}
-	e.archives[sha256Hex(content)] = members
+	e.archives[gmalware.SHA256Hex(content)] = members
 }
 
 // checkSpec is what the checker looks at: the folders of the run and the
 // expectations.
 type checkSpec struct {
 	output, reports, quarantine string
-	expectations
+	Expectations
 }
 
 // outputViolations checks the invariant of the connector on OUTPUT: every file
@@ -125,8 +139,8 @@ type checkSpec struct {
 // file) is flagged on purpose. Archives are not extracted: their members are
 // the ones the scenario declared, and the service must have seen one. It returns
 // one line per violation.
-func outputViolations(spec checkSpec, gm *gmalware) (violations []string) {
-	reports, errs := readSessionReports(spec.reports)
+func outputViolations(spec checkSpec, gm *gmalware.GMalware) (violations []string) {
+	reports, errs := ReadSessionReports(spec.reports)
 	violations = append(violations, errs...)
 	files, problems := listEntries(spec.output)
 	violations = append(violations, problems...)
@@ -200,7 +214,7 @@ func isLockReport(name string) bool {
 // lockReportViolations checks that a lock report is exactly the report of a
 // detection of a file the test programmed as malware (or of a declared archive with such a member), whose copy is in the
 // quarantine; a file that hides behind that name is a violation.
-func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmalware, reports map[string][]datamodel.Report) []string {
+func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmalware.GMalware, reports map[string][]datamodel.Report) []string {
 	quarantineDir := spec.quarantine
 	if size > maxReportSize {
 		return []string{rel + ": lock report larger than a report can be"}
@@ -229,7 +243,7 @@ func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmal
 	if quarantineDir == "" || !isSHA256(r.SHA256) {
 		return append(violations, rel+": lock report with no verifiable SHA256")
 	}
-	if spec.quarantineOff && r.MitigationID == "" {
+	if spec.QuarantineOff && r.MitigationID == "" {
 		return violations
 	}
 	id := hcquarantine.ComputeCacheID(r.Filename, r.SHA256)
@@ -250,12 +264,12 @@ func isSHA256(s string) bool {
 // programmedMalware tells whether the content is malware for the test: it was
 // programmed in the service or flagged for a plugin, or it is a declared archive
 // with a member that was.
-func (e *expectations) programmedMalware(sha string, gm *gmalware) bool {
+func (e *Expectations) programmedMalware(sha string, gm *gmalware.GMalware) bool {
 	if e.isMalware(sha, gm) {
 		return true
 	}
 	for _, m := range e.archives[sha] {
-		if e.isMalware(sha256Hex(m), gm) {
+		if e.isMalware(gmalware.SHA256Hex(m), gm) {
 			return true
 		}
 	}
@@ -264,49 +278,49 @@ func (e *expectations) programmedMalware(sha string, gm *gmalware) bool {
 
 // isMalware tells whether the content itself, not an archive around it, was
 // programmed in the service or flagged for a plugin.
-func (e *expectations) isMalware(sha string, gm *gmalware) bool {
+func (e *Expectations) isMalware(sha string, gm *gmalware.GMalware) bool {
 	return gm.Programmed(sha) || e.flagged[sha]
 }
 
 // reasonAllowed tells whether a file of that size may be delivered with that
 // not-analyzed reason: empty and too-big are checked against the size, the
 // others must have been declared by the scenario.
-func (e *expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size int64) bool {
+func (e *Expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size int64) bool {
 	switch reason {
 	case datamodel.NotAnalyzedEmpty:
 		return size == 0
 	case datamodel.NotAnalyzedTooBig:
 		return e.maxFileSize > 0 && size > e.maxFileSize
 	case datamodel.NotAnalyzedEncrypted, datamodel.NotAnalyzedExtractLimit, datamodel.NotAnalyzedExtractError,
-		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, reasonAnalysisError:
+		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, ReasonAnalysisError:
 		return e.reasons[reason]
 	default:
 		return false
 	}
 }
 
-// restoredEntry tells whether a report entry says the file was restored.
-func restoredEntry(e datamodel.Report) bool {
+// RestoredEntry tells whether a report entry says the file was restored.
+func RestoredEntry(e datamodel.Report) bool {
 	return e.HasBeenRestored || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored
 }
 
 // restoredIn tells whether the reports hold a restored entry: the restore
 // really happened.
 func restoredIn(entries []datamodel.Report) bool {
-	return slices.ContainsFunc(entries, restoredEntry)
+	return slices.ContainsFunc(entries, RestoredEntry)
 }
 
 // fileViolations judges a delivered file by its reports. A malicious file, or
 // a report that says so, is always a violation. A report in error is not, when
 // a later attempt (a rescan after an outage) gave the file a valid report too:
 // one valid report is enough.
-func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spec checkSpec, gm *gmalware) (violations []string) {
+func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (violations []string) {
 	released := spec.released[sum]
 	if !released && spec.programmedMalware(sum, gm) {
 		violations = append(violations, rel+": programmed as malware")
 	}
 	if len(entries) == 0 {
-		if v, analyzed := gm.Given(sum); spec.lostByCrash[sum] && analyzed && !v.malware && v.analysisError == "" && len(violations) == 0 {
+		if v, analyzed := gm.Given(sum); spec.lostByCrash[sum] && analyzed && !v.Malware && v.AnalysisError == "" && len(violations) == 0 {
 			return nil
 		}
 		return append(violations, rel+": in no session report")
@@ -317,7 +331,7 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 		if released {
 			// The restored entry is the only one excused from the detection; the
 			// others are the earlier detection, which stays in the reports.
-			if restoredEntry(e) {
+			if RestoredEntry(e) {
 				ok, bad, issues := restoredEntryViolations(rel, size, e, spec)
 				valid = valid || ok
 				violations = append(violations, bad...)
@@ -363,7 +377,7 @@ func restoredEntryViolations(rel string, size int64, e datamodel.Report, spec ch
 // entryViolations judges one report entry: whether it validates the delivery,
 // the violations it brings, and the problems that a valid entry elsewhere
 // cancels.
-func entryViolations(rel, sum string, size int64, e datamodel.Report, spec checkSpec, gm *gmalware) (valid bool, violations, problems []string) {
+func entryViolations(rel, sum string, size int64, e datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (valid bool, violations, problems []string) {
 	if e.Malicious || len(e.MaliciousExtractedFiles) > 0 {
 		violations = append(violations, rel+": reported malicious")
 	}
@@ -389,7 +403,7 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 		switch {
 		case !ok:
 			problems = append(problems, rel+": never analyzed and no not-analyzed reason")
-		case v.malware:
+		case v.Malware:
 			violations = append(violations, rel+": the service said malware")
 		default:
 			valid = true
@@ -400,14 +414,14 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 
 // archiveViolations holds an archive to its declared members: none programmed
 // as malware, at least one seen by the service, none failed.
-func archiveViolations(rel, sum string, e datamodel.Report, spec checkSpec, gm *gmalware) (valid bool, violations, problems []string) {
+func archiveViolations(rel, sum string, e datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (valid bool, violations, problems []string) {
 	members, declared := spec.archives[sum]
 	if !declared {
 		return false, []string{rel + ": archive whose members the scenario did not declare"}, nil
 	}
 	seen := false
 	for _, m := range members {
-		memberSum := sha256Hex(m)
+		memberSum := gmalware.SHA256Hex(m)
 		if spec.isMalware(memberSum, gm) {
 			violations = append(violations, rel+": a member is programmed as malware")
 		}
@@ -439,9 +453,9 @@ func fileDigest(path string) (sum string, size int64, err error) {
 	return hex.EncodeToString(h.Sum(nil)), size, nil
 }
 
-// readSessionReports gathers the JSON session reports found below dir,
+// ReadSessionReports gathers the JSON session reports found below dir,
 // by SHA256 of the file they describe.
-func readSessionReports(dir string) (bySHA map[string][]datamodel.Report, problems []string) {
+func ReadSessionReports(dir string) (bySHA map[string][]datamodel.Report, problems []string) {
 	bySHA = map[string][]datamodel.Report{}
 	files, problems := listEntries(dir)
 	for _, path := range files {

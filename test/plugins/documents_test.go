@@ -1,6 +1,6 @@
 //go:build linux
 
-package test
+package plugins
 
 import (
 	"archive/zip"
@@ -41,7 +41,7 @@ func bigDocument(t *testing.T, kind, unique string, entries int, encrypted bool)
 	var raw []byte
 	if encrypted {
 		var err error
-		raw, err = os.ReadFile(filepath.Join("..", "cmd", "plugins", "extract", "testdata", "t17a", "enc_zipcrypto.zip"))
+		raw, err = os.ReadFile(filepath.Join("..", "..", "cmd", "plugins", "extract", "testdata", "t17a", "enc_zipcrypto.zip"))
 		if err != nil {
 			t.Fatal(err)
 		}

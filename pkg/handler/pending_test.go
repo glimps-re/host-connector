@@ -2,6 +2,9 @@ package handler
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -108,5 +111,109 @@ func TestFileTable_pendingDropsWhatPressureEvicts(t *testing.T) {
 	got := tab.Pending("/in/tom")
 	if got != tab.Len() || got >= 10 {
 		t.Errorf("Pending = %d with %d entries kept of 10: eviction must lower it to what is kept", got, tab.Len())
+	}
+}
+
+// T20a: a file handed to the pipeline that changes before a worker takes it
+// does not stay pending: once its outcome comes, the folder of its owner counts
+// nothing pending, so the session of the owner is not held.
+func TestMonitor_aPendingFileThatChangesBeforeBeingTakenIsNoLongerPending(t *testing.T) {
+	tests := []struct {
+		name   string
+		change func(t *testing.T, p string)
+	}{
+		{"deleted", func(t *testing.T, p string) {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"rewritten", func(t *testing.T, p string) {
+			if err := os.WriteFile(p, []byte("tom rewritten content"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"replaced by a link", func(t *testing.T, p string) {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(filepath.Join(filepath.Dir(p), "1.txt"), p); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"emptied", func(t *testing.T, p string) {
+			if err := os.Truncate(p, 0); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"deleted then recreated", func(t *testing.T, p string) {
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(p, []byte("tom recreated"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			tom := filepath.Join(dir, "tom")
+			if err := os.MkdirAll(tom, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			p := filepath.Join(tom, "2.txt")
+			if err := os.WriteFile(p, []byte("tom second"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The first submission of p waits for a worker until the test hands its
+			// outcome back; every other submission ends at once.
+			held := make(chan scanner.FileOutcome, 1)
+			var once sync.Once
+			var m *Monitor
+			m, err := NewMonitor(func(path string, id scanner.FileIdentity) (bool, error) {
+				o := scanner.FileOutcome{Location: path, Identity: id, Kind: scanner.OutcomeFinal}
+				first := false
+				if path == p {
+					once.Do(func() { first = true })
+				}
+				if first {
+					held <- o
+					return true, nil
+				}
+				go m.FileDone(o)
+				return true, nil
+			}, Config{
+				DisableWatcher: true,
+				Period:         sdk.Duration(15 * time.Millisecond),
+				ModDelay:       sdk.Duration(5 * time.Millisecond),
+				Owners:         []scanner.OwnerRule{{Root: dir, Depth: 1}},
+				Watched:        []string{dir},
+				PreScan:        true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if e := m.Close(); e != nil {
+					t.Error(e)
+				}
+			})
+			m.Start()
+			if err = m.Add(dir); err != nil {
+				t.Fatal(err)
+			}
+			var o scanner.FileOutcome
+			select {
+			case o = <-held:
+			case <-time.After(5 * time.Second):
+				t.Fatal("the file was never submitted")
+			}
+			if got := m.PendingFiles(tom); got != 1 {
+				t.Fatalf("PendingFiles(tom) = %d while the file waits for a worker, want 1", got)
+			}
+			tt.change(t, p)
+			m.FileDone(o)
+			waitFor(t, "nothing pending under tom", func() bool { return m.PendingFiles(tom) == 0 })
+		})
 	}
 }

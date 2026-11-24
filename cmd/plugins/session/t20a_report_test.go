@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,23 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
+
+type t20Logs struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *t20Logs) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *t20Logs) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
 
 type t20Fixture struct {
 	p      *SessionPlugin

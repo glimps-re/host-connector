@@ -9,6 +9,7 @@ import (
 	"hash/crc32"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -621,6 +622,81 @@ func TestZipLocker_Zip64Record(t *testing.T) {
 			}
 			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
 				t.Errorf("GetHeader() error = %v, want %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestZipStrictReader_ListAndRestore(t *testing.T) {
+	enc := bytes.Repeat([]byte("x"), 20)
+	tests := []struct {
+		name    string
+		entries func(index []byte) []zipEntrySpec
+		wantErr error
+	}{
+		{"one entry", func(i []byte) []zipEntrySpec {
+			return []zipEntrySpec{{name: "index.json", data: i, method: zip.Store}}
+		}, errZipLayout},
+		{"three entries", func(i []byte) []zipEntrySpec {
+			return []zipEntrySpec{
+				{name: "index.json", data: i, method: zip.Store},
+				{name: "payload.bin", data: enc, method: zip.Store, encrypted: true},
+				{name: "extra", data: []byte("x"), method: zip.Store},
+			}
+		}, errZipLayout},
+		{"reversed entries", func(i []byte) []zipEntrySpec {
+			return []zipEntrySpec{
+				{name: "payload.bin", data: enc, method: zip.Store, encrypted: true},
+				{name: "index.json", data: i, method: zip.Store},
+			}
+		}, errZipIndexNotFound},
+		{"deflate payload", func(i []byte) []zipEntrySpec {
+			return []zipEntrySpec{
+				{name: "index.json", data: i, method: zip.Store},
+				{name: "payload.bin", data: enc, method: zip.Deflate, encrypted: true},
+			}
+		}, errZipMethod},
+		{"payload not encrypted", func(i []byte) []zipEntrySpec {
+			return []zipEntrySpec{
+				{name: "index.json", data: i, method: zip.Store},
+				{name: "payload.bin", data: enc, method: zip.Store},
+			}
+		}, errZipPayloadNotLocked},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			q, dir := newE2EHandler(t, FormatZip)
+			dest := filepath.Join(t.TempDir(), "victim.bin")
+			idx, err := json.Marshal(LockIndex{Version: 1, Filepath: dest, Reason: "malware: x", Entry: "payload.bin"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			id := ComputeCacheID(dest, "sha-z2")
+			lock := filepath.Join(dir, id+".lock")
+			if err := os.WriteFile(lock, buildZip(t, tt.entries(idx)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := q.registry.Set(t.Context(), &Entry{ID: id, SHA256: "sha-z2", InitialLocation: dest, QuarantineLocation: lock}); err != nil {
+				t.Fatal(err)
+			}
+
+			for f, err := range q.ListQuarantinedFiles(t.Context()) {
+				if err == nil && f != nil && f.ID == id {
+					t.Errorf("listing must not surface the refused container %s", id)
+				}
+			}
+			err = q.Restore(t.Context(), id)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("Restore() error = %v, want %v", err, tt.wantErr)
+			}
+			if _, err := os.Stat(dest); err == nil {
+				t.Error("nothing must be written at the destination")
+			}
+			if _, err := os.Stat(lock); err != nil {
+				t.Errorf(".lock must be kept: %v", err)
+			}
+			if entries, err := os.ReadDir(filepath.Dir(dest)); err != nil || len(entries) != 0 {
+				t.Errorf("destination dir = %v (err %v), want empty (no temporary left)", entries, err)
 			}
 		})
 	}

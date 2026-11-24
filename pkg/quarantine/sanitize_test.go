@@ -104,3 +104,23 @@ func TestSanitizeEntryName_LengthCap(t *testing.T) {
 		t.Errorf("sanitizeEntryName() unexpectedly empty after truncation")
 	}
 }
+
+func TestTruncateUTF8(t *testing.T) {
+	tests := []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"abc", 5, "abc"},
+		{"abc", 2, "ab"},
+		{"aé", 2, "a"},
+		{"éé", 3, "é"},
+		{"é", 0, ""},
+	}
+	for _, tt := range tests {
+		got := truncateUTF8(tt.in, tt.max)
+		if got != tt.want || !utf8.ValidString(got) {
+			t.Errorf("truncateUTF8(%q, %d) = %q, want %q", tt.in, tt.max, got, tt.want)
+		}
+	}
+}

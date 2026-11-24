@@ -1471,3 +1471,84 @@ func listID(name string) string {
 	sum := sha256.Sum256([]byte(name))
 	return hex.EncodeToString(sum[:])
 }
+
+func TestQuarantine_wrongSHA256Refused(t *testing.T) {
+	for _, format := range []Format{FormatTar, FormatZip} {
+		t.Run(string(format), func(t *testing.T) {
+			q, dir := newE2EHandler(t, format)
+			src := writeSample(t, "s.bin", []byte("actual content"))
+			wrong := sha256Hex([]byte("another content"))
+			_, id, err := quarantinePath(t.Context(), t, q, src, wrong, []string{"m"})
+			if !errors.Is(err, ErrQuarantineSHA256Mismatch) {
+				t.Fatalf("Quarantine() error = %v, want ErrQuarantineSHA256Mismatch", err)
+			}
+			if entries, err := filepath.Glob(filepath.Join(dir, "*.lock")); err != nil || len(entries) != 0 {
+				t.Errorf("no .lock must be kept, got %v (err %v)", entries, err)
+			}
+			if got, err := q.IsRestored(t.Context(), src, wrong); err != nil || got {
+				t.Errorf("IsRestored() = %t (err %v) for a refused quarantine %q", got, err, id)
+			}
+			if _, err := os.Stat(src); err != nil {
+				t.Errorf("source must be left untouched: %v", err)
+			}
+		})
+	}
+}
+
+func TestLimitWriter_NoFixedCap(t *testing.T) {
+	const lockSize = int64(6 << 30)
+	lw := &limitWriter{w: io.Discard, remaining: lockSize}
+	chunk := make([]byte, 1<<20)
+	for range 6 << 10 {
+		if _, err := lw.Write(chunk); err != nil {
+			t.Fatalf("Write() error = %v before reaching the lock size", err)
+		}
+	}
+	if lw.written != lockSize {
+		t.Fatalf("written = %d, want %d", lw.written, lockSize)
+	}
+	if _, err := lw.Write([]byte{0}); !errors.Is(err, ErrRestoreTooLarge) {
+		t.Errorf("Write() past the limit error = %v, want ErrRestoreTooLarge", err)
+	}
+}
+
+func TestCreateRestoreTempFile(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	for _, base := range []string{"a.bin", strings.Repeat("é", 200), strings.Repeat("a", 255)} {
+		name, f, err := createRestoreTempFile(root, base)
+		if err != nil {
+			t.Fatalf("createRestoreTempFile(%d bytes) error = %v", len(base), err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(name, TempPrefix) || len(name) > 255 {
+			t.Errorf("name %q: want prefix %q and <= 255 bytes (got %d)", name, TempPrefix, len(name))
+		}
+	}
+	n1, f1, err := createRestoreTempFile(root, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n2, f2, err := createRestoreTempFile(root, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n1 == n2 {
+		t.Error("two temporary files must get distinct names")
+	}
+}

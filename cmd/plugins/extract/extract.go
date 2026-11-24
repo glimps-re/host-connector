@@ -701,7 +701,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 	extraction.listComplete = sink.complete
 	t := &sink.table
 
-	// zip bomb detection (only count files that would pass MaxFileSize filter)
+	// zip bomb rule: weigh only members within the remaining budget (MaxFileSize), i.e. what would be extracted
 	bomb, text, weighErr := t.weigh(archivePath)
 	if weighErr != nil {
 		sze.logger.Warn("the size of the archive could not be read", slog.String("error", weighErr.Error()))

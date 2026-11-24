@@ -295,7 +295,7 @@ A file is submitted under its host path. A member of an archive is submitted as 
 
 - **`paths`** (required, at least 1): Directories or files to monitor and scan. On the command line, they are given as arguments.
 - **`workers`** (default `4`, flag `--workers`): Number of files analyzed concurrently.
-- **`max_file_size`** (default `100MiB`, flag `--max-file-size`): Largest file submitted to GMalware. A larger file is extracted if it is an archive and `extract` is on. Otherwise it follows `unanalyzable_policy.too_big`.
+- **`max_file_size`** (default `100MiB`, flag `--max-file-size`): Largest file submitted to GMalware. A larger file is extracted if it is an archive and `extract` is on, at any level: a nested archive over `max_file_size` is opened as long as its members fit the extraction budget. Otherwise it follows `unanalyzable_policy.too_big`.
 - **`follow_symlinks`** (default `false`, flag `--follow-symlinks`): Follow symbolic links. When off, links are skipped, and a file whose path crosses a link is left in place with a warning. Turning it on disables this protection, and a warning is logged when move, delete or quarantine is active.
 - **`work_dir`** (default: system temporary directory, `TMPDIR` honored): Base of the private working directory used for extractions and plugin files. A `gmhost-<random>` sub-directory is created there and removed at stop. The connector refuses to start if it is a monitored path or lies under one. Use a local disk: `tmpfs` uses RAM, and locks are unreliable on network file systems.
 - **`shutdown_timeout`** (default `8s`, at least `2s`, flag `--shutdown-timeout`, local only: not managed by the console): Time allowed to stop on `SIGTERM`/`SIGINT`. Files being processed may finish during part of this time, then they are left in place and processed again at the next start. Set it below the orchestrator's stop delay (`docker stop -t`, systemd `TimeoutStopSec`). A second signal stops at once. The exit code is `1` if the delay was exceeded.
@@ -310,16 +310,16 @@ On Linux, `/proc` must be available: the connector refuses to start without it.
 - **`extract_workers`** (default `2`, flag `--extract-workers`): Number of archives extracted concurrently. Keep it well below `workers` (1:10 to 1:20).
 - **`extract_min_size`** (default `8KB`, flag `--extract-min-size`): Files at or below this size are analyzed whole instead of being extracted. Archives of a known format are extracted whatever their size.
 - **`recursive_extract_max_depth`** (default `10`): Maximum nesting level. Deeper archives are not opened and follow `unanalyzable_policy.too_big`.
-- **`recursive_extract_max_size`** (default `5GB`): Maximum total size extracted from one top-level file, across all levels.
+- **`recursive_extract_max_size`** (default `5GB`): Maximum total size extracted from one top-level file, across all levels. A member that is not an archive can be written to `work_dir` up to what is left of this budget before it is refused as too big for GMalware: size `work_dir` for `extract_workers` × `recursive_extract_max_size`.
 - **`recursive_extract_max_files`** (default `10000`): Maximum number of files extracted from one top-level file, across all levels.
 
-Members left out by these limits, or larger than `max_file_size`, follow `unanalyzable_policy.too_big`.
+A member is bounded only by what is left of `recursive_extract_max_size`; `max_file_size` does not limit extraction. Members left out by these limits, or non-archive members larger than `max_file_size` (not submitted), follow `unanalyzable_policy.too_big`.
 
 #### Unanalyzable Policy
 
 `unanalyzable_policy` decides what happens to a file that cannot be fully analyzed. `error` leaves the file in place (in INPUT) and reports it. `pass` delivers it, marked with the reason in the reports. `mitigate` treats it as malware (quarantined or deleted).
 
-- **`too_big`** (`error` | `pass` | `mitigate`, default `error`): Files larger than `max_file_size` that are not extracted, and archive members left out by the extraction limits.
+- **`too_big`** (`error` | `pass` | `mitigate`, default `error`): Files larger than `max_file_size` that are not extracted (an archive is), and archive members left out by the extraction limits.
 - **`encrypted`** (`error` | `pass` | `mitigate`, default `error`): Archives protected by an unknown password. This also covers damaged archives that may hide encrypted content.
 - **`empty`** (`pass` | `skip` | `mitigate`, default `pass`): Files of size 0. `pass` delivers a new empty file, `skip` leaves the file in place with a warning. `pass` is refused with `move.mode: rename`. If the key is absent with `rename`, `skip` is used.
 - **`analysis_error`** (`error` | `pass` | `mitigate`, default `error`): Files GMalware failed to analyze. A file with a detection is always malware, whatever this value.
@@ -533,7 +533,7 @@ A complete example is available at `rsc/plugin_config.yml`.
 
 #### Extract Plugin
 
-Extracts archives with an embedded 7-Zip (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, disk images, etc.). Size limits are the global ones (`max_file_size`, `recursive_extract_*`).
+Extracts archives with an embedded 7-Zip (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, disk images, etc.). Size limits are the global ones (`recursive_extract_*`; `max_file_size` bounds only what is submitted, not what is extracted).
 
 | Key | Default | Description |
 |---|---|---|

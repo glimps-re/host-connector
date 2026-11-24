@@ -347,7 +347,8 @@ func (s *listSink) addLine(line string) error {
 	// A blank column is unknown, not 0. The packed size of every member counts,
 	// the ones over the size limit included: a solid block is listed on its first
 	// member, which may be over the limit. A size counts as declared only within the
-	// limit, so that what the bomb rule weighs is what would be extracted.
+	// limit (the remaining budget, which the core gives as MaxFileSize), so that what
+	// the bomb rule weighs is what would be extracted.
 	if fp.CompressedSize >= 0 {
 		t.packed = addClamped(t.packed, int64(fp.CompressedSize))
 		t.packedGiven = true
@@ -463,7 +464,7 @@ func batchNames(names []string, maxCount, maxBytes int) [][]string {
 // keyed on a type the archive chooses) are exempt: a sparse image of a few kilobytes
 // declares gigabytes honestly. The type is the container's own choice, and some of
 // those types are real compressors (wim, Dmg, SquashFS, CramFS, QCOW), so a bomb can
-// be written in them: what they hold is bounded by max_file_size, the budget of the
+// be written in them: what they hold is bounded by the remaining budget of the
 // extraction and its guard, and by nothing else. A listing that gives no packed size
 // (bzip2, and Cab or Compound when they give none: MSI, .doc, .xls) has no ratio and
 // is no bomb here: what a forged one declares is bounded by the failure of 7z and the

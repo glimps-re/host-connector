@@ -253,7 +253,7 @@ func markPolicySkipped(r *datamodel.Result, location string) {
 }
 
 // applyLimitSkips applies the policy of the files too big to the members the
-// extraction left out because of its limits (a member over max_file_size, too
+// extraction left out because of its limits (a member over the remaining extraction budget, too
 // many members, too large a total). With PolicyError the archive fails for good:
 // it stays where it is, and nothing is let through unseen. With PolicyPass the
 // members are listed as not analyzed, with an exact count; with PolicyMitigate

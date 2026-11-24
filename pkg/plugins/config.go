@@ -22,7 +22,7 @@ var ErrInvalidConfig = errors.New("invalid plugin configuration")
 // "unknown key".
 var removedConfigKeys = map[string]map[string]string{
 	"extract": {
-		"max_file_size":            "the extraction limits are the global ones now: use max_file_size of the main configuration (per extracted file); remove the key, and adjust the global limit if the old value must be kept",
+		"max_file_size":            "the extraction limits are the global ones now: a member is bounded by what is left of recursive_extract_max_size of the main configuration, and max_file_size of the main configuration bounds only what is submitted for analysis; remove the key, and adjust recursive_extract_max_size if the old value must be kept",
 		"max_extracted_files":      "the extraction limits are the global ones now: use recursive_extract_max_files of the main configuration (it counts all levels of one scan, not one archive); remove the key, and adjust the global limit if the old value must be kept",
 		"max_total_extracted_size": "the extraction limits are the global ones now: use recursive_extract_max_size of the main configuration (it counts all levels of one scan, not one archive); remove the key, and adjust the global limit if the old value must be kept",
 	},

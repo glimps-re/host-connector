@@ -1450,10 +1450,11 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 	}()
 
 	archiveLogger.Debug("attempting to extract file")
+	remainingSize := c.config.RecursiveExtractMaxSize - *totalExtractedSize
 	limits := plugins.ExtractLimits{
-		MaxFileSize:  c.config.MaxFileSize,
+		MaxFileSize:  remainingSize,
 		MaxFiles:     c.config.RecursiveExtractMaxFiles - *totalExtractedFiles,
-		MaxTotalSize: c.config.RecursiveExtractMaxSize - *totalExtractedSize,
+		MaxTotalSize: remainingSize,
 	}
 	// Typed once, before the extractor reads the file, from the verified descriptor:
 	// typing it again after a refusal would let bytes rewritten in between make it
@@ -1862,7 +1863,7 @@ func (c *Connector) checkZipFamily(file fileToAnalyze, extractedFiles int, extra
 		}
 	}()
 	extraction, extractErr, stopped := c.runExtractor(file, outputDir, plugins.ExtractLimits{
-		MaxFileSize: c.config.MaxFileSize, MaxFiles: maxFiles, MaxTotalSize: maxSize, CheckOnly: true,
+		MaxFileSize: maxSize, MaxFiles: maxFiles, MaxTotalSize: maxSize, CheckOnly: true,
 	}, fileLogger)
 	if stopped {
 		return extractErr

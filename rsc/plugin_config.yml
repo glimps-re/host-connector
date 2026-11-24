@@ -13,7 +13,9 @@ extract:
   file: extract.so
   config:
     # The extraction limits are the global ones, set in the main config.yml:
-    # max_file_size, recursive_extract_max_files, recursive_extract_max_size.
+    # recursive_extract_max_files and recursive_extract_max_size: a member is bounded
+    # only by what is left of recursive_extract_max_size, max_file_size bounds only
+    # what is submitted for analysis.
     # The former keys max_file_size, max_extracted_files and max_total_extracted_size
     # of this plugin are removed: the connector refuses to start if one is present.
 

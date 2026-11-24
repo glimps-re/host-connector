@@ -45,11 +45,11 @@ func TestT27_remainingBudgetShrinksFromOneLevelToTheNext(t *testing.T) {
 		t.Fatalf("the extractor was called %d time(s), the nested archive was never attempted", len(seen))
 	}
 	first, second := seen[0], seen[1]
-	if first.MaxFiles != 50 || first.MaxTotalSize != 1<<20 || first.MaxFileSize != 1<<19 {
-		t.Errorf("first level limits = %+v, want the global ones (50 files, 1 MiB, 512 KiB per member)", first)
+	if first.MaxFiles != 50 || first.MaxTotalSize != 1<<20 || first.MaxFileSize != first.MaxTotalSize {
+		t.Errorf("first level limits = %+v, want 50 files and a member bounded by the 1 MiB budget", first)
 	}
-	if second.MaxFileSize != first.MaxFileSize {
-		t.Errorf("per-member limit changed between levels: %d then %d", first.MaxFileSize, second.MaxFileSize)
+	if second.MaxFileSize != second.MaxTotalSize {
+		t.Errorf("per-member limit = %d at the second level, want the remaining budget %d", second.MaxFileSize, second.MaxTotalSize)
 	}
 	if second.MaxFiles >= first.MaxFiles || second.MaxTotalSize >= first.MaxTotalSize {
 		t.Errorf("nested limits = %+v, want a budget smaller than %+v: the extracted files and bytes were already spent", second, first)

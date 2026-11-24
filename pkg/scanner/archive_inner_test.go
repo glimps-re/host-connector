@@ -1282,8 +1282,8 @@ func TestRecursiveExtract_budgetShrinksFromOneLevelToTheNext(t *testing.T) {
 	if len(seen) < 2 {
 		t.Fatalf("ExtractFile called %d times, want the sub-archive extracted too", len(seen))
 	}
-	want0 := plugins.ExtractLimits{MaxFileSize: 1000, MaxFiles: 10, MaxTotalSize: 5000}
-	want1 := plugins.ExtractLimits{MaxFileSize: 1000, MaxFiles: 8, MaxTotalSize: 4900}
+	want0 := plugins.ExtractLimits{MaxFileSize: 5000, MaxFiles: 10, MaxTotalSize: 5000}
+	want1 := plugins.ExtractLimits{MaxFileSize: 4900, MaxFiles: 8, MaxTotalSize: 4900}
 	if seen[0] != want0 || seen[1] != want1 {
 		t.Errorf("limits = %+v then %+v, want %+v then %+v: the budget of the second level is what the first one left", seen[0], seen[1], want0, want1)
 	}

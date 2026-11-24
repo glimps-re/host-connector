@@ -82,7 +82,9 @@ type Extraction struct {
 // ExtractLimits bounds one extraction; the values come from the global
 // configuration. A zero or negative budget means: extract nothing.
 type ExtractLimits struct {
-	// MaxFileSize bounds one member.
+	// MaxFileSize bounds one member. The core sets it to MaxTotalSize: a member is
+	// bounded only by what is left of the budget (max_file_size bounds only what is
+	// submitted for analysis, not what is extracted).
 	MaxFileSize int64
 	// MaxFiles is the remaining budget of files.
 	MaxFiles int

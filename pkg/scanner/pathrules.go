@@ -111,7 +111,7 @@ func (c *Connector) listedNames(archive fileToAnalyze, maxFiles int, archiveLogg
 		}
 	}()
 	extraction, extractErr, stopped := c.runExtractor(archive, outputDir, plugins.ExtractLimits{
-		MaxFileSize: c.config.MaxFileSize, MaxFiles: maxFiles, MaxTotalSize: c.config.RecursiveExtractMaxSize, NamesOnly: true,
+		MaxFileSize: c.config.RecursiveExtractMaxSize, MaxFiles: maxFiles, MaxTotalSize: c.config.RecursiveExtractMaxSize, NamesOnly: true,
 	}, archiveLogger)
 	if stopped {
 		return nil, false, extractErr

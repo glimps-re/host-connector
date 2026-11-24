@@ -33,8 +33,9 @@ type SevenZipExtractPlugin struct {
 }
 
 // Config defines the extraction behavior. The extraction limits are the global
-// ones (max_file_size, recursive_extract_max_files, recursive_extract_max_size):
-// the core passes them at each extraction.
+// ones: the core passes them at each extraction, a member being bounded only by what
+// is left of recursive_extract_max_size (max_file_size bounds only what is submitted
+// for analysis) and the files by recursive_extract_max_files.
 type Config struct {
 	DefaultPasswords []string `mapstructure:"default_passwords,omitempty"` // Default passwords for encrypted archives
 	SevenZipPath     string   `mapstructure:"seven_zip_path,omitempty"`

@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -113,9 +114,7 @@ func newRun(t *testing.T, s Scenario, st state) *run {
 		}
 		write(t, filepath.Join(in.Output, "tom", rel+"-lockreport"+strconv.Itoa(i)+".json"), marshal(t, e))
 	}
-	for path, n := range st.consumed {
-		r.consumed[path] = n
-	}
+	maps.Copy(r.consumed, st.consumed)
 	for _, f := range st.submitted {
 		submit(t, r.gm.URL, filepath.Join(tom, f.Path), f.Content)
 	}
@@ -587,8 +586,8 @@ func TestRows(t *testing.T) {
 
 func TestTable(t *testing.T) {
 	many := Scenario{Want: map[string]Outcome{}}
-	var output []File
-	var reports []datamodel.Report
+	output := make([]File, 0, maxPassedRows)
+	reports := make([]datamodel.Report, 0, maxPassedRows)
 	for i := range maxPassedRows {
 		f := File{Path: fmt.Sprintf("f%02d.txt", i), Content: []byte(strconv.Itoa(i))}
 		many.Files = append(many.Files, f)

@@ -965,7 +965,7 @@ func reasons(malicious bool, malware datamodel.MalwareReason, notAnalyzed datamo
 }
 
 func describeMalicious(want map[string]datamodel.MalwareReason) string {
-	var parts []string
+	parts := make([]string, 0, len(want))
 	for _, suffix := range slices.Sorted(maps.Keys(want)) {
 		parts = append(parts, suffix+":"+string(want[suffix]))
 	}
@@ -1015,7 +1015,7 @@ func describeEntriesNotAnalyzed(entries []datamodel.Report) string {
 		for _, m := range e.NotAnalyzedExtractedFiles {
 			reasons[m.Reason] = true
 		}
-		var rs []string
+		rs := make([]string, 0, len(reasons))
 		for reason := range reasons {
 			rs = append(rs, string(reason))
 		}

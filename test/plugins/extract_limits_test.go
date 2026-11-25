@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -344,6 +346,69 @@ func TestE2E_anOrdinaryZipOverTheLimitsIsStillHeld(t *testing.T) {
 		Want: map[string]harness.Outcome{
 			"big.zip":  {In: harness.Input, Error: "left out by the limits of the extraction", NotAnalyzedMembers: harness.NoMembers},
 			"ctl.docx": {In: harness.Output, NotAnalyzedMembers: &harness.MemberList{Reason: datamodel.NotAnalyzedExtractLimit}},
+		},
+	})
+}
+
+// randomBytes is incompressible and reproducible.
+func randomBytes(t *testing.T, n int, seed byte) []byte {
+	t.Helper()
+	b := make([]byte, n)
+	if _, err := rand.NewChaCha8([32]byte{seed}).Read(b); err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// mib is one MiB.
+const mib = 1 << 20
+
+// stored packs the members as a ZIP of stored members.
+func stored(t *testing.T, members map[string]string) []byte {
+	t.Helper()
+	entries := make([]rawEntry, 0, len(members))
+	for name, data := range members {
+		entries = append(entries, rawEntry{name: name, data: data})
+	}
+	slices.SortFunc(entries, func(x, y rawEntry) int { return strings.Compare(x.name, y.name) })
+	return rawZip{entries: entries}.bytes()
+}
+
+// T77b: max_file_size bounds what is submitted, not what is extracted. A nested
+// archive above max_file_size is opened and the detected sample inside it is
+// analyzed: the outer archive is quarantined.
+func TestE2E_aNestedArchiveAboveMaxFileSizeIsOpened(t *testing.T) {
+	bad := harness.File{Path: "a-bad.bin", Content: []byte(strings.Repeat("a sample inside a nested archive above max_file_size ", 40)), Verdict: harness.Malicious}
+	pad1 := harness.File{Path: "pad1.bin", Content: randomBytes(t, 768<<10, 1)}
+	pad2 := harness.File{Path: "pad2.bin", Content: randomBytes(t, 768<<10, 3)}
+	inner := archive(t, "inner.zip", stored, bad, pad1, pad2)
+	if len(inner.Content) <= mib {
+		t.Fatalf("inner is %d bytes, want more than 1MiB", len(inner.Content))
+	}
+	harness.Run(t, harness.Scenario{
+		Plugins: map[string]map[string]any{"extract": nil},
+		Config:  map[string]any{"max_file_size": "1MiB"},
+		Files: []harness.File{
+			archive(t, "outer.zip", stored, inner),
+		},
+		Want: map[string]harness.Outcome{
+			"outer.zip":                     {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
+			"outer.zip/inner.zip/a-bad.bin": {ServiceVerdict: harness.Given},
+		},
+	})
+}
+
+// T77b: a member that is not an archive and is above max_file_size is still
+// too big: with the default policy (error) the archive stays in INPUT.
+func TestE2E_aNonArchiveMemberAboveMaxFileSizeIsTooBig(t *testing.T) {
+	harness.Run(t, harness.Scenario{
+		Plugins: map[string]map[string]any{"extract": nil},
+		Config:  map[string]any{"max_file_size": "1MiB"},
+		Files: []harness.File{
+			archive(t, "outer.zip", stored, harness.File{Path: "big.bin", Content: randomBytes(t, 2*mib, 2)}),
+		},
+		Want: map[string]harness.Outcome{
+			"outer.zip": {In: harness.Input, Error: "first: big.bin: file is too big to be analyzed: size 2 MiB exceeds max_file_size 1 MiB"},
 		},
 	})
 }

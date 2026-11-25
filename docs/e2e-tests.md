@@ -28,7 +28,7 @@ Four points to keep in mind:
   (`plugins/report_test.go`) also need `realbrowser`. Every file of
   `test/internal` carries only `linux`, and so do the tests of the document
   builders (`plugins/documents_test.go`): a plain `go test ./test/...` runs
-  these 21 self-tests and builds no binary; 110 tests with
+  these 21 self-tests and builds no binary; 112 tests with
   `-tags e2e,realbrowser`.
 - The binary and the plugins are built once, into `gmhost-e2e/<key>` in the
   user cache folder, and reused by both packages and by later runs until the
@@ -387,6 +387,8 @@ are one row. Files are relative to `test/`.
 | `anOverLimitDocumentIsDeliveredWithItsMembersUnchecked` | `plugins/extract_limits_test.go` | A docx, a jar and an apk of 10,001 entries. | Each is analyzed whole, submitted under its own path and delivered; its report lists members as not analyzed for the extract limit with the exact count. | — |
 | `anOverLimitDocumentThatIsMalwareIsQuarantined` | `plugins/extract_limits_test.go` | An over-limit docx that the service flags. | It is quarantined, and its report lists no unchecked member. | — |
 | `anOrdinaryZipOverTheLimitsIsStillHeld` | `plugins/extract_limits_test.go` | A plain zip of 10,001 entries beside an over-limit docx. | The docx is delivered; the zip stays in INPUT, reported as left out by the extraction limits. | — |
+| `aNestedArchiveAboveMaxFileSizeIsOpened` | `plugins/extract_limits_test.go` | `max_file_size` 1 MiB; a zip holding a stored zip above 1 MiB (two 768 KiB random members and a detected sample). | The nested zip is opened, the sample is analyzed, and the outer zip is quarantined. | — |
+| `aNonArchiveMemberAboveMaxFileSizeIsTooBig` | `plugins/extract_limits_test.go` | `max_file_size` 1 MiB; a zip with one 2 MiB random member that is not an archive. | The zip stays in INPUT, reported with "size 2 MiB exceeds max_file_size 1 MiB". | — |
 | `TestTreeSize` | `plugins/extract_limits_test.go` | Helper test: a folder with files, a sub-folder and two symlinks. | `treeSize` adds regular files only (links count for nothing) and fails on a missing folder. | — |
 
 ### Encryption

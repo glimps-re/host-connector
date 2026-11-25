@@ -111,11 +111,13 @@ func TestCheckDeclarations(t *testing.T) {
 		{name: "output directory elsewhere", decl: scanner.Declarations{OutputDirs: []string{otherOut}}},
 		{name: "output directory equal to a monitored path", decl: scanner.Declarations{OutputDirs: []string{watched}}, wantErr: "monitored path"},
 		{name: "output directory under a monitored path", decl: scanner.Declarations{OutputDirs: []string{filepath.Join(watched, "reports")}}, wantErr: "monitored path"},
-		{name: "output directory overlapping the quarantine", decl: scanner.Declarations{OutputDirs: []string{filepath.Join(quarantineDir, "x")}}, wantErr: "quarantine"},
+		{name: "output directory equal to the quarantine", decl: scanner.Declarations{OutputDirs: []string{quarantineDir}}},
+		{name: "output directory under the quarantine", decl: scanner.Declarations{OutputDirs: []string{filepath.Join(quarantineDir, "x")}}},
 		{name: "executable under a monitored path", decl: scanner.Declarations{Executables: []string{filepath.Join(watched, "bin", "7z")}}, wantErr: "monitored path"},
 		{name: "executable under move.destination", decl: scanner.Declarations{Executables: []string{filepath.Join(moveDest, "7z")}}, wantErr: "move.destination"},
 		{name: "executable under an output directory", decl: scanner.Declarations{Executables: []string{filepath.Join(otherOut, "7z")}, OutputDirs: []string{otherOut}}, wantErr: "output directory"},
-		{name: "output directory under move.destination", decl: scanner.Declarations{OutputDirs: []string{filepath.Join(moveDest, "results")}}, wantErr: "move.destination"},
+		{name: "output directory equal to move.destination", decl: scanner.Declarations{OutputDirs: []string{moveDest}}},
+		{name: "output directory under move.destination", decl: scanner.Declarations{OutputDirs: []string{filepath.Join(moveDest, "results")}}},
 		{name: "executable elsewhere", decl: scanner.Declarations{Executables: []string{filepath.Join(base, "bin", "7z")}}},
 	}
 	for _, tt := range tests {

@@ -25,7 +25,7 @@ func writeAt(t *testing.T, path, content string) {
 	}
 }
 
-func TestT27_removeRunLeavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
+func TestRemoveRun_leavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "out")
 	outside := filepath.Join(root, "outside")
@@ -79,7 +79,7 @@ func TestT27_removeRunLeavesNothingNewAndNothingOutsideTheFolder(t *testing.T) {
 	}
 }
 
-func TestT27_removeRunToleratesAMissingOrEmptyFolder(t *testing.T) {
+func TestRemoveRun_toleratesAMissingOrEmptyFolder(t *testing.T) {
 	sze := &sevenZipExtract{logger: discardLogger()}
 	empty := t.TempDir()
 	if err := sze.removeRun(empty, map[string]struct{}{}); err != nil {
@@ -93,7 +93,7 @@ func TestT27_removeRunToleratesAMissingOrEmptyFolder(t *testing.T) {
 	}
 }
 
-func TestT27_skipVanished(t *testing.T) {
+func TestSkipVanished(t *testing.T) {
 	denied := &fs.PathError{Op: "open", Path: "x", Err: fs.ErrPermission}
 	tests := []struct {
 		name string
@@ -114,7 +114,7 @@ func TestT27_skipVanished(t *testing.T) {
 	}
 }
 
-func TestT27_recoverableAnomalyIsRecordedOnceForTheArchive(t *testing.T) {
+func TestRecoverableAnomaly_isRecordedOnceForTheArchive(t *testing.T) {
 	sze := &sevenZipExtract{logger: discardLogger()}
 	var anomalies []string
 	sze.recoverableAnomaly(&anomalies, "list", errors.New("Headers Error"))
@@ -126,7 +126,7 @@ func TestT27_recoverableAnomalyIsRecordedOnceForTheArchive(t *testing.T) {
 	}
 }
 
-func TestT27_updateRecordsRegularFilesAndDropsLinks(t *testing.T) {
+func TestExtractResult_updateRecordsRegularFilesAndDropsLinks(t *testing.T) {
 	dir := t.TempDir()
 	ec := &extractResult{logger: discardLogger()}
 
@@ -165,7 +165,7 @@ func TestT27_updateRecordsRegularFilesAndDropsLinks(t *testing.T) {
 	}
 }
 
-func TestT27_updateMakesAnUnreadableFileReadableAndFailsOnAMissingOne(t *testing.T) {
+func TestExtractResult_updateMakesAnUnreadableFileReadableAndFailsOnAMissingOne(t *testing.T) {
 	dir := t.TempDir()
 	ec := &extractResult{logger: discardLogger()}
 	if os.Geteuid() != 0 {

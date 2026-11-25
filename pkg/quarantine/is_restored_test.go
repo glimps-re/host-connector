@@ -28,7 +28,7 @@ func restoreContent(t *testing.T, q *QuarantineHandler, name, content string) (p
 	return path, sha
 }
 
-func TestT14a_hostileSHA256NeverMatchAnEntry(t *testing.T) {
+func TestIsRestored_hostileSHA256NeverMatchAnEntry(t *testing.T) {
 	q, _ := newIntegrityHandler(t, "infected", FormatTar)
 	_, sha := restoreContent(t, q, "x.bin", "a restored content")
 	elsewhere := filepath.Join(t.TempDir(), "other.bin")
@@ -60,7 +60,7 @@ func TestT14a_hostileSHA256NeverMatchAnEntry(t *testing.T) {
 	}
 }
 
-func TestT14a_theEmptyContentStaysPerLocationWhateverTheSpelling(t *testing.T) {
+func TestIsRestored_theEmptyContentStaysPerLocationWhateverTheSpelling(t *testing.T) {
 	q, _ := newIntegrityHandler(t, "infected", FormatTar)
 	first, _ := restoreContent(t, q, "empty-a.bin", "")
 	other := filepath.Join(t.TempDir(), "empty-b.bin")
@@ -79,7 +79,7 @@ func TestT14a_theEmptyContentStaysPerLocationWhateverTheSpelling(t *testing.T) {
 	}
 }
 
-func TestT14a_aClosedRegistryIsAnErrorNeverASafeAnswer(t *testing.T) {
+func TestIsRestored_aClosedRegistryIsAnErrorNeverASafeAnswer(t *testing.T) {
 	dir := t.TempDir()
 	q, err := NewQuarantineHandler(t.Context(), Config{Location: dir, LockPassword: "infected", Format: FormatTar})
 	if err != nil {
@@ -101,7 +101,7 @@ func TestT14a_aClosedRegistryIsAnErrorNeverASafeAnswer(t *testing.T) {
 	}
 }
 
-func TestT14a_aRegistryWithoutTheIndexIsMigratedAndItsRowsStillCount(t *testing.T) {
+func TestRegistry_aRegistryWithoutTheIndexIsMigratedAndItsRowsStillCount(t *testing.T) {
 	location := filepath.Join(t.TempDir(), "old-registry.db")
 	db, err := sql.Open("sqlite", location)
 	if err != nil {

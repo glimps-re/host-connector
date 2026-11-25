@@ -20,7 +20,7 @@ import (
 // analysed has been verified: in copy mode it reaches OUTPUT as a private copy
 // of the analysed bytes, not by path (which would publish the source inode, that
 // a depositor still holding the file open can rewrite).
-func TestT13_aLargeArchiveExtractedAndAnalysedIsCopiedNotPassedByPath(t *testing.T) {
+func TestPipeline_aLargeArchiveExtractedAndAnalysedIsCopiedNotPassedByPath(t *testing.T) {
 	const maxFileSize = 100
 	root := t.TempDir()
 	in, out := filepath.Join(root, "in"), filepath.Join(root, "out")

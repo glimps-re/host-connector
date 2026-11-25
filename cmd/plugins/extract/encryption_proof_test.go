@@ -91,7 +91,7 @@ func TestExcludesEncryption_theTechnicalListingMustProveIt(t *testing.T) {
 func TestExtract_aFailureCuredByAnotherPasswordIsRemembered(t *testing.T) {
 	plugin := realPlugin(t)
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	archive, err := filepath.Abs(fixture(t, filepath.Join("t17a", "known_password.zip")))
+	archive, err := filepath.Abs(fixture(t, filepath.Join("archives", "known_password.zip")))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,7 +113,7 @@ func TestExtractFile_encryptionIsExcludedOnlyForAStructuralAnomalyOfPlainMembers
 	}{
 		{"trailing.7z", true},
 		{"twin.7z", true},
-		{"t17a/enc_content.7z", true},
+		{"archives/enc_content.7z", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.fixture, func(t *testing.T) {

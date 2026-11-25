@@ -17,10 +17,10 @@ import (
 
 const windowsMalware = "MALWARE: quarantined then deleted"
 
-// TestT10_windows_filesAreMovedQuarantinedAndDeletedWithoutSharingErrors checks
+// TestPipeline_filesAreMovedQuarantinedAndDeletedWithoutSharingErrors checks
 // that the descriptor of a file is closed before the actions: a file opened
 // without delete sharing can be neither renamed nor removed on Windows.
-func TestT10_windows_filesAreMovedQuarantinedAndDeletedWithoutSharingErrors(t *testing.T) {
+func TestPipeline_filesAreMovedQuarantinedAndDeletedWithoutSharingErrors(t *testing.T) {
 	root := t.TempDir()
 	in, out, qdir := filepath.Join(root, "in"), filepath.Join(root, "out"), filepath.Join(root, "quarantine")
 	for _, d := range []string{in, out, qdir} {

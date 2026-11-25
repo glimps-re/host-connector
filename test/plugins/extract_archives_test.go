@@ -75,7 +75,7 @@ func TestE2E_archives(t *testing.T) {
 // fixtureOf reads a fixture of the extract plugin's tests.
 func fixtureOf(t *testing.T, name string) []byte {
 	t.Helper()
-	raw, err := os.ReadFile(filepath.Clean(filepath.Join(harness.RepoRoot(t), "cmd", "plugins", "extract", "testdata", "t17a", name)))
+	raw, err := os.ReadFile(filepath.Clean(filepath.Join(harness.RepoRoot(t), "cmd", "plugins", "extract", "testdata", "archives", name)))
 	if err != nil {
 		t.Fatal(err)
 	}

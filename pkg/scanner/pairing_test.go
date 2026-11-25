@@ -17,10 +17,10 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-// TestT11_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned runs one
+// TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned runs one
 // deposited file through each way out of the pipeline and checks the pairing
 // the session plugin relies on to close its sessions.
-func TestT11_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *testing.T) {
+func TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *testing.T) {
 	failing := func() *gdetectMock.MockGDetectSubmitter {
 		fail := errors.New("service unreachable")
 		return &gdetectMock.MockGDetectSubmitter{

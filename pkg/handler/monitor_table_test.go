@@ -13,7 +13,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
-func TestMonitorT09_oneTimerWhateverTheNumberOfWaitingFiles(t *testing.T) {
+func TestMonitor_oneTimerWhateverTheNumberOfWaitingFiles(t *testing.T) {
 	m, err := NewMonitor(func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{ModDelay: sdk.Duration(time.Hour), MaxTrackedBytes: 1 << 40})
 	if err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestMonitorT09_oneTimerWhateverTheNumberOfWaitingFiles(t *testing.T) {
 	}
 }
 
-func TestMonitorT09_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
+func TestMonitor_ownersDeclaredByPluginsReachTheTableViaTheConnector(t *testing.T) {
 	conn := &scanner.Connector{}
 	if err := conn.SetTrackingOwners("/in", 2); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestMonitorT09_ownersDeclaredByPluginsReachTheTable(t *testing.T) {
 	}
 }
 
-func TestMonitorT09_pressureEventInEventOnlyModeIsRateLimited(t *testing.T) {
+func TestMonitor_pressureEventInEventOnlyModeIsRateLimited(t *testing.T) {
 	rec := recordEvents(t)
 	dir := t.TempDir()
 	paths := make([]string, 40)
@@ -137,9 +137,9 @@ func TestMonitorT09_pressureEventInEventOnlyModeIsRateLimited(t *testing.T) {
 	}
 }
 
-// TestFileTableT09_endRescanNeverBlocksTheOthersForLong checks the 50 ms
+// TestFileTable_endRescanNeverBlocksTheOthersForLong checks the 50 ms
 // bound on the lock held by the purge of a big table.
-func TestFileTableT09_endRescanNeverBlocksTheOthersForLong(t *testing.T) {
+func TestFileTable_endRescanNeverBlocksTheOthersForLong(t *testing.T) {
 	if testing.Short() {
 		t.Skip("200000 entries, a few seconds")
 	}
@@ -216,7 +216,7 @@ func newBareMonitor(t *testing.T, cb OnNewFileFunc, cfg Config) *Monitor {
 	return m
 }
 
-func TestMonitorT09_processDue(t *testing.T) {
+func TestMonitor_processDue(t *testing.T) {
 	dir := t.TempDir()
 	write := func(name, content string) string {
 		p := filepath.Join(dir, name)
@@ -331,7 +331,7 @@ func TestMonitorT09_processDue(t *testing.T) {
 	})
 }
 
-func TestMonitorT09_pressureEventsAreRaisedThenResolved(t *testing.T) {
+func TestMonitor_pressureEventsAreRaisedThenResolved(t *testing.T) {
 	rec := recordEvents(t)
 	const delay = time.Hour
 	entry := int64(len(ctPath("aaa", 0))) + fileOverhead
@@ -371,7 +371,7 @@ func TestMonitorT09_pressureEventsAreRaisedThenResolved(t *testing.T) {
 	}
 }
 
-func TestMonitorT09_walkRootCapsTheUnreadableFolders(t *testing.T) {
+func TestMonitor_walkRootCapsTheUnreadableFolders(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("permission denied cannot be triggered as root")
 	}
@@ -408,7 +408,7 @@ func TestMonitorT09_walkRootCapsTheUnreadableFolders(t *testing.T) {
 	}
 }
 
-func TestFileTableT09_overflowProtectsEveryFileForTenRescansOnly(t *testing.T) {
+func TestFileTable_overflowProtectsEveryFileForTenRescansOnly(t *testing.T) {
 	c := newCTTable(40)
 	p := "/in/u/a.bin"
 	c.Track(p, scanner.FileIdentity{Size: 1}, c.now, c.now.Add(time.Hour))
@@ -426,7 +426,7 @@ func TestFileTableT09_overflowProtectsEveryFileForTenRescansOnly(t *testing.T) {
 	}
 }
 
-func TestFileTableT09_pressureReportNamesAtMost32Owners(t *testing.T) {
+func TestFileTable_pressureReportNamesAtMost32Owners(t *testing.T) {
 	const delay = time.Hour
 	c := newCTTable(30)
 	for n := 0; c.track("aaa", n, delay); n++ {
@@ -459,7 +459,7 @@ func TestFileTableT09_pressureReportNamesAtMost32Owners(t *testing.T) {
 	}
 }
 
-func TestMonitorT09_pressureEndIsRaisedInEventOnlyMode(t *testing.T) {
+func TestMonitor_pressureEndIsRaisedInEventOnlyMode(t *testing.T) {
 	rec := recordEvents(t)
 	dir := t.TempDir()
 	paths := make([]string, 30)
@@ -506,7 +506,7 @@ func TestMonitorT09_pressureEndIsRaisedInEventOnlyMode(t *testing.T) {
 	}
 }
 
-func TestMonitorT09_relativeWatchedPathKeepsUsersApart(t *testing.T) {
+func TestMonitor_relativeWatchedPathKeepsUsersApart(t *testing.T) {
 	dir := t.TempDir()
 	t.Chdir(dir)
 	for _, p := range []string{"in/alice/a.txt", "in/alice/sub/b.txt", "in/bob/c.txt"} {
@@ -533,9 +533,9 @@ func TestMonitorT09_relativeWatchedPathKeepsUsersApart(t *testing.T) {
 	}
 }
 
-// TestFileTableT09_countedCostMatchesTheRealHeap compares the counted bytes
+// TestFileTable_countedCostMatchesTheRealHeap compares the counted bytes
 // with what the runtime really allocates for the entries.
-func TestFileTableT09_countedCostMatchesTheRealHeap(t *testing.T) {
+func TestFileTable_countedCostMatchesTheRealHeap(t *testing.T) {
 	if testing.Short() {
 		t.Skip("allocates a few hundred thousand entries")
 	}

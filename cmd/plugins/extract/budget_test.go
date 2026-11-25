@@ -38,7 +38,7 @@ func reasonsOf(ex plugins.Extraction) map[datamodel.NotAnalyzedReason]int {
 	return out
 }
 
-func TestT27_memberOverTheLimitIsNeverWrittenToDisk(t *testing.T) {
+func TestExtractFile_memberOverTheLimitIsNeverWrittenToDisk(t *testing.T) {
 	plugin := realPlugin(t)
 	archive := build7z(t, plugin, map[string]int{"huge.bin": 30 * mib, "small.txt": 10})
 	out := t.TempDir()
@@ -58,7 +58,7 @@ func TestT27_memberOverTheLimitIsNeverWrittenToDisk(t *testing.T) {
 	}
 }
 
-func TestT27_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *testing.T) {
+func TestExtractFile_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *testing.T) {
 	plugin := realPlugin(t)
 	members := map[string]int{}
 	for i := range 40 {
@@ -97,7 +97,7 @@ func TestT27_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *testing.T) 
 	}
 }
 
-func TestT27_budgetInBytesStopsBeforeWritingTheMembersThatDoNotFit(t *testing.T) {
+func TestExtractFile_budgetInBytesStopsBeforeWritingTheMembersThatDoNotFit(t *testing.T) {
 	plugin := realPlugin(t)
 	archive := build7z(t, plugin, map[string]int{"a.bin": 1 * mib, "b.bin": 1 * mib, "c.bin": 1 * mib, "d.bin": 1 * mib})
 	out := t.TempDir()
@@ -117,7 +117,7 @@ func TestT27_budgetInBytesStopsBeforeWritingTheMembersThatDoNotFit(t *testing.T)
 	}
 }
 
-func TestT27_removedKeysAreRefusedWithTheirReplacementNotAsUnknown(t *testing.T) {
+func TestDecodeConfig_removedKeysAreRefusedWithTheirReplacementNotAsUnknown(t *testing.T) {
 	for key, replacement := range map[string]string{
 		"max_file_size":            "max_file_size of the main configuration",
 		"max_extracted_files":      "recursive_extract_max_files",

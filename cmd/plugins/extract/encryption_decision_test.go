@@ -17,7 +17,7 @@ func extractFixture(t *testing.T, name string, passwords []string) error {
 	t.Helper()
 	plugin := realPlugin(t)
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	archive, err := filepath.Abs(fixture(t, filepath.Join("t17a", name)))
+	archive, err := filepath.Abs(fixture(t, filepath.Join("archives", name)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func extractFixture(t *testing.T, name string, passwords []string) error {
 }
 
 // With the real 7-Zip: what an encryption explains is told from corruption.
-func TestT17a_realEncryptionOrCorruption(t *testing.T) {
+func TestExtract_realEncryptionOrCorruption(t *testing.T) {
 	tests := []struct {
 		name      string
 		fixture   string

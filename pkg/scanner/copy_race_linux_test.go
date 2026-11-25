@@ -20,7 +20,7 @@ import (
 // In copy mode a file verified clean (A) is exchanged with an unverified one (B)
 // while it is moved, whatever the instant: B must never reach OUTPUT and A must
 // be published at least once.
-func TestT13_copyModeAnExchangeDuringTheMoveNeverPublishesTheUnverifiedFile(t *testing.T) {
+func TestMoveAction_copyModeAnExchangeDuringTheMoveNeverPublishesTheUnverifiedFile(t *testing.T) {
 	if !holdsHandle {
 		t.Skip("the exchange needs the verified descriptor of Linux")
 	}
@@ -109,7 +109,7 @@ func TestT13_copyModeAnExchangeDuringTheMoveNeverPublishesTheUnverifiedFile(t *t
 // pipeline marked TooBig (not analysed) goes by path: a large file that was
 // analysed, an extracted archive, or a small file whose result says too big
 // (a plugin, a member of an archive) are all copied.
-func TestT13_copyModeEveryClassOfFileReachesOutputAsAVerifiedPrivateCopy(t *testing.T) {
+func TestMoveAction_copyModeEveryClassOfFileReachesOutputAsAVerifiedPrivateCopy(t *testing.T) {
 	large := strings.Repeat("L", 4096)
 	tests := []struct {
 		name    string

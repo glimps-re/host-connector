@@ -63,12 +63,12 @@ type asFileCase struct {
 }
 
 func fixtureCase(name string) asFileCase {
-	return asFileCase{name, func(t *testing.T) []byte { return t17Fixture(t, name) }}
+	return asFileCase{name, func(t *testing.T) []byte { return archiveFixture(t, name) }}
 }
 
 func cutCase(fixtureName string, percent int) asFileCase {
 	return asFileCase{"cut-" + fixtureName, func(t *testing.T) []byte {
-		b := t17Fixture(t, fixtureName)
+		b := archiveFixture(t, fixtureName)
 		return b[:len(b)*percent/100]
 	}}
 }
@@ -80,7 +80,7 @@ func possiblyEncryptedCases() map[string]asFileCase {
 		"homonym_mixed.7z":    fixtureCase("homonym_mixed.7z"),
 		"zc_collision.zip":    fixtureCase("zc_collision.zip"),
 		"aes_one_corrupt.zip": fixtureCase("aes_one_corrupt.zip"),
-		"local bit 0 cleared": {"bit0.zip", func(t *testing.T) []byte { return clearLocalEncryptionBit(t, t17Fixture(t, "enc_zipcrypto.zip")) }},
+		"local bit 0 cleared": {"bit0.zip", func(t *testing.T) []byte { return clearLocalEncryptionBit(t, archiveFixture(t, "enc_zipcrypto.zip")) }},
 		"crc damaged plain":   {"damaged.zip", damagedPlainZip},
 		"cut enc_headers 50%": cutCase("enc_headers.7z", 50),
 		"cut enc_headers 90%": cutCase("enc_headers.7z", 90),
@@ -89,13 +89,13 @@ func possiblyEncryptedCases() map[string]asFileCase {
 		"cut enc_content 90%": cutCase("enc_content.7z", 90),
 		"cut zipcrypto 66%":   cutCase("enc_zipcrypto.zip", 66),
 		"plain zip then an encrypted 7z": {"plain_then_enc7.zip", func(t *testing.T) []byte {
-			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), t17Fixture(t, "enc_content.7z")...)
+			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), archiveFixture(t, "enc_content.7z")...)
 		}},
 		"plain zip then an AES zip": {"plain_then_aes.zip", func(t *testing.T) []byte {
-			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), t17Fixture(t, "enc_aes.zip")...)
+			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), archiveFixture(t, "enc_aes.zip")...)
 		}},
 		"plain zip then a ZipCrypto zip": {"plain_then_zc.zip", func(t *testing.T) []byte {
-			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), t17Fixture(t, "enc_zipcrypto.zip")...)
+			return append(storedZip(t, map[string]string{"a.txt": "plain member"}), archiveFixture(t, "enc_zipcrypto.zip")...)
 		}},
 		"a member name over the limit":                {"longname.zip", longNamesZip},
 		"a member component over 255":                 {"longcomponent.zip", longComponentZip},
@@ -104,7 +104,7 @@ func possiblyEncryptedCases() map[string]asFileCase {
 		"a folder named with a slash that holds data": {"slashfolder.zip", slashFolderZip},
 		"a tar directory that holds data":             {"folderdata.tar", folderDataTar},
 		"plain 7z then an encrypted 7z": {"plain7_then_enc7.7z", func(t *testing.T) []byte {
-			return append(plainSevenZip(t), t17Fixture(t, "enc_content.7z")...)
+			return append(plainSevenZip(t), archiveFixture(t, "enc_content.7z")...)
 		}},
 	}
 }
@@ -122,11 +122,11 @@ func damagedPlainZip(t *testing.T) []byte {
 
 // Under as_file, a damaged archive that an encryption may hide in is never
 // delivered as a plain file: the policy of the encrypted files decides.
-func TestT17b_asFileFollowsTheEncryptedPolicyWhenEncryptionIsPossible(t *testing.T) {
+func TestPipeline_asFileFollowsTheEncryptedPolicyWhenEncryptionIsPossible(t *testing.T) {
 	for key, c := range possiblyEncryptedCases() {
 		name := c.file
 		t.Run(key+"/encrypted error", func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
 			if r.exists(r.out, name) || r.quarantined(t) != 0 || !r.exists(r.in, name) {
 				t.Errorf("%s was not kept in INPUT under {encrypted: error, as_file}", key)
 			}
@@ -135,7 +135,7 @@ func TestT17b_asFileFollowsTheEncryptedPolicyWhenEncryptionIsPossible(t *testing
 			}
 		})
 		t.Run(key+"/encrypted pass", func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
 			got, ran := r.maybe(name)
 			if !ran {
 				t.Fatalf("the actions never ran for %s under {encrypted: pass, as_file}", key)
@@ -155,8 +155,8 @@ func trailingDataZip(t *testing.T) []byte {
 // Under as_file a structural anomaly whose members were all extracted and tested
 // is analyzed as a plain file and delivered, marked extract-error: a control
 // character in a name is what 7-Zip changes, and every member is still extracted.
-func TestT17b_asFileDeliversAStructuralAnomalyMarkedExtractError(t *testing.T) {
-	r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "control.zip", content: storedZip(t, map[string]string{"a\x01b.txt": "first member", "ok.txt": "second member"})})
+func TestPipeline_asFileDeliversAStructuralAnomalyMarkedExtractError(t *testing.T) {
+	r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "control.zip", content: storedZip(t, map[string]string{"a\x01b.txt": "first member", "ok.txt": "second member"})})
 	got := r.one(t, "control.zip")
 	if got.result.Error != nil || got.result.Malware || got.result.NotAnalyzedReason != datamodel.NotAnalyzedExtractError {
 		t.Errorf("result = %+v, want a clean file marked extract-error", got.result)
@@ -167,13 +167,13 @@ func TestT17b_asFileDeliversAStructuralAnomalyMarkedExtractError(t *testing.T) {
 }
 
 // The default policy keeps every damaged archive in INPUT, with its error.
-func TestT17b_theDefaultPolicyKeepsEveryDamagedArchiveInInput(t *testing.T) {
+func TestPipeline_theDefaultPolicyKeepsEveryDamagedArchiveInInput(t *testing.T) {
 	cases := possiblyEncryptedCases()
 	cases["trailing data"] = asFileCase{"trailing.zip", trailingDataZip}
 	for key, c := range cases {
 		name := c.file
 		t.Run(key, func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: c.content(t)})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: c.content(t)})
 			got, ran := r.maybe(name)
 			delivered := r.exists(r.out, name)
 			if delivered && (!ran || got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted) {
@@ -272,8 +272,8 @@ func twinNamesZip(t *testing.T) []byte {
 
 // 7-Zip extracts both members of a zip that has twin names (it renames the second):
 // nothing is lost, so nothing is an anomaly, and the archive is analyzed as usual.
-func TestT17b_twinNamesWithPlainMembersAreExtractedBothAndAreNoAnomaly(t *testing.T) {
-	r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "twins.zip", content: twinNamesZip(t)})
+func TestPipeline_twinNamesWithPlainMembersAreExtractedBothAndAreNoAnomaly(t *testing.T) {
+	r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyError, ExtractError: scanner.PolicyAsFile}, name: "twins.zip", content: twinNamesZip(t)})
 	got := r.one(t, "twins.zip")
 	if got.result.Error != nil || got.result.NotAnalyzedReason != "" {
 		t.Errorf("result = error %v, reason %q, want an archive analyzed as usual", got.result.Error, got.result.NotAnalyzedReason)

@@ -9,7 +9,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-func TestT27_remainingBudgetShrinksFromOneLevelToTheNext(t *testing.T) {
+func TestRecursiveExtract_remainingBudgetShrinksFromOneLevelToTheNext(t *testing.T) {
 	var mu sync.Mutex
 	var seen []plugins.ExtractLimits
 	inner := realZip(t)

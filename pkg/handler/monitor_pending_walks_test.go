@@ -40,7 +40,7 @@ func pendingWalksPeak(m *Monitor) (stop func() int) {
 	}
 }
 
-func TestT10_mkdirOfTwoHundredLevelsAskForBoundedWalks(t *testing.T) {
+func TestMonitor_mkdirOfTwoHundredLevelsAskForBoundedWalks(t *testing.T) {
 	root := t.TempDir()
 	m, seen := newIdentityMonitor(t, Config{ModDelay: 10_000_000, PreScan: true})
 	m.Start()
@@ -84,7 +84,7 @@ func TestT10_mkdirOfTwoHundredLevelsAskForBoundedWalks(t *testing.T) {
 	}
 }
 
-func TestT10_manyEventsOnTheSameFolderAreOneWalk(t *testing.T) {
+func TestMonitor_manyEventsOnTheSameFolderAreOneWalk(t *testing.T) {
 	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{})
 	before := runtime.NumGoroutine()
 	stop := pendingWalksPeak(m)
@@ -111,7 +111,7 @@ func TestT10_manyEventsOnTheSameFolderAreOneWalk(t *testing.T) {
 	}
 }
 
-func TestT10_siblingFoldersAreNotMergedIntoOne(t *testing.T) {
+func TestMonitor_siblingFoldersAreNotMergedIntoOne(t *testing.T) {
 	m := newBareMonitor(t, func(string, scanner.FileIdentity) (bool, error) { return true, nil }, Config{})
 	for i := range 50 {
 		m.preScanPath(fmt.Sprintf("/in/u%02d", i))

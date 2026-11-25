@@ -91,7 +91,7 @@ func throughputRun(t *testing.T, plugin *SevenZipExtractPlugin, extract bool, fi
 // next to nothing for text and binaries; the small archives that are now
 // extracted are what costs, by the real 7-Zip. The numbers are logged; the only
 // check is that text and binaries are not slowed down by a large factor.
-func TestT17a_throughputOfSmallFiles(t *testing.T) {
+func TestPipeline_throughputOfSmallFiles(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timed run")
 	}
@@ -101,7 +101,7 @@ func TestT17a_throughputOfSmallFiles(t *testing.T) {
 	variants := map[string]func(i int) []byte{
 		"text":   func(i int) []byte { return []byte(fmt.Sprintf("small text file number %d", i)) },
 		"binary": func(i int) []byte { return []byte(fmt.Sprintf("\x7f%04d\xff\xfe\x00\x10\x80", i)) },
-		"zip":    func(i int) []byte { return t17Zip(t, map[string][]byte{"m.txt": []byte(fmt.Sprintf("member %d", i))}) },
+		"zip":    func(i int) []byte { return zipOf(t, map[string][]byte{"m.txt": []byte(fmt.Sprintf("member %d", i))}) },
 	}
 	for name, content := range variants {
 		count := n

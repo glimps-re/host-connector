@@ -13,7 +13,7 @@ import (
 // Every path out of the pipeline releases the verified descriptor: the counter of
 // the sources and the descriptors of the process are back to what they were once
 // the files are handled, whatever the outcome.
-func TestT12_noDescriptorIsHeldAfterTheActionsWhateverTheOutcome(t *testing.T) {
+func TestPipeline_noDescriptorIsHeldAfterTheActionsWhateverTheOutcome(t *testing.T) {
 	outcomes := map[string]func(f **swapFixture) *gdetectMock.MockGDetectSubmitter{
 		"clean file moved": func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return echoReader(serviceSubmitter(f, nil)) },
 		"malware removed":  func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return echoReader(serviceSubmitter(f, nil)) },

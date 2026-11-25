@@ -115,7 +115,7 @@ func TestRealSevenZip_theHeadersOfAZipAreWalked(t *testing.T) {
 
 func rawFromFixture(t *testing.T, fixtureName string) rawEntry {
 	t.Helper()
-	b := t17Fixture(t, fixtureName)
+	b := archiveFixture(t, fixtureName)
 	zr, err := zip.NewReader(bytes.NewReader(b), int64(len(b)))
 	if err != nil {
 		t.Fatal(err)

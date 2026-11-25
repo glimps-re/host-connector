@@ -249,7 +249,7 @@ const (
 
 // The missing table of T16: each too_big policy × (simple file, archive that
 // is not extractable, archive member) → result, action, report, Source.TooBig.
-func TestT16a_tooBigPolicyTable(t *testing.T) {
+func TestUnanalyzable_tooBigPolicyTable(t *testing.T) {
 	big := strings.Repeat("B", accMax+1)
 	type want struct {
 		outcome   accOutcome
@@ -359,7 +359,7 @@ func TestT16a_tooBigPolicyTable(t *testing.T) {
 
 // A large archive that is extracted and whose members are analyzed is not "too
 // big": whatever the policy, TooBig stays false and nothing is marked.
-func TestT16a_largeExtractedArchiveIsNeverTooBig(t *testing.T) {
+func TestUnanalyzable_largeExtractedArchiveIsNeverTooBig(t *testing.T) {
 	for _, policy := range []string{PolicyError, PolicyPass, PolicyMitigate} {
 		t.Run(policy, func(t *testing.T) {
 			r := runAcc(t, accSetup{
@@ -382,7 +382,7 @@ func TestT16a_largeExtractedArchiveIsNeverTooBig(t *testing.T) {
 }
 
 // Size exactly max_file_size is analyzed; max+1 is not.
-func TestT16a_sizeBoundary(t *testing.T) {
+func TestUnanalyzable_sizeBoundary(t *testing.T) {
 	tests := []struct {
 		name       string
 		size       int
@@ -413,7 +413,7 @@ func TestT16a_sizeBoundary(t *testing.T) {
 
 // Zero-length file: skip refuses at submission; mitigate quarantines with
 // reason empty; extract_error / pass are refused by the configuration.
-func TestT16a_emptyFile(t *testing.T) {
+func TestUnanalyzable_emptyFile(t *testing.T) {
 	t.Run("skip", func(t *testing.T) {
 		r := runAcc(t, accSetup{policy: Unanalyzable{Empty: PolicySkip}, files: map[string]string{"e.bin": ""}})
 		if len(r.captures) != 0 || !r.exists(r.in, "e.bin") || r.exists(r.out, "e.bin") {
@@ -449,7 +449,7 @@ func TestT16a_emptyFile(t *testing.T) {
 }
 
 // A member that is empty inside an archive is unchanged by the empty policy.
-func TestT16a_emptyArchiveMemberIsUnchanged(t *testing.T) {
+func TestUnanalyzable_emptyArchiveMemberIsUnchanged(t *testing.T) {
 	for _, p := range []string{PolicySkip, PolicyMitigate} {
 		t.Run(p, func(t *testing.T) {
 			r := runAcc(t, accSetup{
@@ -465,7 +465,7 @@ func TestT16a_emptyArchiveMemberIsUnchanged(t *testing.T) {
 	}
 }
 
-func TestT16a_configValidation(t *testing.T) {
+func TestUnanalyzable_configValidation(t *testing.T) {
 	tests := []struct {
 		name string
 		u    Unanalyzable
@@ -500,7 +500,7 @@ func TestT16a_configValidation(t *testing.T) {
 }
 
 // S11: a plugin that rejects a file non-maliciously is visible as policy-skipped.
-func TestT16a_policySkippedIsVisible(t *testing.T) {
+func TestUnanalyzable_policySkippedIsVisible(t *testing.T) {
 	c := policyConnector(t, Unanalyzable{}, accMax, cleanSubmitter())
 	c.onScanFileCbs = []plugins.OnScanFile{func(string, string, string, bool) *datamodel.Result {
 		return &datamodel.Result{}
@@ -517,7 +517,7 @@ func TestT16a_policySkippedIsVisible(t *testing.T) {
 
 // Report bounds (S14): hostile lists never exceed the limits and the encoding
 // stays under MaxReportSize.
-func TestT16a_reportBounds(t *testing.T) {
+func TestUnanalyzable_reportBounds(t *testing.T) {
 	long := strings.Repeat("é", 5000)
 	huge := make([]datamodel.NotAnalyzedFile, 50_000)
 	for i := range huge {
@@ -576,7 +576,7 @@ func TestT16a_reportBounds(t *testing.T) {
 }
 
 // S23: OnFileScanned cannot wipe the not-analyzed marks.
-func TestT16a_onFileScannedCannotEraseNotAnalyzed(t *testing.T) {
+func TestUnanalyzable_onFileScannedCannotEraseNotAnalyzed(t *testing.T) {
 	c := policyConnector(t, Unanalyzable{TooBig: PolicyPass}, accMax, cleanSubmitter())
 	c.onFileScannedCbs = []namedFileScanned{{plugin: "p", fn: func(string, string, datamodel.Result) *datamodel.Result {
 		return &datamodel.Result{}
@@ -589,7 +589,7 @@ func TestT16a_onFileScannedCannotEraseNotAnalyzed(t *testing.T) {
 }
 
 // extract_error is error or as_file: another value is refused at startup.
-func TestT16a_extractErrorOnlyErrorOrAsFile(t *testing.T) {
+func TestUnanalyzable_extractErrorOnlyErrorOrAsFile(t *testing.T) {
 	for _, v := range []string{"pass", "mitigate", "skip"} {
 		if _, err := NewConnector(Config{Unanalyzable: Unanalyzable{ExtractError: v}, WorkDir: t.TempDir()}, nil, cleanSubmitter()); err == nil {
 			t.Errorf("extract_error=%q accepted", v)

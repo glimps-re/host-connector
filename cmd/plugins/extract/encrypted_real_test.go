@@ -26,33 +26,33 @@ import (
 	"github.com/glimps-re/host-connector/pkg/scanner"
 )
 
-type t17Capture struct {
+type pipelineCapture struct {
 	src    scanner.Source
 	result datamodel.Result
 	report datamodel.Report
 }
 
-type t17Run struct {
+type pipelineRun struct {
 	in, out, qdir string
-	captures      []t17Capture
+	captures      []pipelineCapture
 	submitted     []string
 	scanErr       error
 }
 
 // maybe is for the cases where the contract allows the pipeline to stop before
 // the actions (a definitive error: the archive stays in INPUT).
-func (r *t17Run) maybe(name string) (t17Capture, bool) {
+func (r *pipelineRun) maybe(name string) (pipelineCapture, bool) {
 	for _, c := range r.captures {
 		if filepath.Base(c.src.Path) == name {
 			return c, true
 		}
 	}
-	return t17Capture{}, false
+	return pipelineCapture{}, false
 }
 
-func (r *t17Run) one(t *testing.T, name string) t17Capture {
+func (r *pipelineRun) one(t *testing.T, name string) pipelineCapture {
 	t.Helper()
-	var got []t17Capture
+	var got []pipelineCapture
 	for _, c := range r.captures {
 		if filepath.Base(c.src.Path) == name {
 			got = append(got, c)
@@ -64,12 +64,12 @@ func (r *t17Run) one(t *testing.T, name string) t17Capture {
 	return got[0]
 }
 
-func (r *t17Run) exists(dir, name string) bool {
+func (r *pipelineRun) exists(dir, name string) bool {
 	_, err := os.Lstat(filepath.Join(dir, name))
 	return err == nil
 }
 
-func (r *t17Run) quarantined(t *testing.T) int {
+func (r *pipelineRun) quarantined(t *testing.T) int {
 	t.Helper()
 	locks, err := filepath.Glob(filepath.Join(r.qdir, "*.lock"))
 	if err != nil {
@@ -78,7 +78,7 @@ func (r *t17Run) quarantined(t *testing.T) int {
 	return len(locks)
 }
 
-func (r *t17Run) submissionsOf(name string) int {
+func (r *pipelineRun) submissionsOf(name string) int {
 	n := 0
 	for _, s := range r.submitted {
 		if s == name {
@@ -88,7 +88,7 @@ func (r *t17Run) submissionsOf(name string) int {
 	return n
 }
 
-type t17Setup struct {
+type pipelineSetup struct {
 	policy      scanner.Unanalyzable
 	name        string
 	content     []byte
@@ -98,14 +98,14 @@ type t17Setup struct {
 	malwareFor  string // base name of the submitted file the service calls malware
 }
 
-// runT17 runs the real pipeline with the real extraction plugin and the real
+// runPipeline runs the real pipeline with the real extraction plugin and the real
 // 7-Zip on one deposited archive.
-func runT17(t *testing.T, s t17Setup) *t17Run {
+func runPipeline(t *testing.T, s pipelineSetup) *pipelineRun {
 	t.Helper()
 	plugin := realPlugin(t)
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 	root := t.TempDir()
-	r := &t17Run{in: filepath.Join(root, "in"), out: filepath.Join(root, "out"), qdir: t.TempDir()}
+	r := &pipelineRun{in: filepath.Join(root, "in"), out: filepath.Join(root, "out"), qdir: t.TempDir()}
 	for _, d := range []string{r.in, r.out} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
 			t.Fatal(err)
@@ -186,7 +186,7 @@ func runT17(t *testing.T, s t17Setup) *t17Run {
 	capture := &scanner.MockAction{HandleMock: func(_ context.Context, src scanner.Source, res datamodel.Result, rep *datamodel.Report) error {
 		mu.Lock()
 		defer mu.Unlock()
-		r.captures = append(r.captures, t17Capture{src, res, *rep})
+		r.captures = append(r.captures, pipelineCapture{src, res, *rep})
 		return nil
 	}}
 	c, err := scanner.NewConnector(scanner.Config{
@@ -213,16 +213,16 @@ func runT17(t *testing.T, s t17Setup) *t17Run {
 	return r
 }
 
-func t17Fixture(t *testing.T, name string) []byte {
+func archiveFixture(t *testing.T, name string) []byte {
 	t.Helper()
-	b, err := os.ReadFile(fixture(t, filepath.Join("t17a", name)))
+	b, err := os.ReadFile(fixture(t, filepath.Join("archives", name)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	return b
 }
 
-func t17Zip(t *testing.T, members map[string][]byte) []byte {
+func zipOf(t *testing.T, members map[string][]byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	zw := zip.NewWriter(&buf)
@@ -241,15 +241,15 @@ func t17Zip(t *testing.T, members map[string][]byte) []byte {
 	return buf.Bytes()
 }
 
-var t17Policies = []string{scanner.PolicyError, scanner.PolicyPass, scanner.PolicyMitigate}
+var everyPolicy = []string{scanner.PolicyError, scanner.PolicyPass, scanner.PolicyMitigate}
 
 // An archive that 7-Zip cannot open without a password follows the encrypted
 // policy: never analyzed as a plain file and delivered as clean.
-func TestT17a_realEncryptedArchivesFollowTheEncryptedPolicy(t *testing.T) {
+func TestPipeline_realEncryptedArchivesFollowTheEncryptedPolicy(t *testing.T) {
 	for _, fx := range []string{"enc_zipcrypto.zip", "enc_aes.zip", "enc_headers.7z", "enc_content.7z", "mixed.zip"} {
-		for _, policy := range t17Policies {
+		for _, policy := range everyPolicy {
 			t.Run(fx+"/"+policy, func(t *testing.T) {
-				r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: policy}, name: fx, content: t17Fixture(t, fx)})
+				r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: policy}, name: fx, content: archiveFixture(t, fx)})
 				got, ran := r.maybe(fx)
 				if policy == scanner.PolicyError && !ran {
 					if !r.exists(r.in, fx) || r.exists(r.out, fx) || r.quarantined(t) != 0 {
@@ -302,10 +302,10 @@ func TestT17a_realEncryptedArchivesFollowTheEncryptedPolicy(t *testing.T) {
 }
 
 // A verdict of the service on the encrypted container wins over the policy.
-func TestT17a_realEncryptedArchiveMaliciousVerdictWins(t *testing.T) {
-	for _, policy := range t17Policies {
+func TestPipeline_realEncryptedArchiveMaliciousVerdictWins(t *testing.T) {
+	for _, policy := range everyPolicy {
 		t.Run(policy, func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: policy}, name: "enc.zip", content: t17Fixture(t, "enc_zipcrypto.zip"), malwareFor: "enc.zip"})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: policy}, name: "enc.zip", content: archiveFixture(t, "enc_zipcrypto.zip"), malwareFor: "enc.zip"})
 			got := r.one(t, "enc.zip")
 			if !got.result.Malware || got.result.MalwareReason != datamodel.MalwareDetected || got.result.Error != nil {
 				t.Errorf("result = %+v, want the detection whatever the policy", got.result)
@@ -319,11 +319,11 @@ func TestT17a_realEncryptedArchiveMaliciousVerdictWins(t *testing.T) {
 
 // An encrypted archive over max_file_size is not submitted, same policy, and
 // the pipeline's decision sets Source.TooBig.
-func TestT17a_realEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *testing.T) {
-	content := t17Fixture(t, "enc_zipcrypto.zip")
-	for _, policy := range t17Policies {
+func TestPipeline_realEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *testing.T) {
+	content := archiveFixture(t, "enc_zipcrypto.zip")
+	for _, policy := range everyPolicy {
 		t.Run(policy, func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: policy, TooBig: scanner.PolicyError}, name: "enc.zip", content: content, maxFileSize: int64(len(content)) - 1})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: policy, TooBig: scanner.PolicyError}, name: "enc.zip", content: content, maxFileSize: int64(len(content)) - 1})
 			got := r.one(t, "enc.zip")
 			if len(r.submitted) != 0 {
 				t.Errorf("submitted %v: a file over max_file_size is never submitted", r.submitted)
@@ -351,10 +351,10 @@ func TestT17a_realEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *testing.T) {
 
 // An encrypted archive nested in a plain zip: the member follows the policy,
 // the other members are analyzed.
-func TestT17a_realEncryptedArchiveNestedInAPlainZip(t *testing.T) {
-	for _, policy := range t17Policies {
+func TestPipeline_realEncryptedArchiveNestedInAPlainZip(t *testing.T) {
+	for _, policy := range everyPolicy {
 		t.Run(policy, func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: policy}, name: "n.zip", content: t17Fixture(t, "nested_in_plain.zip")})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: policy}, name: "n.zip", content: archiveFixture(t, "nested_in_plain.zip")})
 			got := r.one(t, "n.zip")
 			res := got.result
 			if r.submissionsOf("p.txt") != 1 {
@@ -399,10 +399,10 @@ func TestT17a_realEncryptedArchiveNestedInAPlainZip(t *testing.T) {
 }
 
 // A password the plugin knows opens the archive normally.
-func TestT17a_realKnownPasswordIsExtractedNormally(t *testing.T) {
-	for _, policy := range t17Policies {
+func TestPipeline_realKnownPasswordIsExtractedNormally(t *testing.T) {
+	for _, policy := range everyPolicy {
 		t.Run(policy, func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: policy, TooBig: policy}, name: "k.zip", content: t17Fixture(t, "known_password.zip")})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: policy, TooBig: policy}, name: "k.zip", content: archiveFixture(t, "known_password.zip")})
 			got := r.one(t, "k.zip")
 			if got.result.Error != nil || got.result.Malware || got.result.NotAnalyzedReason != "" || got.result.NotAnalyzedSubfilesCount != 0 || got.src.TooBig {
 				t.Errorf("result = %+v, want a clean archive", got.result)
@@ -416,7 +416,7 @@ func TestT17a_realKnownPasswordIsExtractedNormally(t *testing.T) {
 
 // Members the plugin leaves out (over max_file_size, over the number of files,
 // over the total size) follow too_big, with exact counts.
-func TestT17a_realMembersLeftOutFollowTooBig(t *testing.T) {
+func TestPipeline_realMembersLeftOutFollowTooBig(t *testing.T) {
 	zeros := bytes.Repeat([]byte{0}, 5000)
 	manyTiny := func(n int) map[string][]byte {
 		m := make(map[string][]byte, n)
@@ -441,9 +441,9 @@ func TestT17a_realMembersLeftOutFollowTooBig(t *testing.T) {
 		{"1500 members for a budget of 10", manyTiny(1500), 0, 10, 0, 1490, datamodel.MaxListedSubfiles, 10},
 	}
 	for _, tt := range tests {
-		for _, policy := range t17Policies {
+		for _, policy := range everyPolicy {
 			t.Run(tt.name+"/"+policy, func(t *testing.T) {
-				content := t17Zip(t, tt.members)
+				content := zipOf(t, tt.members)
 				maxFileSize := tt.maxFileSize
 				if maxFileSize == 0 {
 					maxFileSize = 1 << 20
@@ -451,7 +451,7 @@ func TestT17a_realMembersLeftOutFollowTooBig(t *testing.T) {
 				if int64(len(content)) > maxFileSize {
 					t.Fatalf("test archive is %d bytes, must stay under max_file_size %d", len(content), maxFileSize)
 				}
-				r := runT17(t, t17Setup{policy: scanner.Unanalyzable{TooBig: policy}, name: "a.zip", content: content, maxFileSize: tt.maxFileSize, maxFiles: tt.maxFiles, maxTotal: tt.maxTotal})
+				r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{TooBig: policy}, name: "a.zip", content: content, maxFileSize: tt.maxFileSize, maxFiles: tt.maxFiles, maxTotal: tt.maxTotal})
 				got, ran := r.maybe("a.zip")
 				if policy == scanner.PolicyError && !ran {
 					if !r.exists(r.in, "a.zip") || r.exists(r.out, "a.zip") || r.quarantined(t) != 0 {
@@ -511,12 +511,12 @@ func TestT17a_realMembersLeftOutFollowTooBig(t *testing.T) {
 // Whatever the encryption (ZipCrypto, AES, 7z with encrypted headers or only
 // encrypted content), the real plugin tells ErrEncrypted, never a generic
 // extraction error: the core's encrypted policy depends on it.
-func TestT17a_realPluginReportsEncryptedArchives(t *testing.T) {
+func TestExtractFile_realPluginReportsEncryptedArchives(t *testing.T) {
 	for _, fx := range []string{"enc_zipcrypto.zip", "enc_aes.zip", "enc_headers.7z", "enc_content.7z", "mixed.zip"} {
 		t.Run(fx, func(t *testing.T) {
 			plugin := realPlugin(t)
 			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-			_, err := plugin.ExtractFile(fixture(t, filepath.Join("t17a", fx)), t.TempDir(), openLimits)
+			_, err := plugin.ExtractFile(fixture(t, filepath.Join("archives", fx)), t.TempDir(), openLimits)
 			if !errors.Is(err, plugins.ErrEncrypted) {
 				t.Errorf("ExtractFile() error = %v, want plugins.ErrEncrypted", err)
 			}

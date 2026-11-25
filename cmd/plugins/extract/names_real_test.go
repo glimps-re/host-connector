@@ -35,7 +35,7 @@ func writeNamed(t *testing.T, name string, content []byte) string {
 // own: the names are the ones of the listing when it is honest.
 func zipcryptoWith(t *testing.T, plain ...string) []byte {
 	t.Helper()
-	enc := t17Fixture(t, "enc_zipcrypto.zip")
+	enc := archiveFixture(t, "enc_zipcrypto.zip")
 	zr, err := zip.NewReader(bytes.NewReader(enc), int64(len(enc)))
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestRealSevenZip_namesOnlyGivesNothingOfA7zWithAStub(t *testing.T) {
 
 func TestRealSevenZip_namesOnlyOfAnArchiveWithEncryptedHeaders(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "enc_headers.7z")
-	if err := os.WriteFile(path, t17Fixture(t, "enc_headers.7z"), 0o600); err != nil {
+	if err := os.WriteFile(path, archiveFixture(t, "enc_headers.7z"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	got, err := realPlugin(t).ExtractFile(path, t.TempDir(), namesOnly)

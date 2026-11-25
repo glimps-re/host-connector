@@ -14,17 +14,17 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
-// t17aFixture is a connector with a fake extractor and an action that keeps the
+// policyFixture is a connector with a fake extractor and an action that keeps the
 // results of the archives.
-type t17aFixture struct {
+type policyFixture struct {
 	c       *Connector
 	mu      sync.Mutex
 	results []datamodel.Result
 }
 
-func newT17aFixture(t *testing.T, u Unanalyzable) *t17aFixture {
+func newPolicyFixture(t *testing.T, u Unanalyzable) *policyFixture {
 	t.Helper()
-	f := &t17aFixture{}
+	f := &policyFixture{}
 	c, err := NewConnector(Config{Extract: true, WorkDir: t.TempDir(), RecursiveExtractMaxDepth: 3, ExtractMinThreshold: 1, Workers: 2, Unanalyzable: u}, nil, archiveCleanSubmitter())
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func newT17aFixture(t *testing.T, u Unanalyzable) *t17aFixture {
 	return f
 }
 
-func (f *t17aFixture) extract(t *testing.T) error {
+func (f *policyFixture) extract(t *testing.T) error {
 	t.Helper()
 	location, sha := createArchive(t, []string{"content"})
 	info, err := os.Stat(location)
@@ -54,7 +54,7 @@ func (f *t17aFixture) extract(t *testing.T) error {
 }
 
 // drain processes the files waiting for analysis, until none is left.
-func (f *t17aFixture) drain() {
+func (f *policyFixture) drain() {
 	for {
 		select {
 		case in := <-f.c.analysisChan:
@@ -65,7 +65,7 @@ func (f *t17aFixture) drain() {
 	}
 }
 
-func (f *t17aFixture) only(t *testing.T) datamodel.Result {
+func (f *policyFixture) only(t *testing.T) datamodel.Result {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -118,7 +118,7 @@ func TestRecursiveExtract_membersLeftOutByTheLimitsFollowTheTooBigPolicy(t *test
 					}
 					return plugins.Extraction{Files: []string{writeMember(t, outputDir, "ok.txt", "fine content")}, Size: 12, Skipped: limitSkips, SkippedCount: 7}, nil
 				}
-				f := newT17aFixture(t, Unanalyzable{TooBig: policy})
+				f := newPolicyFixture(t, Unanalyzable{TooBig: policy})
 				err := f.extract(t)
 				if policy == PolicyError && !nested {
 					if !errors.Is(err, errInnerPermanent) {
@@ -158,7 +158,7 @@ func TestRecursiveExtract_anArchiveWhoseMembersAreAllLeftOutEndsWithTheList(t *t
 	ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 		return plugins.Extraction{Skipped: limitSkips, SkippedCount: 2}, nil
 	}
-	f := newT17aFixture(t, Unanalyzable{TooBig: PolicyPass})
+	f := newPolicyFixture(t, Unanalyzable{TooBig: PolicyPass})
 	if err := f.extract(t); err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestRecursiveExtract_anEncryptedArchiveFollowsTheEncryptedPolicy(t *testing
 			ExtractFile = func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 				return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrEncrypted)
 			}
-			f := newT17aFixture(t, Unanalyzable{Encrypted: policy})
+			f := newPolicyFixture(t, Unanalyzable{Encrypted: policy})
 			var got []datamodel.Result
 			f.c.action = &MockAction{HandleMock: func(_ context.Context, _ Source, r datamodel.Result, _ *datamodel.Report) error {
 				got = append(got, r)
@@ -227,7 +227,7 @@ func TestRecursiveExtract_anEncryptedSubArchiveIsAMemberUnderThePolicy(t *testin
 		}
 		return plugins.Extraction{}, fmt.Errorf("x: %w", plugins.ErrEncrypted)
 	}
-	f := newT17aFixture(t, Unanalyzable{Encrypted: PolicyPass})
+	f := newPolicyFixture(t, Unanalyzable{Encrypted: PolicyPass})
 	if err := f.extract(t); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestRecursiveExtract_anArchiveBeyondTheLimitsFollowsTheTooBigPolicy(t *test
 					t.Error("the inner archive must not be opened beyond the limits")
 					return plugins.Extraction{}, nil
 				})
-				f := newT17aFixture(t, Unanalyzable{TooBig: policy, Encrypted: policy})
+				f := newPolicyFixture(t, Unanalyzable{TooBig: policy, Encrypted: policy})
 				limit(&f.c.config)
 				if err := f.extract(t); err != nil {
 					t.Fatal(err)
@@ -436,7 +436,7 @@ func TestRecursiveExtract_aSubArchiveWithEveryMemberLeftOutEndsTheParent(t *test
 			ExtractFile, _ = nestedExtractor(t, func(string) (plugins.Extraction, error) {
 				return plugins.Extraction{Skipped: limitSkips[:1], SkippedCount: 1}, nil
 			})
-			f := newT17aFixture(t, Unanalyzable{TooBig: policy})
+			f := newPolicyFixture(t, Unanalyzable{TooBig: policy})
 			if err := f.extract(t); err != nil {
 				t.Fatal(err)
 			}
@@ -482,7 +482,7 @@ func TestRecursiveExtract_anEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *tes
 				return gdetect.Result{}, nil
 			}
 			echoReader(submitter)
-			f := newT17aFixture(t, Unanalyzable{Encrypted: PolicyPass})
+			f := newPolicyFixture(t, Unanalyzable{Encrypted: PolicyPass})
 			f.c.submitter = submitter
 			f.c.config.MaxFileSize = 10
 			var sources []Source
@@ -552,7 +552,7 @@ func TestRecursiveExtract_aMemberRefusedWithAnAnalysisErrorIsNotListedAsPassed(t
 	ExtractFile = func(_, outputDir string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
 		return plugins.Extraction{Files: []string{writeMember(t, outputDir, "m.txt", "member")}, Size: 6}, nil
 	}
-	f := newT17aFixture(t, Unanalyzable{})
+	f := newPolicyFixture(t, Unanalyzable{})
 	f.c.RegisterOnScanFile(func(_, _, _ string, isArchive bool) *datamodel.Result {
 		if isArchive {
 			return nil
@@ -586,7 +586,7 @@ func TestRecursiveExtract_aLimitSkippedArchiveFollowsTheStricterPolicy(t *testin
 					t.Error("the inner archive must not be opened beyond the limit")
 					return plugins.Extraction{}, nil
 				})
-				f := newT17aFixture(t, Unanalyzable{TooBig: tooBig, Encrypted: encrypted})
+				f := newPolicyFixture(t, Unanalyzable{TooBig: tooBig, Encrypted: encrypted})
 				f.c.config.RecursiveExtractMaxDepth = 1
 				var submitted int
 				var mu sync.Mutex
@@ -642,7 +642,7 @@ func TestRecursiveExtract_aLimitSkippedArchiveKnownAsMalwareIsMalware(t *testing
 	ExtractFile, _ = nestedExtractor(t, func(string) (plugins.Extraction, error) {
 		return plugins.Extraction{}, nil
 	})
-	f := newT17aFixture(t, Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyPass})
+	f := newPolicyFixture(t, Unanalyzable{TooBig: PolicyPass, Encrypted: PolicyPass})
 	f.c.config.RecursiveExtractMaxDepth = 1
 	submitter := archiveCleanSubmitter()
 	submitter.WaitForFileMock = func(_ context.Context, p string, _ gdetect.WaitForOptions) (gdetect.Result, error) {
@@ -676,7 +676,7 @@ func TestRecursiveExtract_anOrdinaryBinaryIsNotLeftOutNorExtracted(t *testing.T)
 		}
 		return plugins.Extraction{}, nil
 	}
-	f := newT17aFixture(t, Unanalyzable{TooBig: PolicyError, Encrypted: PolicyError})
+	f := newPolicyFixture(t, Unanalyzable{TooBig: PolicyError, Encrypted: PolicyError})
 	f.c.config.RecursiveExtractMaxDepth = 1
 	if err := f.extract(t); err != nil {
 		t.Fatal(err)

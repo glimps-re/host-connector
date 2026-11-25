@@ -31,7 +31,7 @@ func entriesOf(t *testing.T, dir string) []string {
 	return names
 }
 
-func TestT24_unsuitableConfiguredBinaryIsRefusedAndLeavesNothingBehind(t *testing.T) {
+func TestSevenZipExtractPlugin_unsuitableConfiguredBinaryIsRefusedAndLeavesNothingBehind(t *testing.T) {
 	prev := proofTimeout
 	proofTimeout = 2 * time.Second
 	t.Cleanup(func() { proofTimeout = prev })
@@ -88,7 +88,7 @@ func TestT24_unsuitableConfiguredBinaryIsRefusedAndLeavesNothingBehind(t *testin
 	}
 }
 
-func TestT24_configuredRealBinaryIsUsedAndKeptOnClose(t *testing.T) {
+func TestSevenZipExtractPlugin_configuredRealBinaryIsUsedAndKeptOnClose(t *testing.T) {
 	embedded := realPlugin(t).sze.sevenZipPath
 	cfg := realConfig()
 	cfg.SevenZipPath = embedded
@@ -111,7 +111,7 @@ func TestT24_configuredRealBinaryIsUsedAndKeptOnClose(t *testing.T) {
 	}
 }
 
-func TestT24_olderVersionBannerIsRefused(t *testing.T) {
+func TestProve_olderVersionBannerIsRefused(t *testing.T) {
 	// A binary that prints the expected listing but announces 7-Zip 24.09: the
 	// protections of the analysis are only established for 25.01.
 	sze := fakeBinary(t, "7-Zip (z) 24.09 (x64) : Copyright (c) 1999-2024 Igor Pavlov", refListing, goodExtract)
@@ -124,7 +124,7 @@ func TestT24_olderVersionBannerIsRefused(t *testing.T) {
 	}
 }
 
-func TestT24_unavailableIsNeverAnArchiveVerdict(t *testing.T) {
+func TestExtractFile_unavailableIsNeverAnArchiveVerdict(t *testing.T) {
 	for name, path := range map[string]string{
 		"missing": filepath.Join(t.TempDir(), "absent"),
 		"not executable": func() string {

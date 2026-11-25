@@ -176,7 +176,7 @@ func afterService(t *testing.T, f *swapFixture, fn func()) {
 // as it answered: the service must have been given the original bytes, and what
 // the actions then receive is the verdict on those bytes (malware), never a clean
 // verdict on the swapped-in file.
-func TestT10_D1_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndActsOnTheirVerdict(t *testing.T) {
+func TestPipeline_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndActsOnTheirVerdict(t *testing.T) {
 	skipWithoutProc(t)
 	var f *swapFixture
 	var swapper *dirSwap
@@ -203,7 +203,7 @@ func TestT10_D1_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndActsO
 // The folders are exchanged during the analysis and left exchanged: the identity
 // check stops the file before any action. It is observed explicitly: no action,
 // a retry outcome, and the file at the path is left where it is.
-func TestT10_D1_directorySwapLeftInPlaceStopsTheFileBeforeAnyAction(t *testing.T) {
+func TestPipeline_directorySwapLeftInPlaceStopsTheFileBeforeAnyAction(t *testing.T) {
 	skipWithoutProc(t)
 	var f *swapFixture
 	var swapper *dirSwap
@@ -234,7 +234,7 @@ func TestT10_D1_directorySwapLeftInPlaceStopsTheFileBeforeAnyAction(t *testing.T
 	}
 }
 
-func TestT10_D1_directorySwapDuringOnScanFileLetsTheFilterReadTheOriginal(t *testing.T) {
+func TestPipeline_directorySwapDuringOnScanFileLetsTheFilterReadTheOriginal(t *testing.T) {
 	skipWithoutProc(t)
 	var f *swapFixture
 	f = newSwapFixture(t, serviceSubmitter(&f, nil))
@@ -265,7 +265,7 @@ func TestT10_D1_directorySwapDuringOnScanFileLetsTheFilterReadTheOriginal(t *tes
 	}
 }
 
-func TestT10_D1_directorySwapDuringExtractionExtractsTheOriginalArchive(t *testing.T) {
+func TestPipeline_directorySwapDuringExtractionExtractsTheOriginalArchive(t *testing.T) {
 	skipWithoutProc(t)
 	original, _ := createArchive(t, []string{"original member"})
 	originalBytes, err := os.ReadFile(filepath.Clean(original))
@@ -319,7 +319,7 @@ func TestT10_D1_directorySwapDuringExtractionExtractsTheOriginalArchive(t *testi
 	}
 }
 
-func TestT10_D1_aShaReturnedByTheServiceThatDiffersIsAnErrorWithoutAction(t *testing.T) {
+func TestPipeline_aShaReturnedByTheServiceThatDiffersIsAnErrorWithoutAction(t *testing.T) {
 	submitter := &gdetectMock.MockGDetectSubmitter{
 		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
 		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
@@ -347,7 +347,7 @@ func openDescriptors(t *testing.T) int {
 	return len(entries)
 }
 
-func TestT10_noDescriptorIsLeftOpenAfterEachFileWhateverTheOutcome(t *testing.T) {
+func TestPipeline_noDescriptorIsLeftOpenAfterEachFileWhateverTheOutcome(t *testing.T) {
 	skipWithoutProc(t)
 	outcomes := map[string]func(f **swapFixture) *gdetectMock.MockGDetectSubmitter{
 		"clean": func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) },
@@ -393,7 +393,7 @@ func TestT10_noDescriptorIsLeftOpenAfterEachFileWhateverTheOutcome(t *testing.T)
 	}
 }
 
-func TestT10_aFifoSwappedInIsNeverOpenedForReading(t *testing.T) {
+func TestPipeline_aFifoSwappedInIsNeverOpenedForReading(t *testing.T) {
 	in := t.TempDir()
 	file := filepath.Join(in, "f.bin")
 	if err := os.WriteFile(file, []byte("regular"), 0o600); err != nil {
@@ -443,7 +443,7 @@ func TestT10_aFifoSwappedInIsNeverOpenedForReading(t *testing.T) {
 	}
 }
 
-func TestT10_aDirectoryLinkIsNeverWalkedEvenWithFollowSymlinks(t *testing.T) {
+func TestPipeline_aDirectoryLinkIsNeverWalkedEvenWithFollowSymlinks(t *testing.T) {
 	in := t.TempDir()
 	outside := t.TempDir()
 	if err := os.WriteFile(filepath.Join(outside, "secret.bin"), []byte("outside the monitored tree"), 0o600); err != nil {
@@ -517,7 +517,7 @@ func copyInto(t *testing.T, dst, src string) {
 	}
 }
 
-func TestT10_procUnusableRefusesToStart(t *testing.T) {
+func TestConnector_procUnusableRefusesToStart(t *testing.T) {
 	skipWithoutProc(t)
 	prev := descriptorPath
 	t.Cleanup(func() { descriptorPath = prev })

@@ -119,7 +119,7 @@ func TestZipFamily_anEncryptedMemberOfAZipFamilyFileFollowsTheEncryptedPolicy(t 
 				return b
 			}
 			t.Run(kind+"/"+method+"/default", func(t *testing.T) {
-				r := runT17(t, t17Setup{name: name, content: content(t)})
+				r := runPipeline(t, pipelineSetup{name: name, content: content(t)})
 				notDelivered(t, r, name)
 				if r.submissionsOf("secret.txt") != 0 {
 					t.Error("a member was extracted and submitted: the file is only checked")
@@ -129,7 +129,7 @@ func TestZipFamily_anEncryptedMemberOfAZipFamilyFileFollowsTheEncryptedPolicy(t 
 				continue // the policies are the same whatever the family: one kind is enough
 			}
 			t.Run(kind+"/"+method+"/pass", func(t *testing.T) {
-				r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: content(t)})
+				r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: content(t)})
 				got := r.one(t, name)
 				if got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted || got.report.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted {
 					t.Errorf("reason = %q, want the file submitted whole and marked encrypted", got.result.NotAnalyzedReason)
@@ -139,7 +139,7 @@ func TestZipFamily_anEncryptedMemberOfAZipFamilyFileFollowsTheEncryptedPolicy(t 
 				}
 			})
 			t.Run(kind+"/"+method+"/mitigate", func(t *testing.T) {
-				r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyMitigate}, name: name, content: content(t)})
+				r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyMitigate}, name: name, content: content(t)})
 				got := r.one(t, name)
 				if !got.result.Malware || got.result.MalwareReason != datamodel.Encrypted {
 					t.Errorf("result = %+v, want malware encrypted", got.result)
@@ -157,7 +157,7 @@ func TestZipFamily_legitimateZipFamilyFilesAreUnchanged(t *testing.T) {
 			content := packageZip(t, kind)
 			typedAs(t, content, mime)
 			name := "legit." + kind
-			r := runT17(t, t17Setup{name: name, content: content})
+			r := runPipeline(t, pipelineSetup{name: name, content: content})
 			got := r.one(t, name)
 			if got.result.Error != nil || got.result.Malware || got.result.NotAnalyzedReason != "" {
 				t.Errorf("result = %+v, want an ordinary file", got.result)
@@ -177,7 +177,7 @@ func TestZipFamily_legitimateZipFamilyFilesAreUnchanged(t *testing.T) {
 func TestZipFamily_theLocalHeaderBitTrickIsCaughtByTheIntegrityTest(t *testing.T) {
 	content := clearLocalEncryptionBit(t, withEncryptedMember(t, packageZip(t, "docx"), "ZipCrypto"))
 	typedAs(t, content, familyTypes["docx"])
-	r := runT17(t, t17Setup{name: "trick.docx", content: content})
+	r := runPipeline(t, pipelineSetup{name: "trick.docx", content: content})
 	notDelivered(t, r, "trick.docx")
 }
 
@@ -187,9 +187,9 @@ func TestZipFamily_aTruncatedDocumentIsNotSubmitted(t *testing.T) {
 	full := packageZip(t, "docx")
 	cut := full[:len(full)*3/4]
 	typedAs(t, cut, familyTypes["docx"])
-	r := runT17(t, t17Setup{name: "cut.docx", content: cut})
+	r := runPipeline(t, pipelineSetup{name: "cut.docx", content: cut})
 	notDelivered(t, r, "cut.docx")
-	r = runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: "cut.docx", content: cut})
+	r = runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: "cut.docx", content: cut})
 	got, ran := r.maybe("cut.docx")
 	if !ran || got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted {
 		t.Errorf("under {pass, as_file}: reason = %q (ran %v), want marked encrypted", got.result.NotAnalyzedReason, ran)
@@ -220,11 +220,11 @@ func TestZipFamily_aZipFamilyFileNestedInAnArchiveFollowsTheSameRules(t *testing
 	for _, format := range []string{"zip", "7z"} {
 		name := "outer." + format
 		t.Run(format+"/default", func(t *testing.T) {
-			r := runT17(t, t17Setup{name: name, content: outer(t, format)})
+			r := runPipeline(t, pipelineSetup{name: name, content: outer(t, format)})
 			notDelivered(t, r, name)
 		})
 		t.Run(format+"/pass", func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: outer(t, format)})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: name, content: outer(t, format)})
 			got := r.one(t, name)
 			if len(got.report.NotAnalyzedExtractedFiles) != 1 || got.report.NotAnalyzedExtractedFiles[0].Reason != datamodel.NotAnalyzedEncrypted {
 				t.Errorf("report = %+v, want inner.docx listed as not analyzed, encrypted", got.report.NotAnalyzedExtractedFiles)
@@ -306,11 +306,11 @@ func TestZipFamily_aMemberEncryptedWithAKnownPasswordIsEncrypted(t *testing.T) {
 			return b
 		}
 		t.Run(method+"/default", func(t *testing.T) {
-			r := runT17(t, t17Setup{name: "known.docx", content: content(t)})
+			r := runPipeline(t, pipelineSetup{name: "known.docx", content: content(t)})
 			notDelivered(t, r, "known.docx")
 		})
 		t.Run(method+"/pass", func(t *testing.T) {
-			r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: "known.docx", content: content(t)})
+			r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass}, name: "known.docx", content: content(t)})
 			got := r.one(t, "known.docx")
 			if got.result.NotAnalyzedReason != datamodel.NotAnalyzedEncrypted {
 				t.Errorf("reason = %q, want the file passed marked encrypted", got.result.NotAnalyzedReason)
@@ -345,7 +345,7 @@ func TestZipFamily_aMemberEncryptedWithAnyPasswordTheConnectorMightTryIsEncrypte
 						t.Fatal(err)
 					}
 					typedAs(t, content, familyTypes[kind])
-					r := runT17(t, t17Setup{name: name, content: content})
+					r := runPipeline(t, pipelineSetup{name: name, content: content})
 					notDelivered(t, r, name)
 				})
 			}

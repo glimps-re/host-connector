@@ -16,7 +16,7 @@ import (
 )
 
 // notDelivered fails when the file reached OUTPUT or left INPUT.
-func notDelivered(t *testing.T, r *t17Run, name string) {
+func notDelivered(t *testing.T, r *pipelineRun, name string) {
 	t.Helper()
 	if r.exists(r.out, name) {
 		t.Errorf("%s was delivered to OUTPUT", name)
@@ -35,14 +35,14 @@ func TestTruncatedZipIsNeverAPlainFile(t *testing.T) {
 			c := cutCase(fx, percent)
 			name := fmt.Sprintf("%s-%d.zip", fx, percent)
 			t.Run(name+"/default", func(t *testing.T) {
-				r := runT17(t, t17Setup{name: name, content: c.content(t)})
+				r := runPipeline(t, pipelineSetup{name: name, content: c.content(t)})
 				notDelivered(t, r, name)
 				if got, ran := r.maybe(name); ran && got.result.Error == nil {
 					t.Errorf("result = %+v, want the failure", got.result)
 				}
 			})
 			t.Run(name+"/pass and as_file", func(t *testing.T) {
-				r := runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
+				r := runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: c.content(t)})
 				got, ran := r.maybe(name)
 				if !ran {
 					t.Fatalf("the actions never ran for %s", name)
@@ -62,13 +62,13 @@ func TestSevenZipWithAFlippedStartHeaderByteIsNeverAPlainFile(t *testing.T) {
 		t.Skip("48 real extractions")
 	}
 	for _, fx := range []string{"enc_headers.7z", "enc_content.7z"} {
-		base := t17Fixture(t, fx)
+		base := archiveFixture(t, fx)
 		for off := 8; off <= 31; off++ {
 			t.Run(fmt.Sprintf("%s/%d", fx, off), func(t *testing.T) {
 				b := bytes.Clone(base)
 				b[off] ^= 0x5a
 				name := fmt.Sprintf("flip%d.7z", off)
-				r := runT17(t, t17Setup{name: name, content: b})
+				r := runPipeline(t, pipelineSetup{name: name, content: b})
 				notDelivered(t, r, name)
 			})
 		}
@@ -135,7 +135,7 @@ func compressedAndCut(t *testing.T, format string) []byte {
 }
 
 func TestOtherTruncatedArchivesAreNeverPlainFiles(t *testing.T) {
-	sevenZip := t17Fixture(t, "enc_content.7z")
+	sevenZip := archiveFixture(t, "enc_content.7z")
 	cases := []struct {
 		name    string
 		content []byte
@@ -148,7 +148,7 @@ func TestOtherTruncatedArchivesAreNeverPlainFiles(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := runT17(t, t17Setup{name: c.name, content: c.content})
+			r := runPipeline(t, pipelineSetup{name: c.name, content: c.content})
 			notDelivered(t, r, c.name)
 		})
 	}
@@ -157,7 +157,7 @@ func TestOtherTruncatedArchivesAreNeverPlainFiles(t *testing.T) {
 // A truncated zip that is a member of a real outer archive follows the rule too.
 func TestTruncatedZipNestedInARealArchiveIsNeverAPlainFile(t *testing.T) {
 	plugin := realPlugin(t)
-	cut := t17Fixture(t, "enc_aes.zip")
+	cut := archiveFixture(t, "enc_aes.zip")
 	cut = cut[:len(cut)/2]
 	for _, format := range []string{"zip", "7z"} {
 		t.Run(format, func(t *testing.T) {
@@ -175,9 +175,9 @@ func TestTruncatedZipNestedInARealArchiveIsNeverAPlainFile(t *testing.T) {
 				t.Fatal(err)
 			}
 			name := "outer." + format
-			r := runT17(t, t17Setup{name: name, content: content})
+			r := runPipeline(t, pipelineSetup{name: name, content: content})
 			notDelivered(t, r, name)
-			r = runT17(t, t17Setup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: content})
+			r = runPipeline(t, pipelineSetup{policy: scanner.Unanalyzable{Encrypted: scanner.PolicyPass, ExtractError: scanner.PolicyAsFile}, name: name, content: content})
 			got, ran := r.maybe(name)
 			if !ran || len(got.report.NotAnalyzedExtractedFiles) != 1 || got.report.NotAnalyzedExtractedFiles[0].Reason != datamodel.NotAnalyzedEncrypted {
 				t.Errorf("report = %+v (ran %v), want inner.zip listed as not analyzed, encrypted", got.report.NotAnalyzedExtractedFiles, ran)
@@ -197,7 +197,7 @@ func TestWhatIsNotTypedAsAnArchiveStaysAPlainFile(t *testing.T) {
 	}{{"image.png", png}, {"blob.bin", binary}}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := runT17(t, t17Setup{name: c.name, content: c.content})
+			r := runPipeline(t, pipelineSetup{name: c.name, content: c.content})
 			got := r.one(t, c.name)
 			if got.result.Error != nil || got.result.NotAnalyzedReason != "" {
 				t.Errorf("result = error %v reason %q, want an ordinary plain file", got.result.Error, got.result.NotAnalyzedReason)
@@ -219,7 +219,7 @@ func TestATextThatStartsLikeAnArchiveStaysInInput(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			r := runT17(t, t17Setup{name: c.name, content: []byte(c.content)})
+			r := runPipeline(t, pipelineSetup{name: c.name, content: []byte(c.content)})
 			notDelivered(t, r, c.name)
 		})
 	}

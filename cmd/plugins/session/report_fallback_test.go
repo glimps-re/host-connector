@@ -25,27 +25,27 @@ import (
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 )
 
-type t20Logs struct {
+type syncLogs struct {
 	mu sync.Mutex
 	b  bytes.Buffer
 }
 
-func (l *t20Logs) Write(p []byte) (int, error) {
+func (l *syncLogs) Write(p []byte) (int, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.Write(p)
 }
 
-func (l *t20Logs) String() string {
+func (l *syncLogs) String() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.b.String()
 }
 
-type t20Fixture struct {
+type reportFixture struct {
 	p      *SessionPlugin
 	hcc    *mock.MockHCContext
-	logs   *t20Logs
+	logs   *syncLogs
 	root   string
 	export string
 	now    atomic.Pointer[time.Time]
@@ -55,9 +55,9 @@ type t20Fixture struct {
 	resolved []string
 }
 
-func newT20Fixture(t *testing.T, cfg Config) *t20Fixture {
+func newReportFixture(t *testing.T, cfg Config) *reportFixture {
 	t.Helper()
-	f := &t20Fixture{logs: &t20Logs{}, root: t.TempDir(), export: t.TempDir()}
+	f := &reportFixture{logs: &syncLogs{}, root: t.TempDir(), export: t.TempDir()}
 	start := time.Unix(1_700_000_000, 0)
 	f.now.Store(&start)
 	f.hcc = newMockHCC(t)
@@ -91,19 +91,19 @@ func newT20Fixture(t *testing.T, cfg Config) *t20Fixture {
 	return f
 }
 
-func (f *t20Fixture) advance(d time.Duration) {
+func (f *reportFixture) advance(d time.Duration) {
 	n := f.now.Load().Add(d)
 	f.now.Store(&n)
 }
 
-func (f *t20Fixture) scanned(user, name string) {
+func (f *reportFixture) scanned(user, name string) {
 	p := filepath.Join(f.root, user, name)
 	f.p.OnStartScanFile(p, "sha-"+name)
 	f.p.OnFileScanned(p, "sha-"+name, datamodel.Result{})
 	f.p.OnReport(&datamodel.Report{Filename: p, SHA256: "sha-" + name})
 }
 
-func (f *t20Fixture) exported(user string) []string {
+func (f *reportFixture) exported(user string) []string {
 	entries, err := os.ReadDir(filepath.Join(f.export, user))
 	if err != nil {
 		return nil
@@ -115,7 +115,7 @@ func (f *t20Fixture) exported(user string) []string {
 	return out
 }
 
-func (f *t20Fixture) eventCount(key string) int {
+func (f *reportFixture) eventCount(key string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n := 0
@@ -146,7 +146,7 @@ func pdfContent(s string) plugins.GeneratedReport {
 // A generator that fails N times: up to report_retries failures the report is
 // retried and finally generated; one more and the JSON fallback is written,
 // with the same files, and the console event is raised once.
-func TestT20a_aGeneratorThatFailsNTimesGivesTheReportOrTheJSONFallback(t *testing.T) {
+func TestReportGeneration_aGeneratorThatFailsNTimesGivesTheReportOrTheJSONFallback(t *testing.T) {
 	const retries = 3
 	tests := []struct {
 		name         string
@@ -162,7 +162,7 @@ func TestT20a_aGeneratorThatFailsNTimesGivesTheReportOrTheJSONFallback(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			f := newT20Fixture(t, Config{ReportRetries: retries})
+			f := newReportFixture(t, Config{ReportRetries: retries})
 			var calls atomic.Int32
 			f.hcc.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 				if int(calls.Add(1)) <= tt.failures {
@@ -209,8 +209,8 @@ func TestT20a_aGeneratorThatFailsNTimesGivesTheReportOrTheJSONFallback(t *testin
 
 // Several sessions whose generator fails give one console event, not one per
 // session, and each one still gets its own JSON report.
-func TestT20a_theFallbackEventIsRaisedOnceForSeveralSessions(t *testing.T) {
-	f := newT20Fixture(t, Config{ReportRetries: 0})
+func TestReportGeneration_theFallbackEventIsRaisedOnceForSeveralSessions(t *testing.T) {
+	f := newReportFixture(t, Config{ReportRetries: 0})
 	f.hcc.GenerateReportFunc = func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 		return plugins.GeneratedReport{}, errors.New("no browser")
 	}
@@ -233,7 +233,7 @@ func TestT20a_theFallbackEventIsRaisedOnceForSeveralSessions(t *testing.T) {
 
 // A generator is a plugin: whatever it hands back (no content, an extension that
 // names another place) never writes outside the export and falls back to JSON.
-func TestT20a_aHostileOrEmptyGeneratorResultFallsBackToJSONInsideTheExport(t *testing.T) {
+func TestReportGeneration_aHostileOrEmptyGeneratorResultFallsBackToJSONInsideTheExport(t *testing.T) {
 	tests := map[string]plugins.GeneratedReport{
 		"no content":            {Extension: ".pdf"},
 		"extension with a path": {Content: io.NopCloser(strings.NewReader("x")), Extension: "/../../escaped"},
@@ -244,7 +244,7 @@ func TestT20a_aHostileOrEmptyGeneratorResultFallsBackToJSONInsideTheExport(t *te
 	}
 	for name, generated := range tests {
 		t.Run(name, func(t *testing.T) {
-			f := newT20Fixture(t, Config{ReportRetries: 0})
+			f := newReportFixture(t, Config{ReportRetries: 0})
 			f.hcc.GenerateReportFunc = func(context.Context, datamodel.ScanContext, iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 				return generated, nil
 			}
@@ -284,7 +284,7 @@ func TestT20a_aHostileOrEmptyGeneratorResultFallsBackToJSONInsideTheExport(t *te
 // or written through, whatever it is: a regular file, or a link to somewhere
 // else. The report is not lost, it is written under a conflict name, with an
 // Error.
-func TestT20a_anExistingFileAtTheNameOfTheReportIsLeftIntact(t *testing.T) {
+func TestReportGeneration_anExistingFileAtTheNameOfTheReportIsLeftIntact(t *testing.T) {
 	kinds := map[string]func(t *testing.T, final, outside string){
 		"regular file": func(t *testing.T, final, _ string) {
 			if err := os.WriteFile(final, []byte("PRECIOUS"), 0o600); err != nil {
@@ -307,7 +307,7 @@ func TestT20a_anExistingFileAtTheNameOfTheReportIsLeftIntact(t *testing.T) {
 	}
 	for name, setup := range kinds {
 		t.Run(name, func(t *testing.T) {
-			f := newT20Fixture(t, Config{})
+			f := newReportFixture(t, Config{})
 			outside := filepath.Join(t.TempDir(), "outside.pdf")
 			f.hcc.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
 				drain(t, reports)

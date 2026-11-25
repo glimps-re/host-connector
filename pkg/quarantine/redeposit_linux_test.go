@@ -14,7 +14,7 @@ import (
 // A file is redeposited under the same name between the copy and the removal of
 // the source: the removal, which goes through the verified handle, leaves the new
 // file alone, and the verified copy stays published.
-func TestT13_aFileRedepositedBeforeTheSourceRemovalIsKeptAndTheVerifiedCopyIsPublished(t *testing.T) {
+func TestMoveVerifiedCopy_aFileRedepositedBeforeTheSourceRemovalIsKeptAndTheVerifiedCopyIsPublished(t *testing.T) {
 	root := t.TempDir()
 	in, out := filepath.Join(root, "in"), filepath.Join(root, "out")
 	for _, d := range []string{in, out} {

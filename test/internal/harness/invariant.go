@@ -20,10 +20,6 @@ import (
 	"github.com/glimps-re/host-connector/test/internal/fakes/gmalware"
 )
 
-// ReasonAnalysisError is the not-analyzed reason of a file delivered under
-// analysis_error: pass.
-const ReasonAnalysisError datamodel.NotAnalyzedReason = "analysis-error"
-
 // maxReportSize bounds the report the checker reads; a larger one is a
 // violation, not a truncated read that hides what follows.
 const maxReportSize = 64 << 20
@@ -292,7 +288,7 @@ func (e *Expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size in
 	case datamodel.NotAnalyzedTooBig:
 		return e.maxFileSize > 0 && size > e.maxFileSize
 	case datamodel.NotAnalyzedEncrypted, datamodel.NotAnalyzedExtractLimit, datamodel.NotAnalyzedExtractError,
-		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, ReasonAnalysisError:
+		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, datamodel.NotAnalyzedAnalysisError:
 		return e.reasons[reason]
 	default:
 		return false
@@ -398,6 +394,10 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 	case e.TotalExtractedFile > 0:
 		ok, bad, issues := archiveViolations(rel, sum, e, spec, gm)
 		valid, violations, problems = ok, append(violations, bad...), append(problems, issues...)
+	case len(e.NotAnalyzedExtractedFiles) > 0:
+		// An archive whose every member was left out: the reasons of its members,
+		// checked above, are what justifies it.
+		valid = true
 	default:
 		v, ok := gm.Given(sum)
 		switch {

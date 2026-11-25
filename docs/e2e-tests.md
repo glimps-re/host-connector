@@ -24,11 +24,12 @@ go test -race -tags e2e_plugins -parallel 4 -timeout 30m ./test/plugins/
 Four points to keep in mind:
 
 - The scenarios of `test/core` carry `linux && (e2e || e2e_core)`, those of
-  `test/plugins` `linux && (e2e || e2e_plugins)`. The two browser scenarios
-  (`plugins/report_test.go`) also need `realbrowser`. Every file of
+  `test/plugins` `linux && (e2e || e2e_plugins)`. The three browser scenarios
+  (`plugins/report_test.go`, `plugins/report_fallback_test.go`) also need
+  `realbrowser`. Every file of
   `test/internal` carries only `linux`, and so do the tests of the document
   builders (`plugins/documents_test.go`): a plain `go test ./test/...` runs
-  these 21 self-tests and builds no binary; 112 tests with
+  these 22 self-tests and builds no binary; 163 tests with
   `-tags e2e,realbrowser`.
 - The binary and the plugins are built once, into `gmhost-e2e/<key>` in the
   user cache folder, and reused by both packages and by later runs until the
@@ -61,10 +62,10 @@ Four points to keep in mind:
 - **The embedded 7-Zip.** The `extract` plugin embeds `7zzs`; the connector
   runs it for real. Some tests also run a copy of it directly to build their
   inputs (7z archives with encrypted headers, AES-encrypted zips, a solid 7z).
-- **Chrome.** The two browser scenarios use a real Chromium or Chrome to render
-  the PDF session report. One of them puts a small Go program in front of the
-  browser (`buildBrowserStub`): it starts the real browser until a marker file
-  exists, then fails.
+- **Chrome.** The three browser scenarios use a real Chromium or Chrome to
+  render the PDF session report. Two of them put a small Go program in front of
+  the browser (`buildBrowserStub`): it starts the real browser until a marker
+  file exists, then fails a set number of times, or always.
 - **The filesystem.** INPUT, OUTPUT, the work folder, the exports and the
   quarantine are real folders under `t.TempDir()`. Signals are real signals.
 
@@ -82,7 +83,8 @@ connector client uses (`/api/versions`, `/status`, `/submit`, `/results/`,
 - **How verdicts are scripted.** By content, keyed by SHA256:
   `MarkMalicious`, `MarkMaliciousWithError` (a detection and an analysis error
   in the same result) and `MarkAnalysisError` (an error and no detection).
-  Content that was never marked is clean.
+  `AnswerOtherSHA256` makes the result of a content carry a SHA256 that is not
+  its own. Content that was never marked is clean.
 - **Errors.** `FailWith(status)` makes the submit, results and search requests
   answer that HTTP status until `FailWith(0)`; `/api/versions` and
   `/api/lite/v2/status` are not affected, nor is submit in hang mode. The
@@ -135,7 +137,7 @@ protocol: `register`, `config`, `tasks`, `events` and `metrics`.
   next one. The fake re-delivers rather than lose a task; the real manager is
   stricter about what it hands out.
 - `events` are kept in order. The scenarios read the acknowledgement of a task
-  (`WaitAck`, with its error text) and the events by type: errors
+  (`Ack`, with its error text, waited for by `in.WaitAck`) and the events by type: errors
   (`ErrorTypes`), resolutions (`ResolvedTypes`), mitigations
   (`MitigationReasons`).
 - `metrics` are accepted and dropped; no scenario asserts them.
@@ -145,11 +147,12 @@ protocol: `register`, `config`, `tasks`, `events` and `metrics`.
 Most tests are one call, `harness.Run(t, harness.Scenario{...})`, that holds
 the input and the expected output side by side:
 
-- **Input.** `Agent`, `Hang` (the service never answers), `Timeout`, `Config`
+- **Input.** `Agent`, `Timeout`, `Config`
   merged over the default, `Plugins` by folder name of `cmd/plugins` (an entry
   turns the plugin on; `extract` also sets `extract: true`; the `session` entry
   is merged over its default), the `Files` added to INPUT at start (path below
-  the owner folder, content, verdict of the service, archive `Members`), then
+  the owner folder, content, verdict of the service, archive `Members`; the
+  verdict `OtherSHA256` is a clean result about another SHA256), then
   `Steps` played in order: `AddFileToInput`, `Await` (a file reaches an
   intermediate outcome), `AwaitDelivered` (files in OUTPUT, reports not
   looked at), `Restore`, `RestoreID`, `UpdateConfig`, `Task`, `Restart`,
@@ -157,9 +160,13 @@ the input and the expected output side by side:
   `Stop` (SIGTERM, clean exit).
 - **Expected output.** `Want` gives an `Outcome` per file, and per archive
   member as `"archive.zip/dir/member.txt"`: where it is (`Input`, `Output`,
-  `Quarantine`, `Nowhere`), the malware or not-analyzed reason and the error of
-  its report entries, `Restored`, the `Container` format, the names it was
-  submitted under, the number of submissions, whether the service gave a
+  `Quarantine`), the malware or not-analyzed reason and the error of
+  its report entries, `NoReport` (no report entry at all, in place of those
+  checks), `Restored`, the `Container` format, the `Delivery` (`Copied`: the
+  file in OUTPUT has another inode than the dropped file; `SameFile`: the same
+  inode), the names it was
+  submitted under (written below the owner folder, compared as full host
+  paths), the number of submissions, whether the service gave a
   verdict, its malicious and not-analyzed members, and an `Entry` function for
   a computed check. The whole run has `WantMitigations` (exact),
   `WantConsoleErrors`, `WantConsoleResolved`, `WantSessionReports`, `WantGone`
@@ -178,20 +185,32 @@ the input and the expected output side by side:
   the later checks look at the newer entries, or at the last one when there is
   none.
 - **Waiting and the table.** `Run` waits up to 60 s for every outcome; an
-  outcome in INPUT must then hold for 12 s. On failure, or when the process
+  outcome in INPUT must then hold for 12 s. `Await` waits the same way for one
+  file. On failure, or when the process
   exits first, it prints one row per file and per run-wide check with what is
   wanted and what is observed, ✓ or ✗; past 50 rows only the ✗ rows are shown.
-  `Run` returns the instance, for the few checks the outcome cannot express
-  (the console lines of the names tests).
+  `Run` returns the instance, for the checks the outcome cannot express (log
+  and console lines, the number of report entries or submissions of a
+  content).
+- **A file without report.** `NoReport` with `In: Input` is checked with the
+  other files: once they have all reached their outcome, the file must still
+  have no entry through the 12 s watch. An entry that appears before the others
+  settle fails only at the 60 s timeout.
 - **Logs.** A scenario asserts on the log only where it is the subject: the
-  console lines of the names tests and the reason of a refused start.
+  console lines of the names tests, the reason of a refused start, and a
+  warning or refusal that the test is about (the empty policy with `rename`, a
+  removed key of the extract plugin).
 
 The other tests start the instance by hand (`harness.Start`), because they
 measure what a scenario does not express: timings and signals (shutdown, slow
 writer, retry intervals), the work folder during a bomb, the spool, inotify
 watches, a concurrent writer, a 5 GiB file, a crash, the PDF report, a name the
-connector chooses (destination conflict), a label capped below its path, or a
-single extraction seen only in the log. They run serially.
+connector chooses (destination conflict), a label capped below its path, a
+single extraction over several rescans, or a quiet minute of the monitor. So do
+the tests that act on INPUT or on the exports in the middle of a run, which no
+step expresses: removing a file, making folders unreadable, putting a file at
+the name of a session report once the session is open, breaking the browser
+once the connector has started. They run serially.
 
 ### What the harness does (`internal/harness`)
 
@@ -208,28 +227,31 @@ single extraction seen only in the log. They run serially.
   of 1 s, a session delay of 2 s and the default extraction limits. A scenario
   merges its keys over it (`Options.Config`), turns plugins on with their
   configuration (`Options.Plugins`, the `session` entry merged over its
-  default) and may fix the order of the plugins (`Order`).
+  default).
   Because the harness has to know the analysis size limit for the invariant,
   it refuses a configuration with `gmalware_syndetect` on.
 - **Dropping files.** `Drop` writes below the owner folder; `Create` makes a
   sparse file; `InOutput`, `Gone`, `OutputHas` and `ReportsOf` read the result.
 - **Waiting.** `wait.WaitFor` (`internal/wait`) polls every 50 ms for at most
-  60 s. The instance method `in.WaitFor`, which the scenarios use, also fails
-  at once if the process exits meanwhile (a connector that refused its
-  configuration is not waited for until the deadline); the package function
-  has no such check. Facts that must *not* happen are judged
-  over a window: `Run` holds an outcome in INPUT for 12 s once its report is
-  written; in the tests started by hand, `StaysInInput` first waits for the log
+  60 s. The instance method `in.WaitFor`, which the scenarios use, polls every
+  200 ms for at most 60 s and also fails at once if the process exits
+  meanwhile (a connector that refused its configuration is not waited for
+  until the deadline); the package function has no such check. `Run` and
+  `StaysInInput` wait with the same loop. Facts that must *not* happen are judged
+  over a window: `Run` holds an outcome in INPUT for 12 s once every outcome is
+  reached; in the tests started by hand, `StaysInInput` first waits for the log
   to name the file, then watches OUTPUT for 12 s and checks that the file is
   still in INPUT.
 - **Signals and restarts.** `Signal` sends a signal; `Restart` stops with
   SIGTERM and starts again on the same folders with a changed configuration;
-  `CrashAndRestart` kills the process group with SIGKILL first.
+  `CrashAndRestart` kills the process group with SIGKILL first. Both wait for
+  the new process to watch again.
 - **Logs.** The output of the process is kept in a bounded buffer: past 8 MiB
   only the last 4 MiB are kept, cut on a byte rather than a line, and the log
   then starts with a marker saying so. It is printed when a test fails.
-  `LogHas` looks for a line: `Run` uses it for a refused start and to know a
-  restart is watching again; some tests started by hand check log lines.
+  `LogHas` looks for a line: `Run` uses it for a refused start, and the
+  restarts to know the connector is watching again; some tests started by hand
+  check log lines.
 - **End of every test.** `finish` (a cleanup, so it also runs when the test
   failed early) sends SIGTERM if the process still runs, waits up to 20 s,
   then runs the OUTPUT invariant (section 3), reports the errors recorded by
@@ -258,7 +280,9 @@ reports, below):
 - an archive is held to the members the scenario declared: none programmed as
   malware, at least one seen by the service, none failed; an archive that was
   not declared is a violation;
-- members listed as not analyzed in a report need a justified reason too;
+- members listed as not analyzed in a report need a justified reason too; an
+  archive entry that extracted nothing and lists its members as not analyzed
+  is valid when each listed reason is justified;
 - anything that is not a regular file (link, device) is a violation, and so is
   an unreadable report. A detection report larger than 64 MiB is a violation
   (the read is capped, so padding cannot hide data behind the cap).
@@ -288,7 +312,7 @@ process has stopped, whether the test passed or not.
 
 **Self-test.** `internal/harness/invariant_test.go` runs the checker on folders
 filled by hand and requires each case to give the expected violation or none:
-`TestOutputViolations` (a table of 45 cases: missing report,
+`TestOutputViolations` (a table of 46 cases: missing report,
 malicious, error, undeclared reasons, size-based reasons, restored malware,
 copies, archives, crash), the lock-report tests (traps, archives, restored
 malware, quarantine off) and `TestEffectiveMaxFileSize`. Each fake has its own
@@ -300,21 +324,32 @@ self-tests beside it (section 5).
 test/
   doc.go                      package documentation: layout, tags, how to run
   internal/
-    wait/                     WaitFor, Poll
+    wait/                     WaitFor
     harness/                  build.go, instance.go, scenario.go, wait.go,
                               invariant.go, maxsize.go, helpers.go, and
                               their self-tests
     fakes/errlog/             what a fake failed to read or write
     fakes/gmalware/           the fake GMalware
     fakes/console/            the fake console
-  core/                       delivery_test.go, console_test.go,
-                              analysis_test.go, paths_test.go, restore_test.go,
+  core/                       delivery_test.go, delivery_copy_test.go,
+                              monitoring_test.go, pressure_test.go,
+                              pairing_test.go, console_test.go,
+                              config_refusal_test.go, analysis_test.go,
+                              service_sha_test.go, paths_test.go,
+                              restore_test.go, restored_content_test.go,
                               quarantine_test.go, names_test.go, shutdown_test.go
-  plugins/                    extract_archives_test.go,
-                              extract_limits_test.go, extract_encryption_test.go,
+  plugins/                    extract_archives_test.go, extract_damaged_test.go,
+                              extract_forged_names_test.go,
+                              extract_config_test.go, extract_limits_test.go,
+                              extract_budget_test.go,
+                              extract_nested_limits_test.go,
+                              extract_encryption_test.go,
+                              extract_encryption_verdicts_test.go,
                               extract_paths_test.go, filetype_filter_test.go,
-                              session_test.go, report_test.go, lifecycle_test.go,
-                              documents_test.go
+                              delivery_copy_test.go, pairing_test.go,
+                              session_test.go, session_report_test.go,
+                              report_test.go, report_fallback_test.go,
+                              lifecycle_test.go, documents_test.go
 ```
 
 `internal` limits the harness and the fakes to the `test/` tree. Helpers used
@@ -322,19 +357,19 @@ by one side only stay in that side's package as plain functions taking the
 instance (the archive builders, 7-Zip helpers, `seenMembers` and `spoolFiles`
 in `plugins`; `inotifyWatches` and `consoleLinesOf` in `core`). The identifiers P*, T*,
 Q*, D* in the comments of the scenarios refer to the tasks of the project;
-`p3/T*` marks the tests of the third phase. The tests rewritten from the
-former in-process tests carry `T11`, `T14a` or `T20a`; those rewritten from
-`pkg/quarantine` name the test they come from.
+`p3/T*` marks the tests of the third phase. A test that covers an in-process
+test names it in its comment (`From Test…` or `Mirrors Test…`); some carry
+`T11`, `T14a` or `T20a` instead.
 
 ## 5. Catalogue
 
-110 tests. The "Needs" column gives the prerequisite beyond the Go toolchain,
+163 tests. The "Needs" column gives the prerequisite beyond the Go toolchain,
 `—` for none: **browser** (the `realbrowser` tag, Chromium or Chrome in the
 `PATH` and a non-root user; the test fails otherwise), **7-Zip** (the `7zzs`
-binary, which the test runs directly to build its input). Every instance
-builds the `extract` plugin, which needs `7zzs`, so a scenario that starts an
-instance before it builds its input fails at that build without `7zzs`; only
-`TestAESDocumentHasNoEncryptionFlag` is skipped. Every test that starts an
+binary, which the test runs directly to build its input or configures as the
+7-Zip of the plugin). Every instance builds the `extract` plugin, which needs
+`7zzs`. Without it, a test that needs `7zzs` before it starts an instance is
+skipped; one that starts an instance first fails at that build. Every test that starts an
 instance also skips under `-short`. A name is given without its `TestE2E_`
 prefix; the prefix of the other tests is kept. Tests with sub-tests (`t.Run`)
 are one row. Files are relative to `test/`.
@@ -349,10 +384,26 @@ are one row. Files are relative to `test/`.
 | `watcherSwitch` | `core/delivery_test.go` | `disable_fs_watcher` true with a 2 s rescan, then false with a 1 h rescan. | The process holds no inotify watch when disabled and some otherwise; a file dropped later is delivered in both cases. | — |
 | `emptyFoldersRemoved` | `plugins/session_test.go` | `remove_empty_dirs` on; a file dropped two folders deep. | After delivery and the session report the emptied folders are gone from INPUT. | — |
 | `slowUploadAndWriterThatKeepsTheFileOpen` | `core/delivery_test.go` | A writer appends to a file every 400 ms for 12 rounds, with a modification delay of 5 s, and keeps it open. | Nothing is submitted or delivered while it writes; the file is delivered whole once it pauses; a write after the delivery does not change OUTPUT. | — |
-| `manyFilesWithATinyTable` | `core/delivery_test.go` | Agent mode; 3000 files with 180-character names, `max_tracked_memory` at its 1 MiB minimum, 3 s rescan. | Every file is delivered, and the console received a `host-monitor-pressure` error (proof that the table overflowed). | — |
+| `manyFilesWithATinyTable` | `core/delivery_test.go` | Agent mode, 8 workers; 3000 files with 180-character names in 20 folders, `max_tracked_memory` at its 1 MiB minimum, 3 s rescan. | Every file is delivered, and the console received a `host-monitor-pressure` error (proof that the table overflowed). | — |
 | `anUnchangedFileLeftInInputIsAnalyzedOnceOverManyRescans` | `core/delivery_test.go` | Move off, watcher off, 1 s rescan; one file. | It is submitted once over about 12 rescans. | — |
 | `aModifiedFileIsAnalyzedAgain` | `core/delivery_test.go` | The same; the file is rewritten after its first analysis. | Each version is submitted exactly once. | — |
 | `aTransientFailureIsRetriedWithGrowingDelaysAndNeverTooOften` | `core/delivery_test.go` | The same, the service answers 503. | The attempts (search requests) are spaced by at least the backoff, and the second delay is not shorter than half the first. | — |
+| `copyModeDeliversAPrivateCopy` | `core/delivery_copy_test.go` | Move mode `copy`; one at a time: a plain file, a 4 KiB file, a malware restored in agent mode, an empty file, a file over a 1 KiB `max_file_size` with `too_big` at `pass`. | Each is delivered as a copy (another inode than the dropped file), except the too-big file, delivered as the same file; the restored, empty and too-big files carry their reason. | — |
+| `copyModeDeliversAPrivateCopyOfArchivesAndSkippedTypes` | `plugins/delivery_copy_test.go` | Move mode `copy`; one at a time: a zip, a PNG skipped by `filetype_filter`, a zip over a 100-byte `max_file_size`, and two zips with a member over a 2 KiB `max_file_size` under `too_big` at `pass` (the zip under the limit, then over it). | Each is delivered as a copy; the PNG is reported skipped; the zips with a big member list it as not analyzed `too-big`. | — |
+| `aFileRemovedBeforeTheEndOfItsDelayIsForgotten` | `core/monitoring_test.go` | Modification delay 5 s; a file removed 1 s after it is dropped, then a second file. | Once the second file is reported, the removed one was never submitted and has no report entry. | — |
+| `aFileAtTheBottomOfTwoHundredLevelsIsDelivered` | `core/monitoring_test.go` | A file 200 folders deep, the folders made at once. | It is delivered. | — |
+| `unreadableFoldersDoNotHideTheFileBesideThem` | `core/monitoring_test.go` | Watcher off, 1 s rescan; 120 folders in mode 000 beside a readable file. Skipped as root. | The readable file is delivered. | — |
+
+### Monitor pressure
+
+The two tests without rescan wait for real quiet minutes; they run serially.
+
+| Test | File | Sets up | Asserts | Needs |
+| --- | --- | --- | --- | --- |
+| `withoutRescanThePressureIsReportedAtMostOnceAMinute` | `core/pressure_test.go` | Agent mode, `max_tracked_memory` 1 MiB, no rescan, modification delay 1 h; 3000 files with 180-character names; one more file a minute after the first report. | One pressure message in the console log, still one 10 s later; a second one only after the quiet minute. | — |
+| `withoutRescanTheEndOfThePressureIsToldOnceAfterAQuietMinute` | `core/pressure_test.go` | The same table, modification delay 20 s; 3000 files with long names, removed after the first report; a probe file within the minute, then one after each quiet minute. | Every probe is delivered; no `host-monitor-pressure` resolution within the minute, then exactly one. | — |
+| `filesLeftInInputFillTheTableUntilTheyAreRemoved` | `core/pressure_test.go` | Agent mode, move off, the same table, 2 s rescan; 3000 files with long names, removed once the console is told. | The console gets `host-monitor-pressure` and `host-monitor-table-full`; after the removal each is resolved exactly once. | — |
+| `aPressureMessageNamesAtMost32Owners` | `core/pressure_test.go` | Agent mode, the same table, 2 s rescan, modification delay 1 h; 10 files with long names in each of 300 owner folders beside `tom`. | Every file stays in INPUT with no report entry; the console gets `host-monitor-pressure` and a message that counts the files of other owners; no message names more than 32 owners or reaches 16 KiB. | — |
 
 ### Console and configuration
 
@@ -362,6 +413,11 @@ are one row. Files are relative to `test/`.
 | `invalidConfigureKeepsTheOldConfiguration` | `core/console_test.go` | Agent mode; the console serves a configuration with an invalid move mode, then a valid one, each followed by `update-config`. | The invalid one is acknowledged with an error and reported to the console as `host-config-rejected`, the old configuration keeps delivering; the valid one is accepted and resolves the error. | — |
 | `refusedAtStart` | `core/console_test.go` | A start with the work folder under a watched path. | It exits with an error and the log gives the message that says how to fix it. | — |
 | `aPluginMisconfigurationIsRefusedAtStart` | `plugins/lifecycle_test.go` | Two starts: a browser path that does not exist, a 7-Zip path that does not exist. | Each exits with an error and the log gives the message that says how to fix it. | — |
+| `anEmptyPassWithRenameIsRefusedAndTheRunningOneKept` | `core/config_refusal_test.go` | Agent mode; a file delivered, then the console serves `empty` at `pass` with move mode `rename`; a file dropped after. | The task is acknowledged with the refusal that names both keys; the file dropped after is delivered. | — |
+| `theEmptyPolicyAndTheMoveMode` | `core/config_refusal_test.go` | Starts with the move on or off, mode `copy`, `rename` or none, `empty` absent or at `skip`, `mitigate` or `pass`; a file that is not empty. | Only the move on with `rename` and `pass` is refused at start, with the message that names both keys. Otherwise the file is delivered, or stays in INPUT with the move off; with `rename` and no `empty` key the log says that empty files are skipped. | — |
+| `aRemovedKeyOfTheExtractPluginIsRefusedWithItsReplacement` | `plugins/extract_config_test.go` | Starts with `max_file_size`, `max_extracted_files` or `max_total_extracted_size` in the extract plugin, beside a default password. | The start is refused with a message that names the key and the limit that replaces it, not the unknown-key refusal; the log quotes neither the value nor the password. | — |
+| `aConfiguredSevenZipIsUsedAndKeptAfterTheStop` | `plugins/extract_config_test.go` | `seven_zip_path` set to a copy of `7zzs`; a zip; SIGTERM once it is delivered. | The member is submitted once and the zip delivered; the configured binary is still there after the stop. | 7-Zip |
+| `aMissingTMPDIRDoesNotStopTheExtraction` | `plugins/extract_config_test.go` | `TMPDIR` on a folder that does not exist, set for the whole test process (the test is serial); a zip of one member. | The start is not refused; the zip is delivered and its member submitted once. | — |
 
 ### Archives and extraction
 
@@ -369,26 +425,49 @@ are one row. Files are relative to `test/`.
 | --- | --- | --- | --- | --- |
 | `archives` | `plugins/extract_archives_test.go` | One zip with clean members, one with a malicious member. | The clean one is delivered; the other is quarantined whole and never reaches OUTPUT. | — |
 | `theHeadersOfAZipAreWalked` | `plugins/extract_archives_test.go` | Eight hand-made zips: a control, records hidden after a folder or between entries, zero padding, a stored jar in a jar, a byte after the end, decoy end-of-directory records. | The honest ones are delivered after each member was analyzed; the others stay in INPUT and are reported "damaged or inconsistent". | — |
-| `extractErrorAsFile` | `plugins/extract_archives_test.go` | `extract_error` at `error` or `as_file` with cut archives, a plain zip followed by an encrypted one, and members with a name over 255 bytes, a path over 4096 bytes or 70 folders deep. | Each stays in INPUT over a 12 s window, whatever the policy, reported with its error (damaged or inconsistent, or encrypted). | — |
+| `extractErrorAsFile` | `plugins/extract_archives_test.go` | `extract_error` at `error` or `as_file`, one archive per run: cut plain and encrypted archives; a plain zip or 7z followed by an encrypted archive; members with a path component over 255 bytes, a path over 4096 bytes, a name over the limit, or too deep; the homonym and collision fixtures; a corrupted AES zip, a cleared encryption bit, a CRC error; cut 7z with encrypted headers or content; zip and tar folder entries that hold data. | Each stays in INPUT over a 12 s window, whatever the policy, reported with its error: damaged or inconsistent, encrypted, or "encrypted, or damaged and it cannot be told which". | 7-Zip |
 | `aHeaderEncryptedSevenZipWithADefaultPassword` | `plugins/extract_archives_test.go` | A 7z with encrypted headers and the password `infected`, with clean members, then with a detected member. | Clean: delivered, every member analyzed. Detected: quarantined, not delivered. | 7-Zip |
 | `aDetectionBesideAWaivedNestedArchiveWins` | `plugins/extract_archives_test.go` | A zip with a malicious member and a nested zip that a skipped path waives. | The outer archive is quarantined and never delivered. | — |
 | `aDetectionBeatsAnUnexaminableNestedArchive` | `plugins/extract_archives_test.go` | A zip with a malicious member and a nested encrypted zip (the default encrypted policy, `error`). | The outer archive is quarantined, not left in INPUT in error. | — |
 | `anArchiveMemberIsSubmittedUnderItsArchivePath` | `plugins/extract_archives_test.go` | A zip, a nested zip and a plain file. | The service is told the host path of the archive plus the member path (nested archives included), the plain file keeps its path, and no label holds the work folder or `..`. | — |
-| `anArchiveWithATooBigMemberIsExtractedOnlyOnce` | `plugins/extract_archives_test.go` | Move off, watcher off, 1 s rescan, `max_file_size` 1 MiB; a zip with a small member and a 2 MiB member. | The failed extraction is logged once over about 8 rescans: the archive is not extracted again. | — |
+| `anArchiveWithATooBigMemberIsExtractedOnlyOnce` | `plugins/extract_archives_test.go` | Move off, watcher off, 1 s rescan, `max_file_size` 1 MiB; a zip with a small member and a 2 MiB member. | The archive has one report entry over about 8 rescans, read after a SIGTERM that writes the open session: it is not extracted again. | — |
+| `theDefaultPolicyKeepsEveryDamagedArchiveInInput` | `plugins/extract_damaged_test.go` | `extract_error` at its default, `encrypted` at `pass`; 22 damaged archives in one run: cut 7z, a CRC error, the homonym and collision fixtures, plain archives followed by encrypted ones, member names too long or too deep, folder entries that hold data, bytes after the end, a ZipCrypto zip cut at 66%. | Each stays in INPUT reported "damaged or inconsistent", except the cut ZipCrypto zip, delivered not analyzed `encrypted`. | 7-Zip |
+| `asFileDeliversAStructuralAnomalyMarkedExtractError` | `plugins/extract_damaged_test.go` | `extract_error` at `as_file`; a zip with a control character in a member name. | Delivered, not analyzed `extract-error`. | — |
+| `twinNamesWithPlainMembersAreExtractedBothAndAreNoAnomaly` | `plugins/extract_damaged_test.go` | `extract_error` at `as_file`; a zip of two plain members both named `twin.txt`. | The zip is delivered and each member submitted once. | — |
+| `aTruncatedZipIsNeverAPlainFile` | `plugins/extract_damaged_test.go` | Four zip fixtures (AES, ZipCrypto, known password, corrupted AES) cut at 10, 20, 50 and 90%, under the default policies, then with `encrypted` at `pass` and `extract_error` at `as_file`. | Default: each stays in INPUT, damaged or encrypted. Otherwise each is delivered not analyzed `encrypted`. | — |
+| `aSevenZipWithAFlippedStartHeaderByteIsNeverAPlainFile` | `plugins/extract_damaged_test.go` | The 7z fixtures with encrypted headers and with encrypted content, one byte of the start header (offsets 8 to 31) flipped per file. | Each stays in INPUT, reported damaged or inconsistent. | — |
+| `otherTruncatedArchivesAreNeverPlainFiles` | `plugins/extract_damaged_test.go` | A gzip, a tar, a 7z, an xz and a bzip2 cut short. | Each stays in INPUT: the gzip reported left out by the extraction limits, the tar and the 7z damaged or inconsistent, the xz and the bzip2 with no report entry. | 7-Zip |
+| `aTruncatedZipNestedInARealArchiveIsNeverAPlainFile` | `plugins/extract_damaged_test.go` | An AES zip cut at 50% inside a zip and inside a 7z, under the default policies, then with `encrypted` at `pass` and `extract_error` at `as_file`. | Default: the outer archive stays in INPUT with the encrypted error of its member. Otherwise it is delivered with that member listed not analyzed `encrypted`. | 7-Zip |
+| `whatIsNotTypedAsAnArchiveStaysAPlainFile` | `plugins/extract_damaged_test.go` | `extract_min_size` 1 B; a cut PNG and a binary blob that 7-Zip refuses. | Both are delivered. | — |
+| `aTextThatStartsLikeAnArchiveStaysInInput` | `plugins/extract_damaged_test.go` | Three texts that start with `BZh9`, `PK\x03\x04` and `070707`. | Each stays in INPUT, reported damaged or inconsistent. | — |
+| `aLinkTargetCannotForgeARefusalOfThePassword` | `plugins/extract_forged_names_test.go` | `encrypted` at `mitigate`; a tar with a hard link whose target holds a forged `ERROR: Wrong password` line. | It stays in INPUT, damaged or inconsistent, and is not quarantined as encrypted. | — |
+| `aMemberNameCannotForgeARefusalOfThePassword` | `plugins/extract_forged_names_test.go` | The same with a zip whose member, below a file, is named with that line. | The same. | — |
+| `aSymbolicLinkCannotForgeARefusalOfThePassword` | `plugins/extract_forged_names_test.go` | The same with a tar symlink that holds the line in its target, then in its name. | The same. | — |
+| `twoMembersOfOneNameAreNotAnEncryptedArchive` | `plugins/extract_forged_names_test.go` | `encrypted` at `mitigate`; a tar of two members named `a`. | Delivered. | — |
+| `aMemberThatTheArchiveMakesImpossibleIsAnAnomaly` | `plugins/extract_forged_names_test.go` | A tar with a folder over a file; a tar with a hard link toward a folder. | Each stays in INPUT, damaged or inconsistent, with one report entry. | — |
 
 ### Size limits and bombs
 
 | Test | File | Sets up | Asserts | Needs |
 | --- | --- | --- | --- | --- |
-| `unanalyzablePolicyPass` | `core/analysis_test.go` | `max_file_size` 1 MiB, policies `too_big` and `empty` at `pass`; a 2 MiB file and an empty file. | Both are delivered and reported not analyzed, `too-big` and `empty`. | — |
+| `unanalyzablePolicyPass` | `core/analysis_test.go` | `max_file_size` 1 MiB, policies `too_big` and `empty` at `pass`; a 2 MiB file and an empty file. | Both are delivered and reported not analyzed, `too-big` and `empty`, and the service gave no verdict on either. | — |
+| `emptyFilePolicy` | `core/analysis_test.go` | No `empty` key, then `empty` at `skip`; an empty file. | No key: delivered, reported not analyzed `empty`. `skip`: it stays in INPUT with no report entry. | — |
 | `extractionBombsAreStopped` | `plugins/extract_limits_test.go` | A zip and a gzip that inflate to 64 MiB, with the recursive extraction limit at 4 MiB. | Each is reported with an error naming the extraction limits, stays in INPUT and is not delivered. | — |
 | `aForgedZipOfEmptyPackedMembersIsABomb` | `plugins/extract_limits_test.go` | A zip of 40 members, each declaring 90 MB with no packed byte, under the default limits. | The log says "potential ZipBomb" within 30 s, the file stays in INPUT, and the work folder never held more than 64 MiB. | — |
-| `aSolidSevenZipWithAHugeFirstMemberIsLeftOutAndNotWrittenOut` | `plugins/extract_limits_test.go` | A solid 7z whose first member is 150 MiB of zeros. | The file stays in INPUT, the log says it was left out by the extraction limits, and the work folder never held more than 64 MiB. | 7-Zip |
+| `aSolidSevenZipWithAHugeFirstMemberIsLeftOutAndNotWrittenOut` | `plugins/extract_limits_test.go` | A solid 7z whose first member is 150 MiB of zeros. | The file stays in INPUT, its report says it was left out by the extraction limits, and the work folder never held more than 64 MiB. | 7-Zip |
 | `anOverLimitDocumentIsDeliveredWithItsMembersUnchecked` | `plugins/extract_limits_test.go` | A docx, a jar and an apk of 10,001 entries. | Each is analyzed whole, submitted under its own path and delivered; its report lists members as not analyzed for the extract limit with the exact count. | — |
 | `anOverLimitDocumentThatIsMalwareIsQuarantined` | `plugins/extract_limits_test.go` | An over-limit docx that the service flags. | It is quarantined, and its report lists no unchecked member. | — |
+| `membersLeftOutByTheLimitsFollowTooBig` | `plugins/extract_limits_test.go` | `too_big` at `error`, `pass` and `mitigate`: a member over `max_file_size`, a file budget of 10 on 40 members, members over the total size, a file budget of 10 on 1500 members, every member over `max_file_size`, a nested zip beyond depth 1 (`encrypted` at the same value), a nested zip whose only member is too big. | `error`: stays in INPUT, reported left out by the extraction limits (beyond the depth: the nested zip in error). `pass`: delivered, the members left out listed with their reason and exact count (the list capped at 1000 of the 1490), the first 10 members submitted once and the others never analyzed. `mitigate`: quarantined with the reason `too-big`. | — |
 | `anOrdinaryZipOverTheLimitsIsStillHeld` | `plugins/extract_limits_test.go` | A plain zip of 10,001 entries beside an over-limit docx. | The docx is delivered; the zip stays in INPUT, reported as left out by the extraction limits. | — |
 | `aNestedArchiveAboveMaxFileSizeIsOpened` | `plugins/extract_limits_test.go` | `max_file_size` 1 MiB; a zip holding a stored zip above 1 MiB (two 768 KiB random members and a detected sample). | The nested zip is opened, the sample is analyzed, and the outer zip is quarantined. | — |
 | `aNonArchiveMemberAboveMaxFileSizeIsTooBig` | `plugins/extract_limits_test.go` | `max_file_size` 1 MiB; a zip with one 2 MiB random member that is not an archive. | The zip stays in INPUT, reported with "size 2 MiB exceeds max_file_size 1 MiB". | — |
+| `aMemberOverMaxFileSizeIsNeverWrittenOut` | `plugins/extract_budget_test.go` | `max_file_size` 10 MiB, `too_big` at `pass`; a 7z with a 30 MiB member of zeros and a small one. | Delivered with the big member listed `too-big`; the work folder never grew by more than 1 MiB. | 7-Zip |
+| `theBudgetInBytesStopsBeforeWritingTheMembersThatDoNotFit` | `plugins/extract_budget_test.go` | `recursive_extract_max_size` 2 MiB + 100 B; a 7z of four 1 MiB members. | Delivered with two members listed `extract-limit`; the work folder never grew by more than the budget plus 2 MiB. | 7-Zip |
+| `theBudgetInFilesIsExactAndTheRestIsListed` | `plugins/extract_budget_test.go` | A 7z of 40 members; `recursive_extract_max_files` 10, 40, then 1500. | 10: delivered with 30 members listed `extract-limit`, the first 10 submitted once, the others never. 40 and 1500: every member submitted once, none listed. | 7-Zip |
+| `theRemainingBudgetShrinksFromOneLevelToTheNext` | `plugins/extract_nested_limits_test.go` | A zip of a plain member and a nested zip of 9 members of 100 bytes; a budget of 10 files, then a budget in bytes with room for 8 nested members. | Delivered with one member listed `extract-limit` each time. | — |
+| `anArchiveBeyondTheDepthFollowsTheStricterPolicy` | `plugins/extract_nested_limits_test.go` | `recursive_extract_max_depth` 1; a zip holding a nested zip, under the nine pairs of `too_big` and `encrypted` values. | The nested zip is submitted once and its member never analyzed. Any `error` keeps the outer zip in INPUT with the unopened-archive error; else any `mitigate` quarantines it with the reason `too-big`; both at `pass` deliver it with the nested zip listed `extract-limit`. | — |
+| `anArchiveBeyondTheDepthKnownAsMalwareIsMalware` | `plugins/extract_nested_limits_test.go` | Depth 1, `too_big` and `encrypted` at `pass`; a zip holding a nested zip that the service flags. | Quarantined; the nested zip is named among the malicious members. | — |
+| `anOrdinaryBinaryAtTheMaximumDepthIsAnalyzed` | `plugins/extract_nested_limits_test.go` | Depth 1, `too_big` and `encrypted` at `error`; a zip holding a small binary. | Delivered with no member listed; the binary is submitted once. | — |
 | `TestTreeSize` | `plugins/extract_limits_test.go` | Helper test: a folder with files, a sub-folder and two symlinks. | `treeSize` adds regular files only (links count for nothing) and fails on a missing folder. | — |
 
 ### Encryption
@@ -399,8 +478,14 @@ are one row. Files are relative to `test/`.
 | `aDocumentInAFullArchiveIsCheckedForEncryption` | `plugins/extract_encryption_test.go` | An outer zip of 9,999 plain files holding a document with an encrypted member, and the same outer zip with a plain document. | The first is held in INPUT with the encrypted error; the second is delivered, analyzed, with the document members listed as not analyzed for the extract limit (`word/document.xml` among them). | — |
 | `anOverLimitEncryptedDocumentFollowsTheEncryptedPolicy` | `plugins/extract_encryption_test.go` | Policy `encrypted` at `pass`; an over-limit docx with an encrypted member. | It is delivered and a report entry says not analyzed for `encrypted`. | — |
 | `anEncryptedDocumentInAFullArchiveFollowsTheEncryptedPolicy` | `plugins/extract_encryption_test.go` | Policy `encrypted` at `pass`; the full outer archive holding an encrypted document. | The outer archive is delivered and its report marks the encrypted outcome. | — |
+| `anEncryptedArchiveFollowsTheEncryptedPolicy` | `plugins/extract_encryption_test.go` | `encrypted` at `error`, `pass` and `mitigate`; a ZipCrypto zip, an AES zip, a 7z with encrypted headers, a 7z with encrypted content, a zip of a plain and a ZipCrypto member (`mixed.zip`), and a ZipCrypto zip nested in a plain zip. | `error`: stays in INPUT with the encrypted error; `pass`: delivered, not analyzed `encrypted` (the nested one listed as a member); `mitigate`: quarantined with the reason `encrypted` (the nested one named as a malicious member). | — |
+| `extractErrorAsFileWithEncryptedPass` | `plugins/extract_encryption_test.go` | `extract_error` at `as_file`, `encrypted` at `pass`, one archive per run: cut encrypted zips and 7z, plain archives followed by encrypted ones, members with a path component, a name or a depth over the limit, the homonym and collision fixtures, a corrupted AES zip, a cleared encryption bit, a CRC error, zip and tar folder entries that hold data. | Each is delivered, not analyzed `encrypted`, never `extract-error`. | 7-Zip |
 | `anOverLimitDocumentWithAnAESMemberWithoutFlagIsHeldAsEncrypted` | `plugins/extract_encryption_test.go` | An over-limit docx whose last member is AES-encrypted with the encryption flag cleared in both headers. | It stays in INPUT, reported with the encrypted-file error: the method is what counts. | 7-Zip |
 | `TestAESDocumentHasNoEncryptionFlag` | `plugins/extract_encryption_test.go` | Helper test: builds the AES document of the previous scenario. | The member is method 99 and its flag is clear in the local and central headers; without clearing, the local flag is set. | 7-Zip |
+| `aDetectionOfAnEncryptedArchiveWinsOverTheEncryptedPolicy` | `plugins/extract_encryption_verdicts_test.go` | A ZipCrypto zip that the service flags; `encrypted` at `error`, `pass` and `mitigate`. | Quarantined as `malware-detected` each time. | — |
+| `anEncryptedArchiveOverMaxFileSizeIsNotSubmitted` | `plugins/extract_encryption_verdicts_test.go` | `max_file_size` one byte under the ZipCrypto fixture, `too_big` at `error`, `encrypted` at each value; the fixture alone, then nested in a plain zip. | Alone: never given a verdict, it follows the encrypted policy (INPUT with the encrypted error, delivered `encrypted`, quarantined `encrypted`). Nested: the plain zip stays in INPUT, its member left out by the limits and never analyzed. | — |
+| `aKnownPasswordOpensTheArchive` | `plugins/extract_encryption_verdicts_test.go` | A zip encrypted with the default password `infected`; `encrypted` and `too_big` at each value. | Delivered with no member listed; its member submitted once. | 7-Zip |
+| `encryptionIsToldFromCorruption` | `plugins/extract_encryption_verdicts_test.go` | `encrypted` at `pass`; 13 fixtures: corrupted AES zips, ZipCrypto and 7z with an unknown password, a wrong configured password after the right one, a forged comment, corrupted 7z (solid or not), homonyms, an empty member beside encrypted ones, 250 plain members beside one encrypted. | What an encryption explains is delivered, not analyzed `encrypted`; a corruption stays in INPUT, damaged or inconsistent. | — |
 
 ### Analysis errors and detections
 
@@ -411,6 +496,7 @@ are one row. Files are relative to `test/`.
 | `analysisErrorPolicy` | `core/analysis_test.go` | `analysis_error` at `error`, `mitigate` and `pass`; a file whose analysis fails and a malware whose analysis also fails. | The malware is always quarantined. The failed file stays in INPUT (`error`), is quarantined (`mitigate`) or is delivered and reported `analysis-error` (`pass`). | — |
 | `analysisErrorInAnArchiveMember` | `plugins/extract_archives_test.go` | The same three values; a zip with a member whose analysis fails. | `error`: stays in INPUT, reported in error; `mitigate`: quarantined; `pass`: delivered. | — |
 | `passNeverBypassesTheOtherPolicies` | `plugins/extract_archives_test.go` | `analysis_error` at `pass`, `encrypted` and `too_big` at `error`; an encrypted zip and a 2 MiB file over a 1 MiB limit. | Both stay in INPUT. | — |
+| `aVerdictOnAnotherSHA256IsAnErrorWithoutAction` | `core/service_sha_test.go` | The service answers clean about another SHA256 (`OtherSHA256`). | The file stays in INPUT, reported with the error "analysis of another content". | — |
 
 ### Path and type rules
 
@@ -445,6 +531,8 @@ are one row. Files are relative to `test/`.
 | `aRestoredArchiveIsCheckedAgainstTheForbiddenPaths` | `plugins/extract_paths_test.go` | With `\.exe$` forbidden: a restored archive without a match, and one with a `.exe` member. | The first is delivered; the second is quarantined again and the report names the member; the mitigations are `malware`, `malware`, `filepath`. | — |
 | `aRestoredArchiveWhoseNamesCannotBeListedStaysInInput` | `plugins/extract_paths_test.go` | A 7z with encrypted headers and an unknown password, quarantined then restored, with `.exe` forbidden; its old detection report is removed first. | It stays in INPUT with no new submission, and is not retried. | 7-Zip |
 | `aRefusedRestoredFileStaysInInputWithoutRetry` | `core/restore_test.go` | A restored malware; then the console turns quarantine and delete off; the content is dropped under a forbidden path. | It stays in INPUT, no container is created, and it is reported once. | — |
+| `aRestoredEmptyFileDoesNotMakeTheOtherEmptyFilesSafe` | `core/restored_content_test.go` | Agent mode, `empty` at `mitigate`; an empty file quarantined and restored, then another empty file in another folder. | The first is delivered restored; the second is quarantined; two `invalid` mitigations. | — |
+| `aContentRestoredInAnOldRegistryStaysRestored` | `core/restored_content_test.go` | A registry of the previous format (no SHA256 index) that holds a restored entry of a malware; that malware dropped. | It is delivered with the restored mark, and no container is made. | — |
 
 ### Quarantine containers
 
@@ -462,13 +550,17 @@ are one row. Files are relative to `test/`.
 | --- | --- | --- | --- | --- |
 | `sessionsCloseAndReopen` | `plugins/session_test.go` | Session delay 2 s; two files dropped one after the other. | Two session reports, each with one entry for its file. | — |
 | `sessionReportGeneratedByTheBrowser` | `plugins/report_test.go` | Agent mode with the `report` plugin and the real browser; a malware is dropped. | The exports hold only a `%PDF` file with the reserved name, and no `session-report-fallback` error was sent. | browser |
-| `failingReportGeneratorFallsBackToJSON` | `plugins/report_test.go` | The browser is replaced by a stub that fails once a marker file exists; one retry. | One JSON report is written under the reserved name with the delivered file, no PDF, and the console gets `session-report-fallback`. | browser |
+| `failingReportGeneratorFallsBackToJSON` | `plugins/report_test.go` | The browser is replaced by a stub that fails N times once a marker file exists: `report_retries` 1 with N unbounded; `report_retries` 3 with N at 2, 3, 4 or unbounded. | The browser is launched until it succeeds, at most `report_retries` + 1 times. Retries run out: one JSON report under the reserved name with the delivered file, no PDF, and one `session-report-fallback` to the console. Otherwise: one PDF and no fallback (the file is a malware there, as the invariant cannot read a PDF). | browser |
 | `aSessionIsClosedAtMaxDuration` | `plugins/session_test.go` | Session delay 1 h, `max_duration` 5 s. | A private spool (mode 600) exists while open and no report yet; the session closes by itself with one report and no spool; the next file opens a second session. | — |
-| `aSessionIsClosedAtMaxSpoolSize` | `plugins/session_test.go` | `max_spool_size` 1 MiB (the minimum), delay 1 h, 3000 files; SIGTERM once they are delivered. | Every file is delivered, and there are exactly two session reports. | — |
+| `aSessionIsClosedAtMaxSpoolSize` | `plugins/session_test.go` | `max_spool_size` 1 MiB (the minimum), delay 1 h, 3000 files; SIGTERM once they are delivered. | Every file is delivered, and there are at least two session reports. | — |
 | `theSpoolOfACrashedRunIsRemovedWithAWarning` | `plugins/session_test.go` | A file delivered with its session open; the process is killed with SIGKILL and restarted. | The log warns that one session report was lost; the old work folder and the spool are removed. | — |
 | `aDepositOfSeveralHundredFilesBehindASaturatedWorkerIsOneSessionAndOneReport` | `plugins/session_test.go` | One worker; 150 files of `tom`, a slow analysis of a file of `jerry`, 150 more files of `tom`. | `tom` gets one report with the 300 files. | — |
 | `aPendingFileThatChangesBeforeBeingTakenNeverBlocksTheSession` | `plugins/session_test.go` | One worker held by the slow analysis of `jerry`; a waiting file of `tom` is deleted, rewritten, replaced by a link, emptied, or deleted and recreated. | The session of `tom` closes and its report is not empty. | — |
 | `aQueueSaturatedBeyondTheInflightTimeoutClosesTheSessionWithAWarn` | `plugins/session_test.go` | `inflight_timeout` 3 s, one worker held 20 s; two files of `tom` wait. | The session closes before the slow analysis ends, with a warning giving the pending count; each of the three files is in exactly one report. | — |
+| `aFileAtTheNameOfTheSessionReportIsLeftIntact` | `plugins/session_report_test.go` | Session delay 1 h; once the session is open, a file, a link to a file outside the exports, or a dangling link at the name of its report; SIGTERM. | What was there is unchanged, and the target of the link is neither written nor created; one report under another name names the file; no temporary file is left; the log says the name already existed. | — |
+| `theFallbackIsToldOnceForSeveralSessions` | `plugins/report_fallback_test.go` | Agent mode, the `report` plugin with a browser stub that always fails once the connector has started, no retry; a file for each of `tom`, `jerry` and `spike`. | Each owner gets one JSON report; the console gets one `session-report-fallback`. | browser |
+| `everyWayOutOfThePipelineClosesTheSession` | `core/pairing_test.go` | One at a time: a clean file, a malware, a file submitted while the service answers 503. | One session report each time; the failed file stays in INPUT with the injected error. | — |
+| `everyWayOutOfThePipelineWithPluginsClosesTheSession` | `plugins/pairing_test.go` | One at a time: a PNG skipped by `filetype_filter`, a cut zip, a text file with the extract plugin on. | One session report each time: the PNG delivered skipped, the zip in INPUT damaged, the text delivered. | — |
 
 ### Labels and names
 
@@ -478,6 +570,8 @@ are one row. Files are relative to `test/`.
 | `aBidiOverrideInANameIsMaskedForTheServiceAndTheConsoleOnly` | `core/names_test.go` | A malware named with U+202E. | The service gets `_`, the console line shows U+FFFD, the JSON report keeps the raw name. | — |
 | `aNewlineAndAnOverrideInANameMakeOneConsoleLine` | `core/names_test.go` | A name with a newline, `time: forged` and U+202E. | One console line with both characters shown as U+FFFD and no forged line. | — |
 | `aNameThatImitatesTheNextFieldsStaysInsideTheQuotes` | `core/names_test.go` | Names `x, flagged: false` and one with a quote and fake fields. | One console line each, holding the quoted name followed by the real fields. | — |
+| `anArchiveNamedByTheDepositorIsRunUnderAName` | `plugins/extract_forged_names_test.go` | `encrypted` at `pass`; a 7z with encrypted headers named with a newline, a tab, an escape sequence, U+202E, a leading `-`, accented letters or invalid UTF-8; with the password `infected` known, then with none. | Known: delivered, its member submitted once. Unknown: delivered not analyzed `encrypted`, the member never analyzed. | 7-Zip |
+| `aSingleFileCompressorKeepsTheNameOfItsMember` | `plugins/extract_forged_names_test.go` | A gzip `report.txt.gz`. | Delivered; its member is submitted as `report.txt.gz/report.txt`. | — |
 
 ### Shutdown
 
@@ -486,12 +580,12 @@ a row says the service never answers, the fake GMalware is in hang mode.
 
 | Test | File | Sets up | Asserts | Needs |
 | --- | --- | --- | --- | --- |
-| `TestShutdown_sigtermDuringTheAnalysisOfAnArchive` | `plugins/lifecycle_test.go` | A zip being analyzed, the service never answers; SIGTERM, timeout 4 s. | Exit code 0 within the timeout plus 2 s, work folder removed, no process left under it, the archive still in INPUT, and the log has the stop messages. | — |
+| `TestShutdown_sigtermDuringTheAnalysisOfAnArchive` | `plugins/lifecycle_test.go` | A zip being analyzed, the service never answers; SIGTERM, timeout 4 s. | Exit code 0 within the timeout plus 2 s, work folder removed, no process left under it, the archive still in INPUT. | — |
 | `TestShutdown_sigtermWritesTheReportOfAnOpenSession` | `plugins/session_test.go` | A delivered file in a session open for 1 h; SIGTERM. | Exit 0 and one report that names the file. | — |
 | `TestShutdown_aSecondSignalStopsImmediately` | `core/shutdown_test.go` | Analysis blocked, timeout 30 s; two SIGTERM. | The process ends within 3 s, killed by SIGTERM (the default action). | — |
 | `TestShutdown_aTooShortTimeoutRefusesToStart` | `core/shutdown_test.go` | `--shutdown-timeout 1s`. | The start is refused with a message naming `shutdown_timeout`. | — |
-| `TestShutdown_sigintStopsLikeSigterm` | `core/shutdown_test.go` | Analysis blocked; SIGINT. | Exit 0, the log names the `interrupt` signal, work folder removed. | — |
-| `TestShutdown_sigtermStopsTheAgent` | `core/shutdown_test.go` | The same in agent mode. | Exit 0, work folder removed, the stop summary is in the log. | — |
+| `TestShutdown_sigintStopsLikeSigterm` | `core/shutdown_test.go` | Analysis blocked; SIGINT. | Exit 0, work folder removed. | — |
+| `TestShutdown_sigtermStopsTheAgent` | `core/shutdown_test.go` | The same in agent mode. | Exit 0, work folder removed. | — |
 
 ### Self-tests of the invariant, the fakes and the helpers
 
@@ -516,6 +610,7 @@ servers. They check the tools the scenarios rely on.
 | `TestGMalware_givenOnlyToAClientThatWaited` | `internal/fakes/gmalware/gmalware_test.go` | A slow result with a client that gives up, then one that waits. | Given only to the client that waited. | — |
 | `TestGMalware_recordsTheSubmittedName` | `internal/fakes/gmalware/gmalware_test.go` | Submissions under several names. | The raw names are kept in order, per content; a caller cannot change them. | — |
 | `TestGMalware_delayResultOf` | `internal/fakes/gmalware/gmalware_test.go` | One content whose result is delayed, and another. | Only the result of that content waits. | — |
+| `TestGMalware_answerOtherSHA256` | `internal/fakes/gmalware/gmalware_test.go` | A content marked with `AnswerOtherSHA256`, and another. | Only the result of the marked content carries another SHA256. | — |
 | `TestGMalware_searches` | `internal/fakes/gmalware/gmalware_test.go` | Search requests, answered or during an outage. | Each one is recorded, in order. | — |
 | `TestFakeConsole_protocol` | `internal/fakes/console/console_test.go` | Protocol errors sent to the fake console. | Wrong method, no key, unknown route and bad event give 400 and four recorded errors; an unacknowledged task is not acknowledged. | — |
 | `TestBigDocument` | `plugins/documents_test.go` | The document builder for docx, jar, apk, with and without an encrypted member. | Entry count, head entries, encrypted members, size, uniqueness; a plain zip is not typed as a document. | — |
@@ -546,9 +641,10 @@ servers. They check the tools the scenarios rely on.
   and other network filesystems, whose limits the README describes (dates,
   locks, inotify), are not covered. The watcher-off mode that is meant for them
   is checked only on a local disk.
-- **Absence is judged over a window of 12 s.** An outcome in INPUT is held
-  for 12 s once its report is written (`harness.Run`), or once the log names
-  the file (`StaysInInput`); a later delivery would not be seen. The other
+- **Absence is judged over a window of 12 s.** An outcome in INPUT, with or
+  without a report, is held for 12 s once every outcome is reached
+  (`harness.Run`), or once the log names the file (`StaysInInput`); a later
+  delivery or report would not be seen. The other
   "not delivered" checks are made at one moment; the invariant at the end of
   the test covers OUTPUT.
 - **Sizes are small on disk.** The largest file dropped is about 9 MiB, apart
@@ -557,6 +653,11 @@ servers. They check the tools the scenarios rely on.
   3.6 GB declared by the forged zip, from files of a few KB to a few MB.
 - **Two modes only.** Scenarios start the connector in `monitoring` or `agent`
   mode; other commands (`scan`, `quarantine`, `version`) are not run.
-- **Browser and 7-Zip scenarios depend on the machine.** The two PDF scenarios
-  run only with the `realbrowser` tag, and then fail without a browser or as
-  root.
+- **Browser and 7-Zip scenarios depend on the machine.** The three browser
+  scenarios run only with the `realbrowser` tag, and then fail without a
+  browser or as root.
+- **Some tests are slow and serial.** The two pressure tests without rescan
+  wait for real quiet minutes of the monitor: about 1 min and 3.5 min. The
+  tests that act on INPUT in the middle of a run (remove a file, change the
+  mode of a folder, create a file at a given moment, hold a result) start the
+  instance by hand. Neither kind runs in parallel.

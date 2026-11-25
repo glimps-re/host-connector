@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -177,26 +176,35 @@ func afterService(t *testing.T, f *swapFixture, fn func()) {
 // the actions then receive is the verdict on those bytes (malware), never a clean
 // verdict on the swapped-in file.
 func TestPipeline_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndActsOnTheirVerdict(t *testing.T) {
-	skipWithoutProc(t)
-	var f *swapFixture
-	var swapper *dirSwap
-	var once sync.Once
-	f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
-	swapper = newDirSwap(t, f.file)
-	afterService(t, f, swapper.undo)
-	f.run(t)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.received) != 1 || f.received[0] != originalContent {
-		t.Fatalf("the service received %q, want exactly the bytes of the file that was hashed: the analysis must read the descriptor, never the path", f.received)
+	tests := []struct {
+		name string
+	}{
+		{name: "swapped while the service reads, undone once it answered"},
 	}
-	if len(f.acted) == 0 {
-		t.Fatal("no action ran although the folders were put back: the check below would prove nothing")
-	}
-	for _, r := range f.acted {
-		if !r.Malware {
-			t.Errorf("an action ran with a clean verdict on the original path: the malicious file would leave as clean")
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipWithoutProc(t)
+			var f *swapFixture
+			var swapper *dirSwap
+			var once sync.Once
+			f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
+			swapper = newDirSwap(t, f.file)
+			afterService(t, f, swapper.undo)
+			f.run(t)
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.received) != 1 || f.received[0] != originalContent {
+				t.Fatalf("the service received %q, want exactly the bytes of the file that was hashed: the analysis must read the descriptor, never the path", f.received)
+			}
+			if len(f.acted) == 0 {
+				t.Fatal("no action ran although the folders were put back: the check below would prove nothing")
+			}
+			for _, r := range f.acted {
+				if !r.Malware {
+					t.Errorf("an action ran with a clean verdict on the original path: the malicious file would leave as clean")
+				}
+			}
+		})
 	}
 }
 
@@ -204,137 +212,146 @@ func TestPipeline_directorySwapUndoneAfterTheAnalysisSendsTheOriginalBytesAndAct
 // check stops the file before any action. It is observed explicitly: no action,
 // a retry outcome, and the file at the path is left where it is.
 func TestPipeline_directorySwapLeftInPlaceStopsTheFileBeforeAnyAction(t *testing.T) {
-	skipWithoutProc(t)
-	var f *swapFixture
-	var swapper *dirSwap
-	var once sync.Once
-	f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
-	swapper = newDirSwap(t, f.file)
-	var mu sync.Mutex
-	var outcomes []FileOutcome
-	f.c.config.OnFileDone = func(o FileOutcome) {
-		mu.Lock()
-		defer mu.Unlock()
-		outcomes = append(outcomes, o)
+	tests := []struct {
+		name string
+	}{
+		{name: "swapped while the service reads, left in place"},
 	}
-	f.run(t)
-	f.mu.Lock()
-	acted := len(f.acted)
-	f.mu.Unlock()
-	if acted != 0 {
-		t.Errorf("%d action(s) ran on a path whose folders were exchanged during the analysis", acted)
-	}
-	mu.Lock()
-	defer mu.Unlock()
-	if len(outcomes) != 1 || outcomes[0].Kind != OutcomeRetry {
-		t.Errorf("outcomes = %+v, want exactly one retry: the changed file is reopened, not final", outcomes)
-	}
-	if b, err := os.ReadFile(filepath.Clean(f.file)); err != nil || string(b) != swappedContent {
-		t.Errorf("the file at the path = %q (%v), want it left untouched", b, err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipWithoutProc(t)
+			var f *swapFixture
+			var swapper *dirSwap
+			var once sync.Once
+			f = newSwapFixture(t, serviceSubmitter(&f, func() { once.Do(swapper.swap) }))
+			swapper = newDirSwap(t, f.file)
+			var mu sync.Mutex
+			var outcomes []FileOutcome
+			f.c.config.OnFileDone = func(o FileOutcome) {
+				mu.Lock()
+				defer mu.Unlock()
+				outcomes = append(outcomes, o)
+			}
+			f.run(t)
+			f.mu.Lock()
+			acted := len(f.acted)
+			f.mu.Unlock()
+			if acted != 0 {
+				t.Errorf("%d action(s) ran on a path whose folders were exchanged during the analysis", acted)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if len(outcomes) != 1 || outcomes[0].Kind != OutcomeRetry {
+				t.Errorf("outcomes = %+v, want exactly one retry: the changed file is reopened, not final", outcomes)
+			}
+			if b, err := os.ReadFile(filepath.Clean(f.file)); err != nil || string(b) != swappedContent {
+				t.Errorf("the file at the path = %q (%v), want it left untouched", b, err)
+			}
+		})
 	}
 }
 
 func TestPipeline_directorySwapDuringOnScanFileLetsTheFilterReadTheOriginal(t *testing.T) {
-	skipWithoutProc(t)
-	var f *swapFixture
-	f = newSwapFixture(t, serviceSubmitter(&f, nil))
-	swapper := newDirSwap(t, f.file)
-	var mu sync.Mutex
-	var read []string
-	f.c.RegisterOnScanFile(func(filename, location, _ string, _ bool) *datamodel.Result {
-		swapper.swap()
-		defer swapper.undo()
-		b, err := os.ReadFile(filepath.Clean(location))
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			read = append(read, "error: "+err.Error())
-			return nil
-		}
-		read = append(read, string(b))
-		return nil
-	})
-	f.run(t)
-	mu.Lock()
-	defer mu.Unlock()
-	if len(read) != 1 {
-		t.Fatalf("the filter ran %d time(s), want 1", len(read))
+	tests := []struct {
+		name string
+	}{
+		{name: "swapped and undone inside the filter"},
 	}
-	if read[0] != originalContent {
-		t.Errorf("the filter read %q through location, want the original file: a dispensed type must never be read from a swapped folder", read[0])
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipWithoutProc(t)
+			var f *swapFixture
+			f = newSwapFixture(t, serviceSubmitter(&f, nil))
+			swapper := newDirSwap(t, f.file)
+			var mu sync.Mutex
+			var read []string
+			f.c.RegisterOnScanFile(func(filename, location, _ string, _ bool) *datamodel.Result {
+				swapper.swap()
+				defer swapper.undo()
+				b, err := os.ReadFile(filepath.Clean(location))
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					read = append(read, "error: "+err.Error())
+					return nil
+				}
+				read = append(read, string(b))
+				return nil
+			})
+			f.run(t)
+			mu.Lock()
+			defer mu.Unlock()
+			if len(read) != 1 {
+				t.Fatalf("the filter ran %d time(s), want 1", len(read))
+			}
+			if read[0] != originalContent {
+				t.Errorf("the filter read %q through location, want the original file: a dispensed type must never be read from a swapped folder", read[0])
+			}
+		})
 	}
 }
 
 func TestPipeline_directorySwapDuringExtractionExtractsTheOriginalArchive(t *testing.T) {
-	skipWithoutProc(t)
-	original, _ := createArchive(t, []string{"original member"})
-	originalBytes, err := os.ReadFile(filepath.Clean(original))
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name            string
+		original, other []string
+	}{
+		{name: "swapped and undone inside the extractor", original: []string{"original member"}, other: []string{"swapped member"}},
 	}
-	other, _ := createArchive(t, []string{"swapped member"})
-	otherBytes, err := os.ReadFile(filepath.Clean(other))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(originalBytes) == string(otherBytes) {
-		t.Fatal("the two archives must differ")
-	}
-	var seenMu sync.Mutex
-	var seen [][]byte
-	var swapper *dirSwap
-	prev := ExtractFile
-	t.Cleanup(func() { ExtractFile = prev })
-	ExtractFile = func(archive, _ string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
-		swapper.swap()
-		defer swapper.undo()
-		b, rerr := os.ReadFile(filepath.Clean(archive))
-		seenMu.Lock()
-		defer seenMu.Unlock()
-		if rerr != nil {
-			return plugins.Extraction{}, rerr
-		}
-		seen = append(seen, b)
-		return plugins.Extraction{}, plugins.ErrUnsupportedFormat
-	}
-	var f *swapFixture
-	f = newSwapFixture(t, serviceSubmitter(&f, nil))
-	f.c.config.ExtractMinThreshold = 1
-	copyInto(t, f.file, original)
-	swapper = newDirSwap(t, f.file)
-	// The swapped folder holds another archive under the same name.
-	swapper.swap()
-	copyInto(t, filepath.Join(swapper.dir, swapper.file), other)
-	swapper.undo()
-	f.run(t)
-	seenMu.Lock()
-	defer seenMu.Unlock()
-	if len(seen) == 0 {
-		t.Fatal("the extractor was never called")
-	}
-	for _, got := range seen {
-		if string(got) != string(originalBytes) {
-			t.Errorf("the extractor read an archive of %d bytes, want the original of %d: it must read the hashed file itself", len(got), len(originalBytes))
-		}
-	}
-}
-
-func TestPipeline_aShaReturnedByTheServiceThatDiffersIsAnErrorWithoutAction(t *testing.T) {
-	submitter := &gdetectMock.MockGDetectSubmitter{
-		ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
-		WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
-			return gdetect.Result{SHA256: strings.Repeat("0", 64)}, nil
-		},
-		WaitForReaderMock: func(context.Context, io.Reader, gdetect.WaitForOptions) (gdetect.Result, error) {
-			return gdetect.Result{SHA256: strings.Repeat("0", 64)}, nil
-		},
-	}
-	f := newSwapFixture(t, submitter)
-	f.run(t)
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if len(f.acted) != 0 {
-		t.Errorf("%d action(s) ran although the service answered about another file (different SHA256)", len(f.acted))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipWithoutProc(t)
+			original, _ := createArchive(t, tt.original)
+			originalBytes, err := os.ReadFile(filepath.Clean(original))
+			if err != nil {
+				t.Fatal(err)
+			}
+			other, _ := createArchive(t, tt.other)
+			otherBytes, err := os.ReadFile(filepath.Clean(other))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(originalBytes) == string(otherBytes) {
+				t.Fatal("the two archives must differ")
+			}
+			var seenMu sync.Mutex
+			var seen [][]byte
+			var swapper *dirSwap
+			prev := ExtractFile
+			t.Cleanup(func() { ExtractFile = prev })
+			ExtractFile = func(archive, _ string, _ plugins.ExtractLimits) (plugins.Extraction, error) {
+				swapper.swap()
+				defer swapper.undo()
+				b, rerr := os.ReadFile(filepath.Clean(archive))
+				seenMu.Lock()
+				defer seenMu.Unlock()
+				if rerr != nil {
+					return plugins.Extraction{}, rerr
+				}
+				seen = append(seen, b)
+				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
+			}
+			var f *swapFixture
+			f = newSwapFixture(t, serviceSubmitter(&f, nil))
+			f.c.config.ExtractMinThreshold = 1
+			copyInto(t, f.file, original)
+			swapper = newDirSwap(t, f.file)
+			// The swapped folder holds another archive under the same name.
+			swapper.swap()
+			copyInto(t, filepath.Join(swapper.dir, swapper.file), other)
+			swapper.undo()
+			f.run(t)
+			seenMu.Lock()
+			defer seenMu.Unlock()
+			if len(seen) == 0 {
+				t.Fatal("the extractor was never called")
+			}
+			for _, got := range seen {
+				if string(got) != string(originalBytes) {
+					t.Errorf("the extractor read an archive of %d bytes, want the original of %d: it must read the hashed file itself", len(got), len(originalBytes))
+				}
+			}
+		})
 	}
 }
 
@@ -394,102 +411,120 @@ func TestPipeline_noDescriptorIsLeftOpenAfterEachFileWhateverTheOutcome(t *testi
 }
 
 func TestPipeline_aFifoSwappedInIsNeverOpenedForReading(t *testing.T) {
-	in := t.TempDir()
-	file := filepath.Join(in, "f.bin")
-	if err := os.WriteFile(file, []byte("regular"), 0o600); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+	}{
+		{name: "a regular file replaced by a FIFO after it was identified"},
 	}
-	info, err := os.Lstat(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := IdentityOf(info)
-	if err = os.Remove(file); err != nil {
-		t.Fatal(err)
-	}
-	if err = syscall.Mkfifo(file, 0o600); err != nil {
-		t.Skipf("no FIFO here: %v", err)
-	}
-	c, err := NewConnector(Config{Roots: []string{in}, WorkDir: t.TempDir(), Workers: 1}, nil, cleanSubmitter())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = c.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	var accepted bool
-	go func() {
-		defer close(done)
-		accepted, _ = c.SubmitFile(t.Context(), file, want)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("SubmitFile blocked on a FIFO that replaced the regular file")
-	}
-	if accepted {
-		t.Error("a FIFO must never be accepted for analysis")
-	}
-	closed := make(chan struct{})
-	go func() {
-		defer close(closed)
-		c.Close(t.Context())
-	}()
-	select {
-	case <-closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("Close blocked: a worker is stuck opening the FIFO")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := t.TempDir()
+			file := filepath.Join(in, "f.bin")
+			if err := os.WriteFile(file, []byte("regular"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Lstat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := IdentityOf(info)
+			if err = os.Remove(file); err != nil {
+				t.Fatal(err)
+			}
+			if err = syscall.Mkfifo(file, 0o600); err != nil {
+				t.Skipf("no FIFO here: %v", err)
+			}
+			c, err := NewConnector(Config{Roots: []string{in}, WorkDir: t.TempDir(), Workers: 1}, nil, cleanSubmitter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = c.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			var accepted bool
+			go func() {
+				defer close(done)
+				accepted, _ = c.SubmitFile(t.Context(), file, want)
+			}()
+			select {
+			case <-done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("SubmitFile blocked on a FIFO that replaced the regular file")
+			}
+			if accepted {
+				t.Error("a FIFO must never be accepted for analysis")
+			}
+			closed := make(chan struct{})
+			go func() {
+				defer close(closed)
+				c.Close(t.Context())
+			}()
+			select {
+			case <-closed:
+			case <-time.After(5 * time.Second):
+				t.Fatal("Close blocked: a worker is stuck opening the FIFO")
+			}
+		})
 	}
 }
 
 func TestPipeline_aDirectoryLinkIsNeverWalkedEvenWithFollowSymlinks(t *testing.T) {
-	in := t.TempDir()
-	outside := t.TempDir()
-	if err := os.WriteFile(filepath.Join(outside, "secret.bin"), []byte("outside the monitored tree"), 0o600); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+	}{
+		{name: "a link to an outside folder and a loop link"},
 	}
-	if err := os.WriteFile(filepath.Join(in, "inside.bin"), []byte("inside"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(in, "to-outside")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	if err := os.Symlink(in, filepath.Join(in, "loop")); err != nil {
-		t.Fatal(err)
-	}
-	c, err := NewConnector(Config{Roots: []string{in}, FollowSymlinks: true, WorkDir: t.TempDir(), Workers: 1}, nil, cleanSubmitter())
-	if err != nil {
-		t.Fatal(err)
-	}
-	var mu sync.Mutex
-	var handled []string
-	c.action = &MockAction{HandleMock: func(_ context.Context, p Source, _ datamodel.Result, _ *datamodel.Report) error {
-		mu.Lock()
-		defer mu.Unlock()
-		handled = append(handled, filepath.Base(p.Path))
-		return nil
-	}}
-	if err = c.Start(); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- c.ScanFile(t.Context(), in) }()
-	select {
-	case err = <-done:
-		if err != nil {
-			t.Logf("ScanFile() error = %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("ScanFile did not return: a directory link loop was followed")
-	}
-	c.Close(t.Context())
-	mu.Lock()
-	defer mu.Unlock()
-	for _, name := range handled {
-		if name == "secret.bin" {
-			t.Errorf("a file behind a directory link was scanned: %v", handled)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := t.TempDir()
+			outside := t.TempDir()
+			if err := os.WriteFile(filepath.Join(outside, "secret.bin"), []byte("outside the monitored tree"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(in, "inside.bin"), []byte("inside"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(outside, filepath.Join(in, "to-outside")); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			if err := os.Symlink(in, filepath.Join(in, "loop")); err != nil {
+				t.Fatal(err)
+			}
+			c, err := NewConnector(Config{Roots: []string{in}, FollowSymlinks: true, WorkDir: t.TempDir(), Workers: 1}, nil, cleanSubmitter())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var mu sync.Mutex
+			var handled []string
+			c.action = &MockAction{HandleMock: func(_ context.Context, p Source, _ datamodel.Result, _ *datamodel.Report) error {
+				mu.Lock()
+				defer mu.Unlock()
+				handled = append(handled, filepath.Base(p.Path))
+				return nil
+			}}
+			if err = c.Start(); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- c.ScanFile(t.Context(), in) }()
+			select {
+			case err = <-done:
+				if err != nil {
+					t.Logf("ScanFile() error = %v", err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("ScanFile did not return: a directory link loop was followed")
+			}
+			c.Close(t.Context())
+			mu.Lock()
+			defer mu.Unlock()
+			for _, name := range handled {
+				if name == "secret.bin" {
+					t.Errorf("a file behind a directory link was scanned: %v", handled)
+				}
+			}
+		})
 	}
 }
 
@@ -518,13 +553,22 @@ func copyInto(t *testing.T, dst, src string) {
 }
 
 func TestConnector_procUnusableRefusesToStart(t *testing.T) {
-	skipWithoutProc(t)
-	prev := descriptorPath
-	t.Cleanup(func() { descriptorPath = prev })
-	descriptorPath = func(*os.File) (string, bool) { return "", false }
-	var f *swapFixture
-	f = newSwapFixture(t, serviceSubmitter(&f, nil))
-	if err := f.c.Start(); !errors.Is(err, errNoDescriptorLinks) {
-		t.Errorf("Start() error = %v, want errNoDescriptorLinks (fail closed, no silent fallback)", err)
+	tests := []struct {
+		name string
+	}{
+		{name: "no descriptor link"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			skipWithoutProc(t)
+			prev := descriptorPath
+			t.Cleanup(func() { descriptorPath = prev })
+			descriptorPath = func(*os.File) (string, bool) { return "", false }
+			var f *swapFixture
+			f = newSwapFixture(t, serviceSubmitter(&f, nil))
+			if err := f.c.Start(); !errors.Is(err, errNoDescriptorLinks) {
+				t.Errorf("Start() error = %v, want errNoDescriptorLinks (fail closed, no silent fallback)", err)
+			}
+		})
 	}
 }

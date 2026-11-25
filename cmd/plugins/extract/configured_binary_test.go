@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -88,39 +89,57 @@ func TestSevenZipExtractPlugin_unsuitableConfiguredBinaryIsRefusedAndLeavesNothi
 	}
 }
 
-func TestSevenZipExtractPlugin_configuredRealBinaryIsUsedAndKeptOnClose(t *testing.T) {
-	embedded := realPlugin(t).sze.sevenZipPath
-	cfg := realConfig()
-	cfg.SevenZipPath = embedded
-	hcc := newMockContext(t)
-	var p SevenZipExtractPlugin
-	if err := p.Init(cfg, hcc); err != nil {
-		t.Fatalf("Init() with seven_zip_path error = %v", err)
+func TestSevenZipExtractPlugin_configuredRealBinaryIsDeclaredAndNotDeployed(t *testing.T) {
+	tests := []struct {
+		name   string
+		binary func(t *testing.T) string
+	}{
+		{name: "the embedded 7-Zip, configured", binary: func(t *testing.T) string { return realPlugin(t).sze.sevenZipPath }},
 	}
-	if len(hcc.Executables) != 1 || hcc.Executables[0] != embedded {
-		t.Errorf("declared executables %v, want only %s", hcc.Executables, embedded)
-	}
-	if left := entriesOf(t, hcc.WorkDir); len(left) != 0 {
-		t.Errorf("a configured binary must not be deployed: work directory holds %v", left)
-	}
-	if err := p.Close(t.Context()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(embedded); err != nil {
-		t.Errorf("Close removed the configured binary: %v", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configured := tt.binary(t)
+			cfg := realConfig()
+			cfg.SevenZipPath = configured
+			hcc := newMockContext(t)
+			var p SevenZipExtractPlugin
+			if err := p.Init(cfg, hcc); err != nil {
+				t.Fatalf("Init() with seven_zip_path error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := p.Close(context.Background()); err != nil {
+					t.Error(err)
+				}
+			})
+			if len(hcc.Executables) != 1 || hcc.Executables[0] != configured {
+				t.Errorf("declared executables %v, want only %s", hcc.Executables, configured)
+			}
+			if left := entriesOf(t, hcc.WorkDir); len(left) != 0 {
+				t.Errorf("a configured binary must not be deployed: work directory holds %v", left)
+			}
+		})
 	}
 }
 
 func TestProve_olderVersionBannerIsRefused(t *testing.T) {
 	// A binary that prints the expected listing but announces 7-Zip 24.09: the
 	// protections of the analysis are only established for 25.01.
-	sze := fakeBinary(t, "7-Zip (z) 24.09 (x64) : Copyright (c) 1999-2024 Igor Pavlov", refListing, goodExtract)
-	err := prove(sze, t.TempDir())
-	if err == nil {
-		t.Fatal("prove() accepted a 7-Zip 24.09: the version gate is missing")
+	tests := []struct {
+		name, banner string
+	}{
+		{name: "7-Zip 24.09", banner: "7-Zip (z) 24.09 (x64) : Copyright (c) 1999-2024 Igor Pavlov"},
 	}
-	if !strings.Contains(err.Error(), "version") {
-		t.Errorf("prove() error = %v, want it to name the version", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sze := fakeBinary(t, tt.banner, refListing, goodExtract)
+			err := prove(sze, t.TempDir())
+			if err == nil {
+				t.Fatalf("prove() accepted %s: the version gate is missing", tt.name)
+			}
+			if !strings.Contains(err.Error(), "version") {
+				t.Errorf("prove() error = %v, want it to name the version", err)
+			}
+		})
 	}
 }
 

@@ -119,11 +119,12 @@ func (in *Instance) OutputHas(t *testing.T, content []byte) bool {
 const MonitoringStarted = "monitoring successfully completed"
 
 // Restart stops the connector with SIGTERM and starts it again on the same
-// folders and quarantine, with change merged over its configuration. The
-// registry of the quarantine is in memory, so the new run does not know what
-// the previous one quarantined.
+// folders and quarantine, with change merged over its configuration, and waits
+// for it to watch again. The registry of the quarantine is in memory, so the
+// new run does not know what the previous one quarantined.
 func (in *Instance) Restart(t *testing.T, change map[string]any) {
 	t.Helper()
+	before := strings.Count(in.Stderr.String(), MonitoringStarted)
 	in.Signal(t, syscall.SIGTERM)
 	if _, err := in.Wait(t, 20*time.Second); err != nil {
 		t.Fatalf("the connector did not stop cleanly: %v", err)
@@ -144,6 +145,14 @@ func (in *Instance) Restart(t *testing.T, change map[string]any) {
 		in.Console.SetConfig(conf)
 	}
 	in.launch(t, in.bin, in.dir, in.args)
+	in.waitMonitoringAgain(t, before)
+}
+
+// waitMonitoringAgain waits for the connector to log that it watches more
+// times than before.
+func (in *Instance) waitMonitoringAgain(t *testing.T, before int) {
+	t.Helper()
+	in.WaitFor(t, "the monitoring to start again", func() bool { return strings.Count(in.Stderr.String(), MonitoringStarted) > before })
 }
 
 // NotDeliveredWindow is how long a file that must stay in INPUT is watched.
@@ -155,12 +164,8 @@ const NotDeliveredWindow = 12 * time.Second
 func (in *Instance) StaysInInput(t *testing.T, path string, content []byte) {
 	t.Helper()
 	in.WaitFor(t, "the connector to look at "+filepath.Base(path), func() bool { return in.LogHas(path) })
-	deadline := time.Now().Add(NotDeliveredWindow)
-	for time.Now().Before(deadline) {
-		if in.OutputHas(t, content) {
-			t.Fatalf("%s was delivered", filepath.Base(path))
-		}
-		time.Sleep(200 * time.Millisecond)
+	if in.poll(NotDeliveredWindow, func() bool { return in.OutputHas(t, content) }) == nil {
+		t.Fatalf("%s was delivered", filepath.Base(path))
 	}
 	if in.Gone(path) {
 		t.Errorf("%s left INPUT", filepath.Base(path))
@@ -172,15 +177,17 @@ func PathFilter(forbidden, skipped []string) map[string]any {
 	return map[string]any{"filepath_filter": map[string]any{"forbidden_paths": forbidden, "skipped_paths": skipped}}
 }
 
-// CrashAndRestart kills the connector without warning, as a crash does, and
-// starts it again on the same folders.
+// CrashAndRestart kills the connector without warning, as a crash does, starts
+// it again on the same folders, and waits for it to watch again.
 func (in *Instance) CrashAndRestart(t *testing.T) {
 	t.Helper()
+	before := strings.Count(in.Stderr.String(), MonitoringStarted)
 	if err := syscall.Kill(-in.Cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		t.Fatal(err)
 	}
 	<-in.exited
 	in.launch(t, in.bin, in.dir, in.args)
+	in.waitMonitoringAgain(t, before)
 }
 
 // NamesOf waits until the fake service has been sent the content, and returns

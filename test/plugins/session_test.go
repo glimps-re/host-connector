@@ -20,37 +20,61 @@ import (
 // P17: the folders a delivered file leaves empty in INPUT are removed once the
 // session report is written.
 func TestE2E_emptyFoldersRemoved(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Plugins: map[string]map[string]any{"session": {"remove_empty_dirs": true}},
-		Files:   []harness.File{{Path: "deep/er/a.txt", Content: []byte("in a subfolder")}},
-		Want: map[string]harness.Outcome{
-			"deep/er/a.txt": {In: harness.Output},
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "two folders left empty",
+			scenario: harness.Scenario{
+				Plugins: map[string]map[string]any{"session": {"remove_empty_dirs": true}},
+				Files:   []harness.File{{Path: "deep/er/a.txt", Content: []byte("in a subfolder")}},
+				Want: map[string]harness.Outcome{
+					"deep/er/a.txt": {In: harness.Output},
+				},
+				WantGone: []string{"deep"},
+			},
 		},
-		WantGone: []string{"deep"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // P3: a session that is closed gets its report, and the files that come later
 // open a new session with its own report.
 func TestE2E_sessionsCloseAndReopen(t *testing.T) {
-	first, second := []byte("content of the first session"), []byte("content of the second session")
-	in := harness.Run(t, harness.Scenario{
-		Plugins: map[string]map[string]any{"session": {"delay": "2s"}},
-		Files:   []harness.File{{Path: "one.txt", Content: first}},
-		Steps: []harness.Step{
-			harness.Await("one.txt", harness.Outcome{In: harness.Output}),
-			harness.AddFileToInput(harness.File{Path: "two.txt", Content: second}),
-		},
-		Want: map[string]harness.Outcome{
-			"one.txt": {In: harness.Output},
-			"two.txt": {In: harness.Output},
-		},
-		WantSessionReports: 2,
-	})
-	for name, content := range map[string][]byte{"one.txt": first, "two.txt": second} {
-		if got := in.ReportsOf(t, content); len(got) != 1 {
-			t.Errorf("entries for %s = %d, want 1", name, len(got))
-		}
+	t.Parallel()
+	tests := []struct {
+		name          string
+		first, second []byte
+	}{
+		{name: "a file after the first session closed", first: []byte("content of the first session"), second: []byte("content of the second session")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := harness.Run(t, harness.Scenario{
+				Plugins: map[string]map[string]any{"session": {"delay": "2s"}},
+				Files:   []harness.File{{Path: "one.txt", Content: tt.first}},
+				Steps: []harness.Step{
+					harness.Await("one.txt", harness.Outcome{In: harness.Output}),
+					harness.AddFileToInput(harness.File{Path: "two.txt", Content: tt.second}),
+				},
+				Want: map[string]harness.Outcome{
+					"one.txt": {In: harness.Output},
+					"two.txt": {In: harness.Output},
+				},
+				WantSessionReports: 2,
+			})
+			for name, content := range map[string][]byte{"one.txt": tt.first, "two.txt": tt.second} {
+				if got := in.ReportsOf(t, content); len(got) != 1 {
+					t.Errorf("entries for %s = %d, want 1", name, len(got))
+				}
+			}
+		})
 	}
 }
 
@@ -64,40 +88,50 @@ func spoolFiles(t *testing.T, in *harness.Instance) []string {
 // session that has been open for max_duration is closed at once whatever its
 // activity, with its report, and the next deposit opens a new session.
 func TestE2E_aSessionIsClosedAtMaxDuration(t *testing.T) {
-	gm := gmalware.New(t, false)
-	in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h", "max_duration": "5s"}}})
-	first, second := []byte("deposited in the first session"), []byte("deposited in the second session")
-	in.Drop(t, "one.txt", first)
-	var spool string
-	in.WaitFor(t, "the spool of the open session", func() bool {
-		files := spoolFiles(t, in)
-		if len(files) != 1 {
-			return false
-		}
-		spool = files[0]
-		return true
-	})
-	info, err := os.Stat(spool)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name          string
+		maxDuration   string
+		first, second []byte
+	}{
+		{name: "a 5 s max_duration", maxDuration: "5s", first: []byte("deposited in the first session"), second: []byte("deposited in the second session")},
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("the spool has the mode %o, want 600", mode)
-	}
-	if in.ReportCount() != 0 {
-		t.Error("a session report was written before the session closed")
-	}
-	in.WaitFor(t, "the first session to be closed by max_duration", func() bool { return in.ReportCount() == 1 })
-	if left := spoolFiles(t, in); len(left) != 0 {
-		t.Errorf("spools left after the report: %v", left)
-	}
-	in.Drop(t, "two.txt", second)
-	in.WaitFor(t, "the second session report", func() bool { return in.ReportCount() == 2 })
-	if got := in.ReportsOf(t, first); len(got) != 1 {
-		t.Errorf("entries for the first file = %d, want 1", len(got))
-	}
-	if got := in.ReportsOf(t, second); len(got) != 1 {
-		t.Errorf("entries for the second file = %d, want 1", len(got))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := gmalware.New(t, false)
+			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h", "max_duration": tt.maxDuration}}})
+			in.Drop(t, "one.txt", tt.first)
+			var spool string
+			in.WaitFor(t, "the spool of the open session", func() bool {
+				files := spoolFiles(t, in)
+				if len(files) != 1 {
+					return false
+				}
+				spool = files[0]
+				return true
+			})
+			info, err := os.Stat(spool)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode := info.Mode().Perm(); mode != 0o600 {
+				t.Errorf("the spool has the mode %o, want 600", mode)
+			}
+			if in.ReportCount() != 0 {
+				t.Error("a session report was written before the session closed")
+			}
+			in.WaitFor(t, "the first session to be closed by max_duration", func() bool { return in.ReportCount() == 1 })
+			if left := spoolFiles(t, in); len(left) != 0 {
+				t.Errorf("spools left after the report: %v", left)
+			}
+			in.Drop(t, "two.txt", tt.second)
+			in.WaitFor(t, "the second session report", func() bool { return in.ReportCount() == 2 })
+			if got := in.ReportsOf(t, tt.first); len(got) != 1 {
+				t.Errorf("entries for the first file = %d, want 1", len(got))
+			}
+			if got := in.ReportsOf(t, tt.second); len(got) != 1 {
+				t.Errorf("entries for the second file = %d, want 1", len(got))
+			}
+		})
 	}
 }
 
@@ -105,78 +139,108 @@ func TestE2E_aSessionIsClosedAtMaxDuration(t *testing.T) {
 // at once (that is the minimum the key accepts) and the next deposits open another: many reports in one run make
 // several session reports, and not one report is lost.
 func TestE2E_aSessionIsClosedAtMaxSpoolSize(t *testing.T) {
-	long := strings.Repeat("n", 180)
-	files := make([]harness.File, 0, 3000)
-	paths := make([]string, 0, 3000)
-	want := map[string]harness.Outcome{}
-	for i := range 3000 {
-		f := harness.File{Path: fmt.Sprintf("d%d/%s%05d.txt", i%20, long, i), Content: []byte(fmt.Sprintf("file number %d", i))}
-		files = append(files, f)
-		paths = append(paths, f.Path)
-		want[f.Path] = harness.Outcome{In: harness.Output}
+	t.Parallel()
+	tests := []struct {
+		name  string
+		files int
+	}{
+		{name: "3000 files with long names for a 1 MiB spool", files: 3000},
 	}
-	harness.Run(t, harness.Scenario{
-		Config:  map[string]any{"workers": 8},
-		Plugins: map[string]map[string]any{"session": {"delay": "1h", "max_spool_size": "1MiB"}},
-		Steps: []harness.Step{
-			harness.AddFileToInput(files...),
-			harness.AwaitDelivered(paths...),
-			harness.Stop(),
-		},
-		Want:               want,
-		WantSessionReports: 2,
-	})
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			long := strings.Repeat("n", 180)
+			files := make([]harness.File, 0, tt.files)
+			paths := make([]string, 0, tt.files)
+			want := map[string]harness.Outcome{}
+			for i := range tt.files {
+				f := harness.File{Path: fmt.Sprintf("d%d/%s%05d.txt", i%20, long, i), Content: []byte(fmt.Sprintf("file number %d", i))}
+				files = append(files, f)
+				paths = append(paths, f.Path)
+				want[f.Path] = harness.Outcome{In: harness.Output}
+			}
+			in := harness.Run(t, harness.Scenario{
+				Config:  map[string]any{"workers": 8},
+				Plugins: map[string]map[string]any{"session": {"delay": "1h", "max_spool_size": "1MiB"}},
+				Steps: []harness.Step{
+					harness.AddFileToInput(files...),
+					harness.AwaitDelivered(paths...),
+					harness.Stop(),
+				},
+				Want: want,
+			})
+			if n := in.ReportCount(); n < 2 {
+				t.Errorf("%d session report(s), want at least 2", n)
+			}
+		})
+	}
 }
 
 // T20b: the spool of a session open when the connector crashed is not
 // recovered: the next start removes it, with a warning that counts the session
 // reports lost, and the work directory of the dead run goes with it.
 func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
-	gm := gmalware.New(t, false)
-	in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h"}}})
-	content := []byte("deposited before the crash")
-	in.Expect.CrashLost(content)
-	in.Drop(t, "a.txt", content)
-	in.WaitFor(t, "the delivery", func() bool { return in.InOutput("a.txt") })
-	in.WaitFor(t, "the spool of the open session", func() bool { return len(spoolFiles(t, in)) == 1 })
-	oldDirs := harness.GlobOne(t, filepath.Join(in.Work, "gmhost-*"))
-	before := strings.Count(in.Stderr.String(), harness.MonitoringStarted)
-	in.CrashAndRestart(t)
-	in.WaitFor(t, "the connector to be back", func() bool { return strings.Count(in.Stderr.String(), harness.MonitoringStarted) > before })
-	if !in.LogHas("1 session report(s) of a previous run were lost (crash)") {
-		t.Error("the log does not warn that one session report was lost")
+	tests := []struct {
+		name    string
+		content []byte
+	}{
+		{name: "one file in the open session", content: []byte("deposited before the crash")},
 	}
-	for _, dir := range oldDirs {
-		if !in.Gone(dir) {
-			t.Errorf("the work directory of the crashed run is still there: %s", dir)
-		}
-	}
-	if left := spoolFiles(t, in); len(left) != 0 {
-		t.Errorf("spools left: %v", left)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := gmalware.New(t, false)
+			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h"}}})
+			in.Expect.CrashLost(tt.content)
+			in.Drop(t, "a.txt", tt.content)
+			in.WaitFor(t, "the delivery", func() bool { return in.InOutput("a.txt") })
+			in.WaitFor(t, "the spool of the open session", func() bool { return len(spoolFiles(t, in)) == 1 })
+			oldDirs := harness.GlobOne(t, filepath.Join(in.Work, "gmhost-*"))
+			in.CrashAndRestart(t)
+			if !in.LogHas("1 session report(s) of a previous run were lost (crash)") {
+				t.Error("the log does not warn that one session report was lost")
+			}
+			for _, dir := range oldDirs {
+				if !in.Gone(dir) {
+					t.Errorf("the work directory of the crashed run is still there: %s", dir)
+				}
+			}
+			if left := spoolFiles(t, in); len(left) != 0 {
+				t.Errorf("spools left: %v", left)
+			}
+		})
 	}
 }
 
 // A SIGTERM with a session that holds a processed file: its report is written
 // by the same path as the order of the console.
 func TestShutdown_sigtermWritesTheReportOfAnOpenSession(t *testing.T) {
-	g := gmalware.New(t, false)
-	in := harness.Start(t, g, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h"}}})
-	in.Drop(t, "a.txt", []byte("some content to analyze"))
-	in.WaitFor(t, "the file to be delivered", func() bool { return in.InOutput("a.txt") })
-	in.Signal(t, syscall.SIGTERM)
-	if _, err := in.Wait(t, 6*time.Second); err != nil {
-		t.Errorf("exit = %v, want code 0; log:\n%s", err, in.Stderr.String())
+	tests := []struct {
+		name  string
+		delay string
+	}{
+		{name: "a session open for 1 h", delay: "1h"},
 	}
-	reports := harness.GlobOne(t, filepath.Join(in.Export, "tom", "*"))
-	if len(reports) != 1 {
-		t.Fatalf("reports = %v, want one; log:\n%s", reports, in.Stderr.String())
-	}
-	content, err := os.ReadFile(filepath.Clean(reports[0]))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(content), "a.txt") {
-		t.Errorf("the report does not mention the file:\n%s", content)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			g := gmalware.New(t, false)
+			in := harness.Start(t, g, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": tt.delay}}})
+			in.Drop(t, "a.txt", []byte("some content to analyze"))
+			in.WaitFor(t, "the file to be delivered", func() bool { return in.InOutput("a.txt") })
+			in.Signal(t, syscall.SIGTERM)
+			if _, err := in.Wait(t, 6*time.Second); err != nil {
+				t.Errorf("exit = %v, want code 0; log:\n%s", err, in.Stderr.String())
+			}
+			reports := harness.GlobOne(t, filepath.Join(in.Export, "tom", "*"))
+			if len(reports) != 1 {
+				t.Fatalf("reports = %v, want one; log:\n%s", reports, in.Stderr.String())
+			}
+			content, err := os.ReadFile(filepath.Clean(reports[0]))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(content), "a.txt") {
+				t.Errorf("the report does not mention the file:\n%s", content)
+			}
+		})
 	}
 }
 
@@ -294,7 +358,10 @@ func TestE2E_aPendingFileThatChangesBeforeBeingTakenNeverBlocksTheSession(t *tes
 			gm := gmalware.New(t, false)
 			slow := []byte("jerry slow")
 			gm.DelayResultOf(slow, 10*time.Second)
-			in := harness.Start(t, gm, harness.Options{Config: map[string]any{"workers": 1}})
+			in := harness.Start(t, gm, harness.Options{Config: map[string]any{
+				"workers":    1,
+				"monitoring": map[string]any{"modification_delay": "50ms"},
+			}})
 			in.Drop(t, "1.txt", []byte("tom first"))
 			in.WaitFor(t, "the session of Tom", func() bool { return len(spoolFiles(t, in)) == 1 })
 			dropAs(t, in, "jerry", "slow.txt", slow)

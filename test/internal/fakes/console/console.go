@@ -18,7 +18,6 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/test/internal/fakes/errlog"
-	"github.com/glimps-re/host-connector/test/internal/wait"
 )
 
 // maxFakeEvent bounds what the fake reads from the connector, as the product
@@ -201,18 +200,6 @@ func (c *Console) Ack(taskID string) (errText string, acked bool) {
 		}
 	}
 	return "", false
-}
-
-// WaitAck waits for the acknowledgement of the task and returns its error text.
-func (c *Console) WaitAck(t *testing.T, taskID string) string {
-	t.Helper()
-	var errText string
-	wait.WaitFor(t, "the acknowledgement of "+taskID, func() bool {
-		var acked bool
-		errText, acked = c.Ack(taskID)
-		return acked
-	})
-	return errText
 }
 
 // EventsOfType returns the events of one type (error, resolution, log, ...).

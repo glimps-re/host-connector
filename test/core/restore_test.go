@@ -48,107 +48,144 @@ func TestE2E_quarantineRestore(t *testing.T) {
 // untouched, the container is kept and the malware is not restored; once the
 // place is free the same restore works.
 func TestE2E_restoreNeverReplacesAFile(t *testing.T) {
-	gm := gmalware.New(t, false)
-	in := harness.Start(t, gm, harness.Options{Agent: true})
-	bad := []byte("a malware that is restored onto an occupied place")
-	gm.MarkMalicious(bad)
-	in.Expect.Release(bad)
-	path := in.Drop(t, "bad.txt", bad)
-	id := hcquarantine.ComputeCacheID(path, gmalware.SHA256Hex(bad))
-	lock := filepath.Join(in.Quarantine, id+".lock")
-	in.WaitFor(t, "the quarantine", func() bool { return !in.Gone(lock) })
-	in.WaitFor(t, "the malware to leave INPUT", func() bool { return in.Gone(path) })
-
-	// A depositor keeps writing the file that now sits where the malware was: it
-	// never gets stable, so it stays there while the restore is tried.
-	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		bad  []byte
+	}{
+		{name: "a file kept growing where the malware was", bad: []byte("a malware that is restored onto an occupied place")},
 	}
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			if _, e := f.WriteString("keeps growing\n"); e != nil {
-				return
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gm := gmalware.New(t, false)
+			in := harness.Start(t, gm, harness.Options{Agent: true})
+			gm.MarkMalicious(tt.bad)
+			in.Expect.Release(tt.bad)
+			path := in.Drop(t, "bad.txt", tt.bad)
+			id := hcquarantine.ComputeCacheID(path, gmalware.SHA256Hex(tt.bad))
+			lock := filepath.Join(in.Quarantine, id+".lock")
+			in.WaitFor(t, "the quarantine", func() bool { return !in.Gone(lock) })
+			in.WaitFor(t, "the malware to leave INPUT", func() bool { return in.Gone(path) })
+
+			// A depositor keeps writing the file that now sits where the malware was: it
+			// never gets stable, so it stays there while the restore is tried.
+			f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+			if err != nil {
+				t.Fatal(err)
 			}
-			select {
-			case <-stop:
-				return
-			case <-time.After(200 * time.Millisecond):
+			stop := make(chan struct{})
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				for {
+					if _, e := f.WriteString("keeps growing\n"); e != nil {
+						return
+					}
+					select {
+					case <-stop:
+						return
+					case <-time.After(200 * time.Millisecond):
+					}
+				}
+			}()
+			stopWriter := sync.OnceFunc(func() {
+				close(stop)
+				<-done
+				if e := f.Close(); e != nil {
+					t.Logf("close: %v", e)
+				}
+			})
+			defer stopWriter()
+
+			msg := in.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id}))
+			if !strings.Contains(msg, "destination already exists") {
+				t.Fatalf("refusal = %q, want the destination named as existing", msg)
 			}
-		}
-	}()
-	stopWriter := sync.OnceFunc(func() {
-		close(stop)
-		<-done
-		if e := f.Close(); e != nil {
-			t.Logf("close: %v", e)
-		}
-	})
-	defer stopWriter()
+			if in.Gone(lock) {
+				t.Error("the container is gone although nothing was restored")
+			}
+			if got, err := os.ReadFile(filepath.Clean(path)); err != nil || bytes.Contains(got, tt.bad) {
+				t.Errorf("the file in the way was changed: %d bytes, %v", len(got), err)
+			}
+			if in.OutputHas(t, tt.bad) {
+				t.Error("the malware reached OUTPUT although its restore was refused")
+			}
 
-	msg := in.Console.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id}))
-	if !strings.Contains(msg, "destination already exists") {
-		t.Fatalf("refusal = %q, want the destination named as existing", msg)
+			stopWriter()
+			in.WaitFor(t, "the file in the way to leave INPUT", func() bool { return in.Gone(path) })
+			if msg := in.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+				t.Fatalf("the restore was refused once the place was free: %s", msg)
+			}
+			in.WaitFor(t, "the restored file to be delivered", func() bool { return in.OutputHas(t, tt.bad) })
+		})
 	}
-	if in.Gone(lock) {
-		t.Error("the container is gone although nothing was restored")
-	}
-	if got, err := os.ReadFile(filepath.Clean(path)); err != nil || bytes.Contains(got, bad) {
-		t.Errorf("the file in the way was changed: %d bytes, %v", len(got), err)
-	}
-	if in.OutputHas(t, bad) {
-		t.Error("the malware reached OUTPUT although its restore was refused")
-	}
-
-	stopWriter()
-	in.WaitFor(t, "the file in the way to leave INPUT", func() bool { return in.Gone(path) })
-	if msg := in.Console.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
-		t.Fatalf("the restore was refused once the place was free: %s", msg)
-	}
-	in.WaitFor(t, "the restored file to be delivered", func() bool { return in.OutputHas(t, bad) })
 }
 
 // T14b, Q30: a container whose registry entry is lost (the registry is in
 // memory and the connector restarted) is restored only under a watched folder.
 // Outside the watched folders the restore is refused and nothing is written.
 func TestE2E_restoreWithoutRegistryEntryOutsideWatchedFolders(t *testing.T) {
+	t.Parallel()
 	elsewhere := t.TempDir()
-	harness.Run(t, harness.Scenario{
-		Agent: true,
-		Files: []harness.File{{Path: "bad.txt", Content: []byte("a malware whose registry entry is lost by a restart"), Verdict: harness.Malicious}},
-		Steps: []harness.Step{
-			harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-			harness.Restart(map[string]any{"paths": []string{elsewhere}}),
-			harness.Restore("bad.txt", "below a watched path"),
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a restart that watches another folder",
+			scenario: harness.Scenario{
+				Agent: true,
+				Files: []harness.File{{Path: "bad.txt", Content: []byte("a malware whose registry entry is lost by a restart"), Verdict: harness.Malicious}},
+				Steps: []harness.Step{
+					harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
+					harness.Restart(map[string]any{"paths": []string{elsewhere}}),
+					harness.Restore("bad.txt", "below a watched path"),
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
+				},
+				WantMitigations: []string{"malware"},
+			},
 		},
-		Want: map[string]harness.Outcome{
-			"bad.txt": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
-		},
-		WantMitigations: []string{"malware"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // T14b, Q30: under a watched folder the same restore is served, the console is
 // told that the registry did not know the file, and the restored file is
 // delivered once.
 func TestE2E_restoreWithoutRegistryEntryUnderAWatchedFolder(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Agent: true,
-		Files: []harness.File{{Path: "bad.txt", Content: []byte("a malware whose registry entry is lost by a restart"), Verdict: harness.Malicious}},
-		Steps: []harness.Step{
-			harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-			harness.Restart(nil),
-			harness.Restore("bad.txt", ""),
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a restart on the same folders",
+			scenario: harness.Scenario{
+				Agent: true,
+				Files: []harness.File{{Path: "bad.txt", Content: []byte("a malware whose registry entry is lost by a restart"), Verdict: harness.Malicious}},
+				Steps: []harness.Step{
+					harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
+					harness.Restart(nil),
+					harness.Restore("bad.txt", ""),
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt": {In: harness.Output, Restored: true},
+				},
+				WantMitigations:   []string{"malware"},
+				WantConsoleErrors: []string{"quarantine-restore-unregistered"},
+			},
 		},
-		Want: map[string]harness.Outcome{
-			"bad.txt": {In: harness.Output, Restored: true},
-		},
-		WantMitigations:   []string{"malware"},
-		WantConsoleErrors: []string{"quarantine-restore-unregistered"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // p3/T61: a restored file that is delivered is listed as not analyzed with the
@@ -156,23 +193,33 @@ func TestE2E_restoreWithoutRegistryEntryUnderAWatchedFolder(t *testing.T) {
 // The detection that quarantined it earlier stays in the reports, and an
 // ordinary file of the same run carries no reason.
 func TestE2E_aRestoredFileIsListedAsNotAnalyzed(t *testing.T) {
-	bad := []byte("this content is a malware, restored then reported as not analyzed")
-	in := harness.Run(t, harness.Scenario{
-		Agent: true,
-		Files: []harness.File{{Path: "bad.txt", Content: bad, Verdict: harness.Malicious}},
-		Steps: []harness.Step{
-			harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-			harness.Restore("bad.txt", ""),
-			harness.AddFileToInput(harness.File{Path: "clean.txt", Content: []byte("an ordinary file that is analyzed")}),
-		},
-		Want: map[string]harness.Outcome{
-			"bad.txt":   {In: harness.Output, Restored: true},
-			"clean.txt": {In: harness.Output},
-		},
-		WantMitigations: []string{"malware"},
-	})
-	if !slices.ContainsFunc(harness.ReadReports(in)[gmalware.SHA256Hex(bad)], func(e datamodel.Report) bool { return e.Malicious }) {
-		t.Error("the detection that quarantined the file is gone from the reports")
+	t.Parallel()
+	tests := []struct {
+		name string
+		bad  []byte
+	}{
+		{name: "a restored malware beside an ordinary file", bad: []byte("this content is a malware, restored then reported as not analyzed")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := harness.Run(t, harness.Scenario{
+				Agent: true,
+				Files: []harness.File{{Path: "bad.txt", Content: tt.bad, Verdict: harness.Malicious}},
+				Steps: []harness.Step{
+					harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
+					harness.Restore("bad.txt", ""),
+					harness.AddFileToInput(harness.File{Path: "clean.txt", Content: []byte("an ordinary file that is analyzed")}),
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt":   {In: harness.Output, Restored: true},
+					"clean.txt": {In: harness.Output},
+				},
+				WantMitigations: []string{"malware"},
+			})
+			if !slices.ContainsFunc(harness.ReadReports(in)[gmalware.SHA256Hex(tt.bad)], func(e datamodel.Report) bool { return e.Malicious }) {
+				t.Error("the detection that quarantined the file is gone from the reports")
+			}
+		})
 	}
 }
 
@@ -181,26 +228,36 @@ func TestE2E_aRestoredFileIsListedAsNotAnalyzed(t *testing.T) {
 // under a forbidden path it is refused: quarantined, with the reason of the
 // path rule.
 func TestE2E_aRestoredFileIsStillHeldToThePathRules(t *testing.T) {
-	bad := []byte("a malware that an operator restores")
-	harness.Run(t, harness.Scenario{
-		Agent:  true,
-		Config: harness.PathFilter([]string{`/forbidden/`}, nil),
-		Files:  []harness.File{{Path: "bad.txt", Content: bad, Verdict: harness.Malicious}},
-		Steps: []harness.Step{
-			harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-			harness.Restore("bad.txt", ""),
-			harness.AddFileToInput(
-				harness.File{Path: "forbidden/y.txt", Content: bad, Verdict: harness.Malicious},
-				harness.File{Path: "elsewhere/z.txt", Content: bad, Verdict: harness.Malicious},
-			),
-		},
-		Want: map[string]harness.Outcome{
-			"bad.txt":         {In: harness.Output, Restored: true},
-			"forbidden/y.txt": {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
-			"elsewhere/z.txt": {In: harness.Output, Restored: true},
-		},
-		WantMitigations: []string{"malware", "filepath"},
-	})
+	t.Parallel()
+	tests := []struct {
+		name string
+		bad  []byte
+	}{
+		{name: "deposited under a forbidden path and elsewhere", bad: []byte("a malware that an operator restores")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, harness.Scenario{
+				Agent:  true,
+				Config: harness.PathFilter([]string{`/forbidden/`}, nil),
+				Files:  []harness.File{{Path: "bad.txt", Content: tt.bad, Verdict: harness.Malicious}},
+				Steps: []harness.Step{
+					harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
+					harness.Restore("bad.txt", ""),
+					harness.AddFileToInput(
+						harness.File{Path: "forbidden/y.txt", Content: tt.bad, Verdict: harness.Malicious},
+						harness.File{Path: "elsewhere/z.txt", Content: tt.bad, Verdict: harness.Malicious},
+					),
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt":         {In: harness.Output, Restored: true},
+					"forbidden/y.txt": {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
+					"elsewhere/z.txt": {In: harness.Output, Restored: true},
+				},
+				WantMitigations: []string{"malware", "filepath"},
+			})
+		})
+	}
 }
 
 // T56: with the quarantine and the deletion off, a refused restored file stays
@@ -208,34 +265,44 @@ func TestE2E_aRestoredFileIsStillHeldToThePathRules(t *testing.T) {
 // set while the quarantine is on, then the actions are turned off by the console
 // and the content is deposited under a forbidden path.
 func TestE2E_aRefusedRestoredFileStaysInInputWithoutRetry(t *testing.T) {
-	bad := []byte("a malware that an operator restores, then is refused for its path")
-	in := harness.Run(t, harness.Scenario{
-		Agent: true,
-		Config: harness.MergeMaps(harness.PathFilter([]string{`/forbidden/`}, nil), map[string]any{
-			"monitoring": map[string]any{"period": "2s"},
-		}),
-		Files: []harness.File{{Path: "bad.txt", Content: bad, Verdict: harness.Malicious}},
-		Steps: []harness.Step{
-			harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-			harness.Restore("bad.txt", ""),
-			harness.Await("bad.txt", harness.Outcome{In: harness.Output, Restored: true}),
-			harness.UpdateConfig(map[string]any{"actions": map[string]any{"quarantine": false, "delete": false}}, ""),
-			harness.AddFileToInput(harness.File{Path: "forbidden/y.txt", Content: bad, Verdict: harness.Malicious}),
-		},
-		Want: map[string]harness.Outcome{
-			"bad.txt":         {In: harness.Output, Restored: true},
-			"forbidden/y.txt": {In: harness.Input, Malware: datamodel.FilteredFilePath},
-		},
-		WantMitigations: []string{"malware", "filepath"},
-	})
-	count := 0
-	for _, e := range harness.ReadReports(in)[gmalware.SHA256Hex(bad)] {
-		if e.Filename == filepath.Join(in.Input, "tom", "forbidden/y.txt") {
-			count++
-		}
+	t.Parallel()
+	tests := []struct {
+		name string
+		bad  []byte
+	}{
+		{name: "quarantine and deletion off", bad: []byte("a malware that an operator restores, then is refused for its path")},
 	}
-	if count != 1 {
-		t.Errorf("the refused file is reported %d times, want once", count)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			in := harness.Run(t, harness.Scenario{
+				Agent: true,
+				Config: harness.MergeMaps(harness.PathFilter([]string{`/forbidden/`}, nil), map[string]any{
+					"monitoring": map[string]any{"period": "2s"},
+				}),
+				Files: []harness.File{{Path: "bad.txt", Content: tt.bad, Verdict: harness.Malicious}},
+				Steps: []harness.Step{
+					harness.Await("bad.txt", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
+					harness.Restore("bad.txt", ""),
+					harness.Await("bad.txt", harness.Outcome{In: harness.Output, Restored: true}),
+					harness.UpdateConfig(map[string]any{"actions": map[string]any{"quarantine": false, "delete": false}}, ""),
+					harness.AddFileToInput(harness.File{Path: "forbidden/y.txt", Content: tt.bad, Verdict: harness.Malicious}),
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt":         {In: harness.Output, Restored: true},
+					"forbidden/y.txt": {In: harness.Input, Malware: datamodel.FilteredFilePath},
+				},
+				WantMitigations: []string{"malware", "filepath"},
+			})
+			count := 0
+			for _, e := range harness.ReadReports(in)[gmalware.SHA256Hex(tt.bad)] {
+				if e.Filename == filepath.Join(in.Input, "tom", "forbidden/y.txt") {
+					count++
+				}
+			}
+			if count != 1 {
+				t.Errorf("the refused file is reported %d times, want once", count)
+			}
+		})
 	}
 }
 

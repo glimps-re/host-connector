@@ -12,20 +12,57 @@ import (
 // P15: a file above max_file_size and an empty file are delivered when the
 // policy says pass, and the reports say they were not analyzed.
 func TestE2E_unanalyzablePolicyPass(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Config: map[string]any{
-			"max_file_size":       "1MiB",
-			"unanalyzable_policy": map[string]any{"too_big": "pass", "empty": "pass"},
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a too big and an empty file",
+			scenario: harness.Scenario{
+				Config: map[string]any{
+					"max_file_size":       "1MiB",
+					"unanalyzable_policy": map[string]any{"too_big": "pass", "empty": "pass"},
+				},
+				Files: []harness.File{
+					{Path: "big.bin", Content: make([]byte, 2<<20)},
+					{Path: "empty.txt"},
+				},
+				Want: map[string]harness.Outcome{
+					"big.bin":   {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedTooBig, ServiceVerdict: harness.NotGiven},
+					"empty.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedEmpty, ServiceVerdict: harness.NotGiven},
+				},
+			},
 		},
-		Files: []harness.File{
-			{Path: "big.bin", Content: make([]byte, 2<<20)},
-			{Path: "empty.txt"},
-		},
-		Want: map[string]harness.Outcome{
-			"big.bin":   {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedTooBig},
-			"empty.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedEmpty},
-		},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
+}
+
+// The empty policy beside P15: with no empty key an empty file is delivered,
+// marked empty; with skip it stays in INPUT, unreported. Mirrors
+// TestPipeline_anEmptyFileIsDeliveredByDefault.
+func TestE2E_emptyFilePolicy(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name   string
+		config map[string]any
+		want   harness.Outcome
+	}{
+		{name: "no empty key", want: harness.Outcome{In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedEmpty}},
+		{name: "skip", config: map[string]any{"unanalyzable_policy": map[string]any{"empty": "skip"}}, want: harness.Outcome{In: harness.Input, NoReport: true}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, harness.Scenario{
+				Config: tt.config,
+				Files:  []harness.File{{Path: "empty.txt"}},
+				Want:   map[string]harness.Outcome{"empty.txt": tt.want},
+			})
+		})
+	}
 }
 
 // D6: a detection always wins. A result that carries a detection and an
@@ -33,16 +70,30 @@ func TestE2E_unanalyzablePolicyPass(t *testing.T) {
 // error; the report says malicious with the reason malware-detected, and the
 // console is told it is a malware.
 func TestE2E_aDetectionWithAnAnalysisErrorIsMalware(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Agent: true,
-		Files: []harness.File{
-			{Path: "bad.txt", Content: []byte("a malware the service also fails to finish analyzing"), Verdict: harness.MaliciousWithError},
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a plain file",
+			scenario: harness.Scenario{
+				Agent: true,
+				Files: []harness.File{
+					{Path: "bad.txt", Content: []byte("a malware the service also fails to finish analyzing"), Verdict: harness.MaliciousWithError},
+				},
+				Want: map[string]harness.Outcome{
+					"bad.txt": {In: harness.Quarantine, Malware: datamodel.MalwareDetected, Error: "could not be analyzed"},
+				},
+				WantMitigations: []string{"malware"},
+			},
 		},
-		Want: map[string]harness.Outcome{
-			"bad.txt": {In: harness.Quarantine, Malware: datamodel.MalwareDetected, Error: "could not be analyzed"},
-		},
-		WantMitigations: []string{"malware"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // T51b: analysis_error decides what becomes of a file whose analysis failed:

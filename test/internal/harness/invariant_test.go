@@ -210,6 +210,15 @@ func TestOutputViolations(t *testing.T) {
 				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: "m", Size: 10, Reason: datamodel.NotAnalyzedEncrypted}}
 			}))
 		}, want: `member "m" delivered not analyzed`},
+		{name: "archive whose every member was left out too big", setup: func(f *fixture) {
+			f.deliver("a.zip", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{
+					{FileName: "big1.bin", Size: 1<<20 + 1, Reason: datamodel.NotAnalyzedTooBig},
+					{FileName: "big2.bin", Size: 1<<20 + 2, Reason: datamodel.NotAnalyzedTooBig},
+				}
+			}))
+		}},
 
 		{name: "flagged content delivered", setup: func(f *fixture) {
 			f.spec.Flag(content)

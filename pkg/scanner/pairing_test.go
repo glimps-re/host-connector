@@ -5,34 +5,21 @@ package scanner
 import (
 	"context"
 	"errors"
-	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 
-	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
 )
 
 // TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned runs one
-// deposited file through each way out of the pipeline and checks the pairing
-// the session plugin relies on to close its sessions.
+// deposited file through the ways out of the pipeline the e2e suite cannot
+// reach and checks the pairing the session plugin relies on to close its
+// sessions.
 func TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *testing.T) {
-	failing := func() *gdetectMock.MockGDetectSubmitter {
-		fail := errors.New("service unreachable")
-		return &gdetectMock.MockGDetectSubmitter{
-			ExtractExpertViewURLMock: func(*gdetect.Result) (string, error) { return "", nil },
-			WaitForFileMock: func(context.Context, string, gdetect.WaitForOptions) (gdetect.Result, error) {
-				return gdetect.Result{}, fail
-			},
-			WaitForReaderMock: func(context.Context, io.Reader, gdetect.WaitForOptions) (gdetect.Result, error) {
-				return gdetect.Result{}, fail
-			},
-		}
-	}
 	archiveRun := func(extract plugins.ExtractFile) func(t *testing.T, f *swapFixture) {
 		return func(t *testing.T, f *swapFixture) {
 			t.Helper()
@@ -50,14 +37,6 @@ func TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *tes
 		setup      func(t *testing.T, f *swapFixture)
 		wantErrors bool
 	}{
-		{name: "clean file", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) }},
-		{name: "malware", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) }},
-		{name: "waived by a plugin", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) }, setup: func(_ *testing.T, f *swapFixture) {
-			f.c.RegisterOnScanFile(func(name, location, sha string, _ bool) *datamodel.Result {
-				return &datamodel.Result{Filename: name, Location: location, SHA256: sha, Score: -500}
-			})
-		}},
-		{name: "submission failure", submitter: func(**swapFixture) *gdetectMock.MockGDetectSubmitter { return failing() }, wantErrors: true},
 		{name: "action failure", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) }, setup: func(_ *testing.T, f *swapFixture) {
 			f.c.action = &MockAction{HandleMock: func(context.Context, Source, datamodel.Result, *datamodel.Report) error {
 				return errors.New("move failed")
@@ -75,18 +54,6 @@ func TestPipeline_everyOnStartScanFileIsFollowedByExactlyOneOnFileScanned(t *tes
 			setup: archiveRun(func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
 				return plugins.Extraction{}, errors.Join(plugins.ErrExtractorUnavailable, errors.New("7zzs missing"))
 			}), wantErrors: true,
-		},
-		{
-			name: "archive, extraction error", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) },
-			setup: archiveRun(func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
-				return plugins.Extraction{}, errors.New("corrupted archive")
-			}), wantErrors: true,
-		},
-		{
-			name: "archive, plain file after all", submitter: func(f **swapFixture) *gdetectMock.MockGDetectSubmitter { return serviceSubmitter(f, nil) },
-			setup: archiveRun(func(string, string, plugins.ExtractLimits) (plugins.Extraction, error) {
-				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
-			}),
 		},
 	}
 	for _, tt := range tests {

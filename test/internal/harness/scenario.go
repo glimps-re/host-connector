@@ -32,6 +32,9 @@ const (
 	MaliciousWithError
 	// AnalysisError is an analysis error and no detection.
 	AnalysisError
+	// OtherSHA256 is a clean verdict whose result carries a SHA256 that is not
+	// the one of the file.
+	OtherSHA256
 )
 
 // Place is where a file of a scenario ends up.
@@ -41,9 +44,9 @@ const (
 	Input      Place = "input"
 	Output     Place = "output"
 	Quarantine Place = "quarantine"
-	// Nowhere is a file that left INPUT and is neither delivered nor
+	// nowhere is a file that left INPUT and is neither delivered nor
 	// quarantined.
-	Nowhere Place = "nowhere"
+	nowhere Place = "nowhere"
 )
 
 // Format is the format of a quarantine container.
@@ -52,6 +55,15 @@ type Format string
 const (
 	Tar Format = "tar"
 	Zip Format = "zip"
+)
+
+// Delivery tells whether the file in OUTPUT is a copy of the dropped file or
+// the dropped file itself (the same inode).
+type Delivery string
+
+const (
+	Copied   Delivery = "copied"
+	SameFile Delivery = "same file"
 )
 
 // ServiceVerdict tells whether the service gave its verdict on a content.
@@ -82,7 +94,7 @@ type MemberList struct {
 }
 
 // NoMembers is a report that lists no member as not analyzed.
-var NoMembers = &MemberList{}
+func NoMembers() *MemberList { return &MemberList{} }
 
 // Outcome is the state of a file. The file must have report entries (by its
 // INPUT path), and they must all carry exactly Malware and NotAnalyzed, and an
@@ -95,10 +107,15 @@ type Outcome struct {
 	Malware     datamodel.MalwareReason
 	NotAnalyzed datamodel.NotAnalyzedReason
 	Error       string
+	// NoReport is a file without any report entry, in place of the entries
+	// above. It is checked with the other files: with In Input, it must then
+	// hold for NotDeliveredWindow.
+	NoReport bool
 	// Restored is a file delivered with the restored mark: its one entry is a
 	// restored one, and its container is gone.
 	Restored  bool
 	Container Format
+	Delivery  Delivery
 	// SubmittedAs are the names the service was told, relative to INPUT/tom.
 	SubmittedAs []string
 	// Submissions is the exact number of submissions of the content.
@@ -114,9 +131,7 @@ type Outcome struct {
 // Scenario is a run of the connector told as its input (configuration, files
 // and verdicts, then steps) and the state it must reach.
 type Scenario struct {
-	Agent bool
-	// Hang makes the service read every submission and never answer.
-	Hang    bool
+	Agent   bool
 	Timeout string
 	Config  map[string]any
 	Plugins map[string]map[string]any
@@ -143,18 +158,13 @@ type Scenario struct {
 
 // Step is what happens during a run, after the files of the scenario are added.
 type Step struct {
-	name  string
 	files []File
 	do    func(t *testing.T, r *run)
 }
 
 // AddFileToInput adds files to INPUT, or rewrites them.
 func AddFileToInput(files ...File) Step {
-	names := make([]string, 0, len(files))
-	for _, f := range files {
-		names = append(names, f.Path)
-	}
-	return Step{name: "add " + strings.Join(names, ", "), files: files, do: func(t *testing.T, r *run) {
+	return Step{files: files, do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.add(t, files)
 	}}
@@ -164,18 +174,22 @@ func AddFileToInput(files ...File) Step {
 // entries it saw are then the history of the file: the later checks of the
 // file look at the newer entries, or at the last one when there is none.
 func Await(path string, o Outcome) Step {
-	return Step{name: "await " + path, do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		r.declare(r.files[path], o)
+		f, ok := r.files[path]
+		if !ok {
+			t.Fatalf("await %s, which the scenario has not added yet", path)
+		}
+		r.declare(f, o)
 		r.wait(t, "await "+path, map[string]Outcome{path: o}, false)
-		r.consumed[path] = len(r.observe().byName[reportName(r.inputPath(path))])
+		r.consumed[path] = len(r.observe()[reportName(r.inputPath(path))])
 	}}
 }
 
 // AwaitDelivered waits for files to be in OUTPUT with their bytes, without
 // looking at their reports.
 func AwaitDelivered(paths ...string) Step {
-	return Step{name: "await the delivery of " + strings.Join(paths, ", "), do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.in.WaitFor(t, "the delivery of "+strings.Join(paths, ", "), func() bool {
 			return !slices.ContainsFunc(paths, func(p string) bool { return !r.delivered(p) })
@@ -186,7 +200,7 @@ func AwaitDelivered(paths ...string) Step {
 // Restore restores a quarantined file through the console. Its answer must be
 // empty when wantAckErr is, else contain it.
 func Restore(path, wantAckErr string) Step {
-	return Step{name: "restore " + path, do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		f := r.files[path]
 		r.task(t, "restore", map[string]string{"id": hcquarantine.ComputeCacheID(r.inputPath(path), gmalware.SHA256Hex(f.Content))}, wantAckErr)
@@ -198,7 +212,7 @@ func Restore(path, wantAckErr string) Step {
 
 // RestoreID asks the console to restore a container by its ID.
 func RestoreID(id, wantAckErr string) Step {
-	return Step{name: "restore " + strconv.Quote(id), do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.task(t, "restore", map[string]string{"id": id}, wantAckErr)
 	}}
@@ -207,7 +221,7 @@ func RestoreID(id, wantAckErr string) Step {
 // UpdateConfig serves the configuration with change merged over it and pushes
 // an update-config task.
 func UpdateConfig(change map[string]any, wantAckErr string) Step {
-	return Step{name: "update-config", do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		conf := r.in.WithConf(t, change)
 		r.needConsole(t)
@@ -224,7 +238,7 @@ func UpdateConfig(change map[string]any, wantAckErr string) Step {
 
 // Task pushes a console task without content (stop, start).
 func Task(action, wantAckErr string) Step {
-	return Step{name: "task " + action, do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.task(t, action, nil, wantAckErr)
 	}}
@@ -233,27 +247,25 @@ func Task(action, wantAckErr string) Step {
 // Restart stops the connector and starts it again with change merged over its
 // configuration, and waits for it to watch again.
 func Restart(change map[string]any) Step {
-	return Step{name: "restart", do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		before := strings.Count(r.in.Stderr.String(), MonitoringStarted)
 		r.in.Restart(t, change)
-		r.in.WaitFor(t, "the monitoring to start again", func() bool { return strings.Count(r.in.Stderr.String(), MonitoringStarted) > before })
 	}}
 }
 
 // ServiceDown makes the service answer status to the analyses.
 func ServiceDown(status int) Step {
-	return Step{name: "service down", do: func(_ *testing.T, r *run) { r.gm.FailWith(status) }}
+	return Step{do: func(_ *testing.T, r *run) { r.gm.FailWith(status) }}
 }
 
 // ServiceUp ends ServiceDown.
 func ServiceUp() Step {
-	return Step{name: "service up", do: func(_ *testing.T, r *run) { r.gm.FailWith(0) }}
+	return Step{do: func(_ *testing.T, r *run) { r.gm.FailWith(0) }}
 }
 
 // AwaitServiceFailure waits for the service to have failed a request.
 func AwaitServiceFailure() Step {
-	return Step{name: "await a failure of the service", do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.in.WaitFor(t, "a failure of the service", func() bool { return r.gm.Failed.Load() > 0 })
 	}}
@@ -261,7 +273,7 @@ func AwaitServiceFailure() Step {
 
 // AwaitConsoleError waits for the console to receive an error of this type.
 func AwaitConsoleError(typ string) Step {
-	return Step{name: "await console error " + typ, do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.needConsole(t)
 		r.in.WaitFor(t, "the console error "+typ, func() bool { return slices.Contains(r.in.Console.ErrorTypes(), typ) })
@@ -270,7 +282,7 @@ func AwaitConsoleError(typ string) Step {
 
 // Stop stops the connector with SIGTERM; it must exit cleanly.
 func Stop() Step {
-	return Step{name: "stop", do: func(t *testing.T, r *run) {
+	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		r.in.Signal(t, syscall.SIGTERM)
 		if _, err := r.in.Wait(t, 20*time.Second); err != nil {
@@ -292,6 +304,8 @@ type run struct {
 	final map[string]File
 	// consumed counts, by key, the report entries an Await already checked.
 	consumed map[string]int
+	// inodes holds the inode of every file the run wrote to INPUT, by key.
+	inodes map[string]uint64
 }
 
 // Run plays a scenario and returns its instance once the wanted state is
@@ -299,7 +313,7 @@ type run struct {
 func Run(t *testing.T, s Scenario) *Instance {
 	t.Helper()
 	t.Parallel()
-	gm := gmalware.New(t, s.Hang)
+	gm := gmalware.New(t, false)
 	in := Start(t, gm, Options{Agent: s.Agent, Timeout: s.Timeout, Config: s.Config, Plugins: s.Plugins})
 	if s.WantRefused != "" {
 		if _, err := in.Wait(t, 20*time.Second); err == nil {
@@ -310,7 +324,7 @@ func Run(t *testing.T, s Scenario) *Instance {
 		}
 		return in
 	}
-	r := &run{s: s, in: in, gm: gm, files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}}
+	r := &run{s: s, in: in, gm: gm, files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}, inodes: map[string]uint64{}}
 	r.validate(t)
 	r.add(t, s.Files)
 	for _, step := range s.Steps {
@@ -359,8 +373,17 @@ func (r *run) add(t *testing.T, files []File) {
 		r.declare(f, r.s.Want[f.Path])
 	}
 	for _, f := range files {
-		r.in.Drop(t, f.Path, f.Content)
+		r.inodes[f.Path] = inode(t, r.in.Drop(t, f.Path, f.Content))
 	}
+}
+
+func inode(t *testing.T, path string) uint64 {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info.Sys().(*syscall.Stat_t).Ino
 }
 
 // remember programs the verdicts of a file and its members and keeps them by
@@ -378,6 +401,8 @@ func (r *run) remember(prefix string, f File) {
 		r.gm.MarkMaliciousWithError(f.Content, "an engine crashed")
 	case AnalysisError:
 		r.gm.MarkAnalysisError(f.Content, "the analysis failed")
+	case OtherSHA256:
+		r.gm.AnswerOtherSHA256(f.Content)
 	case Clean:
 	}
 	if len(f.Members) > 0 {
@@ -435,7 +460,7 @@ func (r *run) needConsole(t *testing.T) {
 func (r *run) task(t *testing.T, action string, content any, wantAckErr string) {
 	t.Helper()
 	r.needConsole(t)
-	got := r.in.Console.WaitAck(t, r.in.Console.Push(t, action, content))
+	got := r.in.WaitAck(t, r.in.Console.Push(t, action, content))
 	switch {
 	case wantAckErr == "" && got != "":
 		t.Fatalf("%s refused: %s", action, got)
@@ -453,34 +478,19 @@ func (r *run) inputPath(key string) string {
 // for NotDeliveredWindow.
 func (r *run) wait(t *testing.T, what string, want map[string]Outcome, global bool) {
 	t.Helper()
-	deadline := time.Now().Add(time.Minute)
-	for !r.reached(want, global) {
-		select {
-		case <-r.in.exited:
-			if r.reached(want, global) {
-				continue
-			}
-			t.Fatalf("the process ended (%v) before %s:\n%s", r.in.exitErr, what, r.table(want, global))
-		default:
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s was not reached:\n%s", what, r.table(want, global))
-		}
-		time.Sleep(200 * time.Millisecond)
+	if err := r.in.poll(time.Minute, func() bool { return r.reached(want, global) }); err != nil {
+		t.Fatalf("%s was not reached: %v:\n%s", what, err, r.table(want, global))
 	}
 	if !slices.ContainsFunc(slices.Collect(maps.Values(want)), func(o Outcome) bool { return o.In == Input }) {
 		return
 	}
-	hold := time.Now().Add(NotDeliveredWindow)
-	for time.Now().Before(hold) {
-		if !r.reached(want, global) {
-			t.Fatalf("%s did not hold:\n%s", what, r.table(want, global))
-		}
-		time.Sleep(200 * time.Millisecond)
+	if r.in.poll(NotDeliveredWindow, func() bool { return !r.reached(want, global) }) == nil {
+		t.Fatalf("%s did not hold:\n%s", what, r.table(want, global))
 	}
 }
 
-// row is a line of the table: what is wanted and what is observed.
+// row is a line of the table, or one check of a file: what is wanted and what
+// is observed.
 type row struct {
 	name, want, got string
 	ok              bool
@@ -497,7 +507,7 @@ func (r *run) reached(want map[string]Outcome, global bool) bool {
 
 // rows observes the run once.
 func (r *run) rows(want map[string]Outcome, global bool) []row {
-	obs := r.observe()
+	byName := r.observe()
 	var rows []row
 	for _, key := range r.keys {
 		o, ok := want[key]
@@ -506,7 +516,7 @@ func (r *run) rows(want map[string]Outcome, global bool) []row {
 		}
 		var w, g []string
 		pass := true
-		for _, c := range r.checks(key, o, obs) {
+		for _, c := range r.checks(key, o, byName) {
 			w, g = append(w, c.want), append(g, c.got)
 			pass = pass && c.ok
 		}
@@ -518,38 +528,29 @@ func (r *run) rows(want map[string]Outcome, global bool) []row {
 	return rows
 }
 
-// observation is what the reports said when the run was observed.
-type observation struct {
-	byName map[string][]datamodel.Report
-}
-
-func (r *run) observe() observation {
-	obs := observation{byName: map[string][]datamodel.Report{}}
+// observe returns the report entries, by file name.
+func (r *run) observe() map[string][]datamodel.Report {
+	byName := map[string][]datamodel.Report{}
 	for _, entries := range ReadReports(r.in) {
 		for _, e := range entries {
-			obs.byName[e.Filename] = append(obs.byName[e.Filename], e)
+			byName[e.Filename] = append(byName[e.Filename], e)
 		}
 	}
-	return obs
-}
-
-type check struct {
-	want, got string
-	ok        bool
+	return byName
 }
 
 // checks are the checks of one file, in the order of the fields of Outcome.
-func (r *run) checks(key string, o Outcome, obs observation) (cs []check) {
+func (r *run) checks(key string, o Outcome, byName map[string][]datamodel.Report) (cs []row) {
 	f := r.files[key]
 	path := r.inputPath(key)
-	history := obs.byName[reportName(path)]
+	history := byName[reportName(path)]
 	entries := history[min(r.consumed[key], len(history)):]
 	if len(entries) == 0 && r.consumed[key] > 0 {
 		entries = history[len(history)-1:]
 	}
 	if o.In != "" {
 		place := r.place(key)
-		c := check{want: string(o.In), got: string(place), ok: place == o.In}
+		c := row{want: string(o.In), got: string(place), ok: place == o.In}
 		if place == Output && !r.delivered(key) {
 			c.got, c.ok = "output (other bytes)", false
 		}
@@ -557,9 +558,11 @@ func (r *run) checks(key string, o Outcome, obs observation) (cs []check) {
 	}
 	switch {
 	case o.Restored:
-		cs = append(cs, check{want: "restored", got: describeEntries(entries), ok: restored(entries)})
+		cs = append(cs, row{want: "restored", got: describeEntries(entries), ok: restored(entries)})
+	case o.NoReport:
+		cs = append(cs, row{want: "no report", got: describeEntries(history), ok: len(history) == 0})
 	case o.In != "" || o.Error != "":
-		cs = append(cs, check{want: describeWantReport(o), got: describeEntries(entries), ok: reportMatches(o, entries)})
+		cs = append(cs, row{want: describeWantReport(o), got: describeEntries(entries), ok: reportMatches(o, entries)})
 	}
 	if o.In == Quarantine && r.in.actionOn("move") {
 		want := 0
@@ -569,40 +572,48 @@ func (r *run) checks(key string, o Outcome, obs observation) (cs []check) {
 			}
 		}
 		n := r.lockReports(path)
-		cs = append(cs, check{want: fmt.Sprintf("%d lock report(s)", want), got: fmt.Sprintf("%d lock report(s)", n), ok: n == want})
+		cs = append(cs, row{want: fmt.Sprintf("%d lock report(s)", want), got: fmt.Sprintf("%d lock report(s)", n), ok: n == want})
 	}
 	if o.Container != "" {
 		format := r.container(key)
-		cs = append(cs, check{want: "container " + string(o.Container), got: "container " + format, ok: format == string(o.Container)})
+		cs = append(cs, row{want: "container " + string(o.Container), got: "container " + format, ok: format == string(o.Container)})
 	}
 	if o.Restored {
 		left := r.restoreLeftovers(key)
-		cs = append(cs, check{want: "container removed", got: left, ok: left == "container removed"})
+		cs = append(cs, row{want: "container removed", got: left, ok: left == "container removed"})
+	}
+	if o.Delivery != "" {
+		got := r.delivery(key)
+		cs = append(cs, row{want: string(o.Delivery), got: got, ok: got == string(o.Delivery)})
 	}
 	if o.SubmittedAs != nil {
-		names := r.submittedAs(f.Content)
-		cs = append(cs, check{want: fmt.Sprintf("submitted as %q", o.SubmittedAs), got: fmt.Sprintf("submitted as %q", names), ok: slices.Equal(names, o.SubmittedAs)})
+		names := r.gm.SubmittedNames(f.Content)
+		want := make([]string, 0, len(o.SubmittedAs))
+		for _, n := range o.SubmittedAs {
+			want = append(want, r.inputPath(n))
+		}
+		cs = append(cs, row{want: fmt.Sprintf("submitted as %q", r.shortNames(want)), got: fmt.Sprintf("submitted as %q", r.shortNames(names)), ok: slices.Equal(names, want)})
 	}
 	if o.Submissions != 0 {
 		n := len(r.gm.SubmittedNames(f.Content))
-		cs = append(cs, check{want: fmt.Sprintf("%d submission(s)", o.Submissions), got: fmt.Sprintf("%d submission(s)", n), ok: n == o.Submissions})
+		cs = append(cs, row{want: fmt.Sprintf("%d submission(s)", o.Submissions), got: fmt.Sprintf("%d submission(s)", n), ok: n == o.Submissions})
 	}
 	if o.ServiceVerdict != "" {
 		got := NotGiven
 		if _, given := r.gm.Given(gmalware.SHA256Hex(f.Content)); given {
 			got = Given
 		}
-		cs = append(cs, check{want: "verdict " + string(o.ServiceVerdict), got: "verdict " + string(got), ok: got == o.ServiceVerdict})
+		cs = append(cs, row{want: "verdict " + string(o.ServiceVerdict), got: "verdict " + string(got), ok: got == o.ServiceVerdict})
 	}
 	if o.MaliciousMembers != nil {
-		cs = append(cs, check{want: describeMalicious(o.MaliciousMembers), got: describeEntriesMalicious(entries), ok: maliciousMembersMatch(o.MaliciousMembers, entries)})
+		cs = append(cs, row{want: describeMalicious(o.MaliciousMembers), got: describeEntriesMalicious(entries), ok: maliciousMembersMatch(o.MaliciousMembers, entries)})
 	}
 	if o.NotAnalyzedMembers != nil {
-		cs = append(cs, check{want: describeMemberList(o.NotAnalyzedMembers), got: describeEntriesNotAnalyzed(entries), ok: notAnalyzedMembersMatch(o.NotAnalyzedMembers, entries)})
+		cs = append(cs, row{want: describeMemberList(o.NotAnalyzedMembers), got: describeEntriesNotAnalyzed(entries), ok: notAnalyzedMembersMatch(o.NotAnalyzedMembers, entries)})
 	}
 	if o.Entry != nil {
 		problems := entryProblems(o.Entry, entries)
-		cs = append(cs, check{want: "entry check", got: problems, ok: problems == "entry check"})
+		cs = append(cs, row{want: "entry check", got: problems, ok: problems == "entry check"})
 	}
 	return cs
 }
@@ -618,7 +629,7 @@ func (r *run) place(key string) Place {
 	case exists(r.lockPath(key, f.Content)):
 		return Quarantine
 	default:
-		return Nowhere
+		return nowhere
 	}
 }
 
@@ -630,6 +641,18 @@ func (r *run) lockPath(key string, content []byte) string {
 func (r *run) delivered(key string) bool {
 	got, err := os.ReadFile(filepath.Clean(filepath.Join(r.in.Output, "tom", key)))
 	return err == nil && bytes.Equal(got, r.files[key].Content)
+}
+
+func (r *run) delivery(key string) string {
+	info, err := os.Stat(filepath.Join(r.in.Output, "tom", key))
+	switch {
+	case err != nil:
+		return "not delivered"
+	case info.Sys().(*syscall.Stat_t).Ino == r.inodes[key]:
+		return string(SameFile)
+	default:
+		return string(Copied)
+	}
 }
 
 func exists(path string) bool {
@@ -713,16 +736,18 @@ func (r *run) restoreLeftovers(key string) string {
 	return "container removed"
 }
 
-// submittedAs returns the names the content was submitted under, relative to
-// INPUT/tom.
-func (r *run) submittedAs(content []byte) []string {
-	names := r.gm.SubmittedNames(content)
-	prefix := filepath.Join(r.in.Input, "tom") + string(filepath.Separator)
-	rel := make([]string, 0, len(names))
+// shortNames writes "INPUT" in place of the INPUT folder in the names, for the
+// table: a name relative to INPUT/tom stays as it is.
+func (r *run) shortNames(names []string) []string {
+	prefix := r.in.Input + string(filepath.Separator)
+	short := make([]string, 0, len(names))
 	for _, n := range names {
-		rel = append(rel, strings.TrimPrefix(n, prefix))
+		if rest, ok := strings.CutPrefix(n, prefix); ok {
+			n = "INPUT/" + rest
+		}
+		short = append(short, n)
 	}
-	return rel
+	return short
 }
 
 func reportMatches(o Outcome, entries []datamodel.Report) bool {
@@ -782,7 +807,7 @@ func notAnalyzedMembersMatch(want *MemberList, entries []datamodel.Report) bool 
 	}
 	for _, e := range entries {
 		list := e.NotAnalyzedExtractedFiles
-		if want == NoMembers || (want.Reason == "" && want.Count == 0 && want.Includes == "") {
+		if want.Reason == "" && want.Count == 0 && want.Includes == "" {
 			if len(list) > 0 || e.NotAnalyzedExtractedCount != 0 {
 				return false
 			}
@@ -963,7 +988,7 @@ func describeEntriesMalicious(entries []datamodel.Report) string {
 }
 
 func describeMemberList(m *MemberList) string {
-	if m == NoMembers || *m == (MemberList{}) {
+	if *m == (MemberList{}) {
 		return "no member not analyzed"
 	}
 	s := "members not analyzed"

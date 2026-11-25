@@ -3,10 +3,9 @@
 package harness
 
 import (
-	"sync"
+	"fmt"
 	"testing"
-
-	"github.com/glimps-re/host-connector/test/internal/wait"
+	"time"
 )
 
 // WaitFor waits for the condition like wait.WaitFor, and fails at
@@ -14,36 +13,41 @@ import (
 // configuration would otherwise be waited for until the deadline.
 func (in *Instance) WaitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	wait.Poll(t, what, cond, in.exited, func() error { return in.exitErr })
-}
-
-// maxLogSize bounds the log of a process the harness keeps; past it the
-// oldest lines are dropped.
-const maxLogSize = 8 << 20
-
-// syncBuffer is the log of a process, read while the process still writes it.
-type syncBuffer struct {
-	mu        sync.Mutex
-	buf       []byte
-	truncated bool
-}
-
-func (b *syncBuffer) Write(p []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	b.buf = append(b.buf, p...)
-	if len(b.buf) > maxLogSize {
-		b.buf = append([]byte(nil), b.buf[len(b.buf)-maxLogSize/2:]...)
-		b.truncated = true
+	if err := in.poll(time.Minute, cond); err != nil {
+		t.Fatalf("%v while waiting for %s", err, what)
 	}
-	return len(p), nil
 }
 
-func (b *syncBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.truncated {
-		return "[the start of the log was dropped]\n" + string(b.buf)
+// WaitAck waits for the console to acknowledge the task and returns its error
+// text.
+func (in *Instance) WaitAck(t *testing.T, taskID string) string {
+	t.Helper()
+	var errText string
+	in.WaitFor(t, "the acknowledgement of "+taskID, func() bool {
+		var acked bool
+		errText, acked = in.Console.Ack(taskID)
+		return acked
+	})
+	return errText
+}
+
+// poll calls cond until it holds, for at most limit. It returns an error when
+// limit passes, or when the process ended and cond still does not hold.
+func (in *Instance) poll(limit time.Duration, cond func() bool) error {
+	deadline := time.Now().Add(limit)
+	for !cond() {
+		select {
+		case <-in.exited:
+			if cond() {
+				return nil
+			}
+			return fmt.Errorf("the process ended (%w)", in.exitErr)
+		default:
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("timeout after %s", limit)
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
-	return string(b.buf)
+	return nil
 }

@@ -31,27 +31,41 @@ func realPNG(t *testing.T) []byte {
 // judged by its content, on the real path it has once extracted, and the whole
 // archive is quarantined. An archive without such a member is delivered.
 func TestE2E_aForbiddenTypeInsideAZipIsRefused(t *testing.T) {
+	t.Parallel()
 	text := []byte(strings.Repeat("a text member beside an image ", 40))
-	harness.Run(t, harness.Scenario{
-		Plugins: map[string]map[string]any{
-			"extract":         nil,
-			"filetype_filter": {"forbidden_types": []string{"image/png"}},
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a zip with an image and one without",
+			scenario: harness.Scenario{
+				Plugins: map[string]map[string]any{
+					"extract":         nil,
+					"filetype_filter": {"forbidden_types": []string{"image/png"}},
+				},
+				Files: []harness.File{
+					archive(t, "with.zip", zipOf,
+						harness.File{Path: "pic.png", Content: realPNG(t)},
+						harness.File{Path: "a.txt", Content: text},
+					),
+					archive(t, "without.zip", zipOf,
+						harness.File{Path: "a.txt", Content: text},
+						harness.File{Path: "b.txt", Content: []byte(strings.Repeat("another text member ", 40))},
+					),
+				},
+				Want: map[string]harness.Outcome{
+					"with.zip":    {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
+					"without.zip": {In: harness.Output},
+				},
+			},
 		},
-		Files: []harness.File{
-			archive(t, "with.zip", zipOf,
-				harness.File{Path: "pic.png", Content: realPNG(t)},
-				harness.File{Path: "a.txt", Content: text},
-			),
-			archive(t, "without.zip", zipOf,
-				harness.File{Path: "a.txt", Content: text},
-				harness.File{Path: "b.txt", Content: []byte(strings.Repeat("another text member ", 40))},
-			),
-		},
-		Want: map[string]harness.Outcome{
-			"with.zip":    {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
-			"without.zip": {In: harness.Output},
-		},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // P7: a refusal beats an exemption. A file that the path rules let through (a
@@ -59,21 +73,35 @@ func TestE2E_aForbiddenTypeInsideAZipIsRefused(t *testing.T) {
 // The same image is dropped outside the trusted folder (the control) and in it:
 // each path gets its own container, so two are quarantined.
 func TestE2E_aRefusalBeatsAnExemption(t *testing.T) {
+	t.Parallel()
 	pic := realPNG(t)
-	harness.Run(t, harness.Scenario{
-		Config:  map[string]any{"filepath_filter": map[string]any{"skipped_paths": []string{`/trusted/`}}},
-		Plugins: map[string]map[string]any{"filetype_filter": {"forbidden_types": []string{"image/png"}}},
-		Files: []harness.File{
-			{Path: "control.png", Content: pic},
-			{Path: "trusted/p.png", Content: pic},
-			{Path: "trusted/t.txt", Content: []byte("a text in a trusted folder")},
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "an image in a skipped folder",
+			scenario: harness.Scenario{
+				Config:  map[string]any{"filepath_filter": map[string]any{"skipped_paths": []string{`/trusted/`}}},
+				Plugins: map[string]map[string]any{"filetype_filter": {"forbidden_types": []string{"image/png"}}},
+				Files: []harness.File{
+					{Path: "control.png", Content: pic},
+					{Path: "trusted/p.png", Content: pic},
+					{Path: "trusted/t.txt", Content: []byte("a text in a trusted folder")},
+				},
+				Want: map[string]harness.Outcome{
+					"control.png":   {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
+					"trusted/p.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
+					"trusted/t.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+				},
+			},
 		},
-		Want: map[string]harness.Outcome{
-			"control.png":   {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
-			"trusted/p.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
-			"trusted/t.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
-		},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // T54: beyond what the type detection reads, a type never waives. A file whose
@@ -81,41 +109,69 @@ func TestE2E_aRefusalBeatsAnExemption(t *testing.T) {
 // analyzed when it is larger than what the detection reads (about 7 MiB): the
 // type of such a file is judged from its head alone.
 func TestE2E_aSkippedTypeIsNotWaivedForALargeFile(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Plugins: map[string]map[string]any{
-			"filetype_filter": {"skipped_types": []string{"image/png"}},
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a small and a 9 MiB image",
+			scenario: harness.Scenario{
+				Plugins: map[string]map[string]any{
+					"filetype_filter": {"skipped_types": []string{"image/png"}},
+				},
+				Files: []harness.File{
+					{Path: "small.png", Content: realPNG(t)},
+					// A real image followed by zeros: still typed image/png, but past the size
+					// the detection reads.
+					{Path: "large.png", Content: append(realPNG(t), make([]byte, 9<<20)...)},
+				},
+				Want: map[string]harness.Outcome{
+					"small.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"large.png": {In: harness.Output, ServiceVerdict: harness.Given},
+				},
+			},
 		},
-		Files: []harness.File{
-			{Path: "small.png", Content: realPNG(t)},
-			// A real image followed by zeros: still typed image/png, but past the size
-			// the detection reads.
-			{Path: "large.png", Content: append(realPNG(t), make([]byte, 9<<20)...)},
-		},
-		Want: map[string]harness.Outcome{
-			"small.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
-			"large.png": {In: harness.Output, ServiceVerdict: harness.Given},
-		},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }
 
 // T56: a restored file of a forbidden type is quarantined again, never
 // delivered: the type rule is a refusal, which the restored mark does not waive.
 func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
-	harness.Run(t, harness.Scenario{
-		Agent: true,
-		Plugins: map[string]map[string]any{
-			"filetype_filter": {"forbidden_types": []string{"image/png"}},
+	t.Parallel()
+	tests := []struct {
+		name     string
+		scenario harness.Scenario
+	}{
+		{
+			name: "a restored image",
+			scenario: harness.Scenario{
+				Agent: true,
+				Plugins: map[string]map[string]any{
+					"filetype_filter": {"forbidden_types": []string{"image/png"}},
+				},
+				Files: []harness.File{
+					{Path: "pic.png", Content: realPNG(t)},
+				},
+				Steps: []harness.Step{
+					harness.Await("pic.png", harness.Outcome{In: harness.Quarantine, Malware: datamodel.FilteredFileType}),
+					harness.Restore("pic.png", ""),
+				},
+				Want: map[string]harness.Outcome{
+					"pic.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
+				},
+				WantMitigations: []string{"filetype", "filetype"},
+			},
 		},
-		Files: []harness.File{
-			{Path: "pic.png", Content: realPNG(t)},
-		},
-		Steps: []harness.Step{
-			harness.Await("pic.png", harness.Outcome{In: harness.Quarantine, Malware: datamodel.FilteredFileType}),
-			harness.Restore("pic.png", ""),
-		},
-		Want: map[string]harness.Outcome{
-			"pic.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
-		},
-		WantMitigations: []string{"filetype", "filetype"},
-	})
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness.Run(t, tt.scenario)
+		})
+	}
 }

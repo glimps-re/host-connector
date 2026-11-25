@@ -225,7 +225,7 @@ func TestE2E_aSparseFileOver5GiBIsRestored(t *testing.T) {
 			id := hcquarantine.ComputeCacheID(src, sum)
 			lock := filepath.Join(in.Quarantine, id+".lock")
 			in.WaitFor(t, "the quarantine of the big file", func() bool { return !in.Gone(lock) && in.Gone(src) })
-			if msg := in.Console.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
+			if msg := in.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
 				t.Fatalf("restore of a %d byte file refused: %s", size, msg)
 			}
 			in.WaitFor(t, "the restored file to be delivered", func() bool { return in.InOutput("big.bin") })

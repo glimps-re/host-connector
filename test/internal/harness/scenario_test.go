@@ -48,6 +48,7 @@ type state struct {
 	agent       bool
 	input       []File
 	output      []File
+	moved       []File // dropped in INPUT, then moved to OUTPUT
 	quarantine  []File
 	zipped      []File // quarantined in a zip container
 	reports     []datamodel.Report
@@ -71,16 +72,24 @@ func newRun(t *testing.T, s Scenario, st state) *run {
 	for _, d := range []string{tom, filepath.Join(in.Output, "tom"), in.Quarantine, filepath.Join(in.Export, "tom")} {
 		mkdir(t, d)
 	}
-	r := &run{s: s, in: in, gm: gmalware.New(t, false), files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}}
+	r := &run{s: s, in: in, gm: gmalware.New(t, false), files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}, inodes: map[string]uint64{}}
 	r.validate(t)
 	for _, f := range s.Files {
 		r.remember("", f)
 	}
 	for _, f := range st.input {
 		write(t, filepath.Join(tom, f.Path), f.Content)
+		r.inodes[f.Path] = inode(t, filepath.Join(tom, f.Path))
 	}
 	for _, f := range st.output {
 		write(t, filepath.Join(in.Output, "tom", f.Path), f.Content)
+	}
+	for _, f := range st.moved {
+		write(t, filepath.Join(tom, f.Path), f.Content)
+		r.inodes[f.Path] = inode(t, filepath.Join(tom, f.Path))
+		if err := os.Rename(filepath.Join(tom, f.Path), filepath.Join(in.Output, "tom", f.Path)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, f := range st.quarantine {
 		write(t, r.lockPath(f.Path, f.Content), []byte("a tar container"))
@@ -250,6 +259,48 @@ func TestRows(t *testing.T) {
 			want: []row{
 				{name: "clean.txt", want: "input / clean", got: "input / clean", ok: true},
 				{name: "bad.txt", want: "input / clean", got: "input / no report"},
+				{name: "containers", want: "0", got: "0", ok: true},
+			},
+		},
+		{
+			name: "a file left in INPUT without report",
+			scenario: Scenario{
+				Files: []File{cleanFile, badFile, {Path: "moved.txt", Content: []byte("moved")}},
+				Want: map[string]Outcome{
+					"clean.txt": {In: Input, NoReport: true},
+					"bad.txt":   {In: Input, NoReport: true},
+					"moved.txt": {In: Input, NoReport: true},
+				},
+			},
+			state: state{input: []File{cleanFile, badFile}, moved: []File{{Path: "moved.txt", Content: []byte("moved")}}, reports: []datamodel.Report{entryOf("bad.txt", detected)}},
+			want: []row{
+				{name: "clean.txt", want: "input / no report", got: "input / no report", ok: true},
+				{name: "bad.txt", want: "input / no report", got: "input / malware:malware-detected"},
+				{name: "moved.txt", want: "input / no report", got: "output / no report"},
+				{name: "containers", want: "0", got: "0", ok: true},
+			},
+		},
+		{
+			name: "a copy or the dropped file delivered",
+			scenario: Scenario{
+				Files: []File{cleanFile, {Path: "moved.txt", Content: []byte("moved")}, {Path: "copy.txt", Content: []byte("copy")}, {Path: "same.txt", Content: []byte("same")}},
+				Want: map[string]Outcome{
+					"clean.txt": {Delivery: Copied},
+					"moved.txt": {Delivery: SameFile},
+					"copy.txt":  {Delivery: SameFile},
+					"same.txt":  {Delivery: Copied},
+				},
+			},
+			state: state{
+				input:  []File{cleanFile, {Path: "copy.txt", Content: []byte("copy")}},
+				output: []File{cleanFile, {Path: "copy.txt", Content: []byte("copy")}},
+				moved:  []File{{Path: "moved.txt", Content: []byte("moved")}, {Path: "same.txt", Content: []byte("same")}},
+			},
+			want: []row{
+				{name: "clean.txt", want: "copied", got: "copied", ok: true},
+				{name: "moved.txt", want: "same file", got: "same file", ok: true},
+				{name: "copy.txt", want: "same file", got: "copied"},
+				{name: "same.txt", want: "copied", got: "same file"},
 				{name: "containers", want: "0", got: "0", ok: true},
 			},
 		},
@@ -434,8 +485,8 @@ func TestRows(t *testing.T) {
 			},
 			state: state{submitted: []File{{Path: "a.zip/d/m.txt", Content: []byte("a member")}, cleanFile}, given: []File{cleanFile}},
 			want: []row{
-				{name: "a.zip", want: `submitted as ["a.zip"] / 1 submission(s)`, got: `submitted as [] / 0 submission(s)`},
-				{name: "a.zip/d/m.txt", want: `submitted as ["a.zip/d/m.txt"] / verdict given`, got: `submitted as ["a.zip/d/m.txt"] / verdict not given`},
+				{name: "a.zip", want: `submitted as ["INPUT/tom/a.zip"] / 1 submission(s)`, got: `submitted as [] / 0 submission(s)`},
+				{name: "a.zip/d/m.txt", want: `submitted as ["INPUT/tom/a.zip/d/m.txt"] / verdict given`, got: `submitted as ["INPUT/tom/a.zip/d/m.txt"] / verdict not given`},
 				{name: "clean.txt", want: "2 submission(s) / verdict not given", got: "1 submission(s) / verdict given"},
 				{name: "containers", want: "0", got: "0", ok: true},
 			},
@@ -449,7 +500,7 @@ func TestRows(t *testing.T) {
 						MaliciousMembers:   map[string]datamodel.MalwareReason{"a.exe": datamodel.FilteredFilePath},
 						NotAnalyzedMembers: &MemberList{Reason: datamodel.NotAnalyzedExtractLimit, Count: 3, Includes: "word/document.xml"},
 					},
-					"clean.txt": {MaliciousMembers: map[string]datamodel.MalwareReason{"b.exe": datamodel.FilteredFilePath}, NotAnalyzedMembers: NoMembers},
+					"clean.txt": {MaliciousMembers: map[string]datamodel.MalwareReason{"b.exe": datamodel.FilteredFilePath}, NotAnalyzedMembers: NoMembers()},
 				},
 			},
 			state: state{reports: []datamodel.Report{

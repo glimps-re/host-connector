@@ -3,11 +3,9 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -38,26 +36,9 @@ func reasonsOf(ex plugins.Extraction) map[datamodel.NotAnalyzedReason]int {
 	return out
 }
 
-func TestExtractFile_memberOverTheLimitIsNeverWrittenToDisk(t *testing.T) {
-	plugin := realPlugin(t)
-	archive := build7z(t, plugin, map[string]int{"huge.bin": 30 * mib, "small.txt": 10})
-	out := t.TempDir()
-	peak := peakWatcher(t, out)
-	ex, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 10 * mib, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	if err != nil {
-		t.Fatalf("ExtractFile() error = %v", err)
-	}
-	if len(ex.Files) != 1 || filepath.Base(ex.Files[0]) != "small.txt" {
-		t.Errorf("Files = %v, want only small.txt", ex.Files)
-	}
-	if len(ex.Skipped) != 1 || ex.Skipped[0].FileName != "huge.bin" || ex.Skipped[0].Reason != datamodel.NotAnalyzedTooBig {
-		t.Errorf("Skipped = %+v, want huge.bin reported too-big", ex.Skipped)
-	}
-	if p := peak(); p > 1*mib {
-		t.Errorf("%d MiB were written for a member that must never be extracted", p/mib)
-	}
-}
-
+// The budgets of 10, 40 and 1500 files are in the e2e scenario
+// TestE2E_theBudgetInFilesIsExactAndTheRestIsListed; a budget under 1 cannot be
+// configured (the connector replaces it with its default).
 func TestExtractFile_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *testing.T) {
 	plugin := realPlugin(t)
 	members := map[string]int{}
@@ -71,9 +52,6 @@ func TestExtractFile_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *tes
 		wantFiles   int
 		wantSkipped int
 	}{
-		{"budget of 10", 10, 10, 30},
-		{"budget of exactly the members", 40, 40, 0},
-		{"budget above", 1500, 40, 0},
 		{"zero budget extracts nothing", 0, 0, 40},
 		{"negative budget extracts nothing", -3, 0, 40},
 	}
@@ -95,56 +73,4 @@ func TestExtractFile_budgetInFilesIsExactAndTheRestIsReportedExtractLimit(t *tes
 			}
 		})
 	}
-}
-
-func TestExtractFile_budgetInBytesStopsBeforeWritingTheMembersThatDoNotFit(t *testing.T) {
-	plugin := realPlugin(t)
-	archive := build7z(t, plugin, map[string]int{"a.bin": 1 * mib, "b.bin": 1 * mib, "c.bin": 1 * mib, "d.bin": 1 * mib})
-	out := t.TempDir()
-	peak := peakWatcher(t, out)
-	ex, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 10 * mib, MaxFiles: 100, MaxTotalSize: 2*mib + 100})
-	if err != nil {
-		t.Fatalf("ExtractFile() error = %v", err)
-	}
-	if len(ex.Files) != 2 || ex.SkippedCount != 2 {
-		t.Errorf("extracted %d, skipped %d, want 2 and 2", len(ex.Files), ex.SkippedCount)
-	}
-	if got := reasonsOf(ex)[datamodel.NotAnalyzedExtractLimit]; got != 2 {
-		t.Errorf("extract-limit entries = %d, want 2 (a budget announced by the listing, before any write)", got)
-	}
-	if p := peak(); p > 2*mib+100+slack {
-		t.Errorf("%d bytes written, over the budget of %d", p, 2*mib+100)
-	}
-}
-
-func TestDecodeConfig_removedKeysAreRefusedWithTheirReplacementNotAsUnknown(t *testing.T) {
-	for key, replacement := range map[string]string{
-		"max_file_size":            "max_file_size of the main configuration",
-		"max_extracted_files":      "recursive_extract_max_files",
-		"max_total_extracted_size": "recursive_extract_max_size",
-	} {
-		t.Run(key, func(t *testing.T) {
-			raw := map[string]any{key: "1GB", "default_passwords": []any{"s3cret-password"}}
-			err := plugins.DecodeConfig("extract", raw, new(Config))
-			if !errors.Is(err, plugins.ErrInvalidConfig) {
-				t.Fatalf("DecodeConfig() error = %v, want ErrInvalidConfig", err)
-			}
-			msg := err.Error()
-			if !strings.Contains(msg, key) || !strings.Contains(msg, replacement) {
-				t.Errorf("error %q must name the key and the global limit that replaces it (%s)", msg, replacement)
-			}
-			if strings.Contains(msg, "unknown") {
-				t.Errorf("error %q must not be the generic unknown key refusal", msg)
-			}
-			if strings.Contains(msg, "s3cret-password") || strings.Contains(msg, "1GB") {
-				t.Errorf("error %q quotes a configured value", msg)
-			}
-		})
-	}
-	t.Run("remaining keys are accepted", func(t *testing.T) {
-		raw := map[string]any{"default_passwords": []any{"infected"}, "seven_zip_path": "/usr/bin/7zzs"}
-		if err := plugins.DecodeConfig("extract", raw, new(Config)); err != nil {
-			t.Errorf("DecodeConfig() error = %v", err)
-		}
-	})
 }

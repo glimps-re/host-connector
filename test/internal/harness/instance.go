@@ -3,15 +3,12 @@
 package harness
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -63,10 +60,6 @@ type Options struct {
 	// their configuration. "extract" also turns the extraction on. "session" is
 	// always on: its entry is merged over its default configuration.
 	Plugins map[string]map[string]any
-	// Order lists the plugins that go first in the plugins file, in that order;
-	// the others follow by name. The order of the plugins is the order of their
-	// callbacks.
-	Order []string
 }
 
 func MergeMaps(dst, src map[string]any) map[string]any {
@@ -94,42 +87,6 @@ func cloneMap(t *testing.T, m map[string]any) map[string]any {
 		t.Fatal(err)
 	}
 	return cp
-}
-
-// writePlugins writes the plugins file with the plugins of order first, in that
-// order, then the others by name (a JSON object keeps the order it is written
-// in).
-func writePlugins(t *testing.T, path string, plugins map[string]map[string]any, order []string) {
-	t.Helper()
-	names := slices.Clone(order)
-	if len(slices.Compact(slices.Sorted(slices.Values(order)))) != len(order) {
-		t.Fatalf("a plugin is listed twice in the order %v", order)
-	}
-	rest := make([]string, 0, len(plugins))
-	for name := range plugins {
-		if !slices.Contains(order, name) {
-			rest = append(rest, name)
-		}
-	}
-	slices.Sort(rest)
-	var buf bytes.Buffer
-	buf.WriteString("{")
-	for i, name := range append(names, rest...) {
-		cfg, ok := plugins[name]
-		if !ok {
-			t.Fatalf("plugin %q is in the order but not in the plugins", name)
-		}
-		raw, err := json.Marshal(cfg)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if i > 0 {
-			buf.WriteString(",")
-		}
-		fmt.Fprintf(&buf, "%q:%s", name, raw)
-	}
-	buf.WriteString("}")
-	Write(t, path, buf.Bytes())
 }
 
 // writeJSON writes v as JSON, which the YAML loaders of the connector read.
@@ -191,7 +148,7 @@ func Start(t *testing.T, g *gmalware.GMalware, opt Options) *Instance {
 	}
 	in.Expect.maxFileSize = maxSize
 	confFile := filepath.Join(root, "config.yml")
-	writePlugins(t, pluginsFile, plugins, opt.Order)
+	writeJSON(t, pluginsFile, plugins)
 	writeJSON(t, confFile, conf)
 	timeout := opt.Timeout
 	if timeout == "" {
@@ -336,4 +293,35 @@ func (in *Instance) LogHas(text string) bool {
 
 func (in *Instance) checkSpec() checkSpec {
 	return checkSpec{output: in.Output, reports: in.Export, quarantine: in.Quarantine, Expectations: in.Expect}
+}
+
+// maxLogSize bounds the log of a process the harness keeps; past it the
+// oldest lines are dropped.
+const maxLogSize = 8 << 20
+
+// syncBuffer is the log of a process, read while the process still writes it.
+type syncBuffer struct {
+	mu        sync.Mutex
+	buf       []byte
+	truncated bool
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf = append(b.buf, p...)
+	if len(b.buf) > maxLogSize {
+		b.buf = append([]byte(nil), b.buf[len(b.buf)-maxLogSize/2:]...)
+		b.truncated = true
+	}
+	return len(p), nil
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.truncated {
+		return "[the start of the log was dropped]\n" + string(b.buf)
+	}
+	return string(b.buf)
 }

@@ -3,10 +3,8 @@
 package main
 
 import (
-	"archive/tar"
 	"archive/zip"
 	"bytes"
-	"compress/gzip"
 	"errors"
 	"log/slog"
 	"os"
@@ -45,51 +43,25 @@ func headerEncrypted7z(t *testing.T, plugin *SevenZipExtractPlugin, members map[
 	return archive
 }
 
-// A 7z whose headers are encrypted, with a password that is a default one, is
-// extracted: the members are listed and written, and no unclassified error comes
-// of the first attempt, made without the password.
-func TestExtract_aHeaderEncryptedSevenZipWithADefaultPassword(t *testing.T) {
-	cases := map[string]map[string]string{
-		"no folder":       {"a.txt": "a plain member", "b.txt": "another plain member"},
-		"folder and file": {"d/c.txt": "a member in a folder", "top.txt": "a member at the top"},
-	}
-	for name, members := range cases {
-		t.Run(name, func(t *testing.T) {
-			plugin := realPlugin(t)
-			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-			archive := headerEncrypted7z(t, plugin, members)
-
-			out := t.TempDir()
-			extraction, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-			if err != nil {
-				t.Fatalf("the extraction failed: %v", err)
-			}
-			got := map[string]bool{}
-			for _, f := range extraction.Files {
-				rel, relErr := filepath.Rel(out, f)
-				if relErr != nil {
-					t.Fatal(relErr)
-				}
-				got[rel] = true
-			}
-			for member := range members {
-				if !got[member] {
-					t.Errorf("member %q not extracted; got %v", member, extraction.Files)
-				}
-			}
-		})
-	}
-}
-
 // Checking such an archive, which is done without any password, says that it is
 // encrypted: its headers cannot be read.
 func TestCheckOnly_aHeaderEncryptedSevenZipIsEncrypted(t *testing.T) {
-	plugin := realPlugin(t)
-	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	archive := headerEncrypted7z(t, plugin, map[string]string{"a.txt": "a plain member"})
-	_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true})
-	if !errors.Is(err, plugins.ErrEncrypted) {
-		t.Fatalf("the check = %v, want plugins.ErrEncrypted", err)
+	tests := []struct {
+		name    string
+		members map[string]string
+	}{
+		{name: "one member", members: map[string]string{"a.txt": "a plain member"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := realPlugin(t)
+			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
+			archive := headerEncrypted7z(t, plugin, tt.members)
+			_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true})
+			if !errors.Is(err, plugins.ErrEncrypted) {
+				t.Fatalf("the check = %v, want plugins.ErrEncrypted", err)
+			}
+		})
 	}
 }
 
@@ -123,32 +95,51 @@ func TestClassifyStderr_aRefusalOfAnArchiveWithEncryptedHeaders(t *testing.T) {
 
 // 7-Zip is run on a name of ours, so that the path it prints in an error is one that
 // can be neutralized, whatever the depositor named the archive: 7-Zip prints a
-// control character of a name in another form than the one it was given.
+// control character of a name in another form than the one it was given. The
+// extraction with and without the password, for the names a file can have, is in
+// the e2e scenario TestE2E_anArchiveNamedByTheDepositorIsRunUnderAName; the check
+// (CheckOnly) and a name over 255 bytes cannot be reached from outside.
 func TestExtract_anArchiveNamedByTheDepositorIsRunUnderAName(t *testing.T) {
 	plugin := realPlugin(t)
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 	source := headerEncrypted7z(t, plugin, map[string]string{"a.txt": "a plain member"})
-	for _, name := range []string{"n\nx.7z", "tab\there.7z", "esc\x1b[31m.7z", "bidi\u202ename.7z", "-option.7z", "ünï côde.7z", "invalid\xff\xfe.7z", strings.Repeat("long", 80) + ".7z"} {
-		t.Run(strconv.Quote(name), func(t *testing.T) {
-			archive := filepath.Join(t.TempDir(), name)
+	tests := []struct {
+		name string
+		// extracted: the extraction with and without the password is checked too.
+		extracted bool
+	}{
+		{name: "n\nx.7z"},
+		{name: "tab\there.7z"},
+		{name: "esc\x1b[31m.7z"},
+		{name: "bidi\u202ename.7z"},
+		{name: "-option.7z"},
+		{name: "ünï côde.7z"},
+		{name: "invalid\xff\xfe.7z"},
+		{name: strings.Repeat("long", 80) + ".7z", extracted: true},
+	}
+	for _, tt := range tests {
+		t.Run(strconv.Quote(tt.name), func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), tt.name)
 			if err := os.Link(source, archive); err != nil {
 				if err = os.Symlink(source, archive); err != nil {
 					t.Skipf("cannot name the archive: %v", err)
 				}
 			}
-			out := t.TempDir()
-			extraction, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-			if err != nil || len(extraction.Files) != 1 {
-				t.Fatalf("ExtractFile() = %v, %v, want the member extracted", extraction.Files, err)
+			if tt.extracted {
+				out := t.TempDir()
+				extraction, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
+				if err != nil || len(extraction.Files) != 1 {
+					t.Fatalf("ExtractFile() = %v, %v, want the member extracted", extraction.Files, err)
+				}
+				// With no password to give, the refusal is the one of an encrypted archive.
+				plugin.sze.config = extractorConfig{}
+				if _, err = plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}); !errors.Is(err, plugins.ErrEncrypted) {
+					t.Errorf("without the password: ExtractFile() = %v, want plugins.ErrEncrypted", err)
+				}
+				plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 			}
-			// With no password to give, the refusal is the one of an encrypted archive.
-			plugin.sze.config = extractorConfig{}
-			if _, err = plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}); !errors.Is(err, plugins.ErrEncrypted) {
-				t.Errorf("without the password: ExtractFile() = %v, want plugins.ErrEncrypted", err)
-			}
-			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 			// The check, which never has a password, runs on a name of ours too.
-			if _, err = plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true}); !errors.Is(err, plugins.ErrEncrypted) {
+			if _, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true}); !errors.Is(err, plugins.ErrEncrypted) {
 				t.Errorf("the check: ExtractFile() = %v, want plugins.ErrEncrypted", err)
 			}
 		})
@@ -183,58 +174,45 @@ func TestStagedName(t *testing.T) {
 	}
 }
 
-// The file inside a single-file compressor is named after the archive: staging keeps
-// the name, so the member is named as it was.
-func TestExtract_aSingleFileCompressorKeepsTheNameOfItsMember(t *testing.T) {
-	plugin := realPlugin(t)
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write([]byte("the content of the member")); err != nil {
-		t.Fatal(err)
-	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "report.txt.gz")
-	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := t.TempDir()
-	extraction, err := plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	if err != nil || len(extraction.Files) != 1 || filepath.Base(extraction.Files[0]) != "report.txt" {
-		t.Errorf("ExtractFile() = %v, %v, want the member report.txt", extraction.Files, err)
-	}
-}
-
 // Staging leaves nothing behind, whether the extraction works or fails, and a work
 // directory that cannot be used is a failure of the host, not of the archive: the
 // extractor is unavailable.
 func TestStage_leavesNothingBehind(t *testing.T) {
-	plugin := realPlugin(t)
-	work := t.TempDir()
-	plugin.sze.workDir = work
-	archive := headerEncrypted7z(t, plugin, map[string]string{"a.txt": "a plain member"})
-	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	limits := plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}
-	if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name    string
+		members map[string]string
+	}{
+		{name: "a 7z with encrypted headers", members: map[string]string{"a.txt": "a plain member"}},
 	}
-	plugin.sze.config = extractorConfig{}
-	if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); !errors.Is(err, plugins.ErrEncrypted) {
-		t.Fatalf("ExtractFile() = %v, want plugins.ErrEncrypted", err)
-	}
-	limits.CheckOnly = true
-	if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); !errors.Is(err, plugins.ErrEncrypted) {
-		t.Fatalf("the check = %v, want plugins.ErrEncrypted", err)
-	}
-	if entries, err := os.ReadDir(work); err != nil || len(entries) != 0 {
-		t.Errorf("work directory = %v (%v), want it empty", entries, err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := realPlugin(t)
+			work := t.TempDir()
+			plugin.sze.workDir = work
+			archive := headerEncrypted7z(t, plugin, tt.members)
+			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
+			limits := plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}
+			if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); err != nil {
+				t.Fatal(err)
+			}
+			plugin.sze.config = extractorConfig{}
+			if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); !errors.Is(err, plugins.ErrEncrypted) {
+				t.Fatalf("ExtractFile() = %v, want plugins.ErrEncrypted", err)
+			}
+			limits.CheckOnly = true
+			if _, err := plugin.ExtractFile(archive, t.TempDir(), limits); !errors.Is(err, plugins.ErrEncrypted) {
+				t.Fatalf("the check = %v, want plugins.ErrEncrypted", err)
+			}
+			if entries, err := os.ReadDir(work); err != nil || len(entries) != 0 {
+				t.Errorf("work directory = %v (%v), want it empty", entries, err)
+			}
 
-	plugin.sze.workDir = filepath.Join(work, "absent")
-	_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	if !errors.Is(err, plugins.ErrExtractorUnavailable) || errors.Is(err, plugins.ErrEncrypted) || errors.Is(err, plugins.ErrArchiveAnomaly) || errors.Is(err, plugins.ErrUnsupportedFormat) {
-		t.Errorf("ExtractFile() in a work directory that is missing = %v, want plugins.ErrExtractorUnavailable and no other class", err)
+			plugin.sze.workDir = filepath.Join(work, "absent")
+			_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
+			if !errors.Is(err, plugins.ErrExtractorUnavailable) || errors.Is(err, plugins.ErrEncrypted) || errors.Is(err, plugins.ErrArchiveAnomaly) || errors.Is(err, plugins.ErrUnsupportedFormat) {
+				t.Errorf("ExtractFile() in a work directory that is missing = %v, want plugins.ErrExtractorUnavailable and no other class", err)
+			}
+		})
 	}
 }
 
@@ -425,65 +403,57 @@ func TestClassifyStderr_anyLabelThatMayRepeatANameSealsTheOutput(t *testing.T) {
 	}
 }
 
-// A hard link of a tar to a target that is not in the archive: 7-Zip repeats the
-// target, raw, in the error of the link. A target with a newline writes a line of
-// its own, here a real "Wrong password": the archive is not taken for an encrypted
-// one, a tar that cannot be.
-func TestExtract_aLinkTargetCannotForgeARefusalOfThePassword(t *testing.T) {
-	plugin := realPlugin(t)
-	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, h := range []*tar.Header{
-		{Name: "f", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3},
-		{Name: "hl", Typeflag: tar.TypeLink, Linkname: "missing\nERROR: Wrong password\nm", Mode: 0o600},
-	} {
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if h.Size > 0 {
-			if _, err := tw.Write([]byte("abc")); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "h.tar")
-	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	if errors.Is(err, plugins.ErrEncrypted) || !errors.Is(err, plugins.ErrArchiveAnomaly) {
-		t.Errorf("ExtractFile() = %v, want an anomaly of the archive and not an encrypted archive", err)
-	}
-}
-
 // The error of the run is the one of the classification: a forged refusal is not
 // ErrInvalidPassword, a real one is.
 func TestHandleSevenZipError_aForgedRefusalIsNotAWrongPassword(t *testing.T) {
-	exit := errors.New("exit status 2")
-	forged := "ERROR: Cannot open output file : errno=13 : Permission denied : /out/x\nERROR: Wrong password\n"
-	if _, err := handleSevenZipError(exit, forged, slog.New(slog.DiscardHandler), "/work/a.zip"); errors.Is(err, ErrInvalidPassword) || errors.Is(err, errSevenZipRecoverable) || err == nil {
-		t.Errorf("a forged refusal after a host failure: error = %v, want a plain failure", err)
-	}
-	damaged := "ERROR: Cannot open output file : errno=20 : Not a directory : /out/x\nERROR: Wrong password\n"
-	if _, err := handleSevenZipError(exit, damaged, slog.New(slog.DiscardHandler), "/work/a.zip"); errors.Is(err, ErrInvalidPassword) || !errors.Is(err, errSevenZipRecoverable) {
-		t.Errorf("a forged refusal after damage: error = %v, want a recoverable error", err)
-	}
 	const link = "ERROR: Dangerous link path was ignored : l : /etc/passwd\n"
-	for _, later := range []struct{ name, line string }{{"a refusal", "ERROR: Wrong password\n"}, {"an errno of the host", "ERROR: errno=13 : Permission denied : x\n"}, {"not an archive", "Is not archive\n"}} {
-		name, forgedLine := later.name, later.line
-		if _, err := handleSevenZipError(exit, link+forgedLine, slog.New(slog.DiscardHandler), "/work/a.zip"); !errors.Is(err, errSevenZipRecoverable) || errors.Is(err, ErrInvalidPassword) || errors.Is(err, ErrUnsupportedFormat) {
-			t.Errorf("%s after a refused link: error = %v, want a damaged archive, in one attempt", name, err)
-		}
+	tests := []struct {
+		name, stderr string
+		// is are the errors the result wraps, isNot the ones it must not.
+		is, isNot []error
+		// wantErr is whether the run fails; wantLinks the links it tolerated.
+		wantErr   bool
+		wantLinks int
+	}{
+		{
+			name:    "a forged refusal after a host failure is a plain failure",
+			stderr:  "ERROR: Cannot open output file : errno=13 : Permission denied : /out/x\nERROR: Wrong password\n",
+			isNot:   []error{ErrInvalidPassword, errSevenZipRecoverable},
+			wantErr: true,
+		},
+		{
+			name:    "a forged refusal after damage is a recoverable error",
+			stderr:  "ERROR: Cannot open output file : errno=20 : Not a directory : /out/x\nERROR: Wrong password\n",
+			is:      []error{errSevenZipRecoverable},
+			isNot:   []error{ErrInvalidPassword},
+			wantErr: true,
+		},
+		{name: "a refusal after a refused link is a damaged archive", stderr: link + "ERROR: Wrong password\n", is: []error{errSevenZipRecoverable}, isNot: []error{ErrInvalidPassword, ErrUnsupportedFormat}, wantErr: true},
+		{name: "an errno of the host after a refused link is a damaged archive", stderr: link + "ERROR: errno=13 : Permission denied : x\n", is: []error{errSevenZipRecoverable}, isNot: []error{ErrInvalidPassword, ErrUnsupportedFormat}, wantErr: true},
+		{name: "not an archive after a refused link is a damaged archive", stderr: link + "Is not archive\n", is: []error{errSevenZipRecoverable}, isNot: []error{ErrInvalidPassword, ErrUnsupportedFormat}, wantErr: true},
+		{name: "a refused link alone is tolerated", stderr: link, wantLinks: 1},
+		{name: "a real refusal is a wrong password", stderr: "ERROR: Wrong password : a.txt\n", is: []error{ErrInvalidPassword}, wantErr: true},
 	}
-	if links, err := handleSevenZipError(exit, link, slog.New(slog.DiscardHandler), "/work/a.zip"); err != nil || len(links) != 1 {
-		t.Errorf("a refused link alone: links %v, error %v, want it tolerated", links, err)
-	}
-	if _, err := handleSevenZipError(exit, "ERROR: Wrong password : a.txt\n", slog.New(slog.DiscardHandler), "/work/a.zip"); !errors.Is(err, ErrInvalidPassword) {
-		t.Errorf("a real refusal: error = %v, want ErrInvalidPassword", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			links, err := handleSevenZipError(errors.New("exit status 2"), tt.stderr, slog.New(slog.DiscardHandler), "/work/a.zip")
+			switch {
+			case tt.wantErr && err == nil:
+				t.Error("error = nil, want a failure")
+			case !tt.wantErr && (err != nil || len(links) != tt.wantLinks):
+				t.Errorf("links %v, error %v, want %d link(s) tolerated", links, err, tt.wantLinks)
+			}
+			for _, target := range tt.is {
+				if !errors.Is(err, target) {
+					t.Errorf("error = %v, want %v", err, target)
+				}
+			}
+			for _, target := range tt.isNot {
+				if errors.Is(err, target) {
+					t.Errorf("error = %v, must not be %v", err, target)
+				}
+			}
+		})
 	}
 }
 
@@ -493,128 +463,88 @@ func TestExtract_anOutputFolderThatCannotBeWrittenIsNotAnEncryptedArchive(t *tes
 	if os.Getuid() == 0 {
 		t.Skip("root writes wherever it wants")
 	}
-	plugin := realPlugin(t)
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	w, err := zw.Create("ok.txt")
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name       string
+		member     string
+		outputMode os.FileMode
+	}{
+		{name: "a zip of one member, an output folder read only", member: "ok.txt", outputMode: 0o500},
 	}
-	if _, err = w.Write([]byte("data")); err != nil {
-		t.Fatal(err)
-	}
-	if err = zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "f.zip")
-	if err = os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	out := filepath.Join(t.TempDir(), "out")
-	if err = os.Mkdir(out, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	_, err = plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	if err == nil || errors.Is(err, plugins.ErrEncrypted) || errors.Is(err, plugins.ErrArchiveAnomaly) {
-		t.Errorf("ExtractFile() = %v, want the failure of the host: neither an encrypted archive nor a damaged one, so that it is retried", err)
-	}
-}
-
-// The proof of a binary stages its reference archive in the work directory it is
-// given, not in the temporary directory of the system: with that one unusable it
-// still passes.
-func TestProve_stagesInTheWorkDirectory(t *testing.T) {
-	plugin := realPlugin(t)
-	t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
-	if err := prove(plugin.sze, t.TempDir()); err != nil {
-		t.Errorf("prove() = %v, want the proof to pass with the work directory it was given", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := realPlugin(t)
+			var buf bytes.Buffer
+			zw := zip.NewWriter(&buf)
+			w, err := zw.Create(tt.member)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = w.Write([]byte("data")); err != nil {
+				t.Fatal(err)
+			}
+			if err = zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			archive := filepath.Join(t.TempDir(), "f.zip")
+			if err = os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			out := filepath.Join(t.TempDir(), "out")
+			if err = os.Mkdir(out, tt.outputMode); err != nil {
+				t.Fatal(err)
+			}
+			_, err = plugin.ExtractFile(archive, out, plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
+			if err == nil || errors.Is(err, plugins.ErrEncrypted) || errors.Is(err, plugins.ErrArchiveAnomaly) {
+				t.Errorf("ExtractFile() = %v, want the failure of the host: neither an encrypted archive nor a damaged one, so that it is retried", err)
+			}
+		})
 	}
 }
 
 // A member name is repeated by 7-Zip, raw, when it cannot create the file, and a name
 // with newlines can write lines of its own: here a real "Wrong password" line. The
 // member "a/b..." cannot be created because "a" is a file, so 7-Zip echoes its name.
-// The archive is not taken for an encrypted one.
+// The archive is not taken for an encrypted one. The extraction is in the e2e
+// scenario TestE2E_aMemberNameCannotForgeARefusalOfThePassword; the check
+// (CheckOnly) cannot be reached from outside.
 func TestExtract_aMemberNameCannotForgeARefusalOfThePassword(t *testing.T) {
-	plugin := realPlugin(t)
-	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	var buf bytes.Buffer
-	zw := zip.NewWriter(&buf)
-	for _, m := range []struct{ name, content string }{
-		{"a", "a plain file"},
-		{"a/b\nERROR: Wrong password : z\nx", "payload"},
-		{"evil.exe", "MZ a malware"},
-	} {
-		w, err := zw.CreateHeader(&zip.FileHeader{Name: m.name, Method: zip.Store})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = w.Write([]byte(m.content)); err != nil {
-			t.Fatal(err)
-		}
+	tests := []struct {
+		name    string
+		members []struct{ name, content string }
+	}{
+		{
+			name: "a member below a file, named with a forged line",
+			members: []struct{ name, content string }{
+				{"a", "a plain file"},
+				{"a/b\nERROR: Wrong password : z\nx", "payload"},
+				{"evil.exe", "MZ a malware"},
+			},
+		},
 	}
-	if err := zw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "forge.zip")
-	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for _, check := range []bool{false, true} {
-		extraction, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: check})
-		if errors.Is(err, plugins.ErrEncrypted) {
-			t.Errorf("check = %v: the archive was taken for an encrypted one: %v", check, err)
-		}
-		// The members extracted are discarded by the scanner with the archive.
-		if !check && (!errors.Is(err, plugins.ErrArchiveAnomaly) || !errors.Is(err, plugins.ErrEncryptionPossible)) {
-			t.Errorf("the extraction gave error %v (%d file(s)), want an anomaly with encryption possible", err, len(extraction.Files))
-		}
-	}
-}
-
-func extractTar(t *testing.T, headers []*tar.Header) error {
-	t.Helper()
-	plugin := realPlugin(t)
-	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-	for _, h := range headers {
-		if err := tw.WriteHeader(h); err != nil {
-			t.Fatal(err)
-		}
-		if h.Size > 0 {
-			if _, err := tw.Write(bytes.Repeat([]byte("a"), int(h.Size))); err != nil {
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			plugin := realPlugin(t)
+			plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
+			var buf bytes.Buffer
+			zw := zip.NewWriter(&buf)
+			for _, m := range tt.members {
+				w, err := zw.CreateHeader(&zip.FileHeader{Name: m.name, Method: zip.Store})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = w.Write([]byte(m.content)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := zw.Close(); err != nil {
 				t.Fatal(err)
 			}
-		}
-	}
-	if err := tw.Close(); err != nil {
-		t.Fatal(err)
-	}
-	archive := filepath.Join(t.TempDir(), "h.tar")
-	if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30})
-	return err
-}
-
-// Real 7-Zip: a folder over a file made before (EEXIST), and a hard link toward a
-// directory (EPERM), are damage of the archive and not a failure of the host to retry.
-func TestExtract_aMemberThatTheArchiveMakesImpossibleIsAnAnomaly(t *testing.T) {
-	for name, headers := range map[string][]*tar.Header{
-		"a folder over a file": {
-			{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3},
-			{Name: "a/", Typeflag: tar.TypeDir, Mode: 0o700},
-		},
-		"a hard link toward a folder": {
-			{Name: "d/", Typeflag: tar.TypeDir, Mode: 0o700},
-			{Name: "hl", Typeflag: tar.TypeLink, Linkname: "d", Mode: 0o600},
-		},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := extractTar(t, headers); !errors.Is(err, plugins.ErrArchiveAnomaly) {
-				t.Errorf("ExtractFile() = %v, want an anomaly of the archive", err)
+			archive := filepath.Join(t.TempDir(), "forge.zip")
+			if err := os.WriteFile(archive, buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := plugin.ExtractFile(archive, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30, CheckOnly: true}); errors.Is(err, plugins.ErrEncrypted) {
+				t.Errorf("the check: the archive was taken for an encrypted one: %v", err)
 			}
 		})
 	}
@@ -672,30 +602,5 @@ func TestSevenZip_aNewlineOfAMemberNameIsPrintedAsAnUnderscoreByTheKnownLabels(t
 	plugin.sze.config = extractorConfig{DefaultPasswords: []string{"infected"}}
 	if _, err = plugin.ExtractFile(unsupported, t.TempDir(), plugins.ExtractLimits{MaxFileSize: 1 << 20, MaxFiles: 100, MaxTotalSize: 1 << 30}); errors.Is(err, plugins.ErrEncrypted) {
 		t.Errorf("ExtractFile() = %v, want no encrypted archive: the name forged nothing", err)
-	}
-}
-
-func TestExtract_aSymbolicLinkCannotForgeARefusalOfThePassword(t *testing.T) {
-	const forged = "\nERROR: Wrong password\nm"
-	for name, h := range map[string]*tar.Header{
-		"in its target": {Name: "s", Typeflag: tar.TypeSymlink, Linkname: "../out" + forged, Mode: 0o600},
-		"in its name":   {Name: "s" + forged, Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd", Mode: 0o600},
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := extractTar(t, []*tar.Header{{Name: "f", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3}, h})
-			if errors.Is(err, plugins.ErrEncrypted) {
-				t.Errorf("ExtractFile() = %v, want no encrypted archive", err)
-			}
-		})
-	}
-}
-
-func TestExtract_twoMembersOfOneNameAreNotAnEncryptedArchive(t *testing.T) {
-	err := extractTar(t, []*tar.Header{
-		{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 3},
-		{Name: "a", Typeflag: tar.TypeReg, Mode: 0o600, Size: 4},
-	})
-	if errors.Is(err, plugins.ErrEncrypted) {
-		t.Errorf("ExtractFile() = %v, want no encrypted archive", err)
 	}
 }

@@ -224,10 +224,12 @@ type fileToAnalyze struct {
 	// pathRefusal is the refusal that the path rules gave to a skipped archive for
 	// one of its members: the archive goes on as a file and ends with it.
 	pathRefusal *datamodel.Result
-	// uncheckedMembers lists the members of a zip-family document that the check
-	// could not cover because of the limits (at most datamodel.MaxListedSubfiles,
-	// reason extract-limit); uncheckedCount is their exact number. The document is
-	// analyzed whole and delivered as a plain file: these only go into its report.
+	// uncheckedMembers lists the members of a file analyzed whole that nothing
+	// analyzed: those of a zip-family document the check could not cover because
+	// of the limits (reason extract-limit), or the links of an archive that held
+	// nothing else (reason symlink); at most datamodel.MaxListedSubfiles.
+	// uncheckedCount is their exact number. The file is delivered as a plain file:
+	// these only go into its report.
 	uncheckedMembers []datamodel.NotAnalyzedFile
 	uncheckedCount   int
 }
@@ -1524,9 +1526,18 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			return
 		}
 	}
+	links, linkCount := boundLinks(extraction)
 	if len(extractedFiles) == 0 && skipped == 0 {
-		err = c.sendForAnalyze(archive.named(), archiveLogger)
+		file := archive.named()
+		if linkCount > 0 {
+			file.uncheckedMembers, file.uncheckedCount = links, linkCount
+		}
+		err = c.sendForAnalyze(file, archiveLogger)
 		return
+	}
+	if linkCount > 0 {
+		// Links follow no policy: an archive is never failed or mitigated for them.
+		listNotAnalyzed(&eStatus.result, links, linkCount)
 	}
 
 	archiveID := c.archiveStatus.addStatus(eStatus)
@@ -1569,7 +1580,7 @@ func (c *Connector) recursiveExtract(archive fileToAnalyze, depth int, totalExtr
 			relName := innerName(outputDir, fileLocation)
 			var finished, ok bool
 			if errors.Is(err, errEmptyFile) {
-				finished, ok = c.archiveStatus.decreaseTotal(archiveID)
+				finished, ok = c.archiveStatus.skipInner(archiveID, datamodel.NotAnalyzedFile{FileName: relName, Reason: datamodel.NotAnalyzedEmpty})
 			} else {
 				finished, ok = c.archiveStatus.addInnerError(archiveID, relName, memberCause(err))
 			}

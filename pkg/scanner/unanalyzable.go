@@ -281,6 +281,23 @@ func (c *Connector) applyLimitSkips(extraction plugins.Extraction, count int, re
 	return nil
 }
 
+// boundLinks is the list of the links an extractor reported and their count,
+// not trusted: every entry is a link with no size, the list holds at most
+// datamodel.MaxListedSubfiles entries with names cut to
+// datamodel.MaxListedNameLen, and the count is within [len(list), MaxFileCount].
+func boundLinks(extraction plugins.Extraction) ([]datamodel.NotAnalyzedFile, int) {
+	count := min(max(extraction.LinksCount, len(extraction.Links), 0), datamodel.MaxFileCount)
+	if count == 0 {
+		return nil, 0
+	}
+	src := extraction.Links[:min(len(extraction.Links), datamodel.MaxListedSubfiles)]
+	links := make([]datamodel.NotAnalyzedFile, len(src))
+	for i, f := range src {
+		links[i] = datamodel.NotAnalyzedFile{FileName: datamodel.CutText(f.FileName, datamodel.MaxListedNameLen), Reason: datamodel.NotAnalyzedSymlink}
+	}
+	return links, count
+}
+
 // listNotAnalyzed adds members to the files not analyzed of a result, within
 // datamodel.MaxListedSubfiles, and their exact count. A plugin may have set the
 // count of the result already: it is added to without wrapping around.

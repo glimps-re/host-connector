@@ -693,8 +693,8 @@ func TestArchive_noMutationOnceFinishIsClaimed(t *testing.T) {
 	if _, ok := h.addInnerError(id, "late2.bin", errors.New("late")); ok {
 		t.Error("addInnerError() after the finish was claimed must refuse")
 	}
-	if _, ok := h.decreaseTotal(id); ok {
-		t.Error("decreaseTotal() after the finish was claimed must refuse")
+	if _, ok := h.skipInner(id, datamodel.NotAnalyzedFile{FileName: "late3.bin", Reason: datamodel.NotAnalyzedEmpty}); ok {
+		t.Error("skipInner() after the finish was claimed must refuse")
 	}
 	st, _ := h.getStatus(id)
 	if st.total != 3 || st.analyzed != 0 || len(st.result.ErrorSubfiles) != 0 || st.result.Error != nil {

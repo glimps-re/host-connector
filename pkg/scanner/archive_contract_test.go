@@ -110,17 +110,23 @@ func BenchmarkMergeResult_fullNotAnalyzedLists(b *testing.B) {
 	}
 }
 
-func TestArchiveContract_emptyMemberKeepsBehaviour(t *testing.T) {
+func TestArchiveContract_emptyMemberIsListedAndLeavesTheTotal(t *testing.T) {
 	h := newArchiveStatusHandler()
 	id := newArchiveForTest(t, h, 2)
-	h.decreaseTotal(id)
+	empty := datamodel.NotAnalyzedFile{FileName: "empty", Reason: datamodel.NotAnalyzedEmpty}
+	if finished, ok := h.skipInner(id, empty); !ok || finished {
+		t.Fatalf("skipInner() = finished %v, ok %v; want an archive still waiting for its other member", finished, ok)
+	}
 	finished, _ := h.addInnerFileResult(id, "ok", datamodel.Result{})
 	if !finished {
 		t.Error("archive must finish when the empty member is dropped from the total")
 	}
 	st, _ := h.getStatus(id)
-	if st.result.Error != nil || len(st.result.ErrorSubfiles) != 0 {
-		t.Errorf("empty member must not mark the archive: Error=%v ErrorSubfiles=%v", st.result.Error, st.result.ErrorSubfiles)
+	if st.result.Error != nil || len(st.result.ErrorSubfiles) != 0 || st.result.Malware {
+		t.Errorf("empty member must not mark the archive: Error=%v ErrorSubfiles=%v Malware=%v", st.result.Error, st.result.ErrorSubfiles, st.result.Malware)
+	}
+	if st.result.NotAnalyzedSubfilesCount != 1 || len(st.result.NotAnalyzedSubfiles) != 1 || st.result.NotAnalyzedSubfiles[0] != empty {
+		t.Errorf("not analyzed = %v (count %d), want the empty member listed once", st.result.NotAnalyzedSubfiles, st.result.NotAnalyzedSubfilesCount)
 	}
 }
 

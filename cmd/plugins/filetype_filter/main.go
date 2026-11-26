@@ -303,13 +303,14 @@ func (p *FTFilterPlugin) OnScanFile(filename string, location string, sha256 str
 			slog.String("sha256", sha256),
 			slog.String("mime", mime))
 		return &datamodel.Result{
-			Filename:       filename,
-			FileType:       mime,
-			Malware:        false,
-			SHA256:         sha256,
-			Score:          -500,
-			FilteredVolume: size,
-			FileSize:       size,
+			Filename:          filename,
+			FileType:          mime,
+			Malware:           false,
+			SHA256:            sha256,
+			Score:             -500,
+			FilteredVolume:    size,
+			FileSize:          size,
+			NotAnalyzedReason: datamodel.NotAnalyzedSkippedType,
 		}
 	}
 

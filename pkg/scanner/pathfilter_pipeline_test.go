@@ -33,14 +33,14 @@ func TestPathFilter_pipeline(t *testing.T) {
 			t.Errorf("%d files submitted, want only b.txt", r.submitted.Load())
 		}
 	})
-	t.Run("a skipped file is delivered, marked policy-skipped, not submitted", func(t *testing.T) {
+	t.Run("a skipped file is delivered, marked skipped-path, not submitted", func(t *testing.T) {
 		r := runAcc(t, accSetup{
 			files:      map[string]string{"trusted.bin": "X"},
 			pathFilter: mustPathFilter(t, nil, []string{`trusted\.bin$`}),
 		})
 		got := r.one(t, "trusted.bin")
-		if got.result.NotAnalyzedReason != datamodel.NotAnalyzedPolicySkipped || !r.exists(r.out, "trusted.bin") || r.submitted.Load() != 0 {
-			t.Errorf("result = %+v, delivered %t, submitted %d, want a delivered file marked policy-skipped", got.result, r.exists(r.out, "trusted.bin"), r.submitted.Load())
+		if got.result.NotAnalyzedReason != datamodel.NotAnalyzedSkippedPath || !r.exists(r.out, "trusted.bin") || r.submitted.Load() != 0 {
+			t.Errorf("result = %+v, delivered %t, submitted %d, want a delivered file marked skipped-path", got.result, r.exists(r.out, "trusted.bin"), r.submitted.Load())
 		}
 	})
 	t.Run("a forbidden member makes its archive malware", func(t *testing.T) {
@@ -54,7 +54,7 @@ func TestPathFilter_pipeline(t *testing.T) {
 			t.Errorf("malware %t, delivered %t, quarantined %d, want a quarantined archive", got.result.Malware, r.exists(r.out, "pack.zip"), r.quarantined(t))
 		}
 	})
-	t.Run("a member matching a skip pattern is not analyzed and is listed policy-skipped", func(t *testing.T) {
+	t.Run("a member matching a skip pattern is not analyzed and is listed skipped-path", func(t *testing.T) {
 		r := runAcc(t, accSetup{
 			files:      map[string]string{"pack.zip": zipOf(t, 10)},
 			extract:    archiveOf("ok.txt", "docs-readme.txt"),
@@ -69,7 +69,7 @@ func TestPathFilter_pipeline(t *testing.T) {
 		got := r.one(t, "pack.zip")
 		found := false
 		for _, f := range got.result.NotAnalyzedSubfiles {
-			found = found || (f.FileName == "docs-readme.txt" && f.Reason == datamodel.NotAnalyzedPolicySkipped)
+			found = found || (f.FileName == "docs-readme.txt" && f.Reason == datamodel.NotAnalyzedSkippedPath)
 		}
 		if !found || !r.exists(r.out, "pack.zip") {
 			t.Errorf("not analyzed = %+v, delivered %t, want the member listed and the archive delivered", got.result.NotAnalyzedSubfiles, r.exists(r.out, "pack.zip"))
@@ -86,8 +86,8 @@ func TestPathFilter_pipeline(t *testing.T) {
 			pathFilter: mustPathFilter(t, nil, []string{`pack\.zip$`}),
 		})
 		got := r.one(t, "pack.zip")
-		if got.result.NotAnalyzedReason != datamodel.NotAnalyzedPolicySkipped || !r.exists(r.out, "pack.zip") || extracted.Load() {
-			t.Errorf("result = %+v, extracted %t, want a skipped archive delivered, marked policy-skipped, never extracted", got.result, extracted.Load())
+		if got.result.NotAnalyzedReason != datamodel.NotAnalyzedSkippedPath || !r.exists(r.out, "pack.zip") || extracted.Load() {
+			t.Errorf("result = %+v, extracted %t, want a skipped archive delivered, marked skipped-path, never extracted", got.result, extracted.Load())
 		}
 	})
 	t.Run("a refusal of a plugin beats a skipped path", func(t *testing.T) {
@@ -148,10 +148,10 @@ func TestPathFilter_skippedArchiveStillMeetsForbiddenPaths(t *testing.T) {
 		wantReason    datamodel.NotAnalyzedReason
 	}{
 		{"a forbidden member refuses the skipped archive", forbidExe, &listing{names: []string{"docs/a.txt", "a.exe"}}, 1, false, accQuarantined, ""},
-		{"no member matches: skipped, never extracted", forbidExe, &listing{names: []string{"a.txt"}}, 1, false, accMoved, datamodel.NotAnalyzedPolicySkipped},
-		{"no forbidden rule: the archive is not even listed", nil, &listing{names: []string{"a.exe"}}, 0, false, accMoved, datamodel.NotAnalyzedPolicySkipped},
+		{"no member matches: skipped, never extracted", forbidExe, &listing{names: []string{"a.txt"}}, 1, false, accMoved, datamodel.NotAnalyzedSkippedPath},
+		{"no forbidden rule: the archive is not even listed", nil, &listing{names: []string{"a.exe"}}, 0, false, accMoved, datamodel.NotAnalyzedSkippedPath},
 		{"a member that is forbidden in a nested folder", []string{`pack\.zip/x/y/.*\.exe$`}, &listing{names: []string{"x/y/z.exe"}}, 1, false, accQuarantined, ""},
-		{"an archive of no file is skipped", forbidExe, &listing{names: []string{}}, 1, false, accMoved, datamodel.NotAnalyzedPolicySkipped},
+		{"an archive of no file is skipped", forbidExe, &listing{names: []string{}}, 1, false, accMoved, datamodel.NotAnalyzedSkippedPath},
 		{"an extractor that gives no names: the skip is withdrawn", forbidExe, &listing{}, 1, true, accMoved, ""},
 		{"an extractor that cannot list: the skip is withdrawn", forbidExe, &listing{err: plugins.ErrListingUnsupported}, 1, true, accMoved, ""},
 		{"encrypted headers: the skip is withdrawn", forbidExe, &listing{err: plugins.ErrEncrypted}, 1, true, accMoved, ""},
@@ -208,7 +208,7 @@ func TestPathFilter_skippedArchiveStillMeetsForbiddenPaths(t *testing.T) {
 				extractMaxFiles: tt.maxFiles,
 				pathFilter:      mustPathFilter(t, forbidExe, skipArchive),
 			})
-			if l.extracted.Load() == 0 || r.one(t, "pack.zip").result.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped {
+			if l.extracted.Load() == 0 || r.one(t, "pack.zip").result.NotAnalyzedReason != "" {
 				t.Errorf("extracted %d, want the skip withdrawn: the archive is processed as any archive", l.extracted.Load())
 			}
 		})
@@ -256,7 +256,7 @@ func TestPathFilter_rawAndLogicalForms(t *testing.T) {
 			name: "a name whose logical form is skipped but not its raw form is analyzed", file: "a\x01b.txt",
 			skipped: []string{`a_b\.txt$`}, check: func(t *testing.T, r *accRun, got datamodel.Result) {
 				t.Helper()
-				if got.NotAnalyzedReason == datamodel.NotAnalyzedPolicySkipped || r.submitted.Load() != 1 {
+				if got.NotAnalyzedReason != "" || r.submitted.Load() != 1 {
 					t.Errorf("result = %+v, submitted %d, want the file analyzed", got, r.submitted.Load())
 				}
 			},

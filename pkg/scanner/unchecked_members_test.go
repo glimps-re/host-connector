@@ -77,7 +77,7 @@ func TestAnalyze_theUncheckedMembersAreListedOnlyForADeliveredDocument(t *testin
 		{name: "too_big mitigate on a document over max_file_size", policy: Unanalyzable{TooBig: PolicyMitigate}, maxSize: 5},
 		{name: "a plugin waiver", scanFile: waiver, wantListed: true, wantReason: datamodel.NotAnalyzedPolicySkipped},
 		{name: "a forbidden path", filter: mustPathFilter(t, []string{`doc\.docx$`}, nil)},
-		{name: "a skipped path", filter: mustPathFilter(t, nil, []string{`doc\.docx$`}), wantListed: true, wantReason: datamodel.NotAnalyzedPolicySkipped},
+		{name: "a skipped path", filter: mustPathFilter(t, nil, []string{`doc\.docx$`}), wantListed: true, wantReason: datamodel.NotAnalyzedSkippedPath},
 		{name: "a forbidden path beats a skipped one", filter: mustPathFilter(t, []string{`doc\.docx$`}, []string{`\.docx$`})},
 	}
 	for _, tt := range tests {

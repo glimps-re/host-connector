@@ -245,11 +245,13 @@ func (c *Connector) applyAnalysisErrorPolicy(input fileToAnalyze, result datamod
 // neither malware nor an error) reaches its destination without analysis: the
 // reports say so, and so does the log.
 func markPolicySkipped(r *datamodel.Result, location string) {
-	if r.Malware || r.Error != nil || r.AnalysisError != "" || r.NotAnalyzedReason != "" {
+	if r.Malware || r.Error != nil || r.AnalysisError != "" {
 		return
 	}
-	r.NotAnalyzedReason = datamodel.NotAnalyzedPolicySkipped
-	logger.Warn("file passed without analysis", slog.String("file", location), slog.String(logReasonKey, string(datamodel.NotAnalyzedPolicySkipped)))
+	if r.NotAnalyzedReason == "" {
+		r.NotAnalyzedReason = datamodel.NotAnalyzedPolicySkipped
+	}
+	logger.Warn("file passed without analysis", slog.String("file", location), slog.String(logReasonKey, string(r.NotAnalyzedReason)))
 }
 
 // applyLimitSkips applies the policy of the files too big to the members the

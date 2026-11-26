@@ -499,19 +499,33 @@ func TestUnanalyzable_configValidation(t *testing.T) {
 	}
 }
 
-// S11: a plugin that rejects a file non-maliciously is visible as policy-skipped.
+// S11: a plugin that rejects a file non-maliciously is visible as policy-skipped,
+// and a waiver that names its list keeps that reason.
 func TestUnanalyzable_policySkippedIsVisible(t *testing.T) {
-	c := policyConnector(t, Unanalyzable{}, accMax, cleanSubmitter())
-	c.onScanFileCbs = []plugins.OnScanFile{func(string, string, string, bool) *datamodel.Result {
-		return &datamodel.Result{}
-	}}
-	in := fileToAnalyze{filename: "f", location: "/in/f", sha256: "s", size: 5}
-	res := c.analyzeFile(in)
-	if res.NotAnalyzedReason != datamodel.NotAnalyzedPolicySkipped {
-		t.Errorf("NotAnalyzedReason = %q, want policy-skipped", res.NotAnalyzedReason)
-	}
-	if res.Malware || res.Error != nil {
-		t.Errorf("result = %+v: a policy skip is neither malware nor error", res)
+	for _, tt := range []struct {
+		name   string
+		result datamodel.Result
+		want   datamodel.NotAnalyzedReason
+	}{
+		{"a plugin waiver without reason", datamodel.Result{}, datamodel.NotAnalyzedPolicySkipped},
+		{"a skipped path", datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedSkippedPath}, datamodel.NotAnalyzedSkippedPath},
+		{"a skipped type", datamodel.Result{NotAnalyzedReason: datamodel.NotAnalyzedSkippedType}, datamodel.NotAnalyzedSkippedType},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := policyConnector(t, Unanalyzable{}, accMax, cleanSubmitter())
+			c.onScanFileCbs = []plugins.OnScanFile{func(string, string, string, bool) *datamodel.Result {
+				r := tt.result
+				return &r
+			}}
+			in := fileToAnalyze{filename: "f", location: "/in/f", sha256: "s", size: 5}
+			res := c.analyzeFile(in)
+			if res.NotAnalyzedReason != tt.want {
+				t.Errorf("NotAnalyzedReason = %q, want %q", res.NotAnalyzedReason, tt.want)
+			}
+			if res.Malware || res.Error != nil {
+				t.Errorf("result = %+v: a waiver is neither malware nor error", res)
+			}
+		})
 	}
 }
 

@@ -23,7 +23,7 @@ func TestE2E_everyWayOutOfThePipelineWithPluginsClosesTheSession(t *testing.T) {
 			scenario: harness.Scenario{
 				Plugins:            map[string]map[string]any{"filetype_filter": {"skipped_types": []string{"image/png"}}},
 				Files:              []harness.File{{Path: "p.png", Content: realPNG(t)}},
-				Want:               map[string]harness.Outcome{"p.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped}},
+				Want:               map[string]harness.Outcome{"p.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedType}},
 				WantSessionReports: 1,
 			},
 		},

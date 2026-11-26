@@ -509,6 +509,12 @@ func notAnalyzedText(reason datamodel.NotAnalyzedReason) string {
 		return "Restauré (précédemment bloqué)"
 	case datamodel.NotAnalyzedAnalysisError:
 		return "Analyse en échec (contenu non vérifié)"
+	case datamodel.NotAnalyzedSkippedPath:
+		return "Liste blanche par chemin (non analysé)"
+	case datamodel.NotAnalyzedSkippedType:
+		return "Liste blanche par type (non analysé)"
+	case datamodel.NotAnalyzedSymlink:
+		return "Lien symbolique (non suivi)"
 	default:
 		return cellText(string(reason))
 	}

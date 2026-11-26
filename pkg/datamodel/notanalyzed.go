@@ -20,6 +20,13 @@ const (
 	// NotAnalyzedAnalysisError is a file the analysis failed on, let through by
 	// unanalyzable_policy.analysis_error: pass.
 	NotAnalyzedAnalysisError NotAnalyzedReason = "analysis-error"
+	// NotAnalyzedSkippedPath is a file waived by skipped_paths.
+	NotAnalyzedSkippedPath NotAnalyzedReason = "skipped-path"
+	// NotAnalyzedSkippedType is a file waived by skipped_types.
+	NotAnalyzedSkippedType NotAnalyzedReason = "skipped-type"
+	// NotAnalyzedSymlink is a symbolic link found in an archive, not followed and
+	// not analyzed.
+	NotAnalyzedSymlink NotAnalyzedReason = "symlink"
 )
 
 const (

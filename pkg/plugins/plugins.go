@@ -72,6 +72,13 @@ type Extraction struct {
 	Skipped []datamodel.NotAnalyzedFile
 	// SkippedCount is the exact total of skipped members.
 	SkippedCount int
+	// Links lists the symbolic links found in the archive, which are neither
+	// extracted nor followed, with Reason NotAnalyzedSymlink. The core lists them
+	// as not analyzed, applies no unanalyzable_policy to them, and bounds the list
+	// and its names again.
+	Links []datamodel.NotAnalyzedFile
+	// LinksCount is the number of links, exact below datamodel.MaxFileCount.
+	LinksCount int
 	// Names are the paths of the files of the archive as it lists them, filled in
 	// NamesOnly mode only: nil says that the names are not known (a listing that is
 	// not whole, over MaxFiles, with anything the extractor finds wrong in the

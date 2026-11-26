@@ -395,3 +395,72 @@ func newTestPlugin(tb testing.TB) *ReportPlugin {
 	}
 	return p
 }
+
+func TestReportDataFrom_countsAsMalwareOnlyDetectedContent(t *testing.T) {
+	detected := datamodel.Report{Filename: "/in/virus.exe", Malicious: true, Malwares: []string{"evil"}, MalwareReason: datamodel.MalwareDetected}
+	byPath := datamodel.Report{Filename: "/in/a.lnk", Malicious: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFilePath}
+	byType := datamodel.Report{Filename: "/in/b.dll", Malicious: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFileType}
+	maliciousMember := datamodel.Report{
+		Filename:                "/in/archive.zip",
+		Malicious:               true,
+		MalwareReason:           datamodel.MalwareDetected,
+		MaliciousExtractedFiles: []datamodel.ExtractedFile{{FileName: "inner.exe", Malicious: true, Malwares: []string{"evil"}}},
+	}
+	forbiddenMember := datamodel.Report{
+		Filename:                "/in/other.zip",
+		Malicious:               true,
+		MalwareReason:           datamodel.FilteredFilePath,
+		MaliciousExtractedFiles: []datamodel.ExtractedFile{{FileName: "inner.lnk", Malicious: true, Malwares: []string{"forbidden_files"}}},
+	}
+
+	tests := []struct {
+		name          string
+		reports       []datamodel.Report
+		wantMitigated int
+		wantMalware   int
+	}{
+		{name: "detected malware", reports: []datamodel.Report{detected}, wantMitigated: 1, wantMalware: 1},
+		{name: "blocked by path", reports: []datamodel.Report{byPath}, wantMitigated: 1},
+		{name: "blocked by type", reports: []datamodel.Report{byType}, wantMitigated: 1},
+		{name: "malicious archive member", reports: []datamodel.Report{maliciousMember}, wantMitigated: 1, wantMalware: 1},
+		{name: "archive blocked for a forbidden member", reports: []datamodel.Report{forbiddenMember}, wantMitigated: 1},
+		{name: "too big", reports: []datamodel.Report{{Filename: "/in/big.bin", Malicious: true, MalwareReason: datamodel.TooBig}}, wantMitigated: 1},
+		{name: "encrypted", reports: []datamodel.Report{{Filename: "/in/enc.zip", Malicious: true, MalwareReason: datamodel.Encrypted}}, wantMitigated: 1},
+		{name: "empty", reports: []datamodel.Report{{Filename: "/in/empty", Malicious: true, MalwareReason: datamodel.Empty}}, wantMitigated: 1},
+		{name: "analysis error", reports: []datamodel.Report{{Filename: "/in/err.bin", Malicious: true, MalwareReason: datamodel.AnalysisError}}, wantMitigated: 1},
+		{name: "threat names without a reason", reports: []datamodel.Report{{Filename: "/in/old.exe", Malicious: true, Malwares: []string{"evil"}}}, wantMitigated: 1},
+		{name: "clean file", reports: []datamodel.Report{{Filename: "/in/ok.txt"}}},
+		{name: "path, type and detection", reports: []datamodel.Report{byPath, byType, detected}, wantMitigated: 3, wantMalware: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := mustReportData(t, datamodel.ScanContext{ScanID: "s"}, tt.reports)
+			if data.TotalMitigated != tt.wantMitigated {
+				t.Errorf("TotalMitigated = %d, want %d", data.TotalMitigated, tt.wantMitigated)
+			}
+			if data.TotalMalware != tt.wantMalware {
+				t.Errorf("TotalMalware = %d, want %d", data.TotalMalware, tt.wantMalware)
+			}
+		})
+	}
+}
+
+func TestReportPlugin_summaryShowsBlockedAndMalwareOnTwoLines(t *testing.T) {
+	p := newTestPlugin(t)
+	buf, err := p.generateHTMLReport(ReportData{TotalMitigated: 3, TotalMalware: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	html := buf.String()
+	for _, want := range []string{
+		"<strong>Bloqués : </strong>3</li>",
+		"<strong>Fichiers malveillants : </strong>1</li>",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML lacks %q", want)
+		}
+	}
+	if strings.Contains(html, "dont fichiers") {
+		t.Error("HTML still holds the old wording")
+	}
+}

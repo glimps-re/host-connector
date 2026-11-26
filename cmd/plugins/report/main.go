@@ -271,13 +271,15 @@ type ReportData struct {
 	AnalyzedVolume        string
 	FilteredVolume        string
 	TotalMitigated        int
-	TotalMalware          int
-	TotalErrors           int
-	MitigatedFiles        []FileReportData
-	MitigatedArchives     []ArchiveReportData
-	ErrorFiles            []ErrorFileData
-	ScanStartTime         string
-	Duration              string
+	// TotalMalware counts the reports whose content was detected as malware
+	// (MalwareDetected); refusals by path, type or policy are blocked, not counted here.
+	TotalMalware      int
+	TotalErrors       int
+	MitigatedFiles    []FileReportData
+	MitigatedArchives []ArchiveReportData
+	ErrorFiles        []ErrorFileData
+	ScanStartTime     string
+	Duration          string
 }
 
 // GenerateReport generates a PDF report from scan results. The reports are read
@@ -360,7 +362,7 @@ func reportDataFrom(ctx context.Context, reportContext datamodel.ScanContext, re
 			continue
 		}
 		reportData.TotalMitigated++
-		if len(report.Malwares) > 0 {
+		if report.MalwareReason == datamodel.MalwareDetected {
 			reportData.TotalMalware++
 		}
 		if len(report.MaliciousExtractedFiles) == 0 {

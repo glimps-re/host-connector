@@ -45,8 +45,14 @@ func TestReport_mixedSessionNumbersAndLabelsInTheHTML(t *testing.T) {
 	if data.NbFileNotAnalyzed != 5 {
 		t.Errorf("NbFileNotAnalyzed = %d, want 5 (2 top-level files, 3 members)", data.NbFileNotAnalyzed)
 	}
-	if want := "<strong>Fichiers malveillants : </strong>1</li>"; !strings.Contains(html, want) {
-		t.Errorf("HTML lacks %q", want)
+	if !tileHTML("Fichiers malveillants", 1).MatchString(html) {
+		t.Error("HTML has no tile \"Fichiers malveillants\" with the value 1")
+	}
+	if !tileHTML("Non analysés", 5).MatchString(html) {
+		t.Error("HTML has no tile \"Non analysés\" with the value 5")
+	}
+	if !strings.Contains(html, "Non analysés : membres d'archives inclus.") {
+		t.Error("HTML lacks the full wording of the not analyzed count")
 	}
 	for _, label := range mixedLabels {
 		if !strings.Contains(html, template.HTMLEscapeString(label)) {
@@ -67,7 +73,7 @@ func TestReport_mixedSessionNumbersAndLabelsInThePDF(t *testing.T) {
 	p := newTestPlugin(t)
 	_, texts := renderPDF(t, p, mixedSession())
 	text := joined(texts)
-	for _, want := range append([]string{"Fichiersmalveillants:1"}, mixedLabels...) {
+	for _, want := range append([]string{"1Fichiersmalveillants", "5Nonanalysés"}, mixedLabels...) {
 		if !strings.Contains(text, squash(want)) {
 			t.Errorf("the PDF text lacks %q", want)
 		}

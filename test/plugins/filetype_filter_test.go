@@ -92,7 +92,7 @@ func TestE2E_aRefusalBeatsAnExemption(t *testing.T) {
 				Want: map[string]harness.Outcome{
 					"control.png":   {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
 					"trusted/p.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
-					"trusted/t.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"trusted/t.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
 				},
 			},
 		},
@@ -127,7 +127,7 @@ func TestE2E_aSkippedTypeIsNotWaivedForALargeFile(t *testing.T) {
 					{Path: "large.png", Content: append(realPNG(t), make([]byte, 9<<20)...)},
 				},
 				Want: map[string]harness.Outcome{
-					"small.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"small.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedType, ServiceVerdict: harness.NotGiven},
 					"large.png": {In: harness.Output, ServiceVerdict: harness.Given},
 				},
 			},
@@ -174,4 +174,19 @@ func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
 			harness.Run(t, tt.scenario)
 		})
 	}
+}
+
+func TestE2E_aFileMatchingASkippedPathAndASkippedTypeIsMarkedSkippedPath(t *testing.T) {
+	harness.Run(t, harness.Scenario{
+		Config:  harness.PathFilter(nil, []string{`/both/`}),
+		Plugins: map[string]map[string]any{"filetype_filter": {"skipped_types": []string{"image/png"}}},
+		Files: []harness.File{
+			{Path: "both/p.png", Content: realPNG(t)},
+			{Path: "type.png", Content: realPNG(t)},
+		},
+		Want: map[string]harness.Outcome{
+			"both/p.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
+			"type.png":   {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedType, ServiceVerdict: harness.NotGiven},
+		},
+	})
 }

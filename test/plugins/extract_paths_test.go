@@ -46,7 +46,7 @@ func TestE2E_pathFiltersJudgeTheLogicalPath(t *testing.T) {
 				},
 				Want: map[string]harness.Outcome{
 					"plain.txt":            {In: harness.Output, ServiceVerdict: harness.Given},
-					"trusted/t.txt":        {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"trusted/t.txt":        {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
 					"forbidden/f.txt":      {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
 					"bad.zip":              {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
 					"clean.zip":            {In: harness.Output},
@@ -64,7 +64,7 @@ func TestE2E_pathFiltersJudgeTheLogicalPath(t *testing.T) {
 
 // T51c: the paths rules of the core, with no plugin. A forbidden path (a file,
 // a member of an archive) is malware and is quarantined; a skipped folder is
-// delivered without analysis, marked policy-skipped; a refusal beats a skip.
+// delivered without analysis, marked skipped-path; a refusal beats a skip.
 func TestE2E_corePathRules(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -89,7 +89,7 @@ func TestE2E_corePathRules(t *testing.T) {
 				},
 				Want: map[string]harness.Outcome{
 					"plain.txt":               {In: harness.Output},
-					"trusted/t.txt":           {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"trusted/t.txt":           {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
 					"forbidden/f.txt":         {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
 					"trusted/forbidden/b.txt": {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
 					"bad.zip":                 {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
@@ -173,7 +173,7 @@ func TestE2E_aRefusedSkippedArchiveNamesItsForbiddenMembers(t *testing.T) {
 
 // T51c, Amendment 3: a skip waives the analysis, never a refusal. An archive in
 // a skipped folder is listed, not extracted: a member under a forbidden path
-// makes it malware; without such a member it is delivered, policy-skipped, and
+// makes it malware; without such a member it is delivered, skipped-path, and
 // none of its members is analyzed.
 func TestE2E_aSkippedArchiveIsStillCheckedAgainstTheForbiddenPaths(t *testing.T) {
 	t.Parallel()
@@ -201,7 +201,7 @@ func TestE2E_aSkippedArchiveIsStillCheckedAgainstTheForbiddenPaths(t *testing.T)
 				},
 				Want: map[string]harness.Outcome{
 					"trusted/with.zip":          {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
-					"trusted/without.zip":       {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped},
+					"trusted/without.zip":       {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath},
 					"trusted/without.zip/b.txt": {ServiceVerdict: harness.NotGiven},
 				},
 			},

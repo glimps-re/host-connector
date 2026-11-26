@@ -334,7 +334,7 @@ Files that reach the output without a full analysis are listed in the log, in th
 `filepath_filter` applies Go regular expressions (RE2, unanchored unless anchored) to the path of every file, and to `<archive path>/<member path>` for archive members. The rules run before analysis and before the plugins.
 
 - **`forbidden_paths`**: Matching files are treated as malware. A forbidden path always wins over a skipped one.
-- **`skipped_paths`**: Matching files are delivered without analysis, marked `policy-skipped`. A skipped archive is not extracted. Forbidden types and forbidden paths still apply to it.
+- **`skipped_paths`**: Matching files are delivered without analysis, marked `skipped-path`. A skipped archive is not extracted. Forbidden types and forbidden paths still apply to it.
 
 Limits, which refuse the configuration if exceeded:
 - 256 patterns per list, 1024 bytes per pattern and 32 KiB in all
@@ -564,7 +564,7 @@ Filters files by MIME type, as detected by libmagic. `libmagic` must be installe
 | Key | Default | Description |
 |---|---|---|
 | `forbidden_types` | `[]` | MIME types treated as malware |
-| `skipped_types` | `[]` | MIME types delivered without analysis |
+| `skipped_types` | `[]` | MIME types delivered without analysis, marked `skipped-type` |
 
 ```yaml
 filetype_filter:

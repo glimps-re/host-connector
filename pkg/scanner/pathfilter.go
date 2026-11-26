@@ -424,12 +424,13 @@ func (f *PathFilter) apply(name, raw, location, sha256 string, skip bool) *datam
 		}
 		logger.Debug("filtered file based on its path (skipped)", "file", name, "location", location, "sha256", sha256, "regexp", rule)
 		return &datamodel.Result{
-			Filename:       name,
-			Location:       location,
-			SHA256:         sha256,
-			Score:          -500,
-			FilteredVolume: info.Size(),
-			FileSize:       info.Size(),
+			Filename:          name,
+			Location:          location,
+			SHA256:            sha256,
+			Score:             -500,
+			FilteredVolume:    info.Size(),
+			FileSize:          info.Size(),
+			NotAnalyzedReason: datamodel.NotAnalyzedSkippedPath,
 		}
 	}
 	return nil

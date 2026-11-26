@@ -50,7 +50,7 @@ func TestE2E_copyModeDeliversAPrivateCopyOfArchivesAndSkippedTypes(t *testing.T)
 				Plugins: map[string]map[string]any{"filetype_filter": {"skipped_types": []string{"image/png"}}},
 				Config:  copyMode,
 				Files:   []harness.File{{Path: "p.png", Content: realPNG(t)}},
-				Want:    map[string]harness.Outcome{"p.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, Delivery: harness.Copied}},
+				Want:    map[string]harness.Outcome{"p.png": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedType, Delivery: harness.Copied}},
 			},
 		},
 		{

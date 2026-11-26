@@ -288,7 +288,8 @@ func (e *Expectations) reasonAllowed(reason datamodel.NotAnalyzedReason, size in
 	case datamodel.NotAnalyzedTooBig:
 		return e.maxFileSize > 0 && size > e.maxFileSize
 	case datamodel.NotAnalyzedEncrypted, datamodel.NotAnalyzedExtractLimit, datamodel.NotAnalyzedExtractError,
-		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedRestored, datamodel.NotAnalyzedAnalysisError:
+		datamodel.NotAnalyzedPolicySkipped, datamodel.NotAnalyzedSkippedPath, datamodel.NotAnalyzedSkippedType,
+		datamodel.NotAnalyzedSymlink, datamodel.NotAnalyzedRestored, datamodel.NotAnalyzedAnalysisError:
 		return e.reasons[reason]
 	default:
 		return false

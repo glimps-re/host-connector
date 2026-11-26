@@ -1358,3 +1358,12 @@ func TestCachedDatabases_aFailureIsNotKept(t *testing.T) {
 		t.Errorf("after the close: %v, %d reads, want the list read again", err, calls.Load())
 	}
 }
+
+func TestOnScanFile_aSkippedTypeIsMarkedSkippedType(t *testing.T) {
+	loadMagic(t)
+	location := write(t, "a.txt", []byte("a line of plain text\n"))
+	got := run(t, filterWith("", "text/plain"), location)
+	if got == nil || got.Malware || got.NotAnalyzedReason != datamodel.NotAnalyzedSkippedType {
+		t.Errorf("OnScanFile() = %+v, want a waiver with reason %q", got, datamodel.NotAnalyzedSkippedType)
+	}
+}

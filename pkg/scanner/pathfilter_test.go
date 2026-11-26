@@ -48,7 +48,7 @@ func TestPathFilter_Apply(t *testing.T) {
 		{name: "no rule", file: "x", location: tmpFile},
 		{name: "a file that does not exist matches nothing", forbidden: []string{"^/nowhere/"}, skipped: []string{`\.txt$`}, file: "nonexistent.txt", location: "/nonexistent/path/file.txt"},
 		{name: "forbidden", forbidden: []string{regexpQuote(tmpDir)}, file: tmpFile, location: tmpFile, want: forbidden(tmpFile, tmpFile, "sha")},
-		{name: "skipped", skipped: []string{`\.log$`}, file: "app.log", location: logFile, want: &datamodel.Result{Filename: "app.log", Location: logFile, SHA256: "sha", Score: -500, FilteredVolume: 12, FileSize: 12}},
+		{name: "skipped", skipped: []string{`\.log$`}, file: "app.log", location: logFile, want: &datamodel.Result{Filename: "app.log", Location: logFile, SHA256: "sha", Score: -500, NotAnalyzedReason: datamodel.NotAnalyzedSkippedPath, FilteredVolume: 12, FileSize: 12}},
 		{name: "no pattern matches", forbidden: []string{"^/forbidden/"}, skipped: []string{`\.bak$`}, file: "test.txt", location: tmpFile},
 		{name: "a forbidden path beats a skipped one", forbidden: []string{regexpQuote(tmpDir)}, skipped: []string{`\.log$`}, file: logFile, location: logFile, want: forbidden(logFile, logFile, "sha")},
 		{name: "a location not cleaned (dot-dot)", forbidden: []string{regexpQuote(tmpDir)}, file: tmpFile, location: tmpDir + "/../" + filepath.Base(tmpDir) + "/test.txt", want: forbidden(tmpFile, tmpFile, "sha")},

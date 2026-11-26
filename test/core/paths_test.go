@@ -38,7 +38,7 @@ func TestE2E_pathRulesMatchTheRawAndTheSanitizedName(t *testing.T) {
 				},
 				Want: map[string]harness.Outcome{
 					"run.exe\n":         {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
-					"trusted\xff/x.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"trusted\xff/x.txt": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
 					"a\x01b.txt":        {In: harness.Output, ServiceVerdict: harness.Given},
 				},
 			},
@@ -72,7 +72,7 @@ func TestE2E_theFoldedNameDoesNotWidenASkipRule(t *testing.T) {
 				},
 				Want: map[string]harness.Outcome{
 					"a\U0000200b.log":         {In: harness.Output, ServiceVerdict: harness.Given},
-					"skipped/b\U0000200b.log": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedPolicySkipped, ServiceVerdict: harness.NotGiven},
+					"skipped/b\U0000200b.log": {In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedSkippedPath, ServiceVerdict: harness.NotGiven},
 				},
 			},
 		},

@@ -15,7 +15,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 func scanContext() datamodel.ScanContext {
@@ -24,10 +23,7 @@ func scanContext() datamodel.ScanContext {
 
 func renderReports(t *testing.T, reports []datamodel.Report) (ReportData, string) {
 	t.Helper()
-	p := &ReportPlugin{}
-	if err := p.Init(p.GetDefaultConfig(), mock.NewMockHCContext()); err != nil {
-		t.Fatal(err)
-	}
+	p := newTestPlugin(t)
 	data := mustReportData(t, scanContext(), reports)
 	buf, err := p.generateHTMLReport(data)
 	if err != nil {

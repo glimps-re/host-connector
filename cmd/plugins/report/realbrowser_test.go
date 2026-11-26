@@ -38,7 +38,7 @@ func findRealBrowser() string {
 // requireBrowser fails the test when no real browser can run it: as root (Chrome
 // refuses its sandbox) or when realBrowser is "". The realbrowser tag is an explicit
 // request for these tests, so a missing browser is a failure, not a skip.
-func requireBrowser(t *testing.T) {
+func requireBrowser(t testing.TB) {
 	t.Helper()
 	if os.Geteuid() == 0 {
 		t.Fatal("Chrome refuses its sandbox as root: run the realbrowser tests as a regular user")

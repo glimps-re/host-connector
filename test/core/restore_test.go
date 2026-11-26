@@ -223,11 +223,10 @@ func TestE2E_aRestoredFileIsListedAsNotAnalyzed(t *testing.T) {
 	}
 }
 
-// T56: "restored" waives the analysis, never a refusal. A content that an
-// operator restored is delivered without analysis wherever it is deposited, but
-// under a forbidden path it is refused: quarantined, with the reason of the
-// path rule.
-func TestE2E_aRestoredFileIsStillHeldToThePathRules(t *testing.T) {
+// T56: a release is per file. A content that an operator restored, deposited
+// again at other paths, is a new file there: refused under a forbidden path,
+// with the reason of the path rule, and analyzed and quarantined elsewhere.
+func TestE2E_aRestoredContentAtOtherPathsIsANewFile(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name string
@@ -252,9 +251,9 @@ func TestE2E_aRestoredFileIsStillHeldToThePathRules(t *testing.T) {
 				Want: map[string]harness.Outcome{
 					"bad.txt":         {In: harness.Output, Restored: true},
 					"forbidden/y.txt": {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
-					"elsewhere/z.txt": {In: harness.Output, Restored: true},
+					"elsewhere/z.txt": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
 				},
-				WantMitigations: []string{"malware", "filepath"},
+				WantMitigations: []string{"malware", "filepath", "malware"},
 			})
 		})
 	}
@@ -302,37 +301,6 @@ func TestE2E_aRefusedRestoredFileStaysInInputWithoutRetry(t *testing.T) {
 			if count != 1 {
 				t.Errorf("the refused file is reported %d times, want once", count)
 			}
-		})
-	}
-}
-
-// T14a: a content restored from the quarantine is not quarantined again when
-// it is deposited at another path, and the report says it was restored.
-func TestE2E_aRestoredContentDepositedElsewhereIsNotQuarantinedAgain(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		elsewhere string
-	}{
-		{name: "another folder of the same owner", elsewhere: "elsewhere/again.bin"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			bad := []byte("a malware the operator restores, then deposits elsewhere")
-			harness.Run(t, harness.Scenario{
-				Agent: true,
-				Files: []harness.File{{Path: "restored-by-the-operator.bin", Content: bad, Verdict: harness.Malicious}},
-				Steps: []harness.Step{
-					harness.Await("restored-by-the-operator.bin", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
-					harness.Restore("restored-by-the-operator.bin", ""),
-					harness.AddFileToInput(harness.File{Path: tt.elsewhere, Content: bad, Verdict: harness.Malicious}),
-				},
-				Want: map[string]harness.Outcome{
-					"restored-by-the-operator.bin": {In: harness.Output, Restored: true},
-					tt.elsewhere:                   {In: harness.Output, Restored: true},
-				},
-				WantMitigations: []string{"malware"},
-			})
 		})
 	}
 }

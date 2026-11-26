@@ -293,7 +293,7 @@ func TestRestore_aContainerWithoutARegistryEntryIsRestoredAndSaidSo(t *testing.T
 		t.Errorf("no warning: %s", logs)
 	}
 	if restored, err := other.IsRestored(t.Context(), path, sha256Hex([]byte("unregistered content"))); err != nil || !restored {
-		t.Errorf("IsRestored() = %v, %v: the content must now count as restored", restored, err)
+		t.Errorf("IsRestored() = %v, %v: the file must now count as restored", restored, err)
 	}
 	// A restoration with an entry does not call the hook.
 	q2, dir2 := newE2EHandler(t, FormatTar)
@@ -512,7 +512,7 @@ func TestRestore_aFailedPublicationOfAContainerWithoutEntryWritesNoEntry(t *test
 		t.Errorf("registry writes = %+v, want none: nothing is registered before the file is published", reg.sets)
 	}
 	if _, err := other.registry.Get(t.Context(), id); !errors.Is(err, errEntryNotFound) {
-		t.Errorf("Get() = %v, want no entry: content must not stay allow-listed", err)
+		t.Errorf("Get() = %v, want no entry: the file must not count as restored", err)
 	}
 	if restored, err := other.IsRestored(t.Context(), path, sha256Hex([]byte("content"))); err != nil || restored {
 		t.Errorf("IsRestored() = %v, %v, want false", restored, err)
@@ -1111,8 +1111,7 @@ func TestSQLiteRegistry_aCallThatWaitsGivesUpWithItsDeadline(t *testing.T) {
 	}
 	defer release()
 	calls := map[string]func(ctx context.Context) error{
-		"Get":         func(ctx context.Context) error { _, e := reg.Get(ctx, "id"); return e },
-		"HasRestored": func(ctx context.Context) error { _, e := reg.HasRestored(ctx, "sha"); return e },
+		"Get": func(ctx context.Context) error { _, e := reg.Get(ctx, "id"); return e },
 		"Set": func(ctx context.Context) error {
 			return reg.Set(ctx, &Entry{ID: "id", SHA256: "sha", RestoredAt: time.Now()})
 		},
@@ -1143,8 +1142,5 @@ func TestSQLiteRegistry_aCallThatWaitsGivesUpWithItsDeadline(t *testing.T) {
 	release()
 	if _, err = reg.Get(t.Context(), "id"); !errors.Is(err, errEntryNotFound) {
 		t.Errorf("Get() = %v, want no entry: nothing was written", err)
-	}
-	if restored, e := reg.HasRestored(t.Context(), "sha"); e != nil || restored {
-		t.Errorf("HasRestored() = %v, %v, want false", restored, e)
 	}
 }

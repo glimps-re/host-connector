@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// A content that was restored is quarantined all the same when it is refused for
-// where it is or what type it is, and the restored mark of the content is kept.
+// A file that was restored is quarantined all the same when it is refused for
+// where it is or what type it is, and its restored mark is kept.
 func TestQuarantine_aRestoredContentRefusedAnywayIsQuarantinedAndStaysRestored(t *testing.T) {
 	for _, format := range []Format{FormatTar, FormatZip} {
 		t.Run(string(format), func(t *testing.T) {
@@ -32,14 +32,6 @@ func TestQuarantine_aRestoredContentRefusedAnywayIsQuarantinedAndStaysRestored(t
 				t.Fatalf("entry %+v (%v), want a restored one", before, err)
 			}
 
-			elsewhere := depositSample(t, t.TempDir(), "forbidden.bin", content)
-			if _, _, err = quarantinePath(t.Context(), t, q, elsewhere, sha, []string{"m"}); !errors.Is(err, ErrRestored) {
-				t.Fatalf("without the mark: error = %v, want ErrRestored", err)
-			}
-			if _, _, err = quarantinePath(WithRefusedAnyway(t.Context()), t, q, elsewhere, sha, []string{"filtered-filepath"}); err != nil {
-				t.Fatalf("with the mark, at another path: error = %v, want it quarantined", err)
-			}
-
 			again := depositSample(t, t.TempDir(), "a.bin", content)
 			if err = os.Rename(again, a); err != nil {
 				t.Fatal(err)
@@ -54,11 +46,6 @@ func TestQuarantine_aRestoredContentRefusedAnywayIsQuarantinedAndStaysRestored(t
 			}
 			if !after.Restored() || !after.RestoredAt.Equal(before.RestoredAt) || !after.CreatedAt.Equal(before.CreatedAt) || after.QuarantineLocation != location {
 				t.Errorf("entry %+v, want RestoredAt and CreatedAt %v kept and the new quarantine location %q", after, before.RestoredAt, location)
-			}
-			for _, loc := range []string{a, elsewhere, "/in/another/user.bin"} {
-				if got, e := q.IsRestored(t.Context(), loc, sha); e != nil || !got {
-					t.Errorf("IsRestored(%s) = %t (%v), want true: the content stays allowed elsewhere", loc, got, e)
-				}
 			}
 		})
 	}

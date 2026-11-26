@@ -30,24 +30,20 @@ type Quarantiner interface {
 	Quarantine(ctx context.Context, file string, in *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error)
 	Restore(ctx context.Context, entryID string) (err error)
 	Reconfigure(ctx context.Context, newConfig Config) (err error)
-	// IsRestored reports whether this content was restored from quarantine. The
-	// empty content is matched per location only: restoring one empty file does
-	// not make every empty file safe.
+	// IsRestored reports whether the file at location holding this content was
+	// restored from quarantine. A release is per file: the same content at another
+	// location, or another content at this location, is not restored.
 	IsRestored(ctx context.Context, location string, sha256 string) (restored bool, err error)
 	ListQuarantinedFiles(ctx context.Context) iter.Seq2[*QuarantinedFile, error]
 	Close() (err error)
 }
 
-const (
-	// emptySHA256 is the SHA256 of the empty content.
-	emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-	sha256Len   = 64
-)
+const sha256Len = 64
 
-// ErrRestored is returned by Quarantine for a content that was restored: it is
-// declared safe, nothing is written, and asking again would give the same
+// ErrRestored is returned by Quarantine for a file that was restored (same
+// location, same content): nothing is written, and asking again gives the same
 // answer.
-var ErrRestored = errors.New("this content was restored from quarantine")
+var ErrRestored = errors.New("this file was restored from quarantine")
 
 // TempPrefix starts the name of every temporary file this package creates
 // next to user files; the scanner and the monitor ignore names with this
@@ -205,9 +201,12 @@ func (cr *ctxReader) Read(p []byte) (n int, err error) {
 }
 
 func (q *QuarantineHandler) Quarantine(ctx context.Context, file string, fIn *os.File, fileSHA256 string, malwares []string) (location string, id string, err error) {
+	// The container records the same path as the registry: Restore checks one
+	// against the other.
+	file = filepath.Clean(file)
 	entry := Entry{
-		ID:              ComputeCacheID(file, fileSHA256),
-		SHA256:          fileSHA256,
+		ID:              entryID(file, fileSHA256),
+		SHA256:          strings.ToLower(fileSHA256),
 		InitialLocation: file,
 	}
 	// Same order as Restore: the lock of the entry, then the lock of the handler.
@@ -316,28 +315,29 @@ func (q *QuarantineHandler) IsRestored(ctx context.Context, location string, sha
 	return q.isRestored(ctx, location, sha256)
 }
 
-// isRestored is the one rule of "restored": a content is, wherever it is
-// deposited, once an entry of that content was restored; the empty content only
-// at the location of the entry. The caller holds q.mu (a second read lock could
-// deadlock against a Reconfigure waiting for the write lock).
-func (q *QuarantineHandler) isRestored(ctx context.Context, location, sha256 string) (bool, error) {
-	sha256 = strings.ToLower(sha256)
-	if len(sha256) != sha256Len {
+// entryID is the registry id of the file at location holding this content: the
+// one key of a quarantine, a restoration and the restored check.
+func entryID(location, contentSHA256 string) string {
+	return ComputeCacheID(filepath.Clean(location), strings.ToLower(contentSHA256))
+}
+
+// isRestored reports whether the entry of this very file was restored. The
+// caller holds q.mu (a second read lock could deadlock against a Reconfigure
+// waiting for the write lock).
+func (q *QuarantineHandler) isRestored(ctx context.Context, location, contentSHA256 string) (bool, error) {
+	if len(contentSHA256) != sha256Len {
 		// Empty or not a SHA256: nothing can have been restored under it.
 		return false, nil
 	}
-	if sha256 == emptySHA256 {
-		entry, err := q.registry.Get(ctx, ComputeCacheID(location, sha256))
-		switch {
-		case err == nil:
-			return entry.Restored(), nil
-		case errors.Is(err, errEntryNotFound):
-			return false, nil
-		default:
-			return false, err
-		}
+	entry, err := q.registry.Get(ctx, entryID(location, contentSHA256))
+	switch {
+	case err == nil:
+		return entry.Restored(), nil
+	case errors.Is(err, errEntryNotFound):
+		return false, nil
+	default:
+		return false, err
 	}
-	return q.registry.HasRestored(ctx, sha256)
 }
 
 var (

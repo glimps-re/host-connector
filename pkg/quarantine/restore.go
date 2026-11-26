@@ -235,6 +235,11 @@ func (q *QuarantineHandler) restore(ctx context.Context, id string) (notify func
 		if header.Filepath != strings.Map(func(r rune) rune { return r }, dest) || !validRestorePath(header.Filepath) {
 			return nil, ErrRestorePathMismatch
 		}
+		if id != entryID(entry.InitialLocation, entry.SHA256) {
+			// Written by an older caller with an upper-case SHA256: IsRestored looks the
+			// file up under another id, so it is quarantined again once restored.
+			logger.Warn("the registry id of this file is not the one the restored check looks up", slog.String("id", id), slog.String("file", dest))
+		}
 	} else if !validRestorePath(header.Filepath) {
 		return nil, fmt.Errorf("%w: the path of the container is not a clean absolute path", ErrRestorePathMismatch)
 	}
@@ -291,7 +296,7 @@ func (q *QuarantineHandler) restore(ctx context.Context, id string) (notify func
 	if registered && !strings.EqualFold(got, entry.SHA256) {
 		return nil, ErrRestoreContentMismatch
 	}
-	if !registered && id != ComputeCacheID(header.Filepath, got) {
+	if !registered && id != entryID(header.Filepath, got) {
 		return nil, fmt.Errorf("%w: the id is not the one of this path and content", ErrRestorePathMismatch)
 	}
 	closeQuietly(f, "container file")

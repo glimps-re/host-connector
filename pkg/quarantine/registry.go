@@ -42,8 +42,6 @@ type quarantineRegistry interface {
 
 	// Get fetch an entry
 	Get(ctx context.Context, id string) (entry *Entry, err error)
-	// HasRestored reports whether any entry with this content was restored.
-	HasRestored(ctx context.Context, sha256 string) (restored bool, err error)
 
 	// Clone returns a new registry at newLocation (in memory when empty) holding
 	// a copy of every entry. The receiver is left untouched, so a caller can
@@ -64,8 +62,8 @@ type quarantineRegistry interface {
 var errEntryNotFound = errors.New("entry not found")
 
 // errRegistryNotWritten is wrapped in the error of any call of the registry that
-// gave up waiting for its lock before it reached the database (Get, HasRestored,
-// Set, Clone and the others take it the same way): nothing was read, written or
+// gave up waiting for its lock before it reached the database (Get, Set, Clone
+// and the others take it the same way): nothing was read, written or
 // created, so a restoration whose marking fails with it has nothing to undo.
 var errRegistryNotWritten = errors.New("the registry was not reached")
 
@@ -140,8 +138,6 @@ const createTable = `CREATE TABLE IF NOT EXISTS entries (
 	location TEXT,
 	restored_at int);`
 
-const createIndex = `CREATE INDEX IF NOT EXISTS idx_entries_sha256 ON entries(sha256);`
-
 func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry, err error) {
 	finalLocation := "file::memory:"
 	createdFile := false
@@ -172,17 +168,6 @@ func newSQLiteRegistry(ctx context.Context, location string) (c *sqliteRegistry,
 	result, err := db.ExecContext(ctx, createTable)
 	if err != nil {
 		err = fmt.Errorf("failed to create quarantine db: %w", err)
-		if e := db.Close(); e != nil {
-			logger.Error("cannot close quarantine db", slog.String("error", e.Error()))
-		}
-		removeCreated(location, createdFile)
-		return
-	}
-
-	// Content lookups (IsRestored) must not scan the table: the index is created
-	// at every opening, which also migrates a registry made before it existed.
-	if _, err = db.ExecContext(ctx, createIndex); err != nil {
-		err = fmt.Errorf("failed to index quarantine db: %w", err)
 		if e := db.Close(); e != nil {
 			logger.Error("cannot close quarantine db", slog.String("error", e.Error()))
 		}
@@ -305,16 +290,6 @@ func (c *sqliteRegistry) Get(ctx context.Context, id string) (entry *Entry, err 
 	return
 }
 
-func (c *sqliteRegistry) HasRestored(ctx context.Context, sha256 string) (restored bool, err error) {
-	unlock, err := c.lock(ctx)
-	if err != nil {
-		return false, err
-	}
-	defer unlock()
-	err = c.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM entries WHERE sha256 = ? AND restored_at > 0)", sha256).Scan(&restored)
-	return
-}
-
 var now = time.Now
 
 func (c *sqliteRegistry) Set(ctx context.Context, entry *Entry) (err error) {
@@ -366,6 +341,9 @@ ON CONFLICT(id) DO UPDATE SET
 	return
 }
 
+// ComputeCacheID returns the registry id of the file at path holding the content
+// of this SHA256, taken as given: the package derives it from a clean path and a
+// lower-case SHA256.
 func ComputeCacheID(path string, contentSHA256 string) (id string) {
 	hash := sha256.New()
 	hash.Write([]byte(path))

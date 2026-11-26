@@ -11,12 +11,12 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	hcquarantine "github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/test/internal/fakes/gmalware"
 	"github.com/glimps-re/host-connector/test/internal/harness"
 )
 
-// From TestIsRestored_theEmptyContentStaysPerLocationWhateverTheSpelling:
-// restoring one empty file does not make every empty file safe; another empty
+// Restoring one empty file does not make every empty file safe; another empty
 // file dropped elsewhere is quarantined again.
 func TestE2E_aRestoredEmptyFileDoesNotMakeTheOtherEmptyFilesSafe(t *testing.T) {
 	t.Parallel()
@@ -50,8 +50,8 @@ func TestE2E_aRestoredEmptyFileDoesNotMakeTheOtherEmptyFilesSafe(t *testing.T) {
 	}
 }
 
-// oldRegistry writes a registry of the version before the index on the
-// SHA256, holding one restored entry of content.
+// oldRegistry writes a registry of the previous version (with its index on the
+// SHA256) holding one restored entry of content, at a location of its own.
 func oldRegistry(t *testing.T, content []byte) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -65,27 +65,29 @@ func oldRegistry(t *testing.T, content []byte) string {
 			t.Error(e)
 		}
 	}()
-	if _, err = db.ExecContext(t.Context(), `CREATE TABLE entries (
+	for _, stmt := range []string{`CREATE TABLE entries (
 	id TEXT PRIMARY KEY,
 	sha256 TEXT,
 	created_at int NOT NULL,
 	updated_at int NOT NULL,
 	quarantine TEXT,
 	location TEXT,
-	restored_at int);`); err != nil {
-		t.Fatal(err)
+	restored_at int);`, `CREATE INDEX idx_entries_sha256 ON entries(sha256);`} {
+		if _, err = db.ExecContext(t.Context(), stmt); err != nil {
+			t.Fatal(err)
+		}
 	}
+	sha, restored := gmalware.SHA256Hex(content), filepath.Join(dir, "old.bin")
 	if _, err = db.ExecContext(t.Context(), "INSERT INTO entries(id, sha256, created_at, updated_at, quarantine, location, restored_at) VALUES(?,?,?,?,?,?,?)",
-		"old-id", gmalware.SHA256Hex(content), 1, 1, filepath.Join(dir, "old.lock"), filepath.Join(dir, "old.bin"), time.Now().UnixMilli()); err != nil {
+		hcquarantine.ComputeCacheID(restored, sha), sha, 1, 1, filepath.Join(dir, "old.lock"), restored, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
-// From TestRegistry_aRegistryWithoutTheIndexIsMigratedAndItsRowsStillCount: a
-// registry of the previous version is opened, and a content restored before
-// is still delivered with the restored mark, without a new container.
-func TestE2E_aContentRestoredInAnOldRegistryStaysRestored(t *testing.T) {
+// A registry of the previous version opens, and a content it restored at one
+// location is a new file anywhere else: analyzed and quarantined.
+func TestE2E_aContentRestoredInAnOldRegistryIsNotReleasedElsewhere(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
@@ -95,15 +97,13 @@ func TestE2E_aContentRestoredInAnOldRegistryStaysRestored(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			in := harness.Run(t, harness.Scenario{
+			harness.Run(t, harness.Scenario{
 				Config: map[string]any{"quarantine": map[string]any{"registry": oldRegistry(t, tt.content)}},
 				Files:  []harness.File{{Path: "again.bin", Content: tt.content, Verdict: harness.Malicious}},
 				Want: map[string]harness.Outcome{
-					"again.bin": {In: harness.Output, Restored: true},
+					"again.bin": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
 				},
 			})
-			// Restored before this run: the scenario has no Restore step to declare it.
-			in.Expect.Release(tt.content)
 		})
 	}
 }

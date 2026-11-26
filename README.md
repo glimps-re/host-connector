@@ -648,7 +648,7 @@ report:
 - `ScanID`, `ScanStartTime`, `Duration`
 - `NbFileSubmitted`, `NbFileAnalyzed`, `NbFileNotAnalyzed`
 - `FileVolume`, `AnalyzedVolume`, `FilteredVolume`
-- `TotalMitigated`, `TotalMalware`, `TotalErrors`
+- `TotalMitigated`, `TotalMalware`, `TotalErrors`: `TotalMalware` counts the files detected as malware, not the refusals by path, type or policy
 - `MitigatedFiles`, `MitigatedArchives`, `ErrorFiles`, `NotAnalyzedFiles`
 - `MoreMitigatedFiles`, `MoreMitigatedArchives`, `MoreErrorFiles`, `MoreNotAnalyzed`: the number of entries left out of each list, which stops at 300 rows
 

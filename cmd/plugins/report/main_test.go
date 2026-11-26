@@ -386,7 +386,7 @@ func TestReportPlugin_aFailingSequenceEndsTheGeneration(t *testing.T) {
 	}
 }
 
-func mustReportData(t *testing.T, reportContext datamodel.ScanContext, reports []datamodel.Report) ReportData {
+func mustReportData(t testing.TB, reportContext datamodel.ScanContext, reports []datamodel.Report) ReportData {
 	t.Helper()
 	data, err := reportDataFrom(context.Background(), reportContext, datamodel.ReportsSeq(reports))
 	if err != nil {
@@ -415,4 +415,15 @@ func TestReportDataFrom_stopsWhenTheContextEnds(t *testing.T) {
 	if read != 3 {
 		t.Errorf("read %d reports, want 3: the pass must stop at the cancellation", read)
 	}
+}
+
+func newTestPlugin(tb testing.TB) *ReportPlugin {
+	tb.Helper()
+	hcc := mock.NewMockHCContext()
+	hcc.Logger = slog.New(slog.DiscardHandler)
+	p := &ReportPlugin{}
+	if err := p.Init(p.GetDefaultConfig(), hcc); err != nil {
+		tb.Fatal(err)
+	}
+	return p
 }

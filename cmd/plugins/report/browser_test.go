@@ -17,7 +17,7 @@ import (
 	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
-func runner(t *testing.T, execPath string) *browserRunner {
+func runner(t testing.TB, execPath string) *browserRunner {
 	t.Helper()
 	return &browserRunner{execPath: execPath, workDir: t.TempDir(), logger: slog.New(slog.DiscardHandler)}
 }

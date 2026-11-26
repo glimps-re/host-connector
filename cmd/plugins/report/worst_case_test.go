@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 )
 
 // longText is a distinct unbreakable text of the longest length a depositor can
@@ -86,10 +85,7 @@ func TestRealBrowser_theWorstReportsStayUnderHalfTheLimits(t *testing.T) {
 	}
 	for name, reports := range cases {
 		t.Run(name, func(t *testing.T) {
-			p := &ReportPlugin{}
-			if err := p.Init(p.GetDefaultConfig(), mock.NewMockHCContext()); err != nil {
-				t.Fatal(err)
-			}
+			p := newTestPlugin(t)
 			p.browser = runner(t, realBrowser)
 			data := mustReportData(t, scanContext(), reports)
 			start := time.Now()

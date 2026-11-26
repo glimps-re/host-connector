@@ -2,7 +2,8 @@
 
 // Package main implements a PDF/HTML report generation plugin.
 //
-// Generates scan reports from templates using chromedp for PDF conversion.
+// Generates scan reports from templates using htmltopdf (pure Go, no browser)
+// for PDF conversion.
 package main
 
 import (
@@ -21,7 +22,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/chromedp/cdproto/page"
 	"github.com/dustin/go-humanize"
 	"github.com/glimps-re/host-connector/internal/displaytext"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
@@ -31,7 +31,7 @@ import (
 // ReportPlugin generates PDF and HTML reports from scan results.
 type ReportPlugin struct {
 	templ         *template.Template
-	browser       *browserRunner
+	pdf           *renderer
 	logger        *slog.Logger
 	consoleLogger *slog.Logger
 }
@@ -52,9 +52,12 @@ var (
 // Config defines the template path for report generation.
 type Config struct {
 	TemplatePath string `mapstructure:"template_path"`
-	// ChromePath is the browser that renders the PDF; empty: found in PATH.
+	// Deprecated: ignored; the PDF is rendered without a browser.
 	ChromePath string `mapstructure:"chrome_path"`
 }
+
+// chromePathDeprecated is logged when the configuration still sets chrome_path.
+const chromePathDeprecated = "chrome_path is deprecated and ignored: the report plugin renders PDFs without a browser; remove it from the configuration"
 
 // GetDefaultConfig returns the default configuration.
 func (p *ReportPlugin) GetDefaultConfig() (config any) {
@@ -62,9 +65,8 @@ func (p *ReportPlugin) GetDefaultConfig() (config any) {
 	return
 }
 
-// Validate loads the template and starts the browser on an empty page like
-// Init does, without any effect: the browser profile lives in the scratch
-// directory of the validation.
+// Validate loads the template and builds the PDF renderer like Init does,
+// without changing the plugin.
 func (p *ReportPlugin) Validate(rawConfig any, vc plugins.ValidationContext) error {
 	config, ok := rawConfig.(*Config)
 	if !ok {
@@ -73,31 +75,29 @@ func (p *ReportPlugin) Validate(rawConfig any, vc plugins.ValidationContext) err
 	if _, err := parseTemplate(config.TemplatePath); err != nil {
 		return err
 	}
-	_, err := startBrowser(config.ChromePath, vc)
+	_, err := startRenderer(context.Background(), config, vc.GetLogger())
 	return err
 }
 
-// startBrowser refuses root, declares the browser and proves it renders a PDF.
-func startBrowser(chromePath string, vc plugins.ValidationContext) (*browserRunner, error) {
-	if err := refuseRoot(); err != nil {
-		return nil, err
+// startRenderer warns when the deprecated chrome_path is set, then builds the
+// PDF renderer and proves it renders a PDF.
+func startRenderer(ctx context.Context, config *Config, logger *slog.Logger) (*renderer, error) {
+	if config.ChromePath != "" {
+		logger.WarnContext(ctx, chromePathDeprecated, slog.String("chrome_path", config.ChromePath))
 	}
-	path, err := declareBrowser(chromePath, vc)
-	if err != nil {
-		return nil, err
-	}
-	runner := &browserRunner{execPath: path, workDir: vc.GetWorkDir(), logger: vc.GetLogger()}
-	if err := checkBrowser(context.Background(), runner); err != nil {
-		return nil, err
-	}
-	vc.GetLogger().Info("report browser checked", slog.String("path", path), slog.Bool("configured", chromePath != ""))
-	return runner, nil
+	return newRenderer(ctx, logger)
 }
 
 // parseTemplate parses the template at path, or the embedded one when path is
 // empty.
 func parseTemplate(path string) (*template.Template, error) {
-	templ := template.New("report").Funcs(template.FuncMap{
+	// ParseFiles names the parsed template after the base name of the file: the
+	// root must carry that name, or Execute finds it empty.
+	name := "report"
+	if path != "" {
+		name = filepath.Base(path)
+	}
+	templ := template.New(name).Funcs(template.FuncMap{
 		"mergeArgsIntoSlice": mergeArgsIntoSlice,
 		"formatDuration":     formatDuration,
 		"others":             others,
@@ -117,7 +117,7 @@ func parseTemplate(path string) (*template.Template, error) {
 	return templ.Parse(defaultTemplate)
 }
 
-// Init loads the template, checks the browser and registers the report
+// Init loads the template, builds the PDF renderer and registers the report
 // generator. The plugin is changed only when everything succeeded.
 func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	config, ok := rawConfig.(*Config)
@@ -128,18 +128,16 @@ func (p *ReportPlugin) Init(rawConfig any, hcc plugins.HCContext) error {
 	if err != nil {
 		return err
 	}
-	if removed, purgeErr := purgeTempLinks(); purgeErr != nil {
-		hcc.GetLogger().Warn("cannot purge the temporary links of a previous run", slog.String("error", purgeErr.Error()))
-	} else if removed > 0 {
-		hcc.GetLogger().Info("temporary links of a previous run removed", slog.Int("count", removed))
-	}
-	runner, err := startBrowser(config.ChromePath, hcc)
+	pdf, err := startRenderer(context.Background(), config, hcc.GetLogger())
 	if err != nil {
 		return err
 	}
 	p.logger = hcc.GetLogger().With(slog.String("plugin", "report"))
 	p.consoleLogger = hcc.GetConsoleLogger()
-	p.templ, p.browser = templ, runner
+	p.templ, p.pdf = templ, pdf
+	if config.ChromePath != "" {
+		p.consoleLogger.Warn(chromePathDeprecated, slog.String("chrome_path", config.ChromePath))
+	}
 
 	template := "default"
 	if config.TemplatePath != "" {
@@ -563,31 +561,13 @@ func (p *ReportPlugin) generateHTMLReport(data ReportData) (htmlBuf *bytes.Buffe
 	return
 }
 
-// generatePDFReport converts HTML report to PDF using chromedp.
-func (p *ReportPlugin) generatePDFReport(ctx context.Context, data ReportData) (pdfBuf *bytes.Buffer, err error) {
-	htmlBuf, err := p.generateHTMLReport(data)
-	if err != nil {
-		return
-	}
-
-	pdf, err := p.browser.render(ctx, htmlBuf.String(), page.PrintToPDF().
-		WithPreferCSSPageSize(false).
-		WithScale(0.9).
-		WithDisplayHeaderFooter(true).
-		WithPaperWidth(8.27).
-		WithPaperHeight(11.69).
-		WithLandscape(false).
-		WithMarginTop(1).
-		WithMarginRight(0.3).
-		WithMarginBottom(1.3).
-		WithMarginLeft(0.3).
-		WithPrintBackground(true).
-		WithHeaderTemplate(`<span></span>`).
-		WithFooterTemplate(`<h4 id="footer-template" style="font-size:10px !important; width: 100%; margin-left:30px; margin-right:30px; display: flex; justify-content: space-between;"><span style="background-color: #000000; color: #FFC000">TLP:AMBER</span><span></span><span>Page <span class='pageNumber'></span> of <span class='totalPages'></span></span></h4>`), maxReportPDF)
-	if err != nil {
+// generatePDFReport renders the report data to PDF; a partial PDF is discarded.
+func (p *ReportPlugin) generatePDFReport(ctx context.Context, data ReportData) (*bytes.Buffer, error) {
+	buf := new(bytes.Buffer)
+	if err := p.pdf.render(ctx, p.templ, data, buf); err != nil {
 		return nil, err
 	}
-	return bytes.NewBuffer(pdf), nil
+	return buf, nil
 }
 
 func getCompleteReason(mitigationReason datamodel.MalwareReason) (reason string) {

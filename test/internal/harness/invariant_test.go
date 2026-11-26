@@ -30,7 +30,7 @@ func newFixture(t *testing.T) *fixture {
 	f := &fixture{t: t, gm: gmalware.New(t, false)}
 	f.spec = checkSpec{
 		output: filepath.Join(root, "output"), reports: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"),
-		Expectations: Expectations{maxFileSize: 1 << 20},
+		maxFileSize: 1 << 20,
 	}
 	for _, d := range []string{f.spec.output, f.spec.reports, f.spec.quarantine} {
 		if err := os.MkdirAll(d, 0o750); err != nil {

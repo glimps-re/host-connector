@@ -314,16 +314,14 @@ func (a *MultiAction) notifyMitigation(ctx context.Context, path string, result 
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), eventTimeout)
 	defer cancel()
 	if e := EventHandler.NotifyFileMitigation(ctx, getMitigationAction(report.Action), report.MitigationID, getMitigationReason(report.MalwareReason), events.FileInfos{
-		CommonDetails: events.CommonDetails{
-			Malwares:           result.Malwares,
-			GmalwareURLs:       gmalwareURLs,
-			QuarantineLocation: report.QuarantineLocation,
-			SHA256:             result.SHA256,
-			AnalysisError:      result.AnalysisError,
-		},
-		File:     path,
-		Size:     report.FileSize,
-		Filetype: report.FileType,
+		Malwares:           result.Malwares,
+		GmalwareURLs:       gmalwareURLs,
+		QuarantineLocation: report.QuarantineLocation,
+		SHA256:             result.SHA256,
+		AnalysisError:      result.AnalysisError,
+		File:               path,
+		Size:               report.FileSize,
+		Filetype:           report.FileType,
 	}); e != nil {
 		logger.Warn("could not push quarantine event to console", slog.String("error", e.Error()))
 	}

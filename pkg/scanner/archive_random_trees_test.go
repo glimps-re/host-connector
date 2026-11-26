@@ -182,12 +182,12 @@ func TestArchiveDetection_randomTreesNeverLoseADetection(t *testing.T) {
 			if err != nil {
 				return plugins.Extraction{}, err
 			}
-			i := bytes.LastIndex(b, []byte("TAG"))
-			if i < 0 {
+			_, after, ok := bytes.CutLast(b, []byte("TAG"))
+			if !ok {
 				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
 			}
 			var id int
-			if _, err = fmt.Sscanf(string(b[i+3:]), "%d", &id); err != nil {
+			if _, err = fmt.Sscanf(string(after), "%d", &id); err != nil {
 				return plugins.Extraction{}, plugins.ErrUnsupportedFormat
 			}
 			n := byID[id]

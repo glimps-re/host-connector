@@ -237,12 +237,13 @@ func (l *zipLocker) GetHeader(src io.ReaderAt, size int64) (LockEntry, error) {
 // index is cleartext by design).
 func lockIndexToLockedFile(idx LockIndex) LockedFile {
 	return LockedFile{
-		LockEntry: LockEntry{Filepath: idx.Filepath, Reason: idx.Reason},
-		Mode:      os.FileMode(idx.Mode).Perm(),
-		UID:       idx.UID,
-		GID:       idx.GID,
-		ModTime:   time.UnixMilli(idx.ModTime),
-		Size:      idx.Size,
+		Filepath: idx.Filepath,
+		Reason:   idx.Reason,
+		Mode:     os.FileMode(idx.Mode).Perm(),
+		UID:      idx.UID,
+		GID:      idx.GID,
+		ModTime:  time.UnixMilli(idx.ModTime),
+		Size:     idx.Size,
 	}
 }
 

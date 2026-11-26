@@ -1,8 +1,9 @@
-//go:build linux && realbrowser
+//go:build linux
 
 package main
 
 import (
+	"log/slog"
 	"regexp"
 	"testing"
 
@@ -26,18 +27,14 @@ func benchReports(files int) []datamodel.Report {
 	return append(reports, archives...)
 }
 
-// BenchmarkGeneratePDFReport times the real PDF path of the plugin; rerun it
-// unchanged after the htmltopdf swap.
+// BenchmarkGeneratePDFReport times the real PDF path of the plugin.
 func BenchmarkGeneratePDFReport(b *testing.B) {
-	requireBrowser(b)
 	for _, bc := range []struct {
 		name  string
 		files int
 	}{{"empty", 0}, {"small", 50}, {"capped", 2000}} {
 		b.Run(bc.name, func(b *testing.B) {
 			p := newTestPlugin(b)
-			// Init ran with the stubbed checkBrowser of TestMain: give the real browser.
-			p.browser = runner(b, realBrowser)
 			data := mustReportData(b, scanContext(), benchReports(bc.files))
 			var pdf []byte
 			b.ReportAllocs()
@@ -58,13 +55,13 @@ func BenchmarkGeneratePDFReport(b *testing.B) {
 	}
 }
 
-// BenchmarkStartup times the self-test of Init: the start-up cost of the plugin.
+// BenchmarkStartup times the renderer build and self-test of Init: the start-up
+// cost of the plugin.
 func BenchmarkStartup(b *testing.B) {
-	requireBrowser(b)
-	r := runner(b, realBrowser)
+	logger := slog.New(slog.DiscardHandler)
 	b.ReportAllocs()
 	for b.Loop() {
-		if err := r.selfTest(b.Context()); err != nil {
+		if _, err := newRenderer(b.Context(), logger); err != nil {
 			b.Fatal(err)
 		}
 	}

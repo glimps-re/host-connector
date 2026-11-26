@@ -24,13 +24,10 @@ go test -race -tags e2e_plugins -parallel 4 -timeout 30m ./test/plugins/
 Four points to keep in mind:
 
 - The scenarios of `test/core` carry `linux && (e2e || e2e_core)`, those of
-  `test/plugins` `linux && (e2e || e2e_plugins)`. The three browser scenarios
-  (`plugins/report_test.go`, `plugins/report_fallback_test.go`) also need
-  `realbrowser`. Every file of
+  `test/plugins` `linux && (e2e || e2e_plugins)`. Every file of
   `test/internal` carries only `linux`, and so do the tests of the document
   builders (`plugins/documents_test.go`): a plain `go test ./test/...` runs
-  these 22 self-tests and builds no binary; 163 tests with
-  `-tags e2e,realbrowser`.
+  these 22 self-tests and builds no binary; 163 tests with `-tags e2e`.
 - The binary and the plugins are built once, into `gmhost-e2e/<key>` in the
   user cache folder, and reused by both packages and by later runs until the
   product code changes (section 2). Without the 7-Zip binary in
@@ -62,10 +59,10 @@ Four points to keep in mind:
 - **The embedded 7-Zip.** The `extract` plugin embeds `7zzs`; the connector
   runs it for real. Some tests also run a copy of it directly to build their
   inputs (7z archives with encrypted headers, AES-encrypted zips, a solid 7z).
-- **Chrome.** The three browser scenarios use a real Chromium or Chrome to
-  render the PDF session report. Two of them put a small Go program in front of
-  the browser (`buildBrowserStub`): it starts the real browser until a marker
-  file exists, then fails a set number of times, or always.
+- **The PDF renderer.** The `report` plugin renders the PDF session report in
+  process with htmltopdf: no browser is needed. The fallback scenarios make it
+  fail with a custom template that parses at start and fails at every
+  execution (`{{ .NoSuchField }}`).
 - **The filesystem.** INPUT, OUTPUT, the work folder, the exports and the
   quarantine are real folders under `t.TempDir()`. Signals are real signals.
 
@@ -209,8 +206,7 @@ connector chooses (destination conflict), a label capped below its path, a
 single extraction over several rescans, or a quiet minute of the monitor. So do
 the tests that act on INPUT or on the exports in the middle of a run, which no
 step expresses: removing a file, making folders unreadable, putting a file at
-the name of a session report once the session is open, breaking the browser
-once the connector has started. They run serially.
+the name of a session report once the session is open. They run serially.
 
 ### What the harness does (`internal/harness`)
 
@@ -364,8 +360,7 @@ test names it in its comment (`From Test…` or `Mirrors Test…`); some carry
 ## 5. Catalogue
 
 163 tests. The "Needs" column gives the prerequisite beyond the Go toolchain,
-`—` for none: **browser** (the `realbrowser` tag, Chromium or Chrome in the
-`PATH` and a non-root user; the test fails otherwise), **7-Zip** (the `7zzs`
+`—` for none: **7-Zip** (the `7zzs`
 binary, which the test runs directly to build its input or configures as the
 7-Zip of the plugin). Every instance builds the `extract` plugin, which needs
 `7zzs`. Without it, a test that needs `7zzs` before it starts an instance is
@@ -412,7 +407,7 @@ The two tests without rescan wait for real quiet minutes; they run serially.
 | `consoleStopThenStart` | `core/console_test.go` | Agent mode; the console pushes `stop` then `start`. | Both tasks are acknowledged without error; a file dropped after the restart is delivered. | — |
 | `invalidConfigureKeepsTheOldConfiguration` | `core/console_test.go` | Agent mode; the console serves a configuration with an invalid move mode, then a valid one, each followed by `update-config`. | The invalid one is acknowledged with an error and reported to the console as `host-config-rejected`, the old configuration keeps delivering; the valid one is accepted and resolves the error. | — |
 | `refusedAtStart` | `core/console_test.go` | A start with the work folder under a watched path. | It exits with an error and the log gives the message that says how to fix it. | — |
-| `aPluginMisconfigurationIsRefusedAtStart` | `plugins/lifecycle_test.go` | Two starts: a browser path that does not exist, a 7-Zip path that does not exist. | Each exits with an error and the log gives the message that says how to fix it. | — |
+| `aPluginMisconfigurationIsRefusedAtStart` | `plugins/lifecycle_test.go` | Two starts: a report template path that does not exist, a 7-Zip path that does not exist. | Each exits with an error and the log gives the message that says how to fix it. | — |
 | `anEmptyPassWithRenameIsRefusedAndTheRunningOneKept` | `core/config_refusal_test.go` | Agent mode; a file delivered, then the console serves `empty` at `pass` with move mode `rename`; a file dropped after. | The task is acknowledged with the refusal that names both keys; the file dropped after is delivered. | — |
 | `theEmptyPolicyAndTheMoveMode` | `core/config_refusal_test.go` | Starts with the move on or off, mode `copy`, `rename` or none, `empty` absent or at `skip`, `mitigate` or `pass`; a file that is not empty. | Only the move on with `rename` and `pass` is refused at start, with the message that names both keys. Otherwise the file is delivered, or stays in INPUT with the move off; with `rename` and no `empty` key the log says that empty files are skipped. | — |
 | `aRemovedKeyOfTheExtractPluginIsRefusedWithItsReplacement` | `plugins/extract_config_test.go` | Starts with `max_file_size`, `max_extracted_files` or `max_total_extracted_size` in the extract plugin, beside a default password. | The start is refused with a message that names the key and the limit that replaces it, not the unknown-key refusal; the log quotes neither the value nor the password. | — |
@@ -549,8 +544,8 @@ The two tests without rescan wait for real quiet minutes; they run serially.
 | Test | File | Sets up | Asserts | Needs |
 | --- | --- | --- | --- | --- |
 | `sessionsCloseAndReopen` | `plugins/session_test.go` | Session delay 2 s; two files dropped one after the other. | Two session reports, each with one entry for its file. | — |
-| `sessionReportGeneratedByTheBrowser` | `plugins/report_test.go` | Agent mode with the `report` plugin and the real browser; a malware is dropped. | The exports hold only a `%PDF` file with the reserved name, and no `session-report-fallback` error was sent. | browser |
-| `failingReportGeneratorFallsBackToJSON` | `plugins/report_test.go` | The browser is replaced by a stub that fails N times once a marker file exists: `report_retries` 1 with N unbounded; `report_retries` 3 with N at 2, 3, 4 or unbounded. | The browser is launched until it succeeds, at most `report_retries` + 1 times. Retries run out: one JSON report under the reserved name with the delivered file, no PDF, and one `session-report-fallback` to the console. Otherwise: one PDF and no fallback (the file is a malware there, as the invariant cannot read a PDF). | browser |
+| `sessionReportIsAPDF` | `plugins/report_test.go` | Agent mode with the `report` plugin and a leftover `chrome_path` to a browser that does not exist; a malware is dropped. | The exports hold only a `%PDF` file with the reserved name, no `session-report-fallback` error was sent, and the log warns that `chrome_path` is deprecated and ignored. | — |
+| `failingReportGeneratorFallsBackToJSON` | `plugins/report_test.go` | A custom template that parses at start and fails at every execution; `report_retries` 1 or 3. | The generation is attempted `report_retries` + 1 times, then one JSON report is written under the reserved name with the delivered file, no PDF, and the console gets one `session-report-fallback`. | — |
 | `aSessionIsClosedAtMaxDuration` | `plugins/session_test.go` | Session delay 1 h, `max_duration` 5 s. | A private spool (mode 600) exists while open and no report yet; the session closes by itself with one report and no spool; the next file opens a second session. | — |
 | `aSessionIsClosedAtMaxSpoolSize` | `plugins/session_test.go` | `max_spool_size` 1 MiB (the minimum), delay 1 h, 3000 files; SIGTERM once they are delivered. | Every file is delivered, and there are at least two session reports. | — |
 | `theSpoolOfACrashedRunIsRemovedWithAWarning` | `plugins/session_test.go` | A file delivered with its session open; the process is killed with SIGKILL and restarted. | The log warns that one session report was lost; the old work folder and the spool are removed. | — |
@@ -558,7 +553,7 @@ The two tests without rescan wait for real quiet minutes; they run serially.
 | `aPendingFileThatChangesBeforeBeingTakenNeverBlocksTheSession` | `plugins/session_test.go` | One worker held by the slow analysis of `jerry`; a waiting file of `tom` is deleted, rewritten, replaced by a link, emptied, or deleted and recreated. | The session of `tom` closes and its report is not empty. | — |
 | `aQueueSaturatedBeyondTheInflightTimeoutClosesTheSessionWithAWarn` | `plugins/session_test.go` | `inflight_timeout` 3 s, one worker held 20 s; two files of `tom` wait. | The session closes before the slow analysis ends, with a warning giving the pending count; each of the three files is in exactly one report. | — |
 | `aFileAtTheNameOfTheSessionReportIsLeftIntact` | `plugins/session_report_test.go` | Session delay 1 h; once the session is open, a file, a link to a file outside the exports, or a dangling link at the name of its report; SIGTERM. | What was there is unchanged, and the target of the link is neither written nor created; one report under another name names the file; no temporary file is left; the log says the name already existed. | — |
-| `theFallbackIsToldOnceForSeveralSessions` | `plugins/report_fallback_test.go` | Agent mode, the `report` plugin with a browser stub that always fails once the connector has started, no retry; a file for each of `tom`, `jerry` and `spike`. | Each owner gets one JSON report; the console gets one `session-report-fallback`. | browser |
+| `theFallbackIsToldOnceForSeveralSessions` | `plugins/report_fallback_test.go` | Agent mode, the `report` plugin with a custom template that fails at every execution, no retry; a file for each of `tom`, `jerry` and `spike`. | Each owner gets one JSON report; the console gets one `session-report-fallback`. | — |
 | `everyWayOutOfThePipelineClosesTheSession` | `core/pairing_test.go` | One at a time: a clean file, a malware, a file submitted while the service answers 503. | One session report each time; the failed file stays in INPUT with the injected error. | — |
 | `everyWayOutOfThePipelineWithPluginsClosesTheSession` | `plugins/pairing_test.go` | One at a time: a PNG skipped by `filetype_filter`, a cut zip, a text file with the extract plugin on. | One session report each time: the PNG delivered skipped, the zip in INPUT damaged, the text delivered. | — |
 
@@ -653,9 +648,8 @@ servers. They check the tools the scenarios rely on.
   3.6 GB declared by the forged zip, from files of a few KB to a few MB.
 - **Two modes only.** Scenarios start the connector in `monitoring` or `agent`
   mode; other commands (`scan`, `quarantine`, `version`) are not run.
-- **Browser and 7-Zip scenarios depend on the machine.** The three browser
-  scenarios run only with the `realbrowser` tag, and then fail without a
-  browser or as root.
+- **7-Zip scenarios depend on the machine.** The scenarios that run `7zzs`
+  directly to build their input fail without it (section 5).
 - **Some tests are slow and serial.** The two pressure tests without rescan
   wait for real quiet minutes of the monitor: about 1 min and 3.5 min. The
   tests that act on INPUT in the middle of a run (remove a file, change the

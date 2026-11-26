@@ -19,8 +19,7 @@
 //	                         filetype_filter, or assert the session plugin
 //
 // The scenarios need a build tag: e2e for both packages, e2e_core or
-// e2e_plugins for one of them. The three browser scenarios also need the
-// realbrowser tag, and fail without a browser or when run as root. Every file
+// e2e_plugins for one of them. Every file
 // under internal carries only the linux tag, so a plain `go test ./test/...`
 // runs the self-tests of the harness and the fakes, and the tests of the
 // document builders of plugins, without building GMHost. Set a timeout above

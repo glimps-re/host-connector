@@ -140,9 +140,3 @@ report:
     #   - Duration: Session duration
     # template_path: /path/to/custom/template.html
     # template_path: ""
-
-    # Absolute path of the Chrome or Chromium binary that renders the PDF (optional)
-    # If empty, a known browser is looked up in PATH. Either way the binary must
-    # be owned by root or the connector account and not writable by others, and
-    # it must render a test page at startup, otherwise the connector refuses to start.
-    # chrome_path: /usr/bin/chromium

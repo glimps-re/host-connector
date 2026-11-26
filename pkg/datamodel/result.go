@@ -19,6 +19,14 @@ type Result struct {
 	AnalysisError      string            `json:"analysis-error"`
 	GMalwareURL        string            `json:"glimps-malware-url"`
 	Restored           bool              `json:"restored,omitempty"`
+	// NotAnalyzedReason is set when the file left the pipeline without a
+	// complete analysis, whatever the way it was let through.
+	NotAnalyzedReason NotAnalyzedReason `json:"not-analyzed-reason,omitempty"`
+	// NotAnalyzedSubfiles lists the members of an archive that were not
+	// analyzed, at most MaxListedSubfiles; NotAnalyzedSubfilesCount is the exact
+	// number.
+	NotAnalyzedSubfiles      []NotAnalyzedFile `json:"not-analyzed-subfiles,omitempty"`
+	NotAnalyzedSubfilesCount int               `json:"not-analyzed-subfiles-count,omitempty"`
 }
 
 type MalwareReason string
@@ -29,4 +37,8 @@ const (
 	TooBig           MalwareReason = "too-big"
 	FilteredFileType MalwareReason = "filtered-filetype"
 	FilteredFilePath MalwareReason = "filtered-filepath"
+	// Empty and Encrypted are the reasons of a file mitigated by the
+	// unanalyzable policy.
+	Empty     MalwareReason = "empty"
+	Encrypted MalwareReason = "encrypted"
 )

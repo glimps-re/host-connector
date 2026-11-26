@@ -1,8 +1,11 @@
+//go:build linux
+
 package main
 
 import (
 	"context"
 	"io"
+	"iter"
 	"log/slog"
 	"maps"
 	"os"
@@ -13,7 +16,6 @@ import (
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/plugins"
-	"github.com/glimps-re/host-connector/pkg/plugins/mock"
 	"github.com/google/go-cmp/cmp"
 )
 
@@ -27,12 +29,14 @@ func TestSessionPlugin_Init(t *testing.T) {
 		{
 			name: "init config",
 			config: &Config{
+				ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 				Depth:      2,
 				Delay:      time.Second,
 				RootFolder: "/tmp",
 			},
 			wantErr: false,
 			wantConfig: Config{
+				ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 				Depth:      2,
 				Delay:      time.Second,
 				RootFolder: "/tmp",
@@ -48,7 +52,7 @@ func TestSessionPlugin_Init(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SessionPlugin{}
-			mockContext := mock.NewMockHCContext()
+			mockContext := newMockHCC(t)
 			err := plugin.Init(tt.config, mockContext)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SessionPlugin.Init() error = %v, wantErr %v", err, tt.wantErr)
@@ -78,7 +82,7 @@ func TestSessionPlugin_Init(t *testing.T) {
 
 func TestSessionPlugin_Close(t *testing.T) {
 	plugin := &SessionPlugin{}
-	mockContext := mock.NewMockHCContext()
+	mockContext := newMockHCC(t)
 
 	// Initialize plugin
 	err := plugin.Init(plugin.GetDefaultConfig(), mockContext)
@@ -103,7 +107,9 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 	}()
 
 	plugin := &SessionPlugin{
+		workDir: t.TempDir(),
 		config: Config{
+			ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 			Delay:      100 * time.Millisecond,
@@ -135,24 +141,18 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 	// Test adding file to session
 	session.addFile(filePath, "sha256hash")
 
-	if len(session.TrackedFiles) != 1 {
-		t.Errorf("PendingFiles length = %v, want 1", len(session.TrackedFiles))
+	if len(session.InFlight) != 1 {
+		t.Errorf("InFlight length = %v, want 1", len(session.InFlight))
 	}
-
-	fileEntry, exists := session.TrackedFiles[filePath]
-	if !exists {
-		t.Error("File should exist in PendingFiles")
-	}
-
-	if fileEntry.SHA256 != "sha256hash" {
-		t.Errorf("File SHA256 = %v, want sha256hash", fileEntry.SHA256)
+	if _, exists := session.InFlight[filePath]; !exists {
+		t.Error("File should exist in InFlight")
 	}
 
 	// Test marking file completed
 	session.markFileCompleted(filePath)
 
-	if !fileEntry.Completed {
-		t.Error("File should be marked as completed")
+	if len(session.InFlight) != 0 {
+		t.Error("A completed file must leave InFlight")
 	}
 
 	// Test adding report
@@ -161,15 +161,15 @@ func TestSessionPlugin_SessionManagement(t *testing.T) {
 		SHA256:    "sha256hash",
 		Malicious: false,
 	}
-	session.addReport(rep)
+	okAdd(session, rep)
 
-	if len(session.CompletedReports) != 1 {
-		t.Errorf("CompletedReports length = %v, want 1", len(session.CompletedReports))
+	if len(sessionReports(t, session)) != 1 {
+		t.Errorf("CompletedReports length = %v, want 1", len(sessionReports(t, session)))
 	}
 
 	// Test session ready for closure
 	time.Sleep(150 * time.Millisecond) // Wait longer than delay
-	if !session.isReadyForClosure(plugin.config.Delay) {
+	if !plugin.readyForClosure(session) {
 		t.Error("Session should be ready for closure")
 	}
 }
@@ -183,7 +183,9 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 	}()
 
 	plugin := &SessionPlugin{
+		workDir: t.TempDir(),
 		config: Config{
+			ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -223,7 +225,7 @@ func TestSessionPlugin_OnStartScanFile(t *testing.T) {
 					if session.ID != tt.expectedSessID {
 						t.Errorf("want session ID %s, got %s", tt.expectedSessID, session.ID)
 					}
-					if _, exists := session.TrackedFiles[tt.filePath]; !exists {
+					if _, exists := session.InFlight[tt.filePath]; !exists {
 						t.Error("File should be added to session")
 					}
 				}
@@ -241,7 +243,9 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 	}()
 
 	plugin := &SessionPlugin{
+		workDir: t.TempDir(),
 		config: Config{
+			ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -264,13 +268,7 @@ func TestSessionPlugin_OnFileScanned(t *testing.T) {
 		return
 	}
 
-	fileEntry := session.TrackedFiles[filePath]
-	if fileEntry == nil {
-		t.Fatal("File entry should exist")
-		return
-	}
-
-	if !fileEntry.Completed {
+	if _, inFlight := session.InFlight[filePath]; inFlight {
 		t.Error("File should be marked as completed")
 	}
 }
@@ -284,7 +282,9 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 	}()
 
 	plugin := &SessionPlugin{
+		workDir: t.TempDir(),
 		config: Config{
+			ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 			RootFolder: tmpDir,
 			Depth:      2,
 		},
@@ -312,12 +312,12 @@ func TestSessionPlugin_OnReport(t *testing.T) {
 		return
 	}
 
-	if len(session.CompletedReports) != 1 {
-		t.Errorf("CompletedReports length = %v, want 1", len(session.CompletedReports))
+	if len(sessionReports(t, session)) != 1 {
+		t.Errorf("CompletedReports length = %v, want 1", len(sessionReports(t, session)))
 	}
 
-	if session.CompletedReports[0].Filename != filePath {
-		t.Errorf("Report filename = %v, want %v", session.CompletedReports[0].Filename, filePath)
+	if sessionReports(t, session)[0].Filename != filePath {
+		t.Errorf("Report filename = %v, want %v", sessionReports(t, session)[0].Filename, filePath)
 	}
 }
 
@@ -329,11 +329,12 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 		}
 	}()
 
-	plugin := &SessionPlugin{}
-	mockContext := mock.NewMockHCContext()
+	plugin := &SessionPlugin{workDir: t.TempDir()}
+	mockContext := newMockHCC(t)
 
 	// Override config for testing
 	config := Config{
+		ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 		RootFolder: tmpDir,
 		Depth:      2,
 		Delay:      50 * time.Millisecond,
@@ -379,8 +380,8 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 		return
 	}
 
-	if len(session.TrackedFiles) != 2 {
-		t.Errorf("Should have 2 pending files, got %d", len(session.TrackedFiles))
+	if len(session.InFlight) != 2 {
+		t.Errorf("Should have 2 pending files, got %d", len(session.InFlight))
 	}
 
 	// 2. Complete scanning
@@ -401,22 +402,20 @@ func TestSessionPlugin_IntegrationWorkflow(t *testing.T) {
 	})
 
 	// Verify reports were added
-	if len(session.CompletedReports) != 2 {
-		t.Errorf("Should have 2 completed reports, got %d", len(session.CompletedReports))
+	if len(sessionReports(t, session)) != 2 {
+		t.Errorf("Should have 2 completed reports, got %d", len(sessionReports(t, session)))
 	}
 
 	// 4. Wait for session to be ready for closure
 	time.Sleep(100 * time.Millisecond)
 
-	if !session.isReadyForClosure(plugin.config.Delay) {
+	if !plugin.readyForClosure(session) {
 		t.Error("Session should be ready for closure")
 	}
 
 	// Verify all files are completed
-	for _, fileEntry := range session.TrackedFiles {
-		if !fileEntry.Completed {
-			t.Error("All files should be completed")
-		}
+	if len(session.InFlight) != 0 {
+		t.Error("All files should be completed")
 	}
 }
 
@@ -426,14 +425,22 @@ func TestSessionPlugin_CloseAllSessions(t *testing.T) {
 
 	var generatedReports [][]datamodel.Report
 
-	mockContext := mock.NewMockHCContext()
-	mockContext.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports []datamodel.Report) (io.Reader, error) {
-		generatedReports = append(generatedReports, reports)
-		return strings.NewReader("mock report"), nil
+	mockContext := newMockHCC(t)
+	mockContext.GenerateReportFunc = func(_ context.Context, _ datamodel.ScanContext, reports iter.Seq2[datamodel.Report, error]) (plugins.GeneratedReport, error) {
+		var got []datamodel.Report
+		for r, err := range reports {
+			if err != nil {
+				return plugins.GeneratedReport{}, err
+			}
+			got = append(got, r)
+		}
+		generatedReports = append(generatedReports, got)
+		return plugins.GeneratedReport{Content: io.NopCloser(strings.NewReader("mock report")), Extension: ".pdf"}, nil
 	}
 
 	plugin := &SessionPlugin{}
 	config := &Config{
+		ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 		RootFolder: tmpDir,
 		Depth:      1,
 		Delay:      1 * time.Hour, // Long delay so sessions are NOT ready for normal closure
@@ -508,6 +515,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok insufficient depth",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      4,
 					Delay:      time.Second,
@@ -521,6 +529,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok different root",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/other_folder/",
 					Depth:      2,
 					Delay:      time.Second,
@@ -534,6 +543,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok different root 2",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      2,
 					Delay:      time.Second,
@@ -547,6 +557,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok create",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,
@@ -561,6 +572,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok no session",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,
@@ -574,6 +586,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 			name: "ok present session",
 			fields: fields{
 				config: &Config{
+					ReportTimeout: time.Minute, MaxDuration: 24 * time.Hour, MaxSpoolSize: "1GiB", InflightTimeout: 24 * time.Hour,
 					RootFolder: "/root/folder/",
 					Depth:      1,
 					Delay:      time.Second,
@@ -593,7 +606,7 @@ func TestSessionPlugin_getSession(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			plugin := &SessionPlugin{}
-			mockContext := mock.NewMockHCContext()
+			mockContext := newMockHCC(t)
 			err := plugin.Init(tt.fields.config, mockContext)
 			if err != nil {
 				t.Fatalf("could not init plugin")

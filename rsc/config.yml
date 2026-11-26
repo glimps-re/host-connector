@@ -24,8 +24,23 @@ gmalware_no_cert_check: false
 quarantine:
   # location: "C:\\Program Files\\GMHost\\quarantine"
   password: infected
-cache:
-  # location: "C:\\Program Files\\GMHost\\cache.db"
-  scan_validity: 168h
 # plugins_config: /etc/gmhost/plugins.yml
+
+# Path rules, applied by the connector to the logical path of every file and archive member
+# (Go regular expressions; they replace the removed filepath_filter plugin). A forbidden path
+# is treated as malware; a skipped path is delivered without analysis. Anchor the skipped
+# paths on folders depositors cannot create: they choose the names of their files and members.
+# filepath_filter:
+#   forbidden_paths:
+#     - '\.exe[^/]*$'
+#   skipped_paths:
+#     - '^/srv/in/trusted/'
+# What the removed error_filter plugin did (quarantine the files whose analysis fails):
+# unanalyzable_policy:
+#   analysis_error: mitigate
 # debug: false
+
+# Time allowed to stop on SIGTERM or SIGINT (default 8s, at least 2s). Keep it under the
+# delay of the orchestrator (`docker stop -t`, systemd `TimeoutStopSec`). Local to this
+# machine: the console does not manage it.
+# shutdown_timeout: 8s

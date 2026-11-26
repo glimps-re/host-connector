@@ -1,305 +1,254 @@
+{{ define "findingHead" }}
+{{ $name := index . 0 }}
+{{ $link := index . 1 }}
+        <colgroup><col style="width:46%"><col style="width:20%"><col style="width:18%"><col style="width:16%"></colgroup>
+        <thead>
+            <tr><th>{{ $name }} · SHA-256</th><th>Menace(s)</th><th>Raison · Taille</th><th>{{ $link }}</th></tr>
+        </thead>
+{{ end }}
+{{ define "findingCells" }}
+{{ $f := index . 0 }}
+{{ $depth := index . 1 }}
+    <td style="padding-left: {{ add 8 (mul (min $depth 6) 12) }}px;">
+        <div class="fname">{{ if gt $depth 0 }}<span class="tree">↳</span> {{ end }}{{ $f.Name }}</div>
+        <code>{{ $f.SHA256 }}</code>
+    </td>
+    <td>{{ range $f.Malwares }}<span class="pill">{{ . }}</span> {{ end }}</td>
+    <td>{{ $f.MitigationReason }}<div class="sz">{{ $f.Size }}</div></td>
+    {{ if eq $f.GMalwareURL "" }}
+    <td class="muted">Pas d'analyse GLIMPS Malware</td>
+    {{ else }}
+    <td><a href="{{ $f.GMalwareURL }}">Lien analyse</a></td>
+    {{ end }}
+{{ end }}
 {{ define "extractedFilesRows" }}
 {{ $files := index . 0 }}
 {{ $depth := index . 1 }}
 {{ range $file := $files }}
 <tr>
-    <td style="padding-left: {{ mul (min $depth 6) 10 }}px;">{{ if gt $depth 0 }}↳ {{ end }}{{ .Name }}</td>
-    <td>{{ .SHA256 }}</td>
-    <td>{{ .Size }}</td>
-    <td>{{ range $i, $malware := .Malwares}}* {{ $malware }}<br>{{ end }}</td>
-    <td>{{ .MitigationReason }}</td>
-    {{ if eq .GMalwareURL "" }}
-    <td>Pas d'analyse GLIMPS Malware</td>
-    {{ else }}
-    <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
-    {{ end }}
+    {{ template "findingCells" (mergeArgsIntoSlice $file $depth) }}
 </tr>
-{{ if gt (len .ExtractedFiles) 0 }}
-{{ template "extractedFilesRows" (mergeArgsIntoSlice .ExtractedFiles (add $depth 1)) }}
+{{ if gt (len $file.ExtractedFiles) 0 }}
+{{ template "extractedFilesRows" (mergeArgsIntoSlice $file.ExtractedFiles (add $depth 1)) }}
 {{ end }}
 {{ end }}
 {{ end }}
-
 <!DOCTYPE html>
 <html lang="fr">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Rapport d'analyse - {{ .ScanID }}</title>
-    <style>
-        :root {
-            --color-bg: #ffffff;
-            --color-text: #000000;
-            --color-accent: #EA5B0C;
-            --gradient-start: #E52321;
-            --gradient-end: #F9C105;
-            --max-width: 900px;
-            --font-family: 'Segoe UI', Arial, sans-serif;
-            --section-padding: 1.5rem;
-            --section-radius: 8px;
-            --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
-            --table-header-bg: linear-gradient(90deg, var(--gradient-start), var(--gradient-end));
-        }
+<meta charset="UTF-8">
+<title>Synthèse d'analyse - {{ .ScanID }}</title>
+<style>
+    :root {
+        --red: #E52521;
+        --red-text: #B91C1C;
+        --orange: #EA5B0C;
+        --orange-text: #B8470A;
+        --amber: #FF8F00;
+        --amber-text: #B45309;
+        --ink: #1F2937;
+        --muted: #6B7280;
+        --line: #E5E7EB;
+        --soft: #F7F7F8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px; line-height: 1.45; color: var(--ink); }
+    .logo { background: linear-gradient(90deg, #E52521, #FAC003); border-radius: 50%; }
+    .logo svg { display: block; }
 
-        * {
-            box-sizing: border-box;
-        }
+    .top { display: flex; align-items: center; }
+    .top .logo { width: 34px; height: 34px; }
+    .top .who { margin-left: 10px; font-size: 15px; font-weight: bold; letter-spacing: 0.12em; }
+    .top .who span { font-weight: normal; letter-spacing: 0.02em; color: var(--muted); }
+    .top .when { margin-left: auto; text-align: right; font-size: 11px; color: var(--muted); }
 
-        body {
-            margin: 0;
-            padding: 2rem 1rem;
-            font-family: var(--font-family);
-            color: var(--color-text);
-            background-color: var(--color-bg);
-            line-height: 1.6;
-        }
+    .verdict {
+        margin-top: 14px;
+        padding: 22px 26px;
+        border-radius: 10px;
+        color: #fff;
+        background: linear-gradient(90deg, #B91C1C, #E52521);
+        break-inside: avoid;
+    }
+    .verdict.ok { background: linear-gradient(90deg, #15803D, #22C55E); }
+    .verdict.warn { background: linear-gradient(90deg, #B8470A, #EA5B0C); }
+    .verdict .kicker { margin: 0; font-size: 11px; font-weight: bold; letter-spacing: 0.18em; text-transform: uppercase; }
+    .verdict h1 { margin: 4px 0 6px; font-size: 26px; line-height: 1.15; }
+    .verdict p { margin: 0; font-size: 13px; }
+    .verdict p + p { margin-top: 4px; }
+    .scan { margin: 8px 0 0; font-size: 11px; color: var(--muted); }
 
-        header {
-            max-width: var(--max-width);
-            margin: 0 auto 2rem;
-            padding: var(--section-padding);
-            background: var(--table-header-bg);
-            border-radius: var(--section-radius);
-            box-shadow: var(--shadow);
-            text-align: center;
-            color: #fff;
-        }
+    .tiles { display: flex; margin-top: 14px; }
+    .tile { flex: 1; margin-left: 10px; padding: 14px 12px 12px; border: 1px solid var(--line); border-top: 5px solid var(--line); border-radius: 8px; text-align: center; }
+    .tile:first-child { margin-left: 0; }
+    .tile .n { margin: 0; font-size: 38px; font-weight: bold; line-height: 1.05; }
+    .tile .l { margin: 4px 0 0; font-size: 12px; font-weight: bold; color: var(--muted); }
+    .tile.bad { border-top-color: var(--red); background: #FDF2F2; }
+    .tile.bad .n { color: var(--red-text); }
+    .tile.mal { border-top-color: #7F1D1D; background: #FDF2F2; }
+    .tile.mal .n { color: #7F1D1D; }
+    .tile.warn { border-top-color: var(--amber); background: #FFF8EC; }
+    .tile.warn .n { color: var(--amber-text); }
+    .tile.err { border-top-color: var(--muted); }
+    .tile.err .n { color: var(--ink); }
 
-        header h1 {
-            margin: 0;
-            font-size: 1.5rem;
-            letter-spacing: 0.05em;
-        }
+    .facts { display: flex; margin-top: 12px; padding: 10px 6px; background: var(--soft); border-radius: 8px; }
+    .fact { flex: 1; padding: 0 8px; }
+    .fact .k { margin: 0; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+    .fact .v { margin: 2px 0 0; font-size: 13px; font-weight: bold; }
 
-        section {
-            max-width: var(--max-width);
-            margin: 1rem auto;
-            padding: var(--section-padding);
-            background: #fdfdfd;
-            border-radius: var(--section-radius);
-            box-shadow: var(--shadow);
-        }
+    .note { margin: 12px 0 0; padding: 10px 14px; border-left: 5px solid var(--amber); background: #FFF8EC; border-radius: 0 6px 6px 0; break-inside: avoid; }
 
-        h2 {
-            margin-top: 0;
-            color: var(--color-accent);
-            border-bottom: 2px solid var(--color-accent);
-            padding-bottom: 0.5rem;
-            font-size: 1.5rem;
-        }
+    section { margin-top: 24px; }
+    h2 { margin: 0 0 10px; padding-bottom: 5px; border-bottom: 3px solid var(--orange); font-size: 17px; color: var(--ink); break-after: avoid; }
+    h2 .count { margin-left: 8px; padding: 2px 9px; border-radius: 999px; font-size: 11px; color: #fff; background: var(--orange); vertical-align: middle; }
+    h2.bad .count { background: var(--red); }
+    h2.warn .count { background: var(--amber-text); }
+    h2.err .count { background: var(--muted); }
+    h3 { margin: 0 0 6px; font-size: 14px; color: var(--ink); break-after: avoid; }
+    .lead { margin: 0 0 8px; color: var(--muted); }
 
-        h3 {
-            margin-top: 0;
-            color: var(--color-accent);
-            border-bottom: 2px solid var(--color-accent);
-            padding-bottom: 0.5rem;
-            font-size: 1.3rem;
-        }
+    table { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 11.5px; line-height: 1.35; }
+    thead th { padding: 6px 8px; text-align: left; font-size: 10px; font-weight: bold; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); border-bottom: 2px solid var(--ink); }
+    td { padding: 7px 8px; vertical-align: top; border-bottom: 1px solid var(--line); overflow-wrap: break-word; }
+    tbody tr { break-inside: avoid; }
+    .fname { font-weight: bold; overflow-wrap: break-word; }
+    .sz { margin-top: 2px; color: var(--muted); }
+    code { font-family: 'DejaVu Sans Mono', monospace; font-size: 8.5px; color: var(--muted); word-break: break-all; }
+    .tree { color: var(--orange); }
+    .pill { display: inline-block; margin: 0 2px 3px 0; padding: 2px 8px; border-radius: 999px; font-size: 10.5px; font-weight: bold; color: var(--red-text); background: #FDE8E8; overflow-wrap: break-word; }
+    .muted { color: var(--muted); }
+    a { color: var(--orange-text); font-weight: bold; }
 
-        ul.details {
-            list-style: none;
-            padding: 0;
-            margin: 0;
-        }
-
-        ul.details li {
-            margin: 0.5rem 0;
-        }
-
-        .table-container {
-            overflow: auto;
-            margin-top: 1rem;
-        }
-
-        .table-container table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 0;
-            border-radius: var(--section-radius);
-            overflow: hidden;
-            box-shadow: var(--shadow);
-            /* Ensures cells don't expand too much */
-            table-layout: fixed;
-            /* Wrap long words */
-            word-wrap: break-word;
-            line-height: 1.1;
-        }
-
-        thead tr {
-            background: var(--table-header-bg);
-        }
-
-        thead th {
-            color: #fff;
-            padding: 0.5rem;
-            /* Reduced padding */
-            text-align: left;
-            font-weight: 600;
-            font-size: 0.85rem;
-            /* Slightly smaller font */
-            word-wrap: break-word;
-        }
-
-        tbody td {
-            padding: 0.5rem;
-            /* Reduced padding */
-            border-bottom: 1px solid #eee;
-            font-size: 0.85rem;
-            /* Smaller text */
-            word-wrap: break-word;
-        }
-
-        tbody tr:hover {
-            background: #fff8f0;
-        }
-
-        @media (max-width: 600px) {
-            body {
-                padding: 1rem;
-            }
-
-            header h1 {
-                font-size: 1.3rem;
-            }
-        }
-    </style>
+    .archive { margin-top: 14px; padding: 12px 14px; border: 1px solid var(--line); border-left: 5px solid var(--red); border-radius: 8px; }
+    .archive .meta { margin: 0 0 8px; font-size: 11.5px; color: var(--muted); overflow-wrap: break-word; }
+    .archive .meta b { color: var(--ink); }
+    .more { margin: 8px 0 0; font-style: italic; color: var(--muted); }
+</style>
 </head>
-
 <body>
 
-    <header>
-        <h1>Rapport d'analyse - {{ .ScanID }}</h1>
-    </header>
+<div class="top">
+    <div class="logo"><svg width="34" height="34" viewBox="0 0 57.26 57.26"><path fill="#ffffff" d="m37.05,30.58h-9.58l5.16,5.14c.41.35.65.87.65,1.42v6.79c0,.52.21,1.01.59,1.37l5.04,4.7v-17.55c0-1.03-.84-1.87-1.87-1.87Z"/><path fill="#ffffff" d="m21.7,29.15c0-3.96,3.21-7.18,7.18-7.18,1.66,0,3.19.56,4.4,1.51l4.13-4.13c-2.27-2.01-5.26-3.23-8.53-3.23-7.11,0-12.88,5.77-12.88,12.88,0,6.64,5.02,12.1,11.47,12.8v-5.61c-3.29-.65-5.77-3.56-5.77-7.04Z"/><path fill="#ffffff" d="m16.76,21.49c.12.04.25,0,.34-.1.1-.12.09-.29,0-.41l.76-.97s.03-.01.05-.03c0-.01.01-.03.02-.04l1.54-1.44c.05.02.11,0,.15-.04.03-.04.03-.08.02-.13l1.35-1.31c.08.05.19.03.25-.04.04-.05.05-.1.04-.16l2.56-1.19s.02.02.03.03c.07.06.18.05.23-.02.03-.03.04-.08.04-.12l3.27-.9s0,.01.01.01c.06.05.15.04.2-.02,0,0,0-.01,0-.02l3.04.26s.02.04.04.06c.07.06.18.05.24-.02.05-.07.05-.16,0-.22l.27-.62,2.11-3.15c.1.05.22.04.29-.05.07-.09.06-.22,0-.3l.68-.71c.05.02.12.01.16-.04.05-.06.04-.14-.02-.19s-.14-.04-.19.02c0,0,0,0,0,0l-2.39-.59c0-.07-.02-.13-.08-.18-.09-.08-.23-.06-.31.03-.03.04-.04.09-.05.13l-2.1.12s-.02-.06-.05-.08c-.06-.05-.15-.04-.2.02-.02.03-.03.06-.03.09l-1.63.22-2.99.37s-.03-.08-.06-.11c-.09-.07-.21-.06-.28.03-.05.06-.05.13-.03.19l-3.56,1.69-2.95,2.29s0,0-.01-.01c-.09-.07-.21-.06-.28.03-.06.07-.06.18,0,.25l-1.09,1.17c-.07,0-.15.02-.2.08-.04.05-.06.12-.05.19l-1.25,1.34c-.06-.04-.15-.03-.2.03-.05.06-.04.16.02.21,0,0,.01,0,.02,0l-.25.65s-.04.02-.06.04c-.03.04-.03.08-.02.12l-.57,1c-.08-.03-.16,0-.22.06-.07.08-.05.2.03.27,0,0,.02,0,.03.01l-.42,1.09-.83,2.04c-.09-.03-.2,0-.26.08-.09.11-.07.27.04.36.05.04.11.05.16.05l.12.81-.18,1.71c-.06,0-.11.02-.15.07-.07.09-.06.21.03.28.09.07.21.06.28-.03.01-.02.02-.04.03-.06l1.42.06s0,0,0,0c0,0,0,0,0,0,0,0,0,0,0,0h0s1.25-.07,1.25-.07c0,0,0,0,0,0,.03.03.08.02.11-.01.02-.03.02-.07,0-.1l1.73-4.14Zm-2.37-3.56l.95-1.22.64-.34s.05,0,.07-.01l.49.03.81,1.31-1.29.31s-.02-.02-.03-.03c-.06-.05-.16-.04-.21.02-.02.03-.03.07-.03.1l-.97.43-.43-.54s.01-.04,0-.06Zm8.78-6.29s0,.01,0,.02l-.64,1.16c-.05-.02-.11-.01-.16.02l-1.02-1.24s.02-.03.02-.05l1.79.1Zm4.22-2.16l.56,1.01-2.6-.09c0-.05-.03-.1-.07-.13-.09-.07-.21-.06-.28.03-.01.02-.02.04-.03.05l-.56-.45s0-.04.01-.06l2.97-.37Zm5.81,1.26l-1.59.51s-.03-.05-.05-.07c-.02-.02-.05-.03-.08-.04l.04-.48,1.68.06s0,.01,0,.02Zm-6.77,4.03l-1.71-.32s0-.03-.01-.05l.82-.47c.06.05.15.04.2-.02,0,0,0,0,0,0l1.64.61s0,0,0,0l-.94.26Zm-2.36.63c-.05-.04-.12-.05-.18-.02l-.22-.16,2.02-.25-1.6.44s0-.01-.01-.01Zm-1.68-.14s-.02-.02-.03-.03c-.06-.05-.14-.04-.19.02,0,.01-.01.02-.02.03l-.5.02.07-.2s.07-.02.1-.06c.05-.07.04-.16-.02-.22-.04-.04-.1-.04-.15-.02l-.45-.48.44-.43,1.72,1.24-.98.12Zm-8.2,5.3l1.94,1.2-1.41.32s0-.01-.01-.01c-.01,0-.02-.01-.04-.02l-.5-1.47s0,0,.01-.01Zm.54,1.66s.03-.06.02-.09l1.3-.3-1.59,1.47.24-1.06s.02-.01.02-.02Zm1.48-.52s-.03,0-.04.01l-1.95-1.2s.01-.05,0-.08l1.47-.61.92,1.15s0,0,0,0c-.09.11-.09.26-.02.37l-.38.35Zm-.14-2.03l.49.09.21,1.12s-.04.01-.06.03l-.9-1.13.26-.11Zm-.3.06l-.1-.13.29.05-.19.08Zm.67-1.1s.03-.07.01-.1l.88-.72.08-.02.56.91s-.03.08-.03.12l-1.39.58-.14-.75s.02-.01.03-.02Zm-.12-2.93s.02-.03.03-.05l2.16-.1-.12.8-1.78-.09-.33-.54s.03-.02.04-.03Zm2.46-1.28l.7.98-.84.04.15-1.02Zm.77,1.09l.11.16-.67.65c-.06-.03-.13-.02-.17.03,0,.01-.02.03-.02.04l-.31-.02.12-.82.94-.04Zm.13,0h.15s-.09.08-.09.08l-.06-.08Zm.23-2.64s.03-.05.04-.07l.88.1-.19.83-.76-.82s.03-.02.04-.03Zm1.02.04l1.35.16s.01.03.02.05l-.54.52-.47-.14s-.02-.05-.04-.07c-.05-.04-.12-.03-.15.02-.03.04-.03.1,0,.14l-.17.46-.2-.22.21-.91Zm3.4-2.92l.63.5s0,0,0,0l-.52.33-.13-.82s.01-.01.02-.02Zm4.9-.67s.04-.02.05-.04c0,0,0,0,0,0l1.57.67-.42.54s-.07,0-.1.02l-1.13-.44.04-.76Zm2.22,1.35l-.04.47c-.05,0-.11.03-.14.07-.04.05-.05.12-.04.18l-2.06.89,1.22-1.57s.08,0,.11-.04c0-.01.02-.02.02-.04l.93.03Zm-1.72,2.37c-.08-.04-.19-.03-.25.05,0,0,0,.02-.01.03l-1.31-.31.81-.34s.1.02.14-.02c.02-.02.03-.05.02-.08l2.11-.91-1.51,1.58Zm-7.34.16c.07.03.14.02.2-.02l1.66,1.21-2.36-.69.51-.49Zm4.38-1.75c.07.04.15.02.2-.03l1.92.96-.86.37-1.25-.91s-.01-.05-.04-.07c-.02-.02-.06-.03-.08-.02l-1.42-1.14s.03-.02.04-.03l1.41.7c-.01.07.01.14.07.17Zm3.53-.8l-1.21,1.56.08-1.61,1.13.04s0,0,0,.01Zm-1.32,1.58l-.93-1.67,1.01.03-.08,1.63Zm-2.29-.29s.03,0,.04-.01l1.09.8-1.38-.33.25-.45Zm-.11-.12s0,.05,0,.07l-.27.48-1.39-.33.22-1.36,1.43,1.15Zm-.31.65l-.67,1.22s-.02,0-.03,0l-.7-1.27.05-.28,1.36.32Zm-1.49-.2l-.1-.18.12.03-.02.15Zm-.03.18l-.22,1.34.07-1.62.15.28Zm-.13,1.86s-.04-.02-.05-.03l.27-1.67.64,1.16s-.03.06-.02.09l-.82.47s-.01-.02-.02-.02Zm1.08-.57l.68-1.23,1.42.34-2.1.89Zm4.44-3.15l-.98-.03.02-.34.96.37Zm-1.09-.04l-1.04-.03-.53-.95,1.59.61-.02.37Zm-.13,1.73l-1.92-.96c0-.06-.02-.11-.08-.14-.06-.04-.13-.03-.18.01l-1.41-.71,2.64.09.95,1.71Zm-3.94-1.7s.01.02.02.03c.01.01.03.01.04.02l-.23,1.39-.16-.04s-.01-.03-.03-.04c0,0-.01,0-.02-.01l-.16-1.01.54-.34Zm-.48,1.37s0,0,0,0c0,0,0,0,0,0l-1.14-.33s0-.01,0-.02l1-.63.16.96Zm-1.24-.22s.04-.01.06-.03c0,0,0,0,0,0l1.14.33s.01.06.04.08c0,0,.02.01.03.02l-.09,2.15s-.09.03-.12.06l-1.68-1.22c.03-.07.01-.14-.04-.2l.65-1.17Zm-2.3,2.38l.18-.47s.05,0,.08,0l.32.23-.43.41-.15-.17Zm.11.21l-.3.29.17-.44.13.14Zm.32-.7l.31.09-.08.08-.23-.17Zm-.5.51l-.22.58-.2.19.23-.98.19.21Zm-.32.83l-.17.44h-.05s.07-.29.07-.29l.15-.14Zm-1.52,1.47l.66-.63.28.39s0,0,0,0c-.02.03-.03.06-.03.09l-.9.15Zm-.26.1s0,0,0,0l-.39.32.05-.34.33.02Zm1.57-1.02l-.08.2.05-.2h.03Zm-.12-.11h-.13s.17-.16.17-.16l-.04.16Zm-.03.11l-.14.6-.29-.4.2-.19h.23Zm-1.87.99l-.07.46-.86.71-.77-1.25,1.69.09Zm-.18,2.2s-.01,0-.02-.01l.16-1.09,2.53-.61-2.66,1.73s0,0-.01-.01Zm-.13-.04l-.53-.87.68-.16-.15,1.03Zm-.53-.98l.77-.63-.07.46-.7.17Zm.44,1.23s.02.02.03.03c0,0,0,0,.01,0l-.21.94-1.2-.21-.04-.19,1.41-.59Zm-1.43.76l-.28-.05.25-.1.03.15Zm.29,1.23l-.21-1.1,1.12.2-.74.94c-.06-.03-.12-.04-.18-.04Zm1.29-1.93s.07-.02.09-.05c.02-.02.03-.05.03-.08l1.06-.31-1.36,1.27.18-.82Zm1.29-.65s-.02.04-.03.06l-1.02.3,2.37-1.54-1.17,1.14c-.05-.02-.11,0-.15.04Zm1.52-1.57s-.04.08-.04.12l-2.54.61.08-.54.45-.37c.06.03.12.02.17-.03.01-.02.02-.04.03-.06l.92-.15s.02.05.04.06c.06.05.16.04.21-.02.05-.06.04-.16-.02-.21,0,0,0,0-.01,0v-.04s.25-.63.25-.63l1.1-.05-.44,1.23c-.07-.01-.15,0-.19.07Zm-.43-1.36l.2-.53.47-.45.44.47s-.01,0-.02.01c-.05.07-.04.16.02.22.02.01.03.02.05.03l-.07.21-1.1.05Zm1.24-1.53l.11-.11,2.42.71c-.01.08.01.16.08.21.1.08.24.07.33-.03.01-.02.02-.03.03-.05l1.37.26-2.53.31-1.8-1.3Zm5.9.66s-.02-.05-.05-.07c-.06-.05-.15-.04-.2.02,0,0,0,.01,0,.02l-1.63-.61s0-.02,0-.02l2.25-.95.07.02,1.91,1.39-2.32.22h-.02Zm.71-1.54l1.1.26c0,.06.03.11.07.15.06.05.15.06.22.02l.62.85-.22.02-1.79-1.31Zm2.05,1.34l.23.32-.42-.3.18-.02Zm.33.35l-.26-.36.54-.05-.17.39s-.07,0-.11.02Zm.3-.47l-.6.06-.64-.89s.01,0,.02-.01c.04-.05.05-.11.04-.16l1.9-.64-.71,1.65Zm.72-1.77s-.02.04-.02.07l-1.9.64s0,0,0,0l1.52-1.59s.08.03.13.02l.31.86s-.01,0-.02.02Zm-.23-1.8l.03-.36.9.39-.93-.03Zm-.06,0l-.94-.03s0-.01,0-.02l.44-.56.53.23-.03.38Zm-.46-.66l.55-.7s.02,0,.03.01l-.08.9-.5-.22Zm.46-.76l-.57.72-1.58-.68,2.1-.12s.02.06.04.08Zm-2.37.12s.03.02.04.02l-.03.71-1.51-.58,1.47-.2s.02.04.04.05Zm-4.9.73s.01,0,.02,0l.14.86-.96.6.8-1.47Zm-2.96,1.62s.02,0,.03,0l.84,1.02-.94-.69.08-.33Zm1.06,1.29s0,0,0,.01l-1.32-.15.16-.7,1.16.84Zm-1.43-.15l-.91-.11s-.01-.03-.02-.05l.64-.94.46.33-.18.76Zm-1.01-.23c-.07-.03-.16-.02-.22.04l-.16-.15.9,-1.69-.3s0,0,0,0l1.07-.48.62.77Zm-1.73-.15s.01-.02.02-.04l1.81.32.16.2-1.46.61s-.02-.02-.03-.03c-.04-.03-.08-.04-.13-.03l-.43-.99s.03-.02.05-.04Zm.37,1.32s.02,0,.04,0l.49,1.46s0,0-.01,0c-.01.01-.02.03-.02.04l-1.52.35,1.03-1.87Zm.5,1.58s.01.03.02.04l-1.42,1.91-.79-.45.63-1.14,1.57-.36Zm.01.24l-.23,1.02-.92.84-.16-.09,1.32-1.77Zm-.49,2.14s-.07.02-.09.05l-.47-.27.77-.71-.21.93Zm-.75-.2l-.66.61.51-.69.15.08Zm.1.06l.52.3s.02.08.05.11l-.3.75-.08-.26s0,0,0,0c.04-.05.04-.13-.02-.18s-.13-.04-.18.02c-.02.02-.03.05-.03.08l-1.15.35s-.01-.02-.02-.02l.07-.1,1.12-1.03Zm.02.9s.04.02.06.02l.1.33-1.17-.05,1-.31Zm.66-.47s.03,0,.04-.01l.72.77-1.1.06.33-.82Zm.89.73l-.76-.82c.03-.06.02-.14-.04-.18,0,0,0,0-.01,0l.25-1.09,1.79-1.65s.05,0,.06-.03c.01-.01.01-.03.02-.04l.38-.35s.03.02.04.03l-1.72,4.13Zm6.23-8.9s-.02-.01-.03-.02l.44-1.25.54-.02s.02.03.03.04c.06.05.14.04.19-.02.01-.01.02-.03.02-.04l1.1-.13.31.22s-.01.04-.01.06l-2.57,1.2s-.01-.02-.02-.03Zm6.78-2.17l2.06-.19.57.42-2.63-.23Zm3.86-1.96s.04-.01.06-.03c.04-.04.03-.11-.01-.14-.02-.02-.04-.02-.07-.02l-.3-.85s.04-.03.06-.05c.04-.05.05-.1.04-.16l1.59-.51s.03.06.05.08l-1.94,2.88.51-1.19Zm1.71-2.05c-.1-.07-.23-.05-.31.04-.02.03-.04.06-.04.1l-.48-.02,1.48-.79-.64.67Zm.65-.76s0,.01,0,.02l-1.6.86-1.05-.45.08-.92c.06,0,.12-.03.16-.08,0,0,0-.02.01-.02l2.4.59Zm-10.12.23l-.83,1.53s-.05.01-.06.03c0,0,0,.02-.01.03l-1.79-.1s-.02-.07-.05-.1c-.07-.05-.16-.04-.22.02-.05.06-.04.15.01.21l-.07.3-.44-.32,3.44-1.64s.02.03.03.04Zm-6.81,4.2c.09.06.2.04.27-.04.05-.06.05-.13.03-.19l2.04-1.08s0,0,.01.01l-.9,1.32s-.03.01-.04.02c0,0,0,.01-.01.02l-2.33,1.19s-.04-.06-.06-.08c-.02-.02-.05-.03-.07-.04l1.06-1.14Zm-1.31,1.55l-.7.89-.51.27,1.15-1.24s.03.06.06.08Zm-1.28,1.42s.04-.07.03-.11l.39-.2-.79,1s-.01,0-.02,0l.24-.63c.05,0,.11,0,.14-.05Zm-.49.9s.07.03.11.02l.41.51-1.05.47s-.01-.02-.02-.03c0,0,0,0,0,0l.55-.97Zm-.63,1.31l.43.99s-.02.02-.03.03c0,.01-.01.02-.02.04l-.86-.02.39-1.03s.06,0,.09,0Zm-.52,1.14l.9.02s.02.05.04.06l-1.05,1.91-.58.13s-.04-.08-.07-.11c-.01,0-.03-.01-.04-.02l.81-2Zm-.86,2.46s.1-.04.13-.08c.04-.05.06-.12.05-.19l.53-.12-.61,1.11s0,0,0,0l-.1-.72Zm.11.84l.78.44-.86,1.15-.09.08.17-1.68Z"/></svg></div>
+    <div class="who">GLIMPS <span>Malware · Rapport de session</span></div>
+    <div class="when">Début : {{ .ScanStartTime }}<br>Durée de session : {{ .Duration }}</div>
+</div>
 
-    <section id="analysis-details">
-        <h2>Détails de l'analyse</h2>
-        <ul class="details">
-            <li><strong>Fichiers listés : </strong>{{ .NbFileSubmitted }}</li>
-            <li><strong>Fichiers analysés : </strong>{{ .NbFileAnalyzed }}</li>
-            <li><strong>Taille totale des fichiers (avant extraction) : </strong>{{ .FileVolume }}</li>
-            <li><strong>Volume analysé : </strong>{{ .AnalyzedVolume }}</li>
-            <li><strong>Volume filtré : </strong>{{ .FilteredVolume }}</li>
-            <li><strong>Bloqués : </strong>{{ .TotalMitigated }}, dont fichiers détéctés comme malveillants: {{ .TotalMalware }}</li>
-            <li><strong>Fichiers en erreur : </strong>{{ .TotalErrors }}</li>
-            <li><strong>Date de début : </strong>{{ .ScanStartTime }}</li>
-            <li><strong>Durée de session: </strong>{{ .Duration }}</li>
-        </ul>
-    </section>
+{{ $cls := " ok" }}
+{{ $title := "Aucune menace détectée" }}
+{{ $detail := "Aucun comportement suspect ou malveillant n'a été détecté dans les fichiers soumis." }}
+{{ if gt .TotalMitigated 0 }}
+{{ $cls = "" }}
+{{ $title = printf "%d fichier(s) bloqué(s)" .TotalMitigated }}
+{{ $detail = "Un ou plusieurs fichiers ont été bloqués par les moteurs d'analyse." }}
+{{ else if or (gt .TotalErrors 0) (gt .NbFileNotAnalyzed 0) }}
+{{ $cls = " warn" }}
+{{ $title = "Analyse incomplète" }}
+{{ $detail = "Aucun fichier n'a été bloqué, mais des fichiers sont en erreur ou n'ont pas été analysés (voir les rubriques ci-dessous)." }}
+{{ end }}
+<div class="verdict{{ $cls }}" id="conclusion">
+    <p class="kicker">Conclusion</p>
+    <h1>{{ $title }}</h1>
+    <p>{{ $detail }}</p>
+    <p>Seuls les fichiers analysés comme sains ont pu être déplacés par l'application sur le support de destination.</p>
+</div>
+<p class="scan">Analyse {{ .ScanID }}</p>
 
-    <section id="conclusion">
-        <h2>Conclusion</h2>
-        {{ if gt .TotalMitigated  0 }}
-        <p>
-            Un ou plusieurs fichiers ont été bloqués par les moteurs d'analyse.
-        </p>
-        {{ else }}
-        <p>
-            Aucun comportement suspect ou malveillant n'a été détecté dans les fichiers soumis.
-        </p>
-        {{ end }}
-        <p>Seuls les fichiers analysés comme sains ont pu être déplacés par l'application sur le support de destination.</p>
-    </section>
+<div class="tiles" id="analysis-details">
+    <div class="tile bad"><p class="n">{{ .TotalMitigated }}</p><p class="l">Bloqués</p></div>
+    <div class="tile mal"><p class="n">{{ .TotalMalware }}</p><p class="l">Fichiers malveillants</p></div>
+    <div class="tile warn"><p class="n">{{ .NbFileNotAnalyzed }}</p><p class="l">Non analysés</p></div>
+    <div class="tile err"><p class="n">{{ .TotalErrors }}</p><p class="l">Fichiers en erreur</p></div>
+</div>
 
-    {{ if gt (len .MitigatedFiles) 0 }}
-    <section id="threat-files">
-        <h2>Fichiers bloqués</h2>
-        <div class="table-container">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Chemin</th>
-                        <th>Menace(s)</th>
-                        <th>SHA-256</th>
-                        <th>Taille</th>
-                        <th>Raison</th>
-                        <th>Analyse</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{ range $index, $file := .MitigatedFiles}}
-                    <tr>
-                        <td>{{ .Name }}</td>
-                        <td>{{ range $i, $malware := .Malwares}}
-                            * {{ $malware }}<br>
-                            {{ end }}
-                        </td>
-                        <td>{{ .SHA256 }}</td>
-                        <td>{{ .Size }}</td>
-                        <td>{{ .MitigationReason }}</td>
-                        {{ if eq .GMalwareURL "" }}
-                        <td>Pas d'analyse GLIMPS Malware</td>
-                        {{ else }}
-                        <td><a href="{{ .GMalwareURL }}">Lien analyse</a></td>
-                        {{ end }}
-                    </tr>
-                    {{ end }}
-                </tbody>
-            </table>
-        </div>
-    </section>
+<div class="facts">
+    <div class="fact"><p class="k">Fichiers listés</p><p class="v">{{ .NbFileSubmitted }}</p></div>
+    <div class="fact"><p class="k">Fichiers analysés</p><p class="v">{{ .NbFileAnalyzed }}</p></div>
+    <div class="fact"><p class="k">Taille totale (avant extraction)</p><p class="v">{{ .FileVolume }}</p></div>
+    <div class="fact"><p class="k">Volume analysé</p><p class="v">{{ .AnalyzedVolume }}</p></div>
+    <div class="fact"><p class="k">Volume filtré</p><p class="v">{{ .FilteredVolume }}</p></div>
+</div>
+<p class="scan">Non analysés : membres d'archives inclus.</p>
+
+{{ if gt .NbFileNotAnalyzed 0 }}
+<p class="note">Des fichiers non analysés (voir la rubrique « Fichiers non analysés ») ont pu être transmis sans analyse complète, selon la politique choisie (<code>unanalyzable_policy</code>) : leur contenu n'a pas été vérifié.</p>
+{{ end }}
+
+{{ if gt (len .MitigatedFiles) 0 }}
+<section id="threat-files">
+    <h2 class="bad">Fichiers bloqués<span class="count">{{ add (len .MitigatedFiles) .MoreMitigatedFiles }}</span></h2>
+    <table>
+        {{ template "findingHead" (mergeArgsIntoSlice "Chemin" "Analyse") }}
+        <tbody>
+            {{ range .MitigatedFiles }}
+            <tr>
+                {{ template "findingCells" (mergeArgsIntoSlice . 0) }}
+            </tr>
+            {{ end }}
+        </tbody>
+    </table>
+    {{ if gt .MoreMitigatedFiles 0 }}<p class="more">… et {{ others .MoreMitigatedFiles "" "" }}</p>{{ end }}
+</section>
+{{ end }}
+
+{{ if gt (len .MitigatedArchives) 0 }}
+<section id="threat-archive">
+    <h2 class="bad">Archives bloquées<span class="count">{{ add (len .MitigatedArchives) .MoreMitigatedArchives }}</span></h2>
+    {{ range $index, $file := .MitigatedArchives }}
+    <div class="archive" id="threat-archive-{{ $index }}">
+        <h3>Archive {{ .Name }}</h3>
+        <p class="meta"><b>Nombre de sous-fichier extrait :</b> {{ .FileCount }} · <b>Taille :</b> {{ .Size }} · <b>Quarantaine :</b> {{ .QuarantineLocation }}<br><b>SHA-256 :</b> <code>{{ .SHA256 }}</code></p>
+        <table>
+            {{ template "findingHead" (mergeArgsIntoSlice "Nom" "URL de l'analyse") }}
+            <tbody>
+                {{ template "extractedFilesRows" (mergeArgsIntoSlice .ExtractedFiles 0) }}
+            </tbody>
+        </table>
+        {{/* The rows of an archive are budgeted with archiveRows in main.go: keep both in step. */}}
+        {{ if gt .MoreExtracted 0 }}<p class="more">… et {{ others .MoreExtracted " fichier de l'archive" " fichiers de l'archive" }}</p>{{ end }}
+    </div>
     {{ end }}
+    {{ if gt .MoreMitigatedArchives 0 }}<p class="more">… et {{ others .MoreMitigatedArchives " archive" " archives" }}</p>{{ end }}
+</section>
+{{ end }}
 
-    {{ if gt (len .MitigatedArchives) 0 }}
-    <section id="threat-archive">
-        <h2>Archives bloquées</h2>
-        {{ range $index, $file := .MitigatedArchives}}
-            <section id="threat-archive-{{ $index }}">
-                <div id="archive-details-{{ $index }}">
-                    <h3>Archive {{ .Name }}</h3>
-                    <ul class="details">
-                        <li><strong>Nombre de sous-fichier extrait : </strong>{{ .FileCount }}</li>
-                        <li><strong>SHA-256 : </strong>{{ .SHA256 }}</li>
-                        <li><strong>Taille : </strong>{{ .Size }}</li>
-                        <li><strong>Quarantaine : </strong>{{ .QuarantineLocation }}</li>
-                    </ul>
-                </div>
-                <div class="table-container">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th>Nom</th>
-                                <th>SHA-256</th>
-                                <th>Taille</th>
-                                <th>Menace(s)</th>
-                                <th>Raison</th>
-                                <th>URL de l'analyse</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {{ template "extractedFilesRows" (mergeArgsIntoSlice .ExtractedFiles 0) }}
-                        </tbody>
-                    </table>
-                </div>
-            </section>
-        {{ end }}
-    </section>
-    {{ end }}
+{{ if gt .NbFileNotAnalyzed 0 }}
+<section id="not-analyzed-files">
+    <h2 class="warn">Fichiers non analysés<span class="count">{{ .NbFileNotAnalyzed }}</span></h2>
+    <p class="lead">Ces fichiers n'ont pas été analysés complètement : leur contenu n'a pas été vérifié. Total : {{ .NbFileNotAnalyzed }}.</p>
+    <table>
+        <colgroup><col style="width:36%"><col style="width:10%"><col style="width:30%"><col style="width:24%"></colgroup>
+        <thead>
+            <tr><th>Fichier</th><th>Taille</th><th>Raison</th><th>Archive d'origine</th></tr>
+        </thead>
+        <tbody>
+            {{ range .NotAnalyzedFiles }}
+            <tr><td class="fname">{{ .Name }}</td><td>{{ .Size }}</td><td>{{ .Reason }}</td><td class="muted">{{ .Origin }}</td></tr>
+            {{ end }}
+        </tbody>
+    </table>
+    {{ if gt .MoreNotAnalyzed 0 }}<p class="more">… et {{ others .MoreNotAnalyzed "" "" }}</p>{{ end }}
+</section>
+{{ end }}
 
-    {{ if gt (len .ErrorFiles) 0 }}
-    <section id="error-files">
-        <h2>Fichiers en erreur</h2>
-        <p>Les fichiers suivants n'ont pas pu être analysés correctement :</p>
-        <div class="table-container">
-            <table>
-                <thead>
-                    <tr>
-                        <th>Fichier</th>
-                        <th>Erreur</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {{ range $index, $file := .ErrorFiles}}
-                    <tr>
-                        <td>{{ .Name }}</td>
-                        <td>{{ .Error }}</td>
-                    </tr>
-                    {{ end }}
-                </tbody>
-            </table>
-        </div>
-    </section>
-    {{ end }}
+{{ if gt (len .ErrorFiles) 0 }}
+<section id="error-files">
+    <h2 class="err">Fichiers en erreur<span class="count">{{ .TotalErrors }}</span></h2>
+    <p class="lead">Les fichiers suivants n'ont pas pu être analysés correctement :</p>
+    <table>
+        <colgroup><col style="width:40%"><col style="width:60%"></colgroup>
+        <thead>
+            <tr><th>Fichier</th><th>Erreur</th></tr>
+        </thead>
+        <tbody>
+            {{ range .ErrorFiles }}
+            <tr><td class="fname">{{ .Name }}</td><td>{{ .Error }}</td></tr>
+            {{ end }}
+        </tbody>
+    </table>
+    {{ if gt .MoreErrorFiles 0 }}<p class="more">… et {{ others .MoreErrorFiles "" "" }}</p>{{ end }}
+</section>
+{{ end }}
+
 </body>
-
 </html>

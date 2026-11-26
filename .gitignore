@@ -6,3 +6,5 @@ vendor/*
 *.swp
 connecteur-host
 bin/*
+tmp/*
+CLAUDE.md

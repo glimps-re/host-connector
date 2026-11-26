@@ -1,7 +1,14 @@
+//go:build linux
+
 package main
 
 import (
+	"context"
+	"errors"
 	"io"
+	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -181,7 +188,7 @@ func TestReportPlugin_scanResToReportData(t *testing.T) {
 		},
 	}
 
-	reportData := scanResToReportData(reportContext, reports)
+	reportData := mustReportData(t, reportContext, reports)
 
 	// Check basic fields
 	if reportData.NbFileSubmitted != 3 {
@@ -304,55 +311,162 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 		},
 	}
 
-	// Note: This test will likely fail in CI/CD environments without chromedp/browser
-	// but will test the data preparation and HTML generation parts
-	result, err := p.GenerateReport(t.Context(), reportContext, reports)
-	// Check if we got an error due to chromedp not being available
+	result, err := p.GenerateReport(t.Context(), reportContext, datamodel.ReportsSeq(reports))
 	if err != nil {
-		// This is expected in environments without a browser
-		t.Logf("GenerateReport failed as expected without browser environment: %v", err)
-
-		// We can still test that the data preparation works
-		reportData := scanResToReportData(reportContext, reports)
-
-		// Verify the data was prepared correctly
-		if reportData.ScanID != reportContext.ScanID {
-			t.Errorf("Expected ScanID %s, got %s", reportContext.ScanID, reportData.ScanID)
-		}
-
-		if reportData.NbFileSubmitted != 2 {
-			t.Errorf("Expected 2 files submitted, got %d", reportData.NbFileSubmitted)
-		}
-
-		if len(reportData.MitigatedFiles) != 1 {
-			t.Errorf("Expected 1 malware file, got %d", len(reportData.MitigatedFiles))
-		}
-
-		return
+		t.Fatalf("GenerateReport() error = %v", err)
 	}
-
-	// If no error, verify we got a valid result
-	if result == nil {
-		t.Error("GenerateReport should return a non-nil reader when successful")
-		return
+	if result.Extension != ".pdf" {
+		t.Errorf("Extension = %q, want .pdf", result.Extension)
 	}
-
-	// Read the content to verify it's not empty
-	content := make([]byte, 1024)
-	n, readErr := result.Read(content)
-	if readErr != nil && readErr != io.EOF {
-		t.Errorf("Error reading generated report: %v", readErr)
-		return
+	head := make([]byte, len(pdfMagic))
+	if _, err := io.ReadFull(result.Content, head); err != nil {
+		t.Fatalf("reading the generated report: %v", err)
 	}
-
-	if n == 0 {
-		t.Error("Generated report should not be empty")
+	if string(head) != pdfMagic {
+		t.Errorf("report starts with %q, want %q", head, pdfMagic)
 	}
-
-	t.Logf("Successfully generated report with %d bytes", n)
 }
 
 func TestReportPlugin_Interface(t *testing.T) {
 	// Test that ReportPlugin implements the Plugin interface
 	var _ plugins.Plugin = &ReportPlugin{}
+}
+
+// The reports are read in one pass, and one that cannot be read ends the
+// generation with its error.
+func TestReportPlugin_aFailingSequenceEndsTheGeneration(t *testing.T) {
+	boom := errors.New("spool unreadable")
+	calls := 0
+	seq := func(yield func(datamodel.Report, error) bool) {
+		calls++
+		if !yield(datamodel.Report{Filename: "a"}, nil) {
+			return
+		}
+		yield(datamodel.Report{}, boom)
+	}
+	if _, err := reportDataFrom(context.Background(), datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
+		t.Errorf("reportDataFrom() error = %v, want the error of the sequence", err)
+	}
+	p := &ReportPlugin{consoleLogger: slog.New(slog.DiscardHandler)}
+	if _, err := p.GenerateReport(t.Context(), datamodel.ScanContext{}, seq); !errors.Is(err, boom) {
+		t.Errorf("GenerateReport() error = %v, want the error of the sequence", err)
+	}
+	if calls != 2 {
+		t.Errorf("the sequence was read %d times for 2 generations, want once each", calls)
+	}
+}
+
+func mustReportData(t testing.TB, reportContext datamodel.ScanContext, reports []datamodel.Report) ReportData {
+	t.Helper()
+	data, err := reportDataFrom(context.Background(), reportContext, datamodel.ReportsSeq(reports))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestReportDataFrom_stopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	read := 0
+	seq := func(yield func(datamodel.Report, error) bool) {
+		for i := range 100 {
+			read++
+			if i == 2 {
+				cancel()
+			}
+			if !yield(datamodel.Report{Filename: "f"}, nil) {
+				return
+			}
+		}
+	}
+	if _, err := reportDataFrom(ctx, datamodel.ScanContext{}, seq); !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if read != 3 {
+		t.Errorf("read %d reports, want 3: the pass must stop at the cancellation", read)
+	}
+}
+
+func newTestPlugin(tb testing.TB) *ReportPlugin {
+	tb.Helper()
+	hcc := mock.NewMockHCContext()
+	hcc.Logger = slog.New(slog.DiscardHandler)
+	p := &ReportPlugin{}
+	if err := p.Init(p.GetDefaultConfig(), hcc); err != nil {
+		tb.Fatal(err)
+	}
+	return p
+}
+
+func TestReportDataFrom_countsAsMalwareOnlyDetectedContent(t *testing.T) {
+	detected := datamodel.Report{Filename: "/in/virus.exe", Malicious: true, Malwares: []string{"evil"}, MalwareReason: datamodel.MalwareDetected}
+	byPath := datamodel.Report{Filename: "/in/a.lnk", Malicious: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFilePath}
+	byType := datamodel.Report{Filename: "/in/b.dll", Malicious: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFileType}
+	maliciousMember := datamodel.Report{
+		Filename:                "/in/archive.zip",
+		Malicious:               true,
+		MalwareReason:           datamodel.MalwareDetected,
+		MaliciousExtractedFiles: []datamodel.ExtractedFile{{FileName: "inner.exe", Malicious: true, Malwares: []string{"evil"}}},
+	}
+	forbiddenMember := datamodel.Report{
+		Filename:                "/in/other.zip",
+		Malicious:               true,
+		MalwareReason:           datamodel.FilteredFilePath,
+		MaliciousExtractedFiles: []datamodel.ExtractedFile{{FileName: "inner.lnk", Malicious: true, Malwares: []string{"forbidden_files"}}},
+	}
+
+	tests := []struct {
+		name          string
+		reports       []datamodel.Report
+		wantMitigated int
+		wantMalware   int
+	}{
+		{name: "detected malware", reports: []datamodel.Report{detected}, wantMitigated: 1, wantMalware: 1},
+		{name: "blocked by path", reports: []datamodel.Report{byPath}, wantMitigated: 1},
+		{name: "blocked by type", reports: []datamodel.Report{byType}, wantMitigated: 1},
+		{name: "malicious archive member", reports: []datamodel.Report{maliciousMember}, wantMitigated: 1, wantMalware: 1},
+		{name: "archive blocked for a forbidden member", reports: []datamodel.Report{forbiddenMember}, wantMitigated: 1},
+		{name: "too big", reports: []datamodel.Report{{Filename: "/in/big.bin", Malicious: true, MalwareReason: datamodel.TooBig}}, wantMitigated: 1},
+		{name: "encrypted", reports: []datamodel.Report{{Filename: "/in/enc.zip", Malicious: true, MalwareReason: datamodel.Encrypted}}, wantMitigated: 1},
+		{name: "empty", reports: []datamodel.Report{{Filename: "/in/empty", Malicious: true, MalwareReason: datamodel.Empty}}, wantMitigated: 1},
+		{name: "analysis error", reports: []datamodel.Report{{Filename: "/in/err.bin", Malicious: true, MalwareReason: datamodel.AnalysisError}}, wantMitigated: 1},
+		{name: "threat names without a reason", reports: []datamodel.Report{{Filename: "/in/old.exe", Malicious: true, Malwares: []string{"evil"}}}, wantMitigated: 1},
+		{name: "clean file", reports: []datamodel.Report{{Filename: "/in/ok.txt"}}},
+		{name: "path, type and detection", reports: []datamodel.Report{byPath, byType, detected}, wantMitigated: 3, wantMalware: 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data := mustReportData(t, datamodel.ScanContext{ScanID: "s"}, tt.reports)
+			if data.TotalMitigated != tt.wantMitigated {
+				t.Errorf("TotalMitigated = %d, want %d", data.TotalMitigated, tt.wantMitigated)
+			}
+			if data.TotalMalware != tt.wantMalware {
+				t.Errorf("TotalMalware = %d, want %d", data.TotalMalware, tt.wantMalware)
+			}
+		})
+	}
+}
+
+// tileHTML is coupled to the markup of the summary tiles in report.html.tmpl: it
+// ties a label to its value, which a plain substring search cannot.
+func tileHTML(label string, n int) *regexp.Regexp {
+	return regexp.MustCompile(`<div class="tile[^"]*">\s*<p class="n">` + strconv.Itoa(n) + `</p>\s*<p class="l">` + regexp.QuoteMeta(label) + `</p>\s*</div>`)
+}
+
+func TestReportPlugin_summaryShowsBlockedAndMalwareInTheirOwnTiles(t *testing.T) {
+	p := newTestPlugin(t)
+	buf, err := p.generateHTMLReport(ReportData{TotalMitigated: 3, TotalMalware: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tile := range []struct {
+		label string
+		n     int
+	}{{"Bloqués", 3}, {"Fichiers malveillants", 1}} {
+		t.Run(tile.label, func(t *testing.T) {
+			if !tileHTML(tile.label, tile.n).MatchString(buf.String()) {
+				t.Errorf("HTML has no tile %q with the value %d", tile.label, tile.n)
+			}
+		})
+	}
 }

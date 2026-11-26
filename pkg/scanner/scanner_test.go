@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -20,9 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gabriel-vasile/mimetype"
+
 	"github.com/glimps-re/connector-integration/sdk"
 	"github.com/glimps-re/go-gdetect/pkg/gdetect"
 	gdetectMock "github.com/glimps-re/go-gdetect/pkg/gdetect/mock"
+	"github.com/glimps-re/host-connector/internal/pathutil"
 	"github.com/glimps-re/host-connector/pkg/config"
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/pkg/quarantine"
@@ -206,6 +210,48 @@ func TestNewConnector(t *testing.T) {
 			},
 		},
 		{
+			name: "restore temporary file is ignored, directly and in a folder",
+			fields: fields{
+				config: Config{
+					Actions: Actions{
+						Deleted:    true,
+						Quarantine: true,
+						Log:        true,
+						Inform:     true,
+					},
+					QuarantineFolder: t.TempDir(),
+				},
+			},
+			assert: func(t *testing.T, c *Connector, buff *bytes.Buffer) {
+				t.Helper()
+				var started []string
+				c.RegisterOnStartScanFile(func(location, _ string) { started = append(started, filepath.Base(location)) })
+				folder := t.TempDir()
+				tmpPath := filepath.Join(folder, quarantine.TempPrefix+"victim.bin-0123456789abcdef")
+				if err := os.WriteFile(tmpPath, []byte(badFileContent), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				regular := filepath.Join(folder, "regular.bin")
+				if err := os.WriteFile(regular, []byte("clean content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := c.ScanFile(t.Context(), tmpPath); err != nil {
+					t.Errorf("ScanFile(temp file) error = %v", err)
+				}
+				if err := c.ScanFile(t.Context(), folder); err != nil {
+					t.Errorf("ScanFile(folder) error = %v", err)
+				}
+				c.Close(t.Context())
+				assertNoOutput(t, buff)
+				if len(started) != 1 || started[0] != "regular.bin" {
+					t.Errorf("submitted files = %v, want only regular.bin", started)
+				}
+				if _, err := os.Stat(tmpPath); err != nil {
+					t.Errorf("temporary file must be left untouched: %v", err)
+				}
+			},
+		},
+		{
 			name: "ok one malware file",
 			fields: fields{
 				config: Config{
@@ -386,10 +432,15 @@ func TestNewConnector(t *testing.T) {
 				}
 				c.Close(t.Context())
 
-				// The symlink should be followed and scanned, and the symlink itself should be deleted
-				cacheID := quarantine.ComputeCacheID(symlinkPath, badFileSHA256)
-				assertFileDeleted(t, buff, symlinkPath, cacheID)
-				// Target file should still exist
+				// The link is followed and the content scanned (and quarantined, read
+				// through the descriptor), but a link is never deleted nor moved: what
+				// would go is the link, not the malware. The link and its target stay.
+				if !strings.Contains(buff.String(), "flagged: true") {
+					t.Errorf("output %q does not report the malware behind the link", buff.String())
+				}
+				if _, err := os.Lstat(symlinkPath); err != nil {
+					t.Errorf("the link must stay, got %v", err)
+				}
 				if _, err := os.Stat(targetFile); err != nil {
 					t.Errorf("target file should still exist but got error: %v", err)
 				}
@@ -549,7 +600,9 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("unwanted error: %v", e)
 				}
 				c.Close(t.Context())
-				assertNoOutput(t, buff)
+				if out := buff.String(); !strings.Contains(out, "flagged: false") || !strings.Contains(out, "(3 extracted file(s) not analyzed)") {
+					t.Errorf("output = %q, want a clean archive with its 3 empty members not analyzed", out)
+				}
 			},
 		},
 		{
@@ -580,8 +633,8 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("unwanted error: %v", err)
 				}
 				c.Close(t.Context())
-				// File should not be acted upon (no output)
-				assertNoOutput(t, buff)
+				// Not acted upon, but listed as not analyzed
+				assertRestoredOutput(t, buff)
 				// File should still exist (not deleted)
 				if _, err := os.Stat(testFile); err != nil {
 					t.Fatalf("file %s should still exist but got error: %v", testFile, err)
@@ -618,7 +671,7 @@ func TestNewConnector(t *testing.T) {
 				}
 				c.Close(t.Context())
 				// Even if cache set fails, file should still be marked as restored
-				assertNoOutput(t, buff)
+				assertRestoredOutput(t, buff)
 			},
 		},
 		{
@@ -739,7 +792,7 @@ func TestNewConnector(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &gdetectMock.MockGDetectSubmitter{
+			submitter := echoReader(&gdetectMock.MockGDetectSubmitter{
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) {
 					if tt.fields.errExtractExpertViewURL {
 						err = errors.New("error extracting expert view url")
@@ -774,9 +827,9 @@ func TestNewConnector(t *testing.T) {
 					}
 					return
 				},
-			}
+			})
 			quarantiner := quarantinemock.QuarantineMock{
-				QuarantineMock: func(ctx context.Context, file, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
+				QuarantineMock: func(ctx context.Context, file string, _ *os.File, fileSHA256 string, malwares []string) (quarantineLocation string, entryID string, err error) {
 					if tt.fields.errQuarantine {
 						err = errors.New("error quarantine")
 						return
@@ -785,7 +838,7 @@ func TestNewConnector(t *testing.T) {
 					quarantineLocation = filepath.Join(t.TempDir(), entryID+".lock")
 					return
 				},
-				IsRestoredMock: func(ctx context.Context, sha256 string) (restored bool, err error) {
+				IsRestoredMock: func(ctx context.Context, location string, sha256 string) (restored bool, err error) {
 					if resp, ok := tt.fields.isRestoredResps[sha256]; ok {
 						restored = resp.restored
 						err = resp.err
@@ -853,9 +906,11 @@ func TestConnector_analyzeFile(t *testing.T) {
 				},
 			},
 			wantResult: datamodel.Result{
-				Filename: "test.txt",
-				Location: "/path/test.txt",
-				SHA256:   "abc123",
+				Filename:          "test.txt",
+				Location:          "/path/test.txt",
+				SHA256:            "abc123",
+				FileSize:          100,
+				NotAnalyzedReason: datamodel.NotAnalyzedPolicySkipped,
 			},
 		},
 		{
@@ -1300,14 +1355,18 @@ func TestConnector_analyzeFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			submitter := &gdetectMock.MockGDetectSubmitter{
+			submitter := echoReader(&gdetectMock.MockGDetectSubmitter{
 				WaitForFileMock: func(ctx context.Context, filepath string, options gdetect.WaitForOptions) (result gdetect.Result, err error) {
-					return tt.fields.submitterWaitForFileResp.result, tt.fields.submitterWaitForFileResp.err
+					res := tt.fields.submitterWaitForFileResp.result
+					if res.SHA256 == "" {
+						res.SHA256 = tt.args.input.sha256
+					}
+					return res, tt.fields.submitterWaitForFileResp.err
 				},
 				ExtractExpertViewURLMock: func(result *gdetect.Result) (urlExpertView string, err error) {
 					return tt.fields.submitterExtractURLResp.url, tt.fields.submitterExtractURLResp.err
 				},
-			}
+			})
 
 			c := &Connector{
 				submitter: submitter,
@@ -1339,7 +1398,7 @@ func TestConnector_analyzeFile(t *testing.T) {
 					t.Errorf("handleFile() result Error = %v, want %v", gotResult.Error, tt.wantResult.Error)
 					return
 				}
-				if !errors.Is(tt.wantResult.Error, gotResult.Error) {
+				if !errors.Is(gotResult.Error, tt.wantResult.Error) {
 					if tt.wantResult.Error.Error() != gotResult.Error.Error() {
 						t.Errorf("handleFile() result Error = %v, want %v", gotResult.Error, tt.wantResult.Error)
 					}
@@ -1654,7 +1713,8 @@ func Test_Connector_checkBeforeExtract(t *testing.T) {
 				location = testFile.Name()
 			}
 
-			err := c.checkBeforeExtract(location, tt.args.size, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
+			mtype, typeErr := mimetype.DetectFile(location)
+			err := c.checkBeforeExtract(location, mtype, typeErr != nil, tt.args.totalExtractedSize, tt.args.totalExtractedFiles, tt.args.depth, logger)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("checkBeforeExtract() error = %v, wantErr %v", err, tt.wantErr)
@@ -1760,19 +1820,16 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			},
 		},
 		{
-			name: "ko getFileSHA256 error",
+			name: "ko getFileSHA256 error: no action, temporary folder and status cleaned up",
 			fields: fields{
 				archiveFileDeleted: true,
 			},
-			wantErr:        true,
-			wantStatusKept: true,
 		},
 		{
-			name: "ko SHA256 mismatch",
+			name: "ko SHA256 mismatch: no action, temporary folder and status cleaned up",
 			fields: fields{
 				sha256Mismatch: true,
 			},
-			wantStatusKept: true,
 		},
 		{
 			name: "ko error handling action",
@@ -1807,9 +1864,9 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 			var actionCalled bool
 			var actionPath string
 			action := &MockAction{
-				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+				HandleMock: func(ctx context.Context, path Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
 					actionCalled = true
-					actionPath = path
+					actionPath = path.Path
 					if tt.fields.actionError {
 						err = actionErr
 						return
@@ -1851,9 +1908,8 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 					parentTotal = 1
 				}
 				parentID = c.archiveStatus.addStatus(archiveStatus{
-					started:         true,
 					finished:        false,
-					archiveLocation: parentLocation,
+					archiveLocation: parentLocation, identity: idOf(t, parentLocation),
 					result: datamodel.Result{
 						SHA256:   parentSHA256,
 						FileSize: parentInfo.Size(),
@@ -1866,7 +1922,6 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 				subArchiveLocation := filepath.Join(t.TempDir(), "sub-archive.zip")
 				subTmpFolder := t.TempDir()
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
-					started:         true,
 					finished:        true,
 					archiveLocation: subArchiveLocation,
 					result: datamodel.Result{
@@ -1898,9 +1953,8 @@ func Test_Connector_finishArchiveAnalysis(t *testing.T) {
 					storedSHA256 = "different-sha256"
 				}
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
-					started:         true,
 					finished:        true,
-					archiveLocation: location,
+					archiveLocation: location, identity: idOf(t, location),
 					result: datamodel.Result{
 						SHA256:   storedSHA256,
 						FileSize: info.Size(),
@@ -2003,7 +2057,7 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var actionCalled bool
 			action := &MockAction{
-				HandleMock: func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+				HandleMock: func(ctx context.Context, path Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
 					actionCalled = true
 					return
 				},
@@ -2028,7 +2082,6 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 				archiveLocation = "/path/to/archive.zip"
 			case tt.fields.archiveFinished:
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
-					started:         true,
 					finished:        true,
 					archiveLocation: "/path/to/archive.zip",
 					result:          datamodel.Result{SHA256: "archive-sha256"},
@@ -2040,9 +2093,8 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 				location, fileSHA256 := createTestFile(t, t.TempDir(), "archive content")
 				tmpFolder = t.TempDir()
 				archiveID = c.archiveStatus.addStatus(archiveStatus{
-					started:         true,
 					finished:        false,
-					archiveLocation: location,
+					archiveLocation: location, identity: idOf(t, location),
 					result: datamodel.Result{
 						SHA256:   fileSHA256,
 						Location: location,
@@ -2090,8 +2142,6 @@ func Test_Connector_analyzeArchiveFile(t *testing.T) {
 var testRecursive []byte
 
 func Test_Connector_recursiveExtract(t *testing.T) {
-	inputArchiveSHA256 := "INPUT_ARCHIVE_SHA256"
-	innermostArchiveSHA256 := "INNERMOST_ARCHIVE_SHA256"
 	type fields struct {
 		recursiveExtractMaxDepth int
 		extractMinThreshold      int64
@@ -2161,10 +2211,10 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			},
 		},
 		{
-			name: "ok with checkBeforeExtract error for input archive",
+			name: "ok an archive below extract_min_size is extracted all the same",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
-				extractMinThreshold:      100000, // so file size < extractMinThreshold, to provoke error checking before extract
+				extractMinThreshold:      100000, // the archive is far below it: its type decides, not its size
 				recursiveExtractMaxSize:  1000000,
 				recursiveExtractMaxFiles: 100,
 				createZipArchive:         []string{"content1"},
@@ -2173,11 +2223,11 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_*.zip"},
+				{filename: "file-0"},
 			},
 		},
 		{
-			name: "ok with ExtractFile error for input archive",
+			name: "ExtractFile error for an archive the extractor recognizes: not a plain file",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
 				extractMinThreshold:      1,
@@ -2188,9 +2238,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			args: args{
 				depth: 0,
 			},
-			wantFilesSent: []fileToAnalyze{
-				{filename: "invalid*.zip"},
-			},
+			wantErr: true,
 		},
 		{
 			name: "ok empty archive", // (0 files to extract)
@@ -2221,7 +2269,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 		{
@@ -2237,9 +2285,9 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
-				{filename: "file-1", archiveSHA256: inputArchiveSHA256},
-				{filename: "file-2", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-0"},
+				{filename: "file-1"},
+				{filename: "file-2"},
 			},
 		},
 		{
@@ -2255,7 +2303,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 1,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 		{
@@ -2271,7 +2319,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_2.zip"},
+				{filename: "archive_level_2.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2287,7 +2335,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip"},
+				{filename: "archive_level_0.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2303,7 +2351,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip"},
+				{filename: "archive_level_0.zip", limitSkipped: true},
 			},
 		},
 		{
@@ -2319,7 +2367,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 		{
@@ -2335,7 +2383,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 		{
@@ -2351,7 +2399,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "file-0", archiveSHA256: innermostArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 		{
@@ -2367,22 +2415,22 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "test_recursive/file_1-1.txt", archiveSHA256: inputArchiveSHA256},
-				{filename: "test_recursive/file_1-2.txt", archiveSHA256: inputArchiveSHA256},
-				{filename: "level1/file_2-1.txt", archiveSHA256: ""},
-				{filename: "level1/file_2-2.txt", archiveSHA256: ""},
-				{filename: "level2/file_3-1.txt", archiveSHA256: ""},
-				{filename: "level2/file_3-2.txt", archiveSHA256: ""},
-				{filename: "level3/file_4-1.txt", archiveSHA256: ""},
-				{filename: "level3/file_4-2.txt", archiveSHA256: ""},
-				{filename: "level4/file_5-1.txt", archiveSHA256: ""},
-				{filename: "level4/file_5-2.txt", archiveSHA256: ""},
-				{filename: "level5/file_6-1.txt", archiveSHA256: ""},
-				{filename: "level5/file_6-2.txt", archiveSHA256: ""},
-				{filename: "level6/file_7-1.txt", archiveSHA256: ""},
-				{filename: "level6/file_7-2.txt", archiveSHA256: ""},
-				{filename: "level7/file_8-1.txt", archiveSHA256: ""},
-				{filename: "level7/file_8-2.txt", archiveSHA256: ""},
+				{filename: "test_recursive/file_1-1.txt"},
+				{filename: "test_recursive/file_1-2.txt"},
+				{filename: "level1/file_2-1.txt"},
+				{filename: "level1/file_2-2.txt"},
+				{filename: "level2/file_3-1.txt"},
+				{filename: "level2/file_3-2.txt"},
+				{filename: "level3/file_4-1.txt"},
+				{filename: "level3/file_4-2.txt"},
+				{filename: "level4/file_5-1.txt"},
+				{filename: "level4/file_5-2.txt"},
+				{filename: "level5/file_6-1.txt"},
+				{filename: "level5/file_6-2.txt"},
+				{filename: "level6/file_7-1.txt"},
+				{filename: "level6/file_7-2.txt"},
+				{filename: "level7/file_8-1.txt"},
+				{filename: "level7/file_8-2.txt"},
 			},
 		},
 		{
@@ -2398,23 +2446,23 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "test_recursive/file_1-1.txt", archiveSHA256: inputArchiveSHA256},
-				{filename: "test_recursive/file_1-2.txt", archiveSHA256: inputArchiveSHA256},
-				{filename: "level1/file_2-1.txt", archiveSHA256: ""},
-				{filename: "level1/file_2-2.txt", archiveSHA256: ""},
-				{filename: "level2/file_3-1.txt", archiveSHA256: ""},
-				{filename: "level2/file_3-2.txt", archiveSHA256: ""},
-				{filename: "level3/file_4-1.txt", archiveSHA256: ""},
-				{filename: "level3/file_4-2.txt", archiveSHA256: ""},
-				{filename: "level4/file_5-1.txt", archiveSHA256: ""},
-				{filename: "level4/file_5-2.txt", archiveSHA256: ""},
-				{filename: "level5/file_6-1.txt", archiveSHA256: ""},
-				{filename: "level5/file_6-2.txt", archiveSHA256: ""},
-				{filename: "level5/level6.zip", archiveSHA256: ""},
+				{filename: "test_recursive/file_1-1.txt"},
+				{filename: "test_recursive/file_1-2.txt"},
+				{filename: "level1/file_2-1.txt"},
+				{filename: "level1/file_2-2.txt"},
+				{filename: "level2/file_3-1.txt"},
+				{filename: "level2/file_3-2.txt"},
+				{filename: "level3/file_4-1.txt"},
+				{filename: "level3/file_4-2.txt"},
+				{filename: "level4/file_5-1.txt"},
+				{filename: "level4/file_5-2.txt"},
+				{filename: "level5/file_6-1.txt"},
+				{filename: "level5/file_6-2.txt"},
+				{filename: "level5/level6.zip", limitSkipped: true},
 			},
 		},
 		{
-			name: "ok inner archive below threshold",
+			name: "ok an inner archive below extract_min_size is extracted all the same",
 			fields: fields{
 				recursiveExtractMaxDepth: 10,
 				extractMinThreshold:      200, // threshold between outer (~257B) and inner (~170B) archive sizes
@@ -2426,7 +2474,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				depth: 0,
 			},
 			wantFilesSent: []fileToAnalyze{
-				{filename: "archive_level_0.zip", archiveSHA256: inputArchiveSHA256},
+				{filename: "file-0"},
 			},
 		},
 	}
@@ -2436,6 +2484,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 			analysisChan := make(chan fileToAnalyze, 20) // large enough to be able to send all extracted files
 
 			c := &Connector{
+				work: newTestWorkDir(t),
 				config: Config{
 					RecursiveExtractMaxDepth: tt.fields.recursiveExtractMaxDepth,
 					ExtractMinThreshold:      tt.fields.extractMinThreshold,
@@ -2450,7 +2499,6 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 
 			var archiveLocation string
 			var archiveSHA256 string
-			var innerArchiveSHA256 string
 			var archiveSize int64
 			switch {
 			case len(tt.fields.inputFile) > 0:
@@ -2506,7 +2554,7 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 				// Start with the innermost archive containing a file at the deepest level
 				fileContent := fmt.Sprintf("file content at depth %d", tt.fields.createArchiveWithDepth)
 				var nestedArchive string
-				nestedArchive, innerArchiveSHA256 = createArchive(t, []string{fileContent})
+				nestedArchive, _ = createArchive(t, []string{fileContent})
 
 				// Create nested archives up to the requested depth
 				for d := range tt.fields.createArchiveWithDepth {
@@ -2581,21 +2629,20 @@ func Test_Connector_recursiveExtract(t *testing.T) {
 					return
 				}
 				tt.wantFilesSent[i].filename = filesSent[i].filename
+			}
 
-				switch want.archiveSHA256 {
-				case inputArchiveSHA256:
-					tt.wantFilesSent[i].archiveSHA256 = archiveSHA256
-				case innermostArchiveSHA256:
-					tt.wantFilesSent[i].archiveSHA256 = innerArchiveSHA256
-				case "":
-					// Don't check archiveSHA256 - copy from got to skip comparison
-					tt.wantFilesSent[i].archiveSHA256 = filesSent[i].archiveSHA256
+			for _, f := range filesSent {
+				if f.logicalPath == "" {
+					continue // the input itself: logical path is its location
+				}
+				if !strings.HasPrefix(f.logicalPath, archive.location+"/") || !strings.HasSuffix(f.logicalPath, "/"+filepath.ToSlash(f.filename)) {
+					t.Errorf("logicalPath = %q, want the top-level archive %q followed by the member path %q", f.logicalPath, archive.location, f.filename)
 				}
 			}
 
 			if diff := cmp.Diff(filesSent, tt.wantFilesSent,
 				cmp.AllowUnexported(fileToAnalyze{}),
-				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "size", "archiveID", "archiveLocation", "archiveTopLocation", "archiveSize"),
+				cmpopts.IgnoreFields(fileToAnalyze{}, "sha256", "location", "logicalPath", "size", "archiveID", "archiveLocation", "archiveTopLocation", "mtype", "typeErr", "typeRead"),
 			); diff != "" {
 				t.Errorf("recursiveExtract() files sent mismatch (want-got):\n%s", diff)
 			}
@@ -2615,9 +2662,10 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 		wantFilesSentToWorker int
 	}{
 		{
-			name:                  "ok nested archive only sub-archive calls callbacks",
-			wantOnStartScanFile:   1,
-			wantOnScanFile:        1,
+			name:                "ok nested archive: the top-level and the sub-archive are decided before any member is sent",
+			wantOnStartScanFile: 1,
+			// The same rule for both: after the extraction, before the dispatch.
+			wantOnScanFile:        2,
 			wantFilesSentToWorker: 1, // innermost file
 		},
 		{
@@ -2639,6 +2687,7 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 			var onScanFileCalled atomic.Int64
 
 			c := &Connector{
+				work: newTestWorkDir(t),
 				config: Config{
 					RecursiveExtractMaxDepth: 10,
 					ExtractMinThreshold:      1,
@@ -2714,5 +2763,47 @@ func Test_Connector_recursiveExtract_topLevelCallbacks(t *testing.T) {
 				t.Errorf("files sent to worker = %d, want %d", len(filesSent), tt.wantFilesSentToWorker)
 			}
 		})
+	}
+}
+
+func TestMemberLogicalPath(t *testing.T) {
+	out := filepath.Join(string(filepath.Separator), "work", "gmhost-1", "extract")
+	tests := []struct {
+		name, parent, location, want string
+	}{
+		{"member", "/in/alice/a.zip", filepath.Join(out, "x", "y.exe"), "/in/alice/a.zip/x/y.exe"},
+		{"nested", "/in/alice/a.zip/b.zip", filepath.Join(out, "f.txt"), "/in/alice/a.zip/b.zip/f.txt"},
+		{"outside the extraction folder keeps its base name", "/in/a.zip", filepath.Join(string(filepath.Separator), "etc", "passwd"), "/in/a.zip/passwd"},
+		{"parent with a trailing slash", "/in/a.zip/", filepath.Join(out, "f"), "/in/a.zip/f"},
+		{"control characters cannot hide a member from a rule", "/in/alice/a.zip", filepath.Join(out, "a\nb.exe"), "/in/alice/a.zip/a_b.exe"},
+		{"carriage return and delete", "/in/a.zip", filepath.Join(out, "a\rb\x7fc"), "/in/a.zip/a_b_c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rel, err := filepath.Rel(out, tt.location)
+			if got := memberLogicalPath(tt.parent, rel, err == nil && pathutil.Under(out, tt.location), tt.location); got != tt.want {
+				t.Errorf("memberLogicalPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFileToAnalyze_logicalPathNeutralizesControlCharactersAtTheTopLevel(t *testing.T) {
+	top := fileToAnalyze{location: "/in/alice/a\nb.exe"}
+	if got, want := top.logical(), "/in/alice/a_b.exe"; got != want {
+		t.Errorf("logical() = %q, want %q", got, want)
+	}
+	if !regexp.MustCompile(`^/in/alice/.*\.exe$`).MatchString(top.logical()) {
+		t.Error("a newline in the name must not hide the file from a rule on its path")
+	}
+	if got := (fileToAnalyze{location: "/in/alice/a.exe"}).logical(); got != "/in/alice/a.exe" {
+		t.Errorf("logical() = %q, want the location unchanged", got)
+	}
+}
+
+func assertRestoredOutput(t *testing.T, buff *bytes.Buffer) {
+	t.Helper()
+	if out := buff.String(); strings.Count(out, "not analyzed (restored)") != 1 || strings.Contains(out, "seems safe") {
+		t.Errorf("inform output = %q, want one line, not analyzed (restored)", out)
 	}
 }

@@ -15,35 +15,37 @@ import (
 	"github.com/glimps-re/host-connector/pkg/quarantine"
 	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
 
 var hostConfig = &config.Config{
-	Config: config.DefaultConfigPath,
-	HostConfig: sdk.HostConfig{
-		CommonConnectorConfig: sdk.CommonConnectorConfig{
-			GMalwareTimeout: config.DefaultTimeout,
-		},
-		Workers:        config.DefaultWorkers,
-		MaxFileSize:    config.DefaultMaxFileSize,
-		ExtractMinSize: config.DefaultExtractMinSize,
-		Actions: sdk.HostActionsConfig{
-			Delete:     true,
-			Quarantine: true,
-			Print:      true,
-			Log:        true,
-		},
-		Monitoring: sdk.HostMonitoringConfig{
-			ModificationDelay: config.DefaultModificationDelay,
-		},
-		Quarantine: sdk.HostQuarantineConfig{
-			Password: "infected",
-		},
+	Config:          config.DefaultConfigPath,
+	ShutdownTimeout: sdk.Duration(config.DefaultShutdownTimeout),
+	GMalwareTimeout: config.DefaultTimeout,
+	Workers:         config.DefaultWorkers,
+	MaxFileSize:     config.DefaultMaxFileSize,
+	ExtractMinSize:  config.DefaultExtractMinSize,
+	Actions: sdk.HostActionsConfig{
+		Delete:     true,
+		Quarantine: true,
+		Print:      true,
+		Log:        true,
+	},
+	Monitoring: sdk.HostMonitoringConfig{
+		ModificationDelay: config.DefaultModificationDelay,
+	},
+	Quarantine: sdk.HostQuarantineConfig{
+		Password: "infected",
 	},
 }
 
+// errConfigFile is set when the configuration file exists but cannot be used:
+// every command that starts the connector refuses to run, instead of starting
+// with defaults nobody wrote.
+var errConfigFile error
+
 func initConfig() {
+	errConfigFile = nil
 	if hostConfig.Config == "" {
 		conf, err := config.GetConfigFile()
 		if err != nil {
@@ -51,14 +53,9 @@ func initConfig() {
 		}
 		hostConfig.Config = conf
 	}
-	viper.SetConfigFile(hostConfig.Config)
-	viper.SetConfigType("yaml")
-	if err := viper.ReadInConfig(); err != nil {
-		logger.Error("can't read config", slog.String("error", err.Error()))
-		return
-	}
-	if err := viper.Unmarshal(hostConfig, viper.DecodeHook(sdk.DurationMapstructureHook())); err != nil {
-		logger.Error("can't unmarshal config", slog.String("error", err.Error()))
+	if err := config.LoadFile(hostConfig.Config, hostConfig, rootCmd.PersistentFlags().Changed("config")); err != nil {
+		errConfigFile = err
+		logger.Error("invalid configuration file", slog.String("error", err.Error()))
 	}
 }
 
@@ -66,6 +63,7 @@ func initRoot(rootCmd *cobra.Command) {
 	cobra.OnInitialize(initConfig)
 
 	rootCmd.PersistentFlags().StringVar(&hostConfig.Config, "config", config.DefaultConfigPath, "config file")
+	rootCmd.PersistentFlags().Var(&hostConfig.ShutdownTimeout, "shutdown-timeout", "Time allowed to stop on SIGTERM or SIGINT (at least 2s): keep it under the delay of the orchestrator")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.GMalwareAPIToken, "gmalware-token", os.Getenv("GMALWARE_TOKEN"), "GLIMPS Malware Detect token")
 	rootCmd.PersistentFlags().StringVar(&hostConfig.GMalwareAPIURL, "gmalware-url", os.Getenv("GMALWARE_URL"), "GLIMPS Malware Detect url (E.g https://gmalware.ggp.glimps.re)")
 	rootCmd.PersistentFlags().BoolVar(&hostConfig.GMalwareSyndetect, "gmalware-syndetect", hostConfig.GMalwareSyndetect, "Use syndetect API to analyze files")
@@ -91,7 +89,8 @@ func initRoot(rootCmd *cobra.Command) {
 
 	monitoringCmd.PersistentFlags().BoolVar(&hostConfig.Monitoring.PreScan, "pre-scan", false, "Immediately scan all existing files in monitored paths when monitoring starts")
 	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.Period, "scan-period", "If set enable periodic rescan. Time interval between periodic re-scans (e.g., '1h', '30m')")
-	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.ModificationDelay, "mod-delay", "Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes)")
+	monitoringCmd.PersistentFlags().BoolVar(&hostConfig.Monitoring.DisableFSWatcher, "disable-fs-watcher", hostConfig.Monitoring.DisableFSWatcher, "Do not watch filesystem events, only pre-scan and periodic rescan (requires --scan-period)")
+	monitoringCmd.PersistentFlags().Var(&hostConfig.Monitoring.ModificationDelay, "mod-delay", "Wait time after file modification before scanning (e.g., '30s', prevents scanning incomplete writes; under 1s logs a warning)")
 
 	agentCmd.PersistentFlags().StringVar(&hostConfig.Console.URL, "console-url", "", "connector manager url")
 	agentCmd.PersistentFlags().StringVar(&hostConfig.Console.APIKey, "console-api-key", "", "connector manager API key")
@@ -101,8 +100,10 @@ func initRoot(rootCmd *cobra.Command) {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "GMHost",
-	Short: "GLIMPS Malware Host connector is a tool to scan files with GLIMPS Malware Detect",
+	Use:               "GMHost",
+	SilenceErrors:     true,
+	PersistentPreRunE: resolveShutdownTimes,
+	Short:             "GLIMPS Malware Host connector is a tool to scan files with GLIMPS Malware Detect",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
 		err = yaml.NewEncoder(os.Stdout).Encode(hostConfig)
 		if err != nil {
@@ -117,6 +118,9 @@ var rootCmd = &cobra.Command{
 }
 
 func initHandlerNoConsole(cmd *cobra.Command, _ []string) (err error) {
+	if errConfigFile != nil {
+		return errConfigFile
+	}
 	if hostConfig.Debug {
 		LogLevel.Set(slog.LevelDebug)
 		scanner.LogLevel.Set(slog.LevelDebug)
@@ -134,6 +138,9 @@ func initHandlerNoConsole(cmd *cobra.Command, _ []string) (err error) {
 }
 
 func initHandler(cmd *cobra.Command, _ []string, consoleClient *sdk.ConnectorManagerClient, unresolvedErrors map[events.ErrorEventType]string) (err error) {
+	if errConfigFile != nil {
+		return errConfigFile
+	}
 	if hostConfig.Debug {
 		LogLevel.Set(slog.LevelDebug)
 		scanner.LogLevel.Set(slog.LevelDebug)

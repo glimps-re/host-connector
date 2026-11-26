@@ -1,32 +1,36 @@
 # GLIMPS Malware Detect Host Connector - Plugin Configuration
 # This file contains configuration examples for all built-in plugins (GNU/Linux only)
 # Reference this file in the main config.yml using: plugins_config: /path/to/plugin_config.yml
+#
+# Plugins are loaded, and their callbacks called, in the order of this file.
+# Recommended order: filters, then session.
+# The filepath_filter and error_filter plugins are removed: see filepath_filter and
+# unanalyzable_policy.analysis_error in the main config.yml.
 
 # Extract Plugin - Archive extraction and scanning
 # Extracts and scans content from various archive formats (ZIP, RAR, 7Z, TAR, GZIP, BZIP2, ISO, etc.)
 extract:
   file: extract.so
   config:
-    # Maximum size per extracted file (default: 500MB)
-    # Files exceeding this size within an archive are skipped
-    # Supported units: B, KB, MB, GB, TB
-    # max_file_size: "500MB"
-
-    # Maximum number of files to extract from a single archive (default: 1000)
-    # max_extracted_files: 1000
-
-    # Maximum total size to extract from one archive (default: 3GB)
-    # Additional files are skipped if this limit is reached
-    # max_total_extracted_size: "3GB"
+    # The extraction limits are the global ones, set in the main config.yml:
+    # recursive_extract_max_files and recursive_extract_max_size: a member is bounded
+    # only by what is left of recursive_extract_max_size, max_file_size bounds only
+    # what is submitted for analysis.
+    # The former keys max_file_size, max_extracted_files and max_total_extracted_size
+    # of this plugin are removed: the connector refuses to start if one is present.
 
     # List of passwords to try when extracting password-protected archives
     # Default: ["infected"] - commonly used password for malware samples
     default_passwords:
       - infected
 
-    # Custom path to 7-Zip binary (optional)
-    # If not specified, the plugin will auto-detect system 7-Zip or use the embedded binary
-    # seven_zip_path: /usr/bin/7z
+    # Absolute path of a 7-Zip binary (optional)
+    # If not specified, the embedded 7-Zip is deployed in the private work directory
+    # (a 7zzs found in PATH is never used). A configured binary must be owned by root
+    # or the connector account and not writable by others. Either way it is run at
+    # startup on a reference archive: a missing, unsafe or unsupported 7-Zip
+    # (the analysis relies on the output of 7-Zip 25.01) refuses the start.
+    # seven_zip_path: /opt/7zip/7zzs
 
 # FileType Filter Plugin - MIME type-based file filtering
 # Filters files based on their detected MIME types using libmagic
@@ -55,42 +59,6 @@ filetype_filter:
       - application/json
       - application/pdf
 
-# FilePath Filter Plugin - path based file filtering
-# Filters files based on their path, using regular expressions
-filepath_filter:
-  file: filepath_filter.so
-  config:
-    # List of paths (in the form of regular expressions) to flag as malicious (Score=1000)
-    # Files matching one of these paths will be immediately marked as threats without further analysis
-    forbidden_paths:
-      - "^/tmp/.*"         # any file in /tmp or its subfolders
-      - "^/tmp/[^/]+$"     # any file strictly in /tmp (not its subfolders)
-      - "^.*.exe$"         # all exe files
-
-    # List of paths (in the form of regular expressions) to mark as safe (Score=-500)
-    # Files matching one of these paths will be skipped from expensive analysis
-    skipped_paths:
-      - "^.*.png$"         # all png files
-      - "^.*.jpg$"         # all jpg files
-
-# FileSize Filter Plugin - File size-based filtering
-# Filters files exceeding a maximum size threshold
-filesize_filter:
-  file: filesize_filter.so
-  config:
-    # Maximum file size (human-readable format)
-    # Files exceeding this size are treated as threats (Score=1000)
-    # Supported units: B, KB, MB, GB, TB
-    # Default: 100MB
-    max_size: "100MB"
-
-# Error Filter Plugin - Analysis error handling
-# Marks files with analysis errors as malicious for proper handling
-# This plugin requires no configuration - it automatically flags files that encounter
-# errors during analysis to ensure they are properly reviewed
-error_filter:
-  file: error_filter.so
-
 # Session Plugin - Session-based file grouping and tracking
 # Manages scanning sessions by grouping files based on directory structure
 session:
@@ -118,6 +86,36 @@ session:
     # Example: ["/var/reports"] creates reports in /var/reports/<session_id>/
     # Leave empty to disable automatic exports
     exports: []
+
+    # Time given to each attempt to generate and write the report of one
+    # session (default: 6m, it should exceed the 5 minutes the PDF rendering may
+    # take). A failed attempt is retried at the next check report_retries times
+    # (default: 3), then a JSON report is written instead
+    # report_timeout: 6m
+    # report_retries: 3
+
+    # Longest a session is held open, since its last activity, by files that
+    # never end or that wait for a worker (default: 24h). Past it the session is
+    # closed with a warning and the waiting files open a new one
+    # inflight_timeout: 24h
+
+    # Remove the empty folders left below a session once its report is written
+    # (default: true; Linux only). The root folder and the folders of the
+    # sessions are kept, as is a folder changed less than "delay" ago or one that
+    # holds a file. false leaves the empty folders where they are
+    # remove_empty_dirs: true
+
+    # Time given to the removal of the empty folders of one session (default: 2m)
+    # cleanup_timeout: 2m
+
+    # Longest a session stays open, whatever its activity (default: 24h, > 0).
+    # Past it the session is closed and the next deposit opens a new one
+    # max_duration: 24h
+
+    # Size of the reports of a session, kept on disk in the work directory
+    # (<work_dir>/session), that closes it at once (default: 1GiB, at least
+    # 1MiB). Plan max_spool_size x the number of sessions open at once
+    # max_spool_size: 1GiB
 
 # Report Plugin - Report generation (PDF/HTML)
 # Generates comprehensive scan reports in PDF or HTML format

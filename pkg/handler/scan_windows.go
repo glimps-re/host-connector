@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"log/slog"
 	"strconv"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
+	"github.com/glimps-re/host-connector/pkg/scanner"
 	"github.com/gonutz/wui/v2"
 )
 
@@ -16,17 +18,23 @@ import (
 var ico []byte
 
 func createWindow(pg *wui.ProgressBar, xLabel *wui.Label, fileLabel *wui.Label, path string, nbFilesLabel *wui.Label) context.Context {
-	windowFont, _ := wui.NewFont(wui.FontDesc{
+	window := wui.NewWindow()
+	if windowFont, err := wui.NewFont(wui.FontDesc{
 		Name:   "Tahoma",
 		Height: -11,
-	})
-	window := wui.NewWindow()
-	window.SetFont(windowFont)
+	}); err != nil {
+		slog.Warn("could not create the window font", slog.String("error", err.Error()))
+	} else {
+		window.SetFont(windowFont)
+	}
 	window.SetInnerSize(544, 190)
 	window.SetTitle("GMHost")
 
-	icon, _ := wui.NewIconFromReader(bytes.NewReader(ico))
-	window.SetIcon(icon)
+	if icon, err := wui.NewIconFromReader(bytes.NewReader(ico)); err != nil {
+		slog.Warn("could not load the window icon", slog.String("error", err.Error()))
+	} else {
+		window.SetIcon(icon)
+	}
 	pg.SetBounds(59, 129, 411, 30)
 	pg.SetValue(0)
 	window.Add(pg)
@@ -64,7 +72,9 @@ func createWindow(pg *wui.ProgressBar, xLabel *wui.Label, fileLabel *wui.Label, 
 		window.SetOnClose(func() {
 			cancel()
 		})
-		window.Show()
+		if err := window.Show(); err != nil {
+			slog.Error("could not show the scan window", slog.String("error", err.Error()))
+		}
 	}()
 	return ctx
 }
@@ -91,6 +101,6 @@ var HandleResultCB = func(path string, result datamodel.Result, report *datamode
 	return nil
 }
 
-func (a *GuiHandleResult) Handle(ctx context.Context, path string, result datamodel.Result, report *datamodel.Report) (err error) {
-	return HandleResultCB(path, result, report)
+func (a *GuiHandleResult) Handle(ctx context.Context, src scanner.Source, result datamodel.Result, report *datamodel.Report) (err error) {
+	return HandleResultCB(src.Path, result, report)
 }

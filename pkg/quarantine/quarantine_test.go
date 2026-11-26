@@ -2,10 +2,17 @@ package quarantine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -15,8 +22,8 @@ import (
 
 type lockerMock struct {
 	LockFileMock   func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error
-	UnlockFileMock func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error)
-	GetHeaderMock  func(in io.Reader) (entry LockEntry, err error)
+	UnlockFileMock func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error)
+	GetHeaderMock  func(src io.ReaderAt, size int64) (entry LockEntry, err error)
 }
 
 func (l *lockerMock) LockFile(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
@@ -26,16 +33,16 @@ func (l *lockerMock) LockFile(file string, in io.Reader, info os.FileInfo, reaso
 	panic("LockFileMock not implemented")
 }
 
-func (l *lockerMock) UnlockFile(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
+func (l *lockerMock) UnlockFile(src io.ReaderAt, size int64, out io.Writer) (LockedFile, error) {
 	if l.UnlockFileMock != nil {
-		return l.UnlockFileMock(in, out)
+		return l.UnlockFileMock(src, size, out)
 	}
 	panic("UnlockFileMock not implemented")
 }
 
-func (l *lockerMock) GetHeader(in io.Reader) (entry LockEntry, err error) {
+func (l *lockerMock) GetHeader(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 	if l.GetHeaderMock != nil {
-		return l.GetHeaderMock(in)
+		return l.GetHeaderMock(src, size)
 	}
 	panic("GetHeaderMock not implemented")
 }
@@ -44,9 +51,9 @@ type registryMock struct {
 	GetLocationMock func() (location string)
 	SetMock         func(ctx context.Context, entry *Entry) error
 	GetMock         func(ctx context.Context, id string) (entry *Entry, err error)
-	MigrateMock     func(ctx context.Context, newLocation string) error
+	CloneMock       func(ctx context.Context, newLocation string, mergeExisting bool) (quarantineRegistry, error)
+	DiscardMock     func() error
 	CloseMock       func() error
-	GetBySHA256Mock func(ctx context.Context, id string) (*Entry, error)
 }
 
 func (m *registryMock) GetLocation() (location string) {
@@ -70,18 +77,18 @@ func (m *registryMock) Get(ctx context.Context, id string) (*Entry, error) {
 	panic("Get not implemented")
 }
 
-func (m *registryMock) GetBySHA256(ctx context.Context, id string) (*Entry, error) {
-	if m.GetBySHA256Mock != nil {
-		return m.GetBySHA256Mock(ctx, id)
+func (m *registryMock) Clone(ctx context.Context, newLocation string, _ bool) (quarantineRegistry, error) {
+	if m.CloneMock != nil {
+		return m.CloneMock(ctx, newLocation, false)
 	}
-	panic("GetBySha256 not implemented")
+	panic("Clone not implemented")
 }
 
-func (m *registryMock) Migrate(ctx context.Context, newLocation string) error {
-	if m.MigrateMock != nil {
-		return m.MigrateMock(ctx, newLocation)
+func (m *registryMock) Discard() error {
+	if m.DiscardMock != nil {
+		return m.DiscardMock()
 	}
-	panic("Migrate not implemented")
+	panic("Discard not implemented")
 }
 
 func (m *registryMock) Close() error {
@@ -283,10 +290,17 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 
 			// Create mocks
 			locker := &lockerMock{
-				LockFileMock: tt.fields.lockFileMock,
+				LockFileMock: func(file string, in io.Reader, info os.FileInfo, reason string, out io.Writer) error {
+					if err := tt.fields.lockFileMock(file, in, info, reason, out); err != nil {
+						return err
+					}
+					_, err := io.Copy(io.Discard, in)
+					return err
+				},
 			}
 			registry := &registryMock{
 				SetMock: tt.fields.registrySet,
+				GetMock: func(context.Context, string) (*Entry, error) { return nil, errEntryNotFound },
 			}
 
 			// Create handler
@@ -296,8 +310,11 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 				registry: registry,
 			}
 
+			// Quarantine only accepts the real SHA256 of the file content.
+			tt.args.fileSHA256 = sha256Hex([]byte(tt.fields.fileContent))
+
 			// Execute
-			gotLocation, gotID, err := q.Quarantine(ctx, testFilePath, tt.args.fileSHA256, tt.args.malwares)
+			gotLocation, gotID, err := quarantinePath(ctx, t, q, testFilePath, tt.args.fileSHA256, tt.args.malwares)
 
 			// Check error
 			if tt.wantErr != nil {
@@ -343,6 +360,20 @@ func TestQuarantineHandler_Quarantine(t *testing.T) {
 	}
 }
 
+// unlockWriteContent is a small helper building an UnlockFileMock that
+// writes content to out and reports it as the plaintext size.
+func unlockWriteContent(content string, reason string) func(src io.ReaderAt, size int64, out io.Writer) (LockedFile, error) {
+	return func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error) {
+		if _, err = out.Write([]byte(content)); err != nil {
+			return
+		}
+		locked.Reason = reason
+		locked.Size = int64(len(content))
+		locked.Mode = 0o600
+		return
+	}
+}
+
 func TestQuarantineHandler_Restore(t *testing.T) {
 	existingRestorePath := filepath.Join(t.TempDir(), "restored.txt")
 	recreatedRestorePath := filepath.Join(t.TempDir(), "missing", "sub", "restored.txt")
@@ -353,9 +384,16 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 	}
 	notADirRestorePath := filepath.Join(regularFile, "sub", "file.txt")
 
+	mismatchPath := filepath.Join(t.TempDir(), "mismatch.txt")
+	tooLargePath := filepath.Join(t.TempDir(), "too_large.txt")
+	registrySetFailPath := filepath.Join(t.TempDir(), "restored.txt")
+	unlockFailPath := filepath.Join(t.TempDir(), "restored.txt")
+	registryGetFailPath := filepath.Join(t.TempDir(), "restored.txt")
+	sizeMismatchPath := filepath.Join(t.TempDir(), "restored.txt")
+
 	type fields struct {
-		getHeaderMock  func(in io.Reader) (entry LockEntry, err error)
-		unlockFileMock func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error)
+		getHeaderMock  func(src io.ReaderAt, size int64) (entry LockEntry, err error)
+		unlockFileMock func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error)
 		registryGet    func(ctx context.Context, id string) (entry *Entry, err error)
 		registrySet    func(ctx context.Context, entry *Entry) error
 		lockFileExists bool
@@ -364,38 +402,25 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 		entryID string
 	}
 	tests := []struct {
-		name             string
-		fields           fields
-		args             args
-		wantRestoredFile string // path where the restored file must exist on success
-		wantErr          error
+		name              string
+		fields            fields
+		args              args
+		wantRestoredFile  string // path where the restored file must exist on success
+		wantErr           error
+		wantDestUntouched string // path that must NOT exist after a failed Restore
 	}{
 		{
 			name: "ok restore",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: existingRestorePath,
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: existingRestorePath}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					tmpFile := filepath.Join(t.TempDir(), "temp.txt")
-					if err = os.WriteFile(tmpFile, []byte("test content"), 0o600); err != nil {
-						return
-					}
-					fInfo, err := os.Stat(tmpFile)
-					if err != nil {
-						return
-					}
-					_, err = out.Write([]byte("test content"))
-					file = tmpFile
-					info = fInfo
-					return
-				},
+				unlockFileMock: unlockWriteContent("test content", "malware: test"),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return &Entry{
 						ID:                 id,
-						SHA256:             "abc123",
+						SHA256:             sha256Hex([]byte("test content")),
+						InitialLocation:    existingRestorePath,
 						QuarantineLocation: "some/path.lock",
 					}, nil
 				},
@@ -404,21 +429,17 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:             args{entryID: testRestoreID},
 			wantRestoredFile: existingRestorePath,
 			wantErr:          nil,
 		},
 		{
 			name: "error when lock file does not exist",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					return
-				},
+				unlockFileMock: unlockWriteContent("", ""),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return &Entry{}, nil
 				},
@@ -427,20 +448,16 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: false,
 			},
-			args: args{
-				entryID: "nonexistent",
-			},
+			args:    args{entryID: testRestoreID},
 			wantErr: os.ErrNotExist,
 		},
 		{
 			name: "error when GetHeader fails",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{}, errors.New("get header failed")
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					return
-				},
+				unlockFileMock: unlockWriteContent("", ""),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return &Entry{}, nil
 				},
@@ -449,83 +466,121 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:    args{entryID: testRestoreID},
 			wantErr: errors.New("get header failed"),
+		},
+		{
+			name: "error when container path does not match registry entry",
+			fields: fields{
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: mismatchPath}, nil
+				},
+				unlockFileMock: unlockWriteContent("should never be written", "malware: test"),
+				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
+					return &Entry{ID: id, SHA256: "abc123", InitialLocation: existingRestorePath}, nil
+				},
+				registrySet: func(ctx context.Context, entry *Entry) error {
+					t.Fatalf("registry.Set must not be called on a path mismatch")
+					return nil
+				},
+				lockFileExists: true,
+			},
+			args:              args{entryID: testRestoreID},
+			wantErr:           ErrRestorePathMismatch,
+			wantDestUntouched: mismatchPath,
+		},
+		{
+			name: "error when restored payload is larger than its container",
+			fields: fields{
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: tooLargePath}, nil
+				},
+				unlockFileMock: unlockWriteContent("this content is longer than the configured limit", "malware: test"),
+				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
+					return &Entry{ID: id, SHA256: "abc123", InitialLocation: tooLargePath}, nil
+				},
+				registrySet: func(ctx context.Context, entry *Entry) error {
+					t.Fatalf("registry.Set must not be called when the restore size limit is exceeded")
+					return nil
+				},
+				lockFileExists: true,
+			},
+			args:              args{entryID: testRestoreID},
+			wantErr:           ErrRestoreTooLarge,
+			wantDestUntouched: tooLargePath,
+		},
+		{
+			name: "error when the size recorded in the container differs from the restored size",
+			fields: fields{
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: sizeMismatchPath}, nil
+				},
+				unlockFileMock: func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error) {
+					if _, err = out.Write([]byte("abc")); err != nil {
+						return
+					}
+					locked.Size = 4
+					return
+				},
+				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
+					return &Entry{ID: id, SHA256: "abc123", InitialLocation: sizeMismatchPath}, nil
+				},
+				registrySet: func(ctx context.Context, entry *Entry) error {
+					t.Fatalf("registry.Set must not be called on a size mismatch")
+					return nil
+				},
+				lockFileExists: true,
+			},
+			args:              args{entryID: testRestoreID},
+			wantErr:           ErrRestoreSizeMismatch,
+			wantDestUntouched: sizeMismatchPath,
 		},
 		{
 			name: "error recreating directory tree",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: notADirRestorePath, // to force failure
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: notADirRestorePath}, nil // to force failure
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					return
-				},
+				unlockFileMock: unlockWriteContent("", ""),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
-					return &Entry{}, nil
+					return &Entry{InitialLocation: notADirRestorePath}, nil
 				},
 				registrySet: func(ctx context.Context, entry *Entry) error {
 					return nil
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:    args{entryID: testRestoreID},
 			wantErr: syscall.ENOTDIR,
 		},
 		{
 			name: "error when UnlockFile fails",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: filepath.Join(t.TempDir(), "restored.txt"),
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: unlockFailPath}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
+				unlockFileMock: func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error) {
 					err = errors.New("unlock failed")
 					return
 				},
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
-					return &Entry{}, nil
+					return &Entry{InitialLocation: unlockFailPath}, nil
 				},
 				registrySet: func(ctx context.Context, entry *Entry) error {
 					return nil
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:    args{entryID: testRestoreID},
 			wantErr: errors.New("unlock failed"),
 		},
 		{
 			name: "error registry get fails",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: filepath.Join(t.TempDir(), "restored.txt"),
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: registryGetFailPath}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					tmpFile := filepath.Join(t.TempDir(), "temp.txt")
-					if err = os.WriteFile(tmpFile, []byte("test content"), 0o600); err != nil {
-						return
-					}
-					fInfo, err := os.Stat(tmpFile)
-					if err != nil {
-						return
-					}
-					_, err = out.Write([]byte("test content"))
-					file = tmpFile
-					info = fInfo
-					reason = "malware: test"
-					return
-				},
+				unlockFileMock: unlockWriteContent("test content", "malware: test"),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return nil, errors.New("registry get failed")
 				},
@@ -534,38 +589,21 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:    args{entryID: testRestoreID},
 			wantErr: errors.New("registry get failed"),
 		},
 		{
 			name: "error registry set fails",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: filepath.Join(t.TempDir(), "restored.txt"),
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: registrySetFailPath}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					tmpFile := filepath.Join(t.TempDir(), "temp.txt")
-					if err = os.WriteFile(tmpFile, []byte("test content"), 0o600); err != nil {
-						return
-					}
-					fInfo, err := os.Stat(tmpFile)
-					if err != nil {
-						return
-					}
-					_, err = out.Write([]byte("test content"))
-					file = tmpFile
-					info = fInfo
-					reason = "malware: test"
-					return
-				},
+				unlockFileMock: unlockWriteContent("test content", "malware: test"),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return &Entry{
 						ID:                 id,
-						SHA256:             "abc123",
+						SHA256:             sha256Hex([]byte("test content")),
+						InitialLocation:    registrySetFailPath,
 						QuarantineLocation: "some/path.lock",
 					}, nil
 				},
@@ -574,37 +612,21 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
-			wantErr: errors.New("error set cache for sha256 abc123, registry set failed"),
+			args:    args{entryID: testRestoreID},
+			wantErr: fmt.Errorf("error set cache for sha256 %s, registry set failed", sha256Hex([]byte("test content"))),
 		},
 		{
 			name: "ok restore recreates missing directory tree",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
-					return LockEntry{
-						Filepath: recreatedRestorePath,
-					}, nil
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+					return LockEntry{Filepath: recreatedRestorePath}, nil
 				},
-				unlockFileMock: func(in io.Reader, out io.Writer) (file string, info os.FileInfo, reason string, err error) {
-					tmpFile := filepath.Join(t.TempDir(), "temp.txt")
-					if err = os.WriteFile(tmpFile, []byte("test content"), 0o600); err != nil {
-						return
-					}
-					fInfo, err := os.Stat(tmpFile)
-					if err != nil {
-						return
-					}
-					_, err = out.Write([]byte("test content"))
-					file = tmpFile
-					info = fInfo
-					return
-				},
+				unlockFileMock: unlockWriteContent("test content", "malware: test"),
 				registryGet: func(ctx context.Context, id string) (entry *Entry, err error) {
 					return &Entry{
 						ID:                 id,
-						SHA256:             "abc123",
+						SHA256:             sha256Hex([]byte("test content")),
+						InitialLocation:    recreatedRestorePath,
 						QuarantineLocation: "some/path.lock",
 					}, nil
 				},
@@ -613,9 +635,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				},
 				lockFileExists: true,
 			},
-			args: args{
-				entryID: "test-entry",
-			},
+			args:             args{entryID: testRestoreID},
 			wantRestoredFile: recreatedRestorePath,
 			wantErr:          nil,
 		},
@@ -649,6 +669,7 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				location: quarantineDir,
 				locker:   locker,
 				registry: registry,
+				watched:  []string{filepath.Dir(filepath.Dir(filepath.Dir(recreatedRestorePath)))},
 			}
 
 			// Execute
@@ -662,6 +683,16 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 				}
 				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
 					t.Errorf("Restore() error = %v, wantErr %v", err, tt.wantErr)
+				}
+				if tt.wantDestUntouched != "" {
+					if _, statErr := os.Stat(tt.wantDestUntouched); !errors.Is(statErr, os.ErrNotExist) {
+						t.Errorf("Restore() must not create %s on failure, stat error: %v", tt.wantDestUntouched, statErr)
+					}
+				}
+				if tt.fields.lockFileExists {
+					if _, statErr := os.Stat(lockFilePath); statErr != nil {
+						t.Errorf("Restore() must keep the .lock file on failure: %v", statErr)
+					}
 				}
 				return
 			}
@@ -686,122 +717,227 @@ func TestQuarantineHandler_Restore(t *testing.T) {
 	}
 }
 
-func TestQuarantineHandler_IsRestored(t *testing.T) {
-	type fields struct {
-		registryGetBySHA256 func(ctx context.Context, sha256 string) (*Entry, error)
+// TestQuarantineHandler_Restore_SymlinkedDestinationDir is an end-to-end
+// (real tarLocker, real registry, real filesystem) regression test for the
+// restore-path contract's directory-safety guarantee: os.OpenRoot follows a
+// symlink given as its argument, so Restore must independently refuse to
+// use a destination directory that is a symlink (or whose identity changed
+// between inspection and open) rather than silently writing through it.
+func TestQuarantineHandler_Restore_SymlinkedDestinationDir(t *testing.T) {
+	ctx := t.Context()
+
+	quarantineDir := t.TempDir()
+	q, err := NewQuarantineHandler(ctx, Config{Location: quarantineDir, LockPassword: "pw"})
+	if err != nil {
+		t.Fatalf("NewQuarantineHandler() error = %v", err)
 	}
-	type args struct {
-		sha256 string
+	defer func() {
+		if err := q.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+
+	realDir := filepath.Join(t.TempDir(), "real")
+	if err := os.Mkdir(realDir, 0o750); err != nil {
+		t.Fatalf("failed to create real dir: %v", err)
+	}
+	samplePath := filepath.Join(realDir, "sample.txt")
+	if err := os.WriteFile(samplePath, []byte("malicious content"), 0o600); err != nil {
+		t.Fatalf("failed to create sample file: %v", err)
+	}
+
+	_, id, err := quarantinePath(ctx, t, q, samplePath, sha256Hex([]byte("malicious content")), []string{"test"})
+	if err != nil {
+		t.Fatalf("Quarantine() error = %v", err)
+	}
+
+	// The attacker deletes the original directory and replaces it with a
+	// symlink to a directory they want the privileged Restore to write
+	// into instead.
+	decoyDir := filepath.Join(t.TempDir(), "decoy")
+	if err := os.Mkdir(decoyDir, 0o750); err != nil {
+		t.Fatalf("failed to create decoy dir: %v", err)
+	}
+	if err := os.RemoveAll(realDir); err != nil {
+		t.Fatalf("failed to remove real dir: %v", err)
+	}
+	if err := os.Symlink(decoyDir, realDir); err != nil {
+		t.Fatalf("failed to create symlink: %v", err)
+	}
+
+	err = q.Restore(ctx, id)
+	if !errors.Is(err, ErrRestoreDestinationUnsafe) {
+		t.Errorf("Restore() error = %v, want ErrRestoreDestinationUnsafe", err)
+	}
+
+	// The decoy directory must remain empty: nothing was written through
+	// the symlink.
+	entries, readErr := os.ReadDir(decoyDir)
+	if readErr != nil {
+		t.Fatalf("failed to read decoy dir: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Restore() wrote into the symlinked decoy directory: %v", entries)
+	}
+
+	// The .lock file must still be present (kept on failure).
+	if _, statErr := os.Stat(filepath.Join(quarantineDir, id+".lock")); statErr != nil {
+		t.Errorf("Restore() must keep the .lock file on failure: %v", statErr)
+	}
+}
+
+// TestQuarantineHandler_Restore_ConcurrentSameID exercises two
+// concurrent Restore calls for the same id must be serialised, never
+// interleaved on the same temp file / rename / registry update.
+func TestQuarantineHandler_Restore_ConcurrentSameID(t *testing.T) {
+	quarantineDir := t.TempDir()
+	destPath := filepath.Join(t.TempDir(), "restored.txt")
+	const id = testRestoreID
+	lockFilePath := filepath.Join(quarantineDir, id+".lock")
+	if err := os.WriteFile(lockFilePath, []byte("dummy lock file"), 0o600); err != nil {
+		t.Fatalf("failed to create lock file: %v", err)
+	}
+
+	var running atomic.Int32
+	var overlapped atomic.Bool
+
+	locker := &lockerMock{
+		GetHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
+			return LockEntry{Filepath: destPath}, nil
+		},
+		UnlockFileMock: func(src io.ReaderAt, size int64, out io.Writer) (locked LockedFile, err error) {
+			if running.Add(1) > 1 {
+				overlapped.Store(true)
+			}
+			defer running.Add(-1)
+			time.Sleep(20 * time.Millisecond)
+			if _, err = out.Write([]byte("content")); err != nil {
+				return
+			}
+			locked.Reason = "malware: test"
+			locked.Size = 7
+			return
+		},
+	}
+	registry := &registryMock{
+		GetMock: func(ctx context.Context, gotID string) (entry *Entry, err error) {
+			return &Entry{ID: gotID, SHA256: sha256Hex([]byte("content")), InitialLocation: destPath}, nil
+		},
+		SetMock: func(ctx context.Context, entry *Entry) error {
+			return nil
+		},
+	}
+	q := &QuarantineHandler{
+		location: quarantineDir,
+		locker:   locker,
+		registry: registry,
+	}
+
+	// The lock file only exists once: the second call is expected to fail
+	// with "file does not exist" after the first has already removed it,
+	// but must never observe a torn/partial temp file from the first call.
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = q.Restore(t.Context(), id)
+		}(i)
+	}
+	wg.Wait()
+
+	if overlapped.Load() {
+		t.Errorf("Restore() calls for the same id overlapped; expected serialisation via the per-ID lock")
+	}
+	okCount := 0
+	for _, e := range errs {
+		if e == nil {
+			okCount++
+		}
+	}
+	if okCount != 1 {
+		t.Errorf("expected exactly one of the two concurrent Restore() calls to succeed, got %d successes: %v", okCount, errs)
+	}
+}
+
+func TestQuarantineHandler_IsRestored(t *testing.T) {
+	const location = "/in/a.txt"
+	sha := sha256Hex([]byte("abc"))
+	restoredAt := func(id string) func(context.Context, string) (*Entry, error) {
+		return func(_ context.Context, got string) (*Entry, error) {
+			if got != id {
+				return nil, errEntryNotFound
+			}
+			return &Entry{ID: id, SHA256: sha, RestoredAt: now()}, nil
+		}
 	}
 	tests := []struct {
 		name         string
-		fields       fields
-		args         args
+		location     string
+		sha256       string
+		get          func(ctx context.Context, id string) (*Entry, error)
 		wantRestored bool
-		wantErr      error
+		wantErr      string
 	}{
 		{
-			name: "file is restored",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return &Entry{
-						ID:                 "entry-1",
-						SHA256:             sha256,
-						InitialLocation:    "/path/to/file.txt",
-						QuarantineLocation: "",
-						RestoredAt:         now(),
-					}, nil
-				},
-			},
-			args: args{
-				sha256: "abc123",
-			},
+			name:     "this file restored",
+			location: location, sha256: sha,
+			get:          restoredAt(ComputeCacheID(location, sha)),
 			wantRestored: true,
-			wantErr:      nil,
 		},
 		{
-			name: "file is not restored (RestoredAt is zero)",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return &Entry{
-						ID:                 "entry-2",
-						SHA256:             sha256,
-						InitialLocation:    "/path/to/file.txt",
-						QuarantineLocation: "/quarantine/entry-2.lock",
-						RestoredAt:         time.Time{},
-					}, nil
-				},
-			},
-			args: args{
-				sha256: "def456",
-			},
-			wantRestored: false,
-			wantErr:      nil,
+			name:     "the same content restored at another location",
+			location: "/in/b.txt", sha256: sha,
+			get: restoredAt(ComputeCacheID(location, sha)),
 		},
 		{
-			name: "entry not found",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return nil, errEntryNotFound
-				},
-			},
-			args: args{
-				sha256: "notfound",
-			},
-			wantRestored: false,
-			wantErr:      nil,
+			name:     "another content restored at this location",
+			location: location, sha256: sha256Hex([]byte("def")),
+			get: restoredAt(ComputeCacheID(location, sha)),
 		},
 		{
-			name: "error when registry GetBySHA256 fails",
-			fields: fields{
-				registryGetBySHA256: func(ctx context.Context, sha256 string) (*Entry, error) {
-					return nil, errors.New("database error")
-				},
+			name:     "this file quarantined but not restored",
+			location: location, sha256: sha,
+			get: func(_ context.Context, id string) (*Entry, error) {
+				return &Entry{ID: id, SHA256: sha}, nil
 			},
-			args: args{
-				sha256: "error123",
+		},
+		{
+			name:     "never quarantined",
+			location: location, sha256: sha,
+			get: func(context.Context, string) (*Entry, error) { return nil, errEntryNotFound },
+		},
+		{
+			name:     "not a SHA256",
+			location: location, sha256: "abc",
+			get: func(context.Context, string) (*Entry, error) {
+				t.Error("the registry must not be asked for a malformed hash")
+				return nil, errEntryNotFound
 			},
-			wantRestored: false,
-			wantErr:      errors.New("database error"),
+		},
+		{
+			name:     "registry error",
+			location: location, sha256: sha,
+			get:     func(context.Context, string) (*Entry, error) { return nil, errors.New("database error") },
+			wantErr: "database error",
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := t.Context()
-
-			// Create mocks
-			registry := &registryMock{
-				GetBySHA256Mock: tt.fields.registryGetBySHA256,
-			}
-
-			// Create handler
-			q := &QuarantineHandler{
-				registry: registry,
-			}
-
-			// Execute
-			gotRestored, err := q.IsRestored(ctx, tt.args.sha256)
-
-			// Check error
-			if tt.wantErr != nil {
-				if err == nil {
-					t.Errorf("IsRestored() error = nil, wantErr %v", tt.wantErr)
-					return
-				}
-				if !errors.Is(err, tt.wantErr) && err.Error() != tt.wantErr.Error() {
-					t.Errorf("IsRestored() error = %v, wantErr %v", err, tt.wantErr)
+			q := &QuarantineHandler{registry: &registryMock{GetMock: tt.get}}
+			got, err := q.IsRestored(t.Context(), tt.location, tt.sha256)
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Errorf("IsRestored() error = %v, want %q", err, tt.wantErr)
 				}
 				return
 			}
-
 			if err != nil {
-				t.Errorf("IsRestored() unexpected error = %v", err)
-				return
+				t.Fatalf("IsRestored() unexpected error = %v", err)
 			}
-
-			// Check restored status
-			if diff := cmp.Diff(gotRestored, tt.wantRestored); diff != "" {
-				t.Errorf("IsRestored() restored diff(-got+want)=%s", diff)
+			if got != tt.wantRestored {
+				t.Errorf("IsRestored() = %t, want %t", got, tt.wantRestored)
 			}
 		})
 	}
@@ -809,7 +945,7 @@ func TestQuarantineHandler_IsRestored(t *testing.T) {
 
 func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 	type fields struct {
-		getHeaderMock func(in io.Reader) (entry LockEntry, err error)
+		getHeaderMock func(src io.ReaderAt, size int64) (entry LockEntry, err error)
 		lockFiles     []string
 		otherFiles    []string
 		createSubdir  bool
@@ -824,7 +960,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "empty directory",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{}, nil
 				},
 				lockFiles:  []string{},
@@ -836,7 +972,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "single lock file",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{
 						Filepath: "/original/file.txt",
 					}, nil
@@ -849,7 +985,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "multiple lock files",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{
 						Filepath: "/original/file.txt",
 					}, nil
@@ -862,7 +998,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "mixed files (only .lock files should be listed)",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{
 						Filepath: "/original/file.txt",
 					}, nil
@@ -876,7 +1012,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 		{
 			name: "subdirectories should be skipped",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{
 						Filepath: "/original/file.txt",
 					}, nil
@@ -888,20 +1024,22 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 			wantErr:              false,
 		},
 		{
-			name: "error when GetHeader fails",
+			// An unreadable or malformed container is logged and
+			// skipped, it no longer aborts the whole listing.
+			name: "GetHeader failure on one file is skipped, not surfaced",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{}, errors.New("failed to read header")
 				},
 				lockFiles: []string{"entry-1.lock"},
 			},
 			wantQuarantinedFiles: []string{},
-			wantErr:              true,
+			wantErr:              false,
 		},
 		{
 			name: "context cancellation",
 			fields: fields{
-				getHeaderMock: func(in io.Reader) (entry LockEntry, err error) {
+				getHeaderMock: func(src io.ReaderAt, size int64) (entry LockEntry, err error) {
 					return LockEntry{
 						Filepath: "/original/file.txt",
 					}, nil
@@ -926,9 +1064,10 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 			// Setup quarantine directory
 			quarantineDir := t.TempDir()
 
-			// Create lock files
+			// Create lock files: a container is named by an id, so the names of the
+			// table are turned into ids.
 			for _, filename := range tt.fields.lockFiles {
-				filePath := filepath.Join(quarantineDir, filename)
+				filePath := filepath.Join(quarantineDir, listID(strings.TrimSuffix(filename, ".lock"))+".lock")
 				err := os.WriteFile(filePath, []byte("dummy lock file content"), 0o600)
 				if err != nil {
 					t.Fatalf("failed to create lock file: %v", err)
@@ -1001,7 +1140,13 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 				gotIDs[i] = f.ID
 			}
 
-			if diff := cmp.Diff(gotIDs, tt.wantQuarantinedFiles); diff != "" {
+			wantIDs := make([]string, len(tt.wantQuarantinedFiles))
+			for i, w := range tt.wantQuarantinedFiles {
+				wantIDs[i] = listID(w)
+			}
+			slices.Sort(gotIDs)
+			slices.Sort(wantIDs)
+			if diff := cmp.Diff(gotIDs, wantIDs); diff != "" {
 				t.Errorf("ListQuarantinedFiles() IDs diff(-got+want)=%s", diff)
 			}
 
@@ -1017,7 +1162,7 @@ func TestQuarantineHandler_ListQuarantinedFiles(t *testing.T) {
 	}
 }
 
-func checkQuarantineLocation(t *testing.T, quarantiner QuarantineHandler, location string, nbEntries int) {
+func checkQuarantineLocation(t *testing.T, quarantiner *QuarantineHandler, location string, nbEntries int) {
 	t.Helper()
 	if quarantiner.location != location {
 		t.Errorf("location not updated, got %s, want %s", quarantiner.location, location)
@@ -1152,15 +1297,13 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 					}
 					return nil
 				},
-				MigrateMock: func(ctx context.Context, newLocation string) error {
-					if tt.fields.registryMigrateErr {
-						return errors.New("error migrate registry")
-					}
-					return nil
+				GetLocationMock: func() string { return "file::memory:" },
+				CloneMock: func(ctx context.Context, newLocation string, _ bool) (quarantineRegistry, error) {
+					return nil, errors.New("error clone registry")
 				},
 			}
 
-			locker := &fileLock{Password: tt.fields.initialPassword}
+			locker := &tarLocker{Password: tt.fields.initialPassword}
 			q := &QuarantineHandler{
 				location: initialDir,
 				locker:   locker,
@@ -1178,6 +1321,9 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 			newConfig := Config{
 				Location: newLocation,
 			}
+			if tt.fields.registryMigrateErr {
+				newConfig.RegistryLocation = filepath.Join(t.TempDir(), "other.db")
+			}
 			err := q.Reconfigure(ctx, newConfig)
 
 			if tt.wantErr != (err != nil) {
@@ -1185,9 +1331,22 @@ func TestQuarantineHandler_Reconfigure(t *testing.T) {
 				return
 			}
 			if err != nil {
+				for _, name := range tt.fields.createLockFiles {
+					if _, statErr := os.Stat(filepath.Join(initialDir, name)); statErr != nil {
+						t.Errorf("%s must be back in the original location after a failed Reconfigure: %v", name, statErr)
+					}
+					if !tt.args.useSameLocation {
+						if _, statErr := os.Stat(filepath.Join(newLocation, name)); statErr == nil {
+							t.Errorf("%s must not stay in the new location after a failed Reconfigure", name)
+						}
+					}
+				}
+				if q.location != initialDir || q.locker != locker {
+					t.Error("a failed Reconfigure must leave the location and the locker (password) unchanged")
+				}
 				return
 			}
-			checkQuarantineLocation(t, *q, newLocation, len(tt.fields.createLockFiles))
+			checkQuarantineLocation(t, q, newLocation, len(tt.fields.createLockFiles))
 		})
 	}
 }
@@ -1213,7 +1372,7 @@ func TestMoveFile(t *testing.T) {
 			},
 			check: func(t *testing.T, src, dst string) {
 				t.Helper()
-				content, err := os.ReadFile(dst) //nolint:gosec // G304 - dst is controlled by test code
+				content, err := os.ReadFile(filepath.Clean(dst))
 				if err != nil {
 					t.Fatalf("failed to read destination file: %v", err)
 				}
@@ -1290,5 +1449,92 @@ func TestMoveFile(t *testing.T) {
 				tt.check(t, src, dst)
 			}
 		})
+	}
+}
+
+// listID is the id a name of the table of ListQuarantinedFiles stands for.
+func listID(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:])
+}
+
+func TestQuarantine_wrongSHA256Refused(t *testing.T) {
+	for _, format := range []Format{FormatTar, FormatZip} {
+		t.Run(string(format), func(t *testing.T) {
+			q, dir := newE2EHandler(t, format)
+			src := writeSample(t, "s.bin", []byte("actual content"))
+			wrong := sha256Hex([]byte("another content"))
+			_, id, err := quarantinePath(t.Context(), t, q, src, wrong, []string{"m"})
+			if !errors.Is(err, ErrQuarantineSHA256Mismatch) {
+				t.Fatalf("Quarantine() error = %v, want ErrQuarantineSHA256Mismatch", err)
+			}
+			if entries, err := filepath.Glob(filepath.Join(dir, "*.lock")); err != nil || len(entries) != 0 {
+				t.Errorf("no .lock must be kept, got %v (err %v)", entries, err)
+			}
+			if got, err := q.IsRestored(t.Context(), src, wrong); err != nil || got {
+				t.Errorf("IsRestored() = %t (err %v) for a refused quarantine %q", got, err, id)
+			}
+			if _, err := os.Stat(src); err != nil {
+				t.Errorf("source must be left untouched: %v", err)
+			}
+		})
+	}
+}
+
+func TestLimitWriter_NoFixedCap(t *testing.T) {
+	const lockSize = int64(6 << 30)
+	lw := &limitWriter{w: io.Discard, remaining: lockSize}
+	chunk := make([]byte, 1<<20)
+	for range 6 << 10 {
+		if _, err := lw.Write(chunk); err != nil {
+			t.Fatalf("Write() error = %v before reaching the lock size", err)
+		}
+	}
+	if lw.written != lockSize {
+		t.Fatalf("written = %d, want %d", lw.written, lockSize)
+	}
+	if _, err := lw.Write([]byte{0}); !errors.Is(err, ErrRestoreTooLarge) {
+		t.Errorf("Write() past the limit error = %v, want ErrRestoreTooLarge", err)
+	}
+}
+
+func TestCreateRestoreTempFile(t *testing.T) {
+	root, err := os.OpenRoot(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	for _, base := range []string{"a.bin", strings.Repeat("é", 200), strings.Repeat("a", 255)} {
+		name, f, err := createRestoreTempFile(root, base)
+		if err != nil {
+			t.Fatalf("createRestoreTempFile(%d bytes) error = %v", len(base), err)
+		}
+		if err := f.Close(); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(name, TempPrefix) || len(name) > 255 {
+			t.Errorf("name %q: want prefix %q and <= 255 bytes (got %d)", name, TempPrefix, len(name))
+		}
+	}
+	n1, f1, err := createRestoreTempFile(root, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	n2, f2, err := createRestoreTempFile(root, "same")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f2.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if n1 == n2 {
+		t.Error("two temporary files must get distinct names")
 	}
 }

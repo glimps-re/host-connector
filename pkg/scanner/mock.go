@@ -7,12 +7,12 @@ import (
 )
 
 type MockAction struct {
-	HandleMock func(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) error
+	HandleMock func(ctx context.Context, src Source, result datamodel.Result, analysisReport *datamodel.Report) error
 }
 
-func (m *MockAction) Handle(ctx context.Context, path string, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
+func (m *MockAction) Handle(ctx context.Context, src Source, result datamodel.Result, analysisReport *datamodel.Report) (err error) {
 	if m.HandleMock != nil {
-		return m.HandleMock(ctx, path, result, analysisReport)
+		return m.HandleMock(ctx, src, result, analysisReport)
 	}
 	panic("HandleMock() not implemented")
 }

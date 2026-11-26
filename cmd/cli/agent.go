@@ -15,6 +15,9 @@ var agentCmd = &cobra.Command{
 	Use:   "agent",
 	Short: "Start monitoring location with GLIMPS Malware host under Connector manager control\n Global config will not be used.",
 	RunE: func(cmd *cobra.Command, args []string) (err error) {
+		if errConfigFile != nil {
+			return errConfigFile
+		}
 		logger.Debug("config", slog.Any("config", hostConfig))
 		console := sdk.NewConnectorManagerClient(context.Background(), hostConfig.Console)
 		managedConfig := &sdk.HostConfig{}
@@ -45,14 +48,18 @@ var agentCmd = &cobra.Command{
 				logger.Error("error starting host connector, wait for a reconfigure from connector manager...", slog.String("error", err.Error()))
 			}
 		}
+		consoleDone := make(chan struct{})
 		defer func() {
-			stopCtx, stopCancel := context.WithTimeout(cmd.Context(), 30*time.Second)
-			defer stopCancel()
-			if e := hostHandler.Stop(stopCtx); e != nil {
-				logger.Error("error stopping connector", slog.String("error", e.Error()))
+			deadline := consoleDeadline()
+			runStop(cmd.Context(), stopHandler)
+			if !waitConsole(consoleDone, deadline) {
+				logger.Warn("the console loop did not end in time: tasks it fetched may be left to the console's timeout")
 			}
 		}()
-		go console.Start(cmd.Context(), hostHandler)
+		go func() {
+			defer close(consoleDone)
+			console.Start(cmd.Context(), hostHandler)
+		}()
 		<-cmd.Context().Done()
 		return
 	},

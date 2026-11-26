@@ -2,10 +2,10 @@ package datamodel
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"io"
+	"iter"
 	"log/slog"
 	"os"
 	"time"
@@ -27,6 +27,8 @@ type Report struct {
 	GMalwareURL             string            `json:"gmalware-url,omitempty"`
 	HasBeenRestored         bool              `json:"has-been-restored,omitempty"`
 	MovedTo                 string            `json:"moved-to,omitempty"`
+	MoveConflictOf          string            `json:"move-conflict-of,omitempty"`
+	Error                   string            `json:"error,omitempty"`
 	Malwares                []string          `json:"malwares,omitempty"`
 	FileSize                int64             `json:"size,omitempty"`
 	FileType                string            `json:"type,omitempty"`
@@ -37,7 +39,30 @@ type Report struct {
 	TotalExtractedFile      int               `json:"total-extracted-file,omitempty"`
 	MaliciousExtractedFiles []ExtractedFile   `json:"malicious-extracted-files,omitempty"`
 	ErrorExtractedFiles     map[string]string `json:"error-extracted-files,omitempty"`
+	// NotAnalyzedReason tells why the file reached its destination without a
+	// complete analysis.
+	NotAnalyzedReason NotAnalyzedReason `json:"not-analyzed-reason,omitempty"`
+	// NotAnalyzedExtractedFiles lists the members of an archive that were not
+	// analyzed, at most MaxListedSubfiles.
+	NotAnalyzedExtractedFiles []NotAnalyzedFile `json:"not-analyzed-extracted-files,omitempty"`
+	// NotAnalyzedExtractedCount is the exact number of such members, which the
+	// list may not hold entirely.
+	NotAnalyzedExtractedCount int `json:"not-analyzed-extracted-count,omitempty"`
 }
+
+// SessionReportPrefix starts the base name of every session report. A
+// deposited file using it (in any letter case) is never moved to the
+// destination: it could pass for a report.
+const SessionReportPrefix = "report-session-"
+
+// SessionSpoolDir is the folder, under the work directory of an instance, where
+// the session plugin keeps the reports of its open sessions, one JSON Lines
+// file per session ("<random>.jsonl", one Report per line).
+const SessionSpoolDir = "session"
+
+// SessionSpoolExt is the extension of the spool files of SessionSpoolDir and of
+// the raw copy of a spool written as a last-resort session report.
+const SessionSpoolExt = ".jsonl"
 
 type Action string
 
@@ -106,10 +131,51 @@ func (rw *ReportsWriter) Write(r Report) (err error) {
 	return
 }
 
-func GenerateReport(_ context.Context, _ ScanContext, reports []Report) (r io.Reader, err error) {
-	buffer := &bytes.Buffer{}
-	out := json.NewEncoder(buffer)
-	out.SetIndent("", "")
-	err = out.Encode(reports)
-	return buffer, err
+// ReportsSeq gives reports as the sequence a report generator reads: once, with
+// no error.
+func ReportsSeq(reports []Report) iter.Seq2[Report, error] {
+	return func(yield func(Report, error) bool) {
+		for _, r := range reports {
+			if !yield(r, nil) {
+				return
+			}
+		}
+	}
+}
+
+// WriteReportsJSON writes the reports as a JSON array, one at a time as the
+// sequence yields them: nothing is kept once written. A failing sequence or a
+// cancelled context ends it with that error, and the output must then be
+// discarded.
+func WriteReportsJSON(ctx context.Context, w io.Writer, reports iter.Seq2[Report, error]) error {
+	out := bufio.NewWriter(w)
+	if _, err := out.WriteString("["); err != nil {
+		return err
+	}
+	first := true
+	for report, err := range reports {
+		if err != nil {
+			return err
+		}
+		if err = ctx.Err(); err != nil {
+			return err
+		}
+		if !first {
+			if _, err = out.WriteString(","); err != nil {
+				return err
+			}
+		}
+		first = false
+		encoded, err := json.Marshal(report)
+		if err != nil {
+			return err
+		}
+		if _, err = out.Write(encoded); err != nil {
+			return err
+		}
+	}
+	if _, err := out.WriteString("]\n"); err != nil {
+		return err
+	}
+	return out.Flush()
 }

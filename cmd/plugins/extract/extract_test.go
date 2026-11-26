@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -12,6 +14,7 @@ func Test_handleSevenZipError(t *testing.T) {
 	type args struct {
 		sevenZipErr error
 		stderr      string
+		paths       []string
 	}
 	tests := []struct {
 		name             string
@@ -33,7 +36,7 @@ func Test_handleSevenZipError(t *testing.T) {
 			name: "ko wrong password",
 			args: args{
 				sevenZipErr: sevenZipErr,
-				stderr:      "Wrong password",
+				stderr:      "ERROR: Wrong password : a.txt",
 			},
 			wantErr:         true,
 			wantSpecificErr: ErrInvalidPassword,
@@ -42,7 +45,8 @@ func Test_handleSevenZipError(t *testing.T) {
 			name: "ko cannot open as archive",
 			args: args{
 				sevenZipErr: sevenZipErr,
-				stderr:      "Cannot open the file as archive",
+				stderr:      "ERROR: archive.zip : Cannot open the file as archive",
+				paths:       []string{"archive.zip"},
 			},
 			wantErr:         true,
 			wantSpecificErr: ErrUnsupportedFormat,
@@ -51,7 +55,7 @@ func Test_handleSevenZipError(t *testing.T) {
 			name: "ko file not found",
 			args: args{
 				sevenZipErr: sevenZipErr,
-				stderr:      "No such file or directory",
+				stderr:      "ERROR: errno=2 : No such file or directory\narchive.zip",
 			},
 			wantErr:         true,
 			wantSpecificErr: ErrFileNotFound,
@@ -60,7 +64,7 @@ func Test_handleSevenZipError(t *testing.T) {
 			name: "ko headers error recoverable",
 			args: args{
 				sevenZipErr: sevenZipErr,
-				stderr:      "Headers Error",
+				stderr:      "ERROR: Headers Error : a.txt",
 			},
 			wantErr:         true,
 			wantSpecificErr: errSevenZipRecoverable,
@@ -78,7 +82,7 @@ func Test_handleSevenZipError(t *testing.T) {
 			name: "ko unexpected end recoverable",
 			args: args{
 				sevenZipErr: sevenZipErr,
-				stderr:      "Unexpected end of archive",
+				stderr:      "ERRORS:\nUnexpected end of archive",
 			},
 			wantErr:         true,
 			wantSpecificErr: errSevenZipRecoverable,
@@ -100,6 +104,91 @@ func Test_handleSevenZipError(t *testing.T) {
 			},
 			wantErr:         true,
 			wantSpecificErr: sevenZipErr,
+		},
+		{
+			name: "ko not an archive, the 7z way for a file with an archive extension",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: fake.7z : fake.7z\nOpen ERROR: Cannot open the file as [7z] archive\nERRORS:\nIs not archive",
+				paths:       []string{"fake.7z"},
+			},
+			wantErr:         true,
+			wantSpecificErr: ErrUnsupportedFormat,
+		},
+		{
+			name: "ko the path repeated by 7z, with the line that says why",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: archive.7z : archive.7z\nOpen ERROR: Cannot open the file as [7z] archive\n\nERRORS:\nUnexpected end of archive\n",
+				paths:       []string{"archive.7z"},
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko the path repeated by 7z, with nothing that says why, is the raw error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: archive.7z : archive.7z\n",
+				paths:       []string{"archive.7z"},
+			},
+			wantErr:         true,
+			wantSpecificErr: sevenZipErr,
+		},
+		{
+			name: "ko a member named like a password error is no password error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: CRC Failed : Wrong password",
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko a member named like a link error is no refused link",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: CRC Failed : Dangerous link path was ignored",
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko a member named like the not-an-archive error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: CRC Failed : Cannot open the file as archive",
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko an archive named like a password error is no password error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: Wrong password.7z : Wrong password.7z\nOpen ERROR: Cannot open the file as [7z] archive\nERRORS:\nUnexpected end of archive",
+				paths:       []string{"Wrong password.7z"},
+			},
+			wantErr: true,
+		},
+		{
+			name: "ko an archive named like the not-an-archive error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: CRC Failed : Cannot open the file as archive.zip",
+				paths:       []string{"Cannot open the file as archive.zip"},
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
+		},
+		{
+			name: "ko a refused link does not hide another error",
+			args: args{
+				sevenZipErr: sevenZipErr,
+				stderr:      "ERROR: Dangerous link path was ignored : l : /etc/passwd\nERROR: CRC Failed : b.txt",
+			},
+			wantErr:         true,
+			wantSpecificErr: errSevenZipRecoverable,
 		},
 		{
 			name: "ok no error",
@@ -151,7 +240,7 @@ func Test_handleSevenZipError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotSymLinkFiles, err := handleSevenZipError(tt.args.sevenZipErr, tt.args.stderr, slog.New(slog.DiscardHandler))
+			gotSymLinkFiles, err := handleSevenZipError(tt.args.sevenZipErr, tt.args.stderr, slog.New(slog.DiscardHandler), tt.args.paths...)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("handleSevenZipError() error = %v, wantErr %v", err, tt.wantErr)
@@ -171,104 +260,6 @@ func Test_handleSevenZipError(t *testing.T) {
 			slices.Sort(tt.wantSymLinkFiles)
 			if !slices.Equal(gotSymLinkFiles, tt.wantSymLinkFiles) {
 				t.Errorf("handleSevenZipError() symLinkFiles = %v, want %v", gotSymLinkFiles, tt.wantSymLinkFiles)
-			}
-		})
-	}
-}
-
-func Test_calculateEffectiveZipBombSizes(t *testing.T) {
-	type args struct {
-		files       []FileProperties
-		maxFileSize int
-	}
-	tests := []struct {
-		name                    string
-		args                    args
-		wantTotalSize           int64
-		wantTotalCompressedSize int64
-	}{
-		{
-			name: "ok empty files",
-			args: args{
-				files:       []FileProperties{},
-				maxFileSize: 100,
-			},
-			wantTotalSize:           0,
-			wantTotalCompressedSize: 0,
-		},
-		{
-			name: "ok all files below max size",
-			args: args{
-				files: []FileProperties{
-					{Name: "file1.txt", Size: 10, CompressedSize: 5},
-					{Name: "file2.txt", Size: 20, CompressedSize: 8},
-					{Name: "file3.txt", Size: 30, CompressedSize: 12},
-				},
-				maxFileSize: 100,
-			},
-			wantTotalSize:           60,
-			wantTotalCompressedSize: 25,
-		},
-		{
-			name: "ok all files above max size",
-			args: args{
-				files: []FileProperties{
-					{Name: "big1.bin", Size: 500_000_000, CompressedSize: 45_000_000},
-					{Name: "big2.bin", Size: 600_000_000, CompressedSize: 50_000_000},
-				},
-				maxFileSize: 100_000_000,
-			},
-			wantTotalSize:           0,
-			wantTotalCompressedSize: 0,
-		},
-		{
-			name: "ok mixed files some above max size",
-			args: args{
-				files: []FileProperties{
-					{Name: "big1.bin", Size: 500_000_000, CompressedSize: 45_000_000},
-					{Name: "small1.txt", Size: 10_000_000, CompressedSize: 1_000_000},
-					{Name: "big2.bin", Size: 600_000_000, CompressedSize: 50_000_000},
-					{Name: "small2.txt", Size: 20_000_000, CompressedSize: 2_000_000},
-				},
-				maxFileSize: 100_000_000,
-			},
-			wantTotalSize:           30_000_000,
-			wantTotalCompressedSize: 3_000_000,
-		},
-		{
-			name: "ok file exactly at max size included",
-			args: args{
-				files: []FileProperties{
-					{Name: "exact.bin", Size: 100, CompressedSize: 40},
-					{Name: "small.txt", Size: 50, CompressedSize: 20},
-				},
-				maxFileSize: 100,
-			},
-			wantTotalSize:           150,
-			wantTotalCompressedSize: 60,
-		},
-		{
-			name: "ok file just above max size excluded",
-			args: args{
-				files: []FileProperties{
-					{Name: "over.bin", Size: 101, CompressedSize: 40},
-					{Name: "small.txt", Size: 50, CompressedSize: 20},
-				},
-				maxFileSize: 100,
-			},
-			wantTotalSize:           50,
-			wantTotalCompressedSize: 20,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			gotTotalSize, gotTotalCompressedSize := calculateEffectiveZipBombSizes(tt.args.files, tt.args.maxFileSize)
-			if gotTotalSize != tt.wantTotalSize {
-				t.Errorf("calculateEffectiveZipBombSizes() totalSize = %v, want %v", gotTotalSize, tt.wantTotalSize)
-			}
-			if gotTotalCompressedSize != tt.wantTotalCompressedSize {
-				t.Errorf("calculateEffectiveZipBombSizes() totalCompressedSize = %v, want %v", gotTotalCompressedSize, tt.wantTotalCompressedSize)
 			}
 		})
 	}

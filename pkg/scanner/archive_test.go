@@ -83,7 +83,6 @@ func Test_archiveStatusHandler_addInnerFileResult(t *testing.T) {
 			var archiveID string
 			if !tt.fields.archiveNotFound {
 				archiveID = a.addStatus(archiveStatus{
-					started:         true,
 					finished:        false,
 					archiveLocation: "/path/to/archive.zip",
 					result: datamodel.Result{
@@ -487,7 +486,7 @@ func Test_mergeResult(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotResult := mergeResult(tt.args.baseResult, tt.args.resultToMerge, tt.args.filename)
+			gotResult := mergeResult(tt.args.baseResult, tt.args.resultToMerge, tt.args.filename, nil)
 
 			if diff := cmp.Diff(gotResult, tt.wantResult); diff != "" {
 				t.Errorf("mergeResult() mismatch (-got +want):\n%s", diff)

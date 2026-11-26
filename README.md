@@ -376,7 +376,7 @@ What happens after a file is analyzed:
 
 - **`location`** (default `/var/lib/gmhost/quarantine` on Linux, `%APPDATA%\gmhost\quarantine` on Windows, flag `--quarantine`): Directory of quarantined files (`<sha256>.lock`). It is created with mode `0700` if missing. It must belong to the connector account (or root), must not be writable by group or others, and must not overlap a monitored path, `move.destination` or the work directory. Otherwise the configuration is refused. Avoid `/tmp`, which may be cleaned automatically.
 - **`password`** (default `infected`): Password used to encrypt quarantined files. It is needed to restore them.
-- **`registry`** (default: in memory, lost on restart, flag `--quarantine-registry`): Database of quarantined and restored files. A restored content is not analyzed again wherever it reappears, but path and type rules still apply to it.
+- **`registry`** (default: in memory, lost on restart, flag `--quarantine-registry`): Database of quarantined and restored files. A released file, seen again at the same path with the same content, is neither analyzed nor filtered (path rules, OnScanFile plugins, size limit; a released archive is neither listed nor extracted); the same content elsewhere is a new file.
 - **`format`** (`tar` | `zip`, default `tar`): Container for new quarantined files. `zip` uses traditional PKWARE encryption and opens with Windows Explorer or 7-Zip. Existing files of both formats stay restorable. With `zip`, consider the password **public**, since ZipCrypto is easily broken: don't reuse it elsewhere. A warning is logged at each configuration.
 
 #### Move
@@ -905,7 +905,7 @@ GMHost quarantine restore d86b21405852d8642ca41afae9dcf0f532e2d67973b0648b0af7c2
 
 - A restoration never overwrites a file: it fails with "destination already exists".
 - Use `--quarantine-registry` with the same registry as the monitoring process. Otherwise the monitoring process is not told about the restoration and quarantines the file again.
-- A content restored once is not analyzed again (see `quarantine.registry`).
+- A released file is not analyzed again at its location (see `quarantine.registry`).
 
 **Warning**: Only restore files if you are certain they are safe. Restored files will be in their original, unencrypted form.
 

@@ -96,6 +96,9 @@ type accSetup struct {
 	// restored lists the files (of files) whose content was quarantined and restored
 	// by the operator before the run.
 	restored []string
+	// restoredAs gives, by file, the content that was restored at its path when it
+	// is not the one of files.
+	restoredAs map[string]string
 	// onDone receives the outcome of each file.
 	onDone func(FileOutcome)
 }
@@ -172,7 +175,11 @@ func runAcc(t *testing.T, s accSetup) *accRun {
 		t.Fatal(err)
 	}
 	for _, name := range s.restored {
-		restoreContent(t, q, filepath.Join(r.in, name), s.files[name])
+		content, ok := s.restoredAs[name]
+		if !ok {
+			content = s.files[name]
+		}
+		restoreContent(t, q, filepath.Join(r.in, name), content)
 	}
 	for name, content := range s.files {
 		p := filepath.Join(r.in, name)

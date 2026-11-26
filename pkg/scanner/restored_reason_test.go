@@ -69,26 +69,3 @@ func TestHandleRestoredFile_theNotAnalyzedReason(t *testing.T) {
 		})
 	}
 }
-
-func TestRestored_aRefusalGetsNoRestoredReason(t *testing.T) {
-	filter := &PathFilter{}
-	results, _ := handledRestored(t, "f.bin", filter, func(string, string, string, bool) *datamodel.Result {
-		return &datamodel.Result{Malware: true, Malwares: []string{"type"}, MalwareReason: datamodel.FilteredFileType}
-	})
-	if len(results) != 1 {
-		t.Fatalf("results = %d, want 1", len(results))
-	}
-	if r := results[0]; r.NotAnalyzedReason != "" || r.Restored {
-		t.Errorf("refused result = reason %q, restored %t, want neither", r.NotAnalyzedReason, r.Restored)
-	}
-}
-
-func TestRestored_aDeliveredFileGetsTheRestoredReasonThroughThePipeline(t *testing.T) {
-	results, analyses := handledRestored(t, "f.bin", nil, nil)
-	if len(results) != 1 || analyses != 0 {
-		t.Fatalf("results = %d, analyses = %d, want 1 and 0", len(results), analyses)
-	}
-	if results[0].NotAnalyzedReason != datamodel.NotAnalyzedRestored {
-		t.Errorf("reason = %q, want restored", results[0].NotAnalyzedReason)
-	}
-}

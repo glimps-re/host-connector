@@ -120,9 +120,10 @@ func (c *Connector) listedNames(archive fileToAnalyze, maxFiles int, archiveLogg
 	case extractErr != nil:
 		archiveLogger.Warn("the members of an archive could not be listed", slog.String(logErrorKey, extractErr.Error()))
 		return nil, false, nil
-	case len(extraction.Files) > 0 || len(extraction.Skipped) > 0 || extraction.SkippedCount > 0 || len(extraction.Names) > maxFiles:
+	case len(extraction.Files) > 0 || len(extraction.Skipped) > 0 || extraction.SkippedCount > 0 ||
+		len(extraction.Links) > 0 || extraction.LinksCount > 0 || len(extraction.Names) > maxFiles:
 		// An extractor that ignores NamesOnly extracts, and one that lists leaves
-		// nothing out: either way the names are not the whole truth.
+		// nothing out, links included: either way the names are not the whole truth.
 		archiveLogger.Warn("an extractor answered a listing with more than names", slog.Int("files", len(extraction.Files)), slog.Int("names", len(extraction.Names)))
 		return nil, false, nil
 	}

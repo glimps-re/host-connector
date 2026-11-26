@@ -81,26 +81,28 @@ func (a *archiveStatusHandler) addStatus(status archiveStatus) (id string) {
 	return
 }
 
-func (a *archiveStatusHandler) decreaseTotal(id string) (finished bool, ok bool) {
+// skipInner ends a member that is not analyzed and not counted as a result
+// (an empty file): the total of the archive is decreased and f is listed in
+// its NotAnalyzedSubfiles, within MaxListedSubfiles, with an exact count.
+func (a *archiveStatusHandler) skipInner(id string, f datamodel.NotAnalyzedFile) (finished, ok bool) {
 	a.Lock()
 	defer a.Unlock()
 	status, ok := a.statusByID[id]
 	if !ok || status.finishClaimed {
-		return finished, false
+		return false, false
 	}
-	ok = true
+	status.result = appendNotAnalyzed(status.result, f)
 	status.total--
 	if status.total == status.analyzed {
 		status.finished = true
 	}
-	finished = status.finished
 	a.statusByID[id] = status
-	return
+	return status.finished, true
 }
 
 // addInnerError records an extracted file that was lost on its way to the
 // analysis (unreadable, sub-archive that could not be extracted): the archive
-// can no longer be taken for clean. It replaces decreaseTotal for such files.
+// can no longer be taken for clean. It replaces skipInner for such files.
 func (a *archiveStatusHandler) addInnerError(id string, filename string, err error) (finished bool, ok bool) {
 	a.Lock()
 	defer a.Unlock()

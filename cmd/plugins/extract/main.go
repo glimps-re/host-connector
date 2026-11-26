@@ -148,6 +148,7 @@ func (p *SevenZipExtractPlugin) ExtractFile(archiveLocation, outputDir string, l
 	}
 	extraction.Skipped = result.skipped.entries
 	extraction.SkippedCount = result.skipped.count
+	extraction.Links, extraction.LinksCount = linksOf(outputDir, result.symlinkFiles)
 	if len(result.anomalies) > 0 {
 		return p.anomalyOf(archiveLocation, result, extraction)
 	}
@@ -261,4 +262,34 @@ func overBudgetExtraction(result extractResult) plugins.Extraction {
 	}
 	count := datamodel.AddCount(len(result.withinBudget), result.skipped.count)
 	return plugins.Extraction{Skipped: skipped, SkippedCount: count}
+}
+
+// linksOf lists the links of an archive, named relative to the output folder
+// with "/" separators: within datamodel.MaxListedSubfiles entries, names cut to
+// datamodel.MaxListedNameLen, with their exact count. A path that is not under
+// the output folder keeps its base name only.
+func linksOf(outputDir string, paths []string) ([]datamodel.NotAnalyzedFile, int) {
+	if len(paths) == 0 {
+		return nil, 0
+	}
+	links := make([]datamodel.NotAnalyzedFile, 0, min(len(paths), datamodel.MaxListedSubfiles))
+	for _, p := range paths[:min(len(paths), datamodel.MaxListedSubfiles)] {
+		links = append(links, datamodel.NotAnalyzedFile{FileName: truncateName(linkRelName(outputDir, p)), Reason: datamodel.NotAnalyzedSymlink})
+	}
+	return links, len(paths)
+}
+
+// linkRelName is the name of a link in the archive. The links 7z refused are named
+// by its messages, relative already; the ones found on disk are absolute.
+func linkRelName(outputDir, p string) string {
+	if !filepath.IsAbs(p) {
+		// Only shown, never used as a path: a traversal 7z refused is evidence
+		// for the analyst, kept whole.
+		return filepath.ToSlash(p)
+	}
+	rel, err := filepath.Rel(outputDir, p)
+	if err != nil || !filepath.IsLocal(rel) {
+		return filepath.Base(p)
+	}
+	return filepath.ToSlash(rel)
 }

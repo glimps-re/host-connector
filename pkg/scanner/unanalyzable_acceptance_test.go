@@ -449,7 +449,7 @@ func TestUnanalyzable_emptyFile(t *testing.T) {
 }
 
 // A member that is empty inside an archive is unchanged by the empty policy.
-func TestUnanalyzable_emptyArchiveMemberIsUnchanged(t *testing.T) {
+func TestUnanalyzable_emptyArchiveMemberIsListedAndTheArchiveDelivered(t *testing.T) {
 	for _, p := range []string{PolicySkip, PolicyMitigate} {
 		t.Run(p, func(t *testing.T) {
 			r := runAcc(t, accSetup{
@@ -458,8 +458,12 @@ func TestUnanalyzable_emptyArchiveMemberIsUnchanged(t *testing.T) {
 				extract: memberExtractor(map[string]string{"empty.bin": "", "ok.bin": "ok"}),
 			})
 			got := r.one(t, "a.zip")
-			if got.result.Malware || got.result.NotAnalyzedSubfilesCount != 0 || got.src.TooBig {
-				t.Errorf("result = %+v: empty members of archives must be unchanged", got.result)
+			if got.result.Malware || got.src.TooBig {
+				t.Errorf("result = %+v: the empty policy must not apply to members of archives", got.result)
+			}
+			want := datamodel.NotAnalyzedFile{FileName: "empty.bin", Reason: datamodel.NotAnalyzedEmpty}
+			if got.result.NotAnalyzedSubfilesCount != 1 || len(got.result.NotAnalyzedSubfiles) != 1 || got.result.NotAnalyzedSubfiles[0] != want {
+				t.Errorf("not analyzed = %v (count %d), want the empty member listed once", got.result.NotAnalyzedSubfiles, got.result.NotAnalyzedSubfilesCount)
 			}
 		})
 	}

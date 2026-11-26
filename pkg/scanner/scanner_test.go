@@ -600,7 +600,9 @@ func TestNewConnector(t *testing.T) {
 					t.Errorf("unwanted error: %v", e)
 				}
 				c.Close(t.Context())
-				assertNoOutput(t, buff)
+				if out := buff.String(); !strings.Contains(out, "flagged: false") || !strings.Contains(out, "(3 extracted file(s) not analyzed)") {
+					t.Errorf("output = %q, want a clean archive with its 3 empty members not analyzed", out)
+				}
 			},
 		},
 		{

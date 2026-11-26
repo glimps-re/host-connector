@@ -449,6 +449,30 @@ func TestMergeResult_keepsTheReasonOfAMemberMitigatedWithoutAnalysis(t *testing.
 			}
 		})
 	}
+	detected := datamodel.Result{Malware: true, Malwares: []string{"evil"}, MalwareReason: datamodel.MalwareDetected}
+	byPath := datamodel.Result{Malware: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFilePath}
+	byType := datamodel.Result{Malware: true, Malwares: []string{"forbidden_files"}, MalwareReason: datamodel.FilteredFileType}
+	for _, tt := range []struct {
+		name  string
+		steps []datamodel.Result
+		want  datamodel.MalwareReason
+	}{
+		{"detected then forbidden path", []datamodel.Result{detected, byPath}, datamodel.MalwareDetected},
+		{"forbidden path then detected", []datamodel.Result{byPath, detected}, datamodel.MalwareDetected},
+		{"forbidden type then detected", []datamodel.Result{byType, detected}, datamodel.MalwareDetected},
+		{"forbidden path only", []datamodel.Result{byPath}, datamodel.FilteredFilePath},
+		{"forbidden type only", []datamodel.Result{byType}, datamodel.FilteredFileType},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var merged datamodel.Result
+			for _, step := range tt.steps {
+				merged = mergeResult(merged, step, "m", nil)
+			}
+			if !merged.Malware || merged.MalwareReason != tt.want {
+				t.Errorf("mergeResult() = %+v, want malware with reason %q", merged, tt.want)
+			}
+		})
+	}
 	// A detection still wins over the reasons of the files not analyzed.
 	got := mergeResult(datamodel.Result{Malware: true, MalwareReason: datamodel.Encrypted}, datamodel.Result{Malware: true, MalwareReason: datamodel.MalwareDetected}, "m", nil)
 	if got.MalwareReason != datamodel.MalwareDetected {

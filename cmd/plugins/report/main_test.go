@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -445,22 +447,26 @@ func TestReportDataFrom_countsAsMalwareOnlyDetectedContent(t *testing.T) {
 	}
 }
 
-func TestReportPlugin_summaryShowsBlockedAndMalwareOnTwoLines(t *testing.T) {
+// tileHTML is coupled to the markup of the summary tiles in report.html.tmpl: it
+// ties a label to its value, which a plain substring search cannot.
+func tileHTML(label string, n int) *regexp.Regexp {
+	return regexp.MustCompile(`<div class="tile[^"]*">\s*<p class="n">` + strconv.Itoa(n) + `</p>\s*<p class="l">` + regexp.QuoteMeta(label) + `</p>\s*</div>`)
+}
+
+func TestReportPlugin_summaryShowsBlockedAndMalwareInTheirOwnTiles(t *testing.T) {
 	p := newTestPlugin(t)
 	buf, err := p.generateHTMLReport(ReportData{TotalMitigated: 3, TotalMalware: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	html := buf.String()
-	for _, want := range []string{
-		"<strong>Bloqués : </strong>3</li>",
-		"<strong>Fichiers malveillants : </strong>1</li>",
-	} {
-		if !strings.Contains(html, want) {
-			t.Errorf("HTML lacks %q", want)
-		}
-	}
-	if strings.Contains(html, "dont fichiers") {
-		t.Error("HTML still holds the old wording")
+	for _, tile := range []struct {
+		label string
+		n     int
+	}{{"Bloqués", 3}, {"Fichiers malveillants", 1}} {
+		t.Run(tile.label, func(t *testing.T) {
+			if !tileHTML(tile.label, tile.n).MatchString(buf.String()) {
+				t.Errorf("HTML has no tile %q with the value %d", tile.label, tile.n)
+			}
+		})
 	}
 }

@@ -638,6 +638,8 @@ report:
     template_path: ""
 ```
 
+**Look of the PDF** (embedded template, GLIMPS colors): the verdict comes first, a red banner "N fichier(s) bloqué(s)", an amber one "Analyse incomplète" when nothing is blocked but a file is in error or not analyzed, or a green one "Aucune menace détectée" when everything was analyzed and nothing blocked, with the conclusion, then four tiles (Bloqués, Fichiers malveillants, Non analysés, Fichiers en erreur) and a line of the other figures (files listed and analyzed, volumes). The sections that follow (blocked files, blocked archives, not analyzed, in error) each have a counter; a file takes one row, its name in bold and its SHA-256 below, its threats as badges. The header is on the first page only; the footer `TLP:AMBER` and "Page N of M" are on every page. `template_path` still loads a custom template, which replaces this one entirely.
+
 **Rendering:**
 - The fonts are embedded in the plugin (Liberation Sans, DejaVu Sans; licences in [LICENSES.md](LICENSES.md)): nothing to install on the host.
 - The renderer is checked on an empty page at every start and configuration; a failure refuses the start.

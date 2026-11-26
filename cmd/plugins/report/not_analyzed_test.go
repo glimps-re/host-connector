@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -228,7 +229,7 @@ func TestReportData_theCountOfTheFailedMembersIsExactBeyondTheListedOnes(t *test
 	if strings.Contains(html, "more failed file") {
 		t.Error("the count of the files not listed is in the HTML")
 	}
-	if !strings.Contains(html, fmt.Sprintf("Fichiers en erreur : </strong>%d", failed)) {
+	if !tileHTML("Fichiers en erreur", failed).MatchString(html) {
 		t.Errorf("the HTML does not give %d files in error", failed)
 	}
 	if !strings.Contains(html, fmt.Sprintf("… et %d autres</p>", failed-maxRows)) {
@@ -380,8 +381,8 @@ func TestReport_noNotAnalyzedSectionWhenNothingPassedUnanalyzed(t *testing.T) {
 	if strings.Contains(html, `id="not-analyzed-files"`) {
 		t.Error("the section is there with nothing to list")
 	}
-	if !strings.Contains(html, "(membres d'archives inclus) : </strong>0") {
-		t.Error("the counter of the files not analyzed is missing")
+	if !tileHTML("Non analysés", 0).MatchString(html) {
+		t.Error("the tile of the files not analyzed is missing")
 	}
 }
 
@@ -838,5 +839,62 @@ func TestReportData_everyTextOfADepositorIsCut(t *testing.T) {
 		if len(names) != maxThreatNames+1 {
 			t.Errorf("a row shows %d threat entries, want %d (the names and the count of the others)", len(names), maxThreatNames+1)
 		}
+	}
+}
+
+func TestReport_sectionBadgesCountOnlyWhatTheSectionHolds(t *testing.T) {
+	badge := func(title string, n int) *regexp.Regexp {
+		return regexp.MustCompile(regexp.QuoteMeta(title) + `<span class="count">` + strconv.Itoa(n) + `</span>`)
+	}
+	t.Run("one file and one archive", func(t *testing.T) {
+		_, html := renderReports(t, append(blockedReports(1), archiveReports(1, 2)...))
+		if !badge("Fichiers bloqués", 1).MatchString(html) {
+			t.Error("the badge of the blocked files is not 1")
+		}
+		if !badge("Archives bloquées", 1).MatchString(html) {
+			t.Error("the badge of the blocked archives is not 1")
+		}
+	})
+	t.Run("over the row budget", func(t *testing.T) {
+		const files, archives = maxRows + 20, maxRows + 20
+		data, html := renderReports(t, append(blockedReports(files), archiveReports(archives, 1)...))
+		if data.MoreMitigatedFiles == 0 || data.MoreMitigatedArchives == 0 {
+			t.Fatalf("fixture not over budget: %d files and %d archives left out", data.MoreMitigatedFiles, data.MoreMitigatedArchives)
+		}
+		if !badge("Fichiers bloqués", files).MatchString(html) {
+			t.Errorf("the badge of the blocked files is not %d", files)
+		}
+		if !badge("Archives bloquées", archives).MatchString(html) {
+			t.Errorf("the badge of the blocked archives is not %d", archives)
+		}
+	})
+}
+
+func TestReport_verdictBannerFollowsTheSession(t *testing.T) {
+	const red, green, amber = `class="verdict" id="conclusion"`, `class="verdict ok" id="conclusion"`, `class="verdict warn" id="conclusion"`
+	tests := []struct {
+		name string
+		data ReportData
+		want string
+	}{
+		{"nothing to report", ReportData{}, green},
+		{"errors only", ReportData{TotalErrors: 1}, amber},
+		{"not analyzed only", ReportData{NbFileNotAnalyzed: 2}, amber},
+		{"blocked", ReportData{TotalMitigated: 1}, red},
+		{"blocked with errors and not analyzed", ReportData{TotalMitigated: 1, TotalErrors: 3, NbFileNotAnalyzed: 4}, red},
+	}
+	p := newTestPlugin(t)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf, err := p.generateHTMLReport(tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, banner := range []string{red, green, amber} {
+				if got := strings.Contains(buf.String(), banner); got != (banner == tt.want) {
+					t.Errorf("banner %s present = %v, want %v", banner, got, banner == tt.want)
+				}
+			}
+		})
 	}
 }

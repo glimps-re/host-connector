@@ -23,7 +23,7 @@ func TestE2E_aPluginMisconfigurationIsRefusedAtStart(t *testing.T) {
 		plugins map[string]map[string]any
 		want    string
 	}{
-		{name: "browser that does not exist (P19)", plugins: map[string]map[string]any{"report": {"chrome_path": "/nonexistent/chromium"}}, want: `plugin "report": browser /nonexistent/chromium: unsafe executable`},
+		{name: "template that does not exist (P19)", plugins: map[string]map[string]any{"report": {"template_path": "/nonexistent/report.html.tmpl"}}, want: `plugin "report": open /nonexistent/report.html.tmpl: no such file or directory`},
 		{name: "7-Zip that does not exist (P18)", plugins: map[string]map[string]any{"extract": {"seven_zip_path": "/nonexistent/7z"}}, want: "install the binary or fix the configured path"},
 	}
 	for _, tt := range tests {

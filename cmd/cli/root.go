@@ -21,25 +21,21 @@ import (
 var hostConfig = &config.Config{
 	Config:          config.DefaultConfigPath,
 	ShutdownTimeout: sdk.Duration(config.DefaultShutdownTimeout),
-	HostConfig: sdk.HostConfig{
-		CommonConnectorConfig: sdk.CommonConnectorConfig{
-			GMalwareTimeout: config.DefaultTimeout,
-		},
-		Workers:        config.DefaultWorkers,
-		MaxFileSize:    config.DefaultMaxFileSize,
-		ExtractMinSize: config.DefaultExtractMinSize,
-		Actions: sdk.HostActionsConfig{
-			Delete:     true,
-			Quarantine: true,
-			Print:      true,
-			Log:        true,
-		},
-		Monitoring: sdk.HostMonitoringConfig{
-			ModificationDelay: config.DefaultModificationDelay,
-		},
-		Quarantine: sdk.HostQuarantineConfig{
-			Password: "infected",
-		},
+	GMalwareTimeout: config.DefaultTimeout,
+	Workers:         config.DefaultWorkers,
+	MaxFileSize:     config.DefaultMaxFileSize,
+	ExtractMinSize:  config.DefaultExtractMinSize,
+	Actions: sdk.HostActionsConfig{
+		Delete:     true,
+		Quarantine: true,
+		Print:      true,
+		Log:        true,
+	},
+	Monitoring: sdk.HostMonitoringConfig{
+		ModificationDelay: config.DefaultModificationDelay,
+	},
+	Quarantine: sdk.HostQuarantineConfig{
+		Password: "infected",
 	},
 }
 

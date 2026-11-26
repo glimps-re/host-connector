@@ -1,4 +1,4 @@
-//go:build linux && (e2e || e2e_plugins) && realbrowser
+//go:build linux && (e2e || e2e_plugins)
 
 package plugins
 
@@ -12,8 +12,7 @@ import (
 
 // From TestReportGeneration_theFallbackEventIsRaisedOnceForSeveralSessions: the
 // sessions of several owners whose report cannot be generated each get their
-// JSON report, and the console is told once. harness.Start: the browser breaks
-// only once the connector checked it at start.
+// JSON report, and the console is told once.
 func TestE2E_theFallbackIsToldOnceForSeveralSessions(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -23,20 +22,14 @@ func TestE2E_theFallbackIsToldOnceForSeveralSessions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			chrome := requireChromium(t)
-			dir := t.TempDir()
-			broken := filepath.Join(dir, "broken")
-			wrapper := buildBrowserStub(t, dir, chrome, broken, alwaysFails)
 			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{
 				Agent: true,
 				Plugins: map[string]map[string]any{
-					"report":  {"chrome_path": wrapper},
+					"report":  {"template_path": failingTemplate(t)},
 					"session": {"report_retries": 0},
 				},
 			})
-			in.WaitMonitoring(t)
-			harness.Write(t, broken, nil)
 			for _, user := range tt.users {
 				dropAs(t, in, user, "a.txt", []byte("a file of "+user))
 			}

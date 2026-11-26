@@ -309,52 +309,20 @@ func TestReportPlugin_GenerateReport(t *testing.T) {
 		},
 	}
 
-	// Note: This test will likely fail in CI/CD environments without chromedp/browser
-	// but will test the data preparation and HTML generation parts
 	result, err := p.GenerateReport(t.Context(), reportContext, datamodel.ReportsSeq(reports))
-	// Check if we got an error due to chromedp not being available
 	if err != nil {
-		// This is expected in environments without a browser
-		t.Logf("GenerateReport failed as expected without browser environment: %v", err)
-
-		// We can still test that the data preparation works
-		reportData := mustReportData(t, reportContext, reports)
-
-		// Verify the data was prepared correctly
-		if reportData.ScanID != reportContext.ScanID {
-			t.Errorf("Expected ScanID %s, got %s", reportContext.ScanID, reportData.ScanID)
-		}
-
-		if reportData.NbFileSubmitted != 2 {
-			t.Errorf("Expected 2 files submitted, got %d", reportData.NbFileSubmitted)
-		}
-
-		if len(reportData.MitigatedFiles) != 1 {
-			t.Errorf("Expected 1 malware file, got %d", len(reportData.MitigatedFiles))
-		}
-
-		return
+		t.Fatalf("GenerateReport() error = %v", err)
 	}
-
-	// If no error, verify we got a valid result
-	if result.Content == nil || result.Extension != ".pdf" {
-		t.Errorf("GenerateReport() = %+v, want a content and the .pdf extension when successful", result)
-		return
+	if result.Extension != ".pdf" {
+		t.Errorf("Extension = %q, want .pdf", result.Extension)
 	}
-
-	// Read the content to verify it's not empty
-	content := make([]byte, 1024)
-	n, readErr := result.Content.Read(content)
-	if readErr != nil && readErr != io.EOF {
-		t.Errorf("Error reading generated report: %v", readErr)
-		return
+	head := make([]byte, len(pdfMagic))
+	if _, err := io.ReadFull(result.Content, head); err != nil {
+		t.Fatalf("reading the generated report: %v", err)
 	}
-
-	if n == 0 {
-		t.Error("Generated report should not be empty")
+	if string(head) != pdfMagic {
+		t.Errorf("report starts with %q, want %q", head, pdfMagic)
 	}
-
-	t.Logf("Successfully generated report with %d bytes", n)
 }
 
 func TestReportPlugin_Interface(t *testing.T) {

@@ -624,29 +624,25 @@ session:
 
 #### Report Plugin
 
-Renders session reports as PDF from an HTML template, using Chrome or Chromium.
+Renders session reports as PDF from an HTML template, with the pure-Go renderer [htmltopdf](https://github.com/glimps-re/htmltopdf): no browser or external process is needed, and the connector may run as root.
 
 | Key | Default | Description |
 |---|---|---|
 | `template_path` | `""` (embedded template) | Custom HTML template (Go `html/template`) |
-| `chrome_path` | `""` (found in `PATH`) | Absolute path of Chrome/Chromium |
+| `chrome_path` | — | Deprecated, ignored: a warning is logged when it is set. Remove it from the configuration |
 
 ```yaml
 report:
   file: report.so
   config:
     template_path: ""
-    chrome_path: ""
 ```
 
-**Prerequisites:**
-- Google Chrome or Chromium must be installed. On Debian:
-```bash
-  sudo apt update && sudo apt install chromium
-```
-- The browser is checked at every start and configuration. It must be owned by root or the connector account, not writable by others, and render a test page within 30 s. Otherwise the connector refuses to start.
-- Chrome keeps its sandbox and refuses to run as root: run the connector under a dedicated service account.
-- JavaScript and all network or `file:` requests are blocked. A custom template must embed its images and styles (`data:` URIs, inline `<style>`).
+**Rendering:**
+- The fonts are embedded in the plugin (Liberation Sans, DejaVu Sans; licences in [LICENSES.md](LICENSES.md)): nothing to install on the host.
+- The renderer is checked on an empty page at every start and configuration; a failure refuses the start.
+- One PDF renders in at most 60 s and 64 MiB, with at most 2 renderings at a time; the renderer limits (boxes, styles, work) are bounded below the htmltopdf defaults. A report over a limit falls back to the JSON report.
+- No JavaScript, network or file access. A custom template must inline its styles (`<style>`); `<img>`, `url()`, `<script>` and `@font-face` are not supported and are dropped.
 
 **Template data:**
 - `ScanID`, `ScanStartTime`, `Duration`
@@ -818,19 +814,10 @@ go test -race -tags e2e_plugins -timeout 30m ./test/plugins/
 go test -race -tags e2e_plugins -timeout 30m -run 'TestE2E_archives$' ./test/plugins/
 
 # Lint, including the suite
-golangci-lint run --build-tags e2e,realbrowser ./test/...
+golangci-lint run --build-tags e2e ./test/...
 ```
 
-It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it). The two browser scenarios also need the tag `realbrowser`, Chromium or Chrome in `PATH` and a non-root user, and fail when either is missing. See `test/doc.go`. The scenarios are described in [docs/e2e-tests.md](docs/e2e-tests.md).
-
-The tests of the report plugin that start a real Chromium (`cmd/plugins/report`) are opt-in with the build tag `realbrowser`: some CI runners (Ubuntu with AppArmor restricting unprivileged user namespaces) leave the browser no usable sandbox, and the plugin deliberately refuses `--no-sandbox`. They need Chromium or Chrome in `PATH` and a non-root user, and fail (not skip) when either is missing:
-
-```bash
-go test -race -tags realbrowser ./cmd/plugins/report/
-
-# Lint, including these tests
-golangci-lint run --build-tags realbrowser ./cmd/plugins/report/...
-```
+It needs the Go toolchain and `cmd/plugins/extract/7zzs` (embedded in the extract plugin at build time: the build fails without it); no browser is needed. See `test/doc.go`. The scenarios are described in [docs/e2e-tests.md](docs/e2e-tests.md).
 
 ### Security Considerations
 

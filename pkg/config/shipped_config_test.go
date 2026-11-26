@@ -21,18 +21,16 @@ func TestShippedYAMLUnchanged(t *testing.T) {
 		t.Fatalf("rsc/config.yml refused: %v", err)
 	}
 	// Effective values with SDK v0.8.4; v0.10.0 only adds zero-valued fields.
-	want := &Config{HostConfig: sdk.HostConfig{
-		CommonConnectorConfig: sdk.CommonConnectorConfig{
-			GMalwareAPIURL:   "https://gmalware.ggp.glimps.re",
-			GMalwareAPIToken: "00000000-00000000-00000000-00000000-00000000",
-			GMalwareTimeout:  sdk.Duration(5 * time.Minute),
-			GMalwareUserTags: []string{"Server1"},
-		},
-		Paths:      []string{},
-		Actions:    sdk.HostActionsConfig{Delete: true, Quarantine: true},
-		Monitoring: sdk.HostMonitoringConfig{PreScan: true, Period: sdk.Duration(time.Hour), ModificationDelay: sdk.Duration(30 * time.Second)},
-		Quarantine: sdk.HostQuarantineConfig{Password: "infected"},
-	}}
+	want := &Config{
+		GMalwareAPIURL:   "https://gmalware.ggp.glimps.re",
+		GMalwareAPIToken: "00000000-00000000-00000000-00000000-00000000",
+		GMalwareTimeout:  sdk.Duration(5 * time.Minute),
+		GMalwareUserTags: []string{"Server1"},
+		Paths:            []string{},
+		Actions:          sdk.HostActionsConfig{Delete: true, Quarantine: true},
+		Monitoring:       sdk.HostMonitoringConfig{PreScan: true, Period: sdk.Duration(time.Hour), ModificationDelay: sdk.Duration(30 * time.Second)},
+		Quarantine:       sdk.HostQuarantineConfig{Password: "infected"},
+	}
 	if diff := cmp.Diff(want, got, cmpopts.EquateEmpty()); diff != "" {
 		t.Errorf("rsc/config.yml effective configuration changed (-want +got):\n%s", diff)
 	}

@@ -8,13 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/test/internal/fakes/gmalware"
-	"github.com/glimps-re/host-connector/test/internal/wait"
 )
 
 func Write(t *testing.T, path string, data []byte) {
@@ -118,25 +116,28 @@ func (in *Instance) OutputHas(t *testing.T, content []byte) bool {
 // MonitoringStarted is the log line of a connector that is watching.
 const MonitoringStarted = "monitoring successfully completed"
 
+func (in *Instance) WaitMonitoring(t *testing.T) {
+	t.Helper()
+	in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(MonitoringStarted) })
+}
+
 // Restart stops the connector with SIGTERM and starts it again on the same
 // folders and quarantine, with change merged over its configuration, and waits
 // for it to watch again. The registry of the quarantine is in memory, so the
 // new run does not know what the previous one quarantined.
 func (in *Instance) Restart(t *testing.T, change map[string]any) {
 	t.Helper()
-	before := strings.Count(in.Stderr.String(), MonitoringStarted)
-	in.Signal(t, syscall.SIGTERM)
-	if _, err := in.Wait(t, 20*time.Second); err != nil {
-		t.Fatalf("the connector did not stop cleanly: %v", err)
-	}
-	if err := syscall.Kill(-in.Cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+	in.Stop(t)
+	if err := in.killGroup(); err != nil {
 		t.Fatalf("the processes of the stopped connector: %v", err)
 	}
 	// The request for tasks of the dead process is still waiting in the fake
 	// console, and would answer a poll later: it must be over before a task is
 	// pushed.
 	if in.Console != nil {
-		wait.WaitFor(t, "the polls of the stopped process to end", func() bool { return in.Console.PollsInFlight() == 0 })
+		if err := in.poll(time.Minute, nil, func() bool { return in.Console.PollsInFlight() == 0 }); err != nil {
+			t.Fatalf("%v while waiting for the polls of the stopped process to end", err)
+		}
 	}
 	conf := in.WithConf(t, change)
 	in.conf = conf
@@ -144,14 +145,15 @@ func (in *Instance) Restart(t *testing.T, change map[string]any) {
 	if in.Console != nil {
 		in.Console.SetConfig(conf)
 	}
-	in.launch(t, in.bin, in.dir, in.args)
-	in.waitMonitoringAgain(t, before)
+	in.relaunch(t)
 }
 
-// waitMonitoringAgain waits for the connector to log that it watches more
-// times than before.
-func (in *Instance) waitMonitoringAgain(t *testing.T, before int) {
+// relaunch starts the stopped connector again and waits for it to log that it
+// watches more times than before.
+func (in *Instance) relaunch(t *testing.T) {
 	t.Helper()
+	before := strings.Count(in.Stderr.String(), MonitoringStarted)
+	in.launch(t, in.bin, in.args)
 	in.WaitFor(t, "the monitoring to start again", func() bool { return strings.Count(in.Stderr.String(), MonitoringStarted) > before })
 }
 
@@ -164,7 +166,7 @@ const NotDeliveredWindow = 12 * time.Second
 func (in *Instance) StaysInInput(t *testing.T, path string, content []byte) {
 	t.Helper()
 	in.WaitFor(t, "the connector to look at "+filepath.Base(path), func() bool { return in.LogHas(path) })
-	if in.poll(NotDeliveredWindow, func() bool { return in.OutputHas(t, content) }) == nil {
+	if in.poll(NotDeliveredWindow, in.exited, func() bool { return in.OutputHas(t, content) }) == nil {
 		t.Fatalf("%s was delivered", filepath.Base(path))
 	}
 	if in.Gone(path) {
@@ -181,13 +183,11 @@ func PathFilter(forbidden, skipped []string) map[string]any {
 // it again on the same folders, and waits for it to watch again.
 func (in *Instance) CrashAndRestart(t *testing.T) {
 	t.Helper()
-	before := strings.Count(in.Stderr.String(), MonitoringStarted)
-	if err := syscall.Kill(-in.Cmd.Process.Pid, syscall.SIGKILL); err != nil {
+	if err := in.killGroup(); err != nil {
 		t.Fatal(err)
 	}
 	<-in.exited
-	in.launch(t, in.bin, in.dir, in.args)
-	in.waitMonitoringAgain(t, before)
+	in.relaunch(t)
 }
 
 // NamesOf waits until the fake service has been sent the content, and returns

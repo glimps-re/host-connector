@@ -37,9 +37,9 @@ type leftOut struct {
 // are there before) and the report entries of the archive.
 func writtenOut(t *testing.T, config map[string]any, members map[string][]byte, extracted []byte) (int64, []datamodel.Report) {
 	t.Helper()
-	gm := gmalware.New(t, false)
+	gm := gmalware.New(t)
 	in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}, Config: config})
-	in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+	in.WaitMonitoring(t)
 	before, err := treeSize(in.Work)
 	if err != nil {
 		t.Fatal(err)
@@ -78,8 +78,8 @@ func checkLeftOut(t *testing.T, entries []datamodel.Report, want leftOut) {
 	}
 }
 
-// From TestExtractFile_memberOverTheLimitIsNeverWrittenToDisk: a member over max_file_size is listed too-big and never written out.
-func TestE2E_aMemberOverMaxFileSizeIsNeverWrittenOut(t *testing.T) {
+// From TestExtractFile_memberOverTheLimitIsNeverWrittenToDisk: a member over the remaining recursive_extract_max_size is listed extract-limit and never written out.
+func TestE2E_aMemberOverTheBudgetIsNeverWrittenOut(t *testing.T) {
 	tests := []struct {
 		name     string
 		members  map[string]int
@@ -88,10 +88,10 @@ func TestE2E_aMemberOverMaxFileSizeIsNeverWrittenOut(t *testing.T) {
 		maxWrite int64
 	}{
 		{
-			name:     "huge.bin of 30 MiB beside small.txt, max_file_size 10 MiB",
+			name:     "huge.bin of 30 MiB beside small.txt, recursive_extract_max_size 10 MiB",
 			members:  map[string]int{"huge.bin": 30 << 20, "small.txt": 10},
-			config:   map[string]any{"max_file_size": "10MiB", "unanalyzable_policy": map[string]any{"too_big": "pass"}},
-			want:     leftOut{reason: datamodel.NotAnalyzedTooBig, count: 1, includes: "huge.bin"},
+			config:   map[string]any{"recursive_extract_max_size": "10MiB", "unanalyzable_policy": map[string]any{"too_big": "pass"}},
+			want:     leftOut{reason: datamodel.NotAnalyzedExtractLimit, count: 1, includes: "huge.bin"},
 			maxWrite: 1 << 20,
 		},
 	}

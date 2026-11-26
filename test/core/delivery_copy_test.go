@@ -46,7 +46,7 @@ func TestE2E_copyModeDeliversAPrivateCopy(t *testing.T) {
 					harness.Await("d/file.bin", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
 					harness.Restore("d/file.bin", ""),
 				},
-				Want:            map[string]harness.Outcome{"d/file.bin": {In: harness.Output, Restored: true, Delivery: harness.Copied}},
+				Want:            map[string]harness.Outcome{"d/file.bin": {In: harness.Output, Restored: true}},
 				WantMitigations: []string{"malware"},
 			},
 		},

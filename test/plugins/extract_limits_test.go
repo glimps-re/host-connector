@@ -214,7 +214,7 @@ func TestE2E_aForgedZipOfEmptyPackedMembersIsABomb(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}})
 			work := watchSize(t, in)
 			entries := make([]rawEntry, 0, tt.members)
@@ -235,21 +235,23 @@ func TestE2E_aForgedZipOfEmptyPackedMembersIsABomb(t *testing.T) {
 	}
 }
 
-// T48c: a solid 7z whose first member is larger than the limit for a member and
-// made of zeros (23 KB packed for 150 MiB) is left out by the limits of the
-// extraction: it stays in INPUT in error and the member is not written out. It
-// is not called a bomb: its members within the limit do not declare 3 GB.
+// T48c: a solid 7z whose first member is larger than the remaining
+// recursive_extract_max_size and made of zeros (23 KB packed for 150 MiB) is
+// left out by the limits of the extraction: it stays in INPUT in error and the
+// member is not written out. It is not called a bomb: its members within the
+// budget do not declare 3 GB.
 func TestE2E_aSolidSevenZipWithAHugeFirstMemberIsLeftOutAndNotWrittenOut(t *testing.T) {
 	tests := []struct {
-		name string
-		size int64
+		name   string
+		size   int64
+		budget string
 	}{
-		{name: "a first member of 150 MiB of zeros", size: 150 << 20},
+		{name: "a first member of 150 MiB of zeros, recursive_extract_max_size 100 MiB", size: 150 << 20, budget: "100MiB"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
-			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}})
+			gm := gmalware.New(t)
+			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}, Config: map[string]any{"recursive_extract_max_size": tt.budget}})
 			work := watchSize(t, in)
 			bin := sevenZip(t)
 			src := t.TempDir()
@@ -350,6 +352,9 @@ func TestE2E_membersLeftOutByTheLimitsFollowTooBig(t *testing.T) {
 		tinyContents[name] = "tiny"
 	}
 	leftOut := harness.Outcome{In: harness.Input, Error: "left out by the limits of the extraction"}
+	// max_file_size bounds only what is submitted: a member over it is extracted,
+	// then refused.
+	tooBig := harness.Outcome{In: harness.Input, Error: "file is too big to be analyzed"}
 	for _, tt := range []struct {
 		name         string
 		limits       map[string]any
@@ -366,7 +371,7 @@ func TestE2E_membersLeftOutByTheLimitsFollowTooBig(t *testing.T) {
 				harness.File{Path: "small.txt", Content: []byte(strings.Repeat("a small member ", 20))},
 				harness.File{Path: "big.bin", Content: big},
 			),
-			held: leftOut,
+			held: tooBig,
 			pass: harness.Outcome{In: harness.Output, NotAnalyzedMembers: &harness.MemberList{Reason: datamodel.NotAnalyzedTooBig, Count: 1, Includes: "big.bin"}},
 		},
 		{
@@ -408,7 +413,7 @@ func TestE2E_membersLeftOutByTheLimitsFollowTooBig(t *testing.T) {
 				harness.File{Path: "big1.bin", Content: big},
 				harness.File{Path: "big2.bin", Content: append(bytes.Clone(big), 1)},
 			),
-			held: leftOut,
+			held: tooBig,
 			pass: harness.Outcome{In: harness.Output, NotAnalyzedMembers: &harness.MemberList{Reason: datamodel.NotAnalyzedTooBig, Count: 2}},
 		},
 		{
@@ -430,7 +435,7 @@ func TestE2E_membersLeftOutByTheLimitsFollowTooBig(t *testing.T) {
 				harness.File{Path: "ok.txt", Content: []byte(strings.Repeat("a member beside a nested zip ", 20))},
 				archive(t, "b.zip", zipOf, harness.File{Path: "big.bin", Content: big}),
 			),
-			held: leftOut,
+			held: tooBig,
 			pass: harness.Outcome{In: harness.Output, NotAnalyzedMembers: &harness.MemberList{Reason: datamodel.NotAnalyzedTooBig, Count: 1, Includes: "b.zip/big.bin"}},
 		},
 	} {

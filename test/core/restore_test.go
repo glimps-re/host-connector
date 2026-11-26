@@ -56,7 +56,7 @@ func TestE2E_restoreNeverReplacesAFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true})
 			gm.MarkMalicious(tt.bad)
 			in.Expect.Release(tt.bad)

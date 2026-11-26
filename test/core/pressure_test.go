@@ -85,11 +85,11 @@ func TestE2E_withoutRescanThePressureIsReportedAtMostOnceAMinute(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Config: map[string]any{
 				"monitoring": map[string]any{"max_tracked_memory": "1MiB", "modification_delay": "1h"},
 			}})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			dropLongNamed(t, in, tt.files)
 			in.WaitFor(t, "the first pressure report", func() bool { return len(pressureMessages(in)) > 0 })
 			first := time.Now()
@@ -109,9 +109,8 @@ func TestE2E_withoutRescanThePressureIsReportedAtMostOnceAMinute(t *testing.T) {
 
 // From TestMonitor_pressureEndIsRaisedInEventOnlyMode: without a rescan, once
 // the files are removed, the end of the pressure is told a minute after the
-// last report, at the next file, and only once. The refusals of the overflow
-// that came after the first report are reported first. harness.Start: a
-// scenario cannot remove files nor wait a minute.
+// last report, at the next file, and only once. harness.Start: a scenario
+// cannot remove files nor wait a minute.
 func TestE2E_withoutRescanTheEndOfThePressureIsToldOnceAfterAQuietMinute(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -122,11 +121,11 @@ func TestE2E_withoutRescanTheEndOfThePressureIsToldOnceAfterAQuietMinute(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Config: map[string]any{
 				"monitoring": map[string]any{"max_tracked_memory": "1MiB", "modification_delay": tt.delay.String()},
 			}})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			dropLongNamed(t, in, tt.files)
 			in.WaitFor(t, "the first pressure report", func() bool { return len(pressureMessages(in)) > 0 })
 			first := time.Now()
@@ -152,6 +151,7 @@ func TestE2E_withoutRescanTheEndOfThePressureIsToldOnceAfterAQuietMinute(t *test
 			in.WaitFor(t, "the end of the pressure", func() bool { return countOf(in.Console.ResolvedTypes(), pressureEvent) > 0 })
 			time.Sleep(time.Until(last.Add(quietMinute)))
 			probe("three-minutes-later.txt")
+			time.Sleep(5 * time.Second)
 			if got := countOf(in.Console.ResolvedTypes(), pressureEvent); got != 1 {
 				t.Errorf("%d resolutions, want 1", got)
 			}
@@ -174,12 +174,12 @@ func TestE2E_filesLeftInInputFillTheTableUntilTheyAreRemoved(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Config: map[string]any{
 				"actions":    map[string]any{"move": false},
 				"monitoring": map[string]any{"max_tracked_memory": "1MiB", "period": tt.period.String()},
 			}})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			dropLongNamed(t, in, tt.files)
 			in.WaitFor(t, "the pressure and the table full", func() bool {
 				errs := in.Console.ErrorTypes()
@@ -236,8 +236,12 @@ func TestE2E_aPressureMessageNamesAtMost32Owners(t *testing.T) {
 				return slices.ContainsFunc(pressureMessages(in), func(m string) bool { return strings.Contains(m, "more file(s) of other owners") })
 			})
 			for _, m := range pressureMessages(in) {
-				if named := strings.Count(m, " holds "); named > tt.maxNamed {
+				named := strings.Count(m, " holds ")
+				if named > tt.maxNamed {
 					t.Errorf("a pressure message names %d owners, want at most %d", named, tt.maxNamed)
+				}
+				if strings.Contains(m, "more file(s) of other owners") && named != tt.maxNamed {
+					t.Errorf("a pressure message that counts other owners names %d owners, want %d", named, tt.maxNamed)
 				}
 				if len(m) >= tt.maxBytes {
 					t.Errorf("a pressure message is %d bytes, want under %d", len(m), tt.maxBytes)

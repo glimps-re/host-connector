@@ -184,8 +184,8 @@ func TestExtract_limitsAndSkippedMembers(t *testing.T) {
 	for _, e := range res.skipped.entries {
 		reasons[e.FileName] = e.Reason
 	}
-	if res.skipped.count != 2 || reasons["huge.bin"] != datamodel.NotAnalyzedTooBig || reasons["third.txt"] != datamodel.NotAnalyzedExtractLimit {
-		t.Errorf("skipped = %+v (%d), want huge.bin too-big and third.txt extract-limit", res.skipped.entries, res.skipped.count)
+	if res.skipped.count != 2 || reasons["huge.bin"] != datamodel.NotAnalyzedExtractLimit || reasons["third.txt"] != datamodel.NotAnalyzedExtractLimit {
+		t.Errorf("skipped = %+v (%d), want huge.bin and third.txt extract-limit", res.skipped.entries, res.skipped.count)
 	}
 }
 

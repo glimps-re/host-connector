@@ -10,7 +10,6 @@
 // Layout:
 //
 //	internal/harness         build, instance, invariant, shared helpers
-//	internal/wait            polling, shared by the harness and the fakes
 //	internal/fakes/errlog    what the fakes failed to read or write
 //	internal/fakes/gmalware  the fake GLIMPS Malware Detect
 //	internal/fakes/console   the fake console
@@ -21,7 +20,7 @@
 // The scenarios need a build tag: e2e for both packages, e2e_core or
 // e2e_plugins for one of them. The three browser scenarios also need the
 // realbrowser tag, and fail without a browser or when run as root. Every file
-// under internal carries only the linux tag, so a plain `go test ./test/...`
+// under internal carries at most the linux tag, so a plain `go test ./test/...`
 // runs the self-tests of the harness and the fakes, and the tests of the
 // document builders of plugins, without building GMHost. Set a timeout above
 // the default 10 minutes of go test:

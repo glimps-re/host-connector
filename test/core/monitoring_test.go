@@ -28,9 +28,9 @@ func TestE2E_aFileRemovedBeforeTheEndOfItsDelayIsForgotten(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{"monitoring": map[string]any{"modification_delay": tt.delay}}})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			path := in.Drop(t, "gone.txt", tt.gone)
 			time.Sleep(time.Second)
 			if err := os.Remove(path); err != nil {
@@ -90,7 +90,7 @@ func TestE2E_unreadableFoldersDoNotHideTheFileBesideThem(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{"monitoring": map[string]any{"disable_fs_watcher": true, "period": "1s"}}})
 			for i := range tt.locked {
 				dir := filepath.Join(in.Input, "tom", fmt.Sprintf("locked%03d", i))

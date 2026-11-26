@@ -47,7 +47,7 @@ func TestE2E_sessionReportGeneratedByTheBrowser(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			chrome := requireChromium(t)
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			gm.MarkMalicious(tt.bad)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Plugins: map[string]map[string]any{"report": {"chrome_path": chrome}}})
 			in.Drop(t, "bad.txt", tt.bad)
@@ -165,7 +165,7 @@ func TestE2E_failingReportGeneratorFallsBackToJSON(t *testing.T) {
 			broken := filepath.Join(dir, "broken")
 			wrapper := buildBrowserStub(t, dir, chrome, broken, tt.failures)
 			content := []byte("a file whose report fails to be rendered")
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			if tt.malware {
 				gm.MarkMalicious(content)
 			}
@@ -176,7 +176,7 @@ func TestE2E_failingReportGeneratorFallsBackToJSON(t *testing.T) {
 					"session": tt.session,
 				},
 			})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			harness.Write(t, broken, nil)
 			in.Drop(t, "a.txt", content)
 			in.WaitFor(t, "the "+tt.wantExt+" report", func() bool {

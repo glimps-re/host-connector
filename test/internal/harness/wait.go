@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// WaitFor waits for the condition like wait.WaitFor, and fails at
-// once if the process ended meanwhile: a connector that refused its
-// configuration would otherwise be waited for until the deadline.
+// WaitFor waits for the condition, and fails at once if the process ended
+// meanwhile: a connector that refused its configuration would otherwise be
+// waited for until the deadline.
 func (in *Instance) WaitFor(t *testing.T, what string, cond func() bool) {
 	t.Helper()
-	if err := in.poll(time.Minute, cond); err != nil {
+	if err := in.poll(time.Minute, in.exited, cond); err != nil {
 		t.Fatalf("%v while waiting for %s", err, what)
 	}
 }
@@ -32,12 +32,13 @@ func (in *Instance) WaitAck(t *testing.T, taskID string) string {
 }
 
 // poll calls cond until it holds, for at most limit. It returns an error when
-// limit passes, or when the process ended and cond still does not hold.
-func (in *Instance) poll(limit time.Duration, cond func() bool) error {
+// limit passes, or when exited is closed (the process ended) and cond still
+// does not hold. A nil exited is never closed.
+func (in *Instance) poll(limit time.Duration, exited <-chan struct{}, cond func() bool) error {
 	deadline := time.Now().Add(limit)
 	for !cond() {
 		select {
-		case <-in.exited:
+		case <-exited:
 			if cond() {
 				return nil
 			}

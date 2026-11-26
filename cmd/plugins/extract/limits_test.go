@@ -120,8 +120,8 @@ func TestRealSevenZip_streamArchivesCannotWritePastTheLimit(t *testing.T) {
 				if err != nil {
 					t.Fatalf("ExtractFile() error = %v", err)
 				}
-				if len(ex.Files) != 0 || len(ex.Skipped) != 1 || ex.Skipped[0].Reason != datamodel.NotAnalyzedTooBig {
-					t.Errorf("Extraction = %+v, want the member reported too-big and nothing extracted", ex)
+				if len(ex.Files) != 0 || len(ex.Skipped) != 1 || ex.Skipped[0].Reason != datamodel.NotAnalyzedExtractLimit {
+					t.Errorf("Extraction = %+v, want the member reported extract-limit and nothing extracted", ex)
 				}
 				entries, readErr := os.ReadDir(out)
 				if readErr != nil {
@@ -217,8 +217,8 @@ func TestExtract_trapMembersAreReportedAloneAndTheRestIsExtracted(t *testing.T) 
 			if len(res.extractedFiles) != 150 {
 				t.Errorf("extracted %d files, want the 150 normal members", len(res.extractedFiles))
 			}
-			if got := skippedBy(res, datamodel.NotAnalyzedTooBig); !equalSets(got, tt.wantBig) {
-				t.Errorf("too-big = %v, want %v", got, tt.wantBig)
+			if got := skippedBy(res, datamodel.NotAnalyzedExtractLimit); !equalSets(got, tt.wantBig) {
+				t.Errorf("extract-limit = %v, want %v", got, tt.wantBig)
 			}
 			if got := skippedBy(res, datamodel.NotAnalyzedExtractError); len(got) != 0 {
 				t.Errorf("extract-error = %v, want none", got)
@@ -256,12 +256,9 @@ func TestExtract_nineTrapsExhaustTheRelaunchesAndTheRestIsLeftOut(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 8 {
-		t.Errorf("too-big = %v, want 8 members", skippedBy(res, datamodel.NotAnalyzedTooBig))
-	}
 	left := skippedBy(res, datamodel.NotAnalyzedExtractLimit)
-	if len(left) != 20+1 || len(res.anomalies) != 0 {
-		t.Errorf("extract-limit = %d members and anomalies %v, want the 21 left members left out by the limit, no anomaly", len(left), res.anomalies)
+	if len(left) != 8+20+1 || len(res.anomalies) != 0 {
+		t.Errorf("extract-limit = %d members and anomalies %v, want the 8 members past the limit and the 21 left members, no anomaly", len(left), res.anomalies)
 	}
 	if len(res.extractedFiles) != 0 {
 		t.Errorf("%d files were handed over after an abandoned batch: nothing partial may pass", len(res.extractedFiles))
@@ -363,8 +360,8 @@ func TestExtract_exitCodeZeroWithAMemberPastTheLimitReportsOnlyThatMemberWithout
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := skippedBy(res, datamodel.NotAnalyzedTooBig); !equalSets(got, []string{"trap1", "trap2"}) {
-		t.Errorf("too-big = %v, want trap1 and trap2", got)
+	if got := skippedBy(res, datamodel.NotAnalyzedExtractLimit); !equalSets(got, []string{"trap1", "trap2"}) {
+		t.Errorf("extract-limit = %v, want trap1 and trap2", got)
 	}
 	if len(res.extractedFiles) != 10 || len(res.anomalies) != 0 {
 		t.Errorf("extracted %d files, anomalies %v, want the 10 normal members and no anomaly", len(res.extractedFiles), res.anomalies)
@@ -388,8 +385,8 @@ func TestExtract_checkAfter7zAloneCatchesAMemberPastTheLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := skippedBy(res, datamodel.NotAnalyzedTooBig); !equalSets(got, []string{"trap1"}) || len(res.extractedFiles) != 5 {
-		t.Errorf("too-big = %v, %d files extracted, want trap1 reported and the 5 others kept", got, len(res.extractedFiles))
+	if got := skippedBy(res, datamodel.NotAnalyzedExtractLimit); !equalSets(got, []string{"trap1"}) || len(res.extractedFiles) != 5 {
+		t.Errorf("extract-limit = %v, %d files extracted, want trap1 reported and the 5 others kept", got, len(res.extractedFiles))
 	}
 	if _, err := os.Stat(filepath.Join(out, "trap1")); err == nil {
 		t.Error("the file past the limit was handed over")
@@ -415,8 +412,8 @@ exit 0`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := skippedBy(res, datamodel.NotAnalyzedTooBig); !equalSets(got, []string{"big.bin"}) || len(res.extractedFiles) != 1 || res.passwordUsed != "infected" {
-		t.Errorf("too-big = %v, %d files, password %q: the member skipped by the listing must stay reported after the password changed", got, len(res.extractedFiles), res.passwordUsed)
+	if got := skippedBy(res, datamodel.NotAnalyzedExtractLimit); !equalSets(got, []string{"big.bin"}) || len(res.extractedFiles) != 1 || res.passwordUsed != "infected" {
+		t.Errorf("extract-limit = %v, %d files, password %q: the member skipped by the listing must stay reported after the password changed", got, len(res.extractedFiles), res.passwordUsed)
 	}
 }
 
@@ -429,7 +426,7 @@ for a in "$@"; do [ "$a" = l ] && { cat $list; exit 0; }; done
 touch `+marker+`
 exit 0`)
 	res, err := sze.extract(t.Context(), fakeArchive(t), t.TempDir(), nil, plugins.ExtractLimits{MaxFileSize: 100 * mib, MaxFiles: 100, MaxTotalSize: 1 << 40})
-	if err != nil || len(skippedBy(res, datamodel.NotAnalyzedTooBig)) != 1 {
+	if err != nil || len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) != 1 {
 		t.Fatalf("extract() = %+v, %v", res.skipped, err)
 	}
 	if _, err := os.Stat(marker); err == nil {
@@ -674,10 +671,11 @@ func TestExtract_nineTrapsAcrossBatchesAreEightRelaunchesInTotal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := len(skippedBy(res, datamodel.NotAnalyzedTooBig)); n != 8 {
-		t.Errorf("too-big = %d members, want 8: the relaunches are counted over all the batches", n)
+	// The 9th member past the limit is counted, then refused: 8 relaunches ran.
+	if res.relaunches != maxTotalRelaunches+1 {
+		t.Errorf("relaunch counter = %d, want %d: the relaunches are counted over all the batches", res.relaunches, maxTotalRelaunches+1)
 	}
-	if len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) == 0 || len(res.anomalies) != 0 {
+	if len(skippedBy(res, datamodel.NotAnalyzedExtractLimit)) <= 8 || len(res.anomalies) != 0 {
 		t.Errorf("skipped = %d, anomalies %v, want the members left after the 8th relaunch as extract-limit", res.skipped.count, res.anomalies)
 	}
 }

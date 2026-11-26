@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -650,7 +649,7 @@ func TestE2E_aLongLabelIsCappedKeepingTheTail(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}})
 			evil := []byte(strings.Repeat("a member with a very long path ", 40))
 			memberDir := strings.TrimSuffix(strings.Repeat(strings.Repeat("m", 199)+"/", tt.members), "/")
@@ -689,36 +688,38 @@ func TestE2E_aLongLabelIsCappedKeepingTheTail(t *testing.T) {
 
 // T11: an archive whose outcome is final (a member over max_file_size leaves
 // it out of the extraction) is extracted once, not at every rescan: its failed
-// extraction is reported once.
+// extraction is reported once (the archive is watched in INPUT for
+// harness.NotDeliveredWindow, about 12 rescans).
 func TestE2E_anArchiveWithATooBigMemberIsExtractedOnlyOnce(t *testing.T) {
 	tests := []struct {
 		name    string
-		rescans int
+		members map[string]string
+		want    harness.Outcome
 	}{
-		{name: "about 8 rescans", rescans: 8},
+		{
+			name:    "about 12 rescans",
+			members: map[string]string{"ok.txt": strings.Repeat("a normal member ", 100), "huge.bin": strings.Repeat("\x00", 2<<20)},
+			want:    harness.Outcome{In: harness.Input, Error: "file is too big to be analyzed"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			const period = time.Second
-			gm := gmalware.New(t, false)
-			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}, Config: map[string]any{
-				"max_file_size": "1MiB",
-				"actions":       map[string]any{"move": false},
-				"monitoring":    map[string]any{"disable_fs_watcher": true, "period": period.String()},
-			}})
-			ok := []byte(strings.Repeat("a normal member ", 100))
-			archive := zipOf(t, map[string]string{"ok.txt": string(ok), "huge.bin": strings.Repeat("\x00", 2<<20)})
-			in.Drop(t, "bomb.zip", archive)
-			in.WaitFor(t, "the report of the extraction", func() bool { return len(in.ReportsOf(t, archive)) >= 1 })
-			time.Sleep(time.Duration(tt.rescans) * period)
+			archive := zipOf(t, tt.members)
+			in := harness.Run(t, harness.Scenario{
+				Plugins: map[string]map[string]any{"extract": nil},
+				Config: map[string]any{
+					"max_file_size": "1MiB",
+					"actions":       map[string]any{"move": false},
+					"monitoring":    map[string]any{"disable_fs_watcher": true, "period": time.Second.String()},
+				},
+				Files: []harness.File{{Path: "bomb.zip", Content: archive}},
+				Want:  map[string]harness.Outcome{"bomb.zip": tt.want},
+			})
 			// The stop writes the report of the open session: an extraction at a rescan
 			// would be in it.
-			in.Signal(t, syscall.SIGTERM)
-			if _, err := in.Wait(t, 20*time.Second); err != nil {
-				t.Fatalf("the connector did not stop cleanly: %v", err)
-			}
+			in.Stop(t)
 			if got := len(in.ReportsOf(t, archive)); got != 1 {
-				t.Errorf("the archive was reported %d times over about %d rescans, want 1: an archive whose outcome is final must not be extracted at every rescan", got, tt.rescans)
+				t.Errorf("the archive was reported %d times, want 1: an archive whose outcome is final must not be extracted at every rescan", got)
 			}
 		})
 	}

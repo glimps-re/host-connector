@@ -427,6 +427,10 @@ func TestE2E_otherTruncatedArchivesAreNeverPlainFiles(t *testing.T) {
 		{path: "cut.gz", content: truncatedGzip(t), want: harness.Outcome{In: harness.Input, Error: "left out by the limits of the extraction"}},
 		{path: "cut.tar", content: truncatedTar(t), want: harness.Outcome{In: harness.Input, Error: errDamagedText}},
 		{path: "cut.7z", content: cut(fixtureOf(t, "enc_content.7z"), 50), want: harness.Outcome{In: harness.Input, Error: errDamagedText}},
+		// TODO(review): likely a bug pinned here. 7-Zip says "Unexpected end of data"
+		// for a cut xz or bzip2, which recoverableLabels (cmd/plugins/extract/errors.go)
+		// does not list: the failure stays unclassified, so it is retried at every
+		// rescan with no report instead of being reported damaged.
 		{path: "cut.xz", content: compressedAndCut(t, "xz"), want: harness.Outcome{In: harness.Input, NoReport: true}},
 		{path: "cut.bz2", content: compressedAndCut(t, "bzip2"), want: harness.Outcome{In: harness.Input, NoReport: true}},
 	}

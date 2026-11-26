@@ -9,7 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -81,7 +80,7 @@ func TestE2E_aFileAtTheNameOfTheSessionReportIsLeftIntact(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h"}}})
 			in.Drop(t, "a.txt", []byte("a file whose session report finds its name taken"))
 			var start time.Time
@@ -105,10 +104,7 @@ func TestE2E_aFileAtTheNameOfTheSessionReportIsLeftIntact(t *testing.T) {
 				}
 			})
 			in.WaitFor(t, "the delivery", func() bool { return in.InOutput("a.txt") })
-			in.Signal(t, syscall.SIGTERM)
-			if _, err := in.Wait(t, 20*time.Second); err != nil {
-				t.Fatalf("the connector did not stop cleanly: %v", err)
-			}
+			in.Stop(t)
 
 			info, err := os.Lstat(at)
 			switch {

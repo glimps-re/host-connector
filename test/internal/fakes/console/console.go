@@ -1,5 +1,3 @@
-//go:build linux
-
 // Package console is a fake connector manager for the e2e suite.
 package console
 
@@ -38,7 +36,7 @@ const APIKey = "key"
 // Console plays the connector manager of the agent mode, with the protocol
 // of the SDK (register, config, tasks, events, metrics). A request that
 // strays from the protocol (method, API key, body) is answered 400 and
-// recorded: ProtocolErrors says them.
+// recorded: it fails the test at its end.
 type Console struct {
 	*httptest.Server
 	errlog.Log
@@ -58,6 +56,7 @@ func New(t *testing.T, config map[string]any) *Console {
 	c := &Console{config: config}
 	c.Server = httptest.NewServer(http.HandlerFunc(c.serve))
 	t.Cleanup(c.Close)
+	t.Cleanup(func() { c.Check(t, "console protocol") })
 	return c
 }
 
@@ -176,12 +175,6 @@ func (c *Console) Events() []Event {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]Event(nil), c.events...)
-}
-
-// ProtocolErrors returns what the connector sent that strays from the
-// protocol.
-func (c *Console) ProtocolErrors() []string {
-	return c.Errors()
 }
 
 // Ack returns the error text the connector gave for the task, and whether the

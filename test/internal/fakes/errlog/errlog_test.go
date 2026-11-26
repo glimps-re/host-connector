@@ -1,5 +1,3 @@
-//go:build linux
-
 package errlog
 
 import (
@@ -48,34 +46,11 @@ func TestErrLog(t *testing.T) {
 			t.Errorf("errors = %v, want one naming the endpoint", got)
 		}
 	})
-	t.Run("a cut body that nobody announced is an error", func(t *testing.T) {
+	t.Run("a cut body is an error", func(t *testing.T) {
 		var l Log
 		l.Drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
 		if got := l.Errors(); len(got) != 1 {
 			t.Errorf("errors = %v, want one", got)
-		}
-	})
-	t.Run("an announced abort that never happens is unconsumed", func(t *testing.T) {
-		var l Log
-		l.ExpectAbortedUploads(2)
-		l.Drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
-		if got := l.Unconsumed(); got != 1 {
-			t.Errorf("unconsumed = %d, want 1", got)
-		}
-	})
-	t.Run("a cut body that was announced is a note, once", func(t *testing.T) {
-		var l Log
-		l.ExpectAbortedUploads(1)
-		l.Drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
-		if got := l.Errors(); len(got) != 0 {
-			t.Fatalf("errors = %v, want none for an announced abort", got)
-		}
-		if got := l.AbortedUploads(); got != 1 {
-			t.Errorf("aborted = %d, want 1", got)
-		}
-		l.Drain(req(t.Context(), iotest.ErrReader(io.ErrUnexpectedEOF)), 10)
-		if got := l.Errors(); len(got) != 1 {
-			t.Errorf("errors = %v, want the second, unannounced abort to be an error", got)
 		}
 	})
 	t.Run("a cancelled request does not excuse a cut body", func(t *testing.T) {

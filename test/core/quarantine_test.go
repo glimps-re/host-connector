@@ -193,7 +193,7 @@ func TestE2E_aSparseFileOver5GiBIsRestored(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Config: harness.MergeMaps(quarantineConfig(tt.format), map[string]any{
 				"unanalyzable_policy": map[string]any{"too_big": "mitigate"},
 			})})

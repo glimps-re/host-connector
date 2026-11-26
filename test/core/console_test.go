@@ -9,7 +9,8 @@ import (
 )
 
 // The console drives the agent: Stop and Start are executed and acknowledged
-// without error, and files are analyzed again after Start.
+// without error. A file dropped while stopped stays in INPUT, and is delivered
+// by the prescan of Start.
 func TestE2E_consoleStopThenStart(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -17,19 +18,22 @@ func TestE2E_consoleStopThenStart(t *testing.T) {
 		scenario harness.Scenario
 	}{
 		{
-			name: "a file before the stop and one after the start",
+			name: "a file before the stop, one while stopped and one after the start",
 			scenario: harness.Scenario{
 				Agent: true,
 				Files: []harness.File{{Path: "first.txt", Content: []byte("first content")}},
 				Steps: []harness.Step{
 					harness.Await("first.txt", harness.Outcome{In: harness.Output}),
 					harness.Task("stop", ""),
+					harness.AddFileToInput(harness.File{Path: "while-stopped.txt", Content: []byte("dropped while stopped")}),
+					harness.Await("while-stopped.txt", harness.Outcome{In: harness.Input, NoReport: true}),
 					harness.Task("start", ""),
 					harness.AddFileToInput(harness.File{Path: "second.txt", Content: []byte("second content")}),
 				},
 				Want: map[string]harness.Outcome{
-					"first.txt":  {In: harness.Output},
-					"second.txt": {In: harness.Output},
+					"first.txt":         {In: harness.Output},
+					"while-stopped.txt": {In: harness.Output},
+					"second.txt":        {In: harness.Output},
 				},
 			},
 		},

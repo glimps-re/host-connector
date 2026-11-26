@@ -50,17 +50,19 @@ func TestE2E_aRemovedKeyOfTheExtractPluginIsRefusedWithItsReplacement(t *testing
 }
 
 // From TestSevenZipExtractPlugin_configuredRealBinaryIsUsedAndKeptOnClose: a configured 7-Zip extracts the archives and is still there after the stop.
+// The archive is a WIM, a format the default extractor cannot open: its member is analyzed only if 7-Zip was used.
 func TestE2E_aConfiguredSevenZipIsUsedAndKeptAfterTheStop(t *testing.T) {
 	t.Parallel()
+	member := []byte(strings.Repeat("a member extracted by the configured 7-Zip ", 20))
 	tests := []struct {
 		name string
 		file harness.File
 		want map[string]harness.Outcome
 	}{
 		{
-			name: "a zip",
-			file: archive(t, "a.zip", zipOf, harness.File{Path: "m.txt", Content: []byte(strings.Repeat("a member extracted by the configured 7-Zip ", 20))}),
-			want: map[string]harness.Outcome{"a.zip": {In: harness.Output}, "a.zip/m.txt": {Submissions: 1}},
+			name: "a wim",
+			file: harness.File{Path: "a.wim", Content: sevenZipOf(t, "wim", map[string][]byte{"m.txt": member}), Members: []harness.File{{Path: "m.txt", Content: member}}},
+			want: map[string]harness.Outcome{"a.wim": {In: harness.Output}, "a.wim/m.txt": {Submissions: 1}},
 		},
 	}
 	for _, tt := range tests {
@@ -96,7 +98,7 @@ func TestE2E_aMissingTMPDIRDoesNotStopTheExtraction(t *testing.T) {
 			// of its own (GOTMPDIR).
 			t.Setenv("GOTMPDIR", t.TempDir())
 			t.Setenv("TMPDIR", filepath.Join(t.TempDir(), "absent"))
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"extract": nil}})
 			content := zipOf(t, map[string]string{"m.txt": string(tt.member)})
 			in.Expect.Archive(content, tt.member)

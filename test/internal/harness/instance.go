@@ -27,7 +27,7 @@ type Instance struct {
 	Stderr     *syncBuffer
 	exited     chan struct{}
 	exitErr    error
-	start      time.Time
+	waited     bool
 	Root       string
 	Input      string
 	Work       string
@@ -37,15 +37,12 @@ type Instance struct {
 	gm         *gmalware.GMalware
 	// conf is the connector configuration the run started with.
 	conf map[string]any
-	// bin, dir and args are what launch ran, for a restart.
-	bin, dir string
+	// bin and args are what launch ran, for a restart.
+	bin      string
 	args     []string
 	killOnce sync.Once
-	// abortedUploads is how many uploads the scenario announced the connector
-	// would cut short.
-	abortedUploads int
-	Console        *console.Console
-	Expect         Expectations
+	Console  *console.Console
+	Expect   Expectations
 }
 
 // Options tune a run; every field is optional.
@@ -137,8 +134,8 @@ func Start(t *testing.T, g *gmalware.GMalware, opt Options) *Instance {
 		"monitoring": map[string]any{"prescan": true, "modification_delay": "1s"},
 		"quarantine": map[string]any{"password": "infected", "location": in.Quarantine},
 	}, opt.Config)
-	if wd, _ := conf["work_dir"].(string); strings.HasPrefix(wd, "INPUT/") {
-		rest, _ := strings.CutPrefix(wd, "INPUT/")
+	wd, _ := conf["work_dir"].(string)
+	if rest, ok := strings.CutPrefix(wd, "INPUT/"); ok {
 		conf["work_dir"] = filepath.Join(in.Input, rest)
 	}
 	in.conf = cloneMap(t, conf)
@@ -154,33 +151,35 @@ func Start(t *testing.T, g *gmalware.GMalware, opt Options) *Instance {
 	if timeout == "" {
 		timeout = "4s"
 	}
-	args := []string{"--config", confFile, "--shutdown-timeout", timeout, "monitoring"}
+	args := []string{"--config", confFile, "--shutdown-timeout", timeout}
 	if opt.Agent {
 		in.Console = console.New(t, conf)
-		args = []string{"--config", confFile, "--shutdown-timeout", timeout, "--console-url", in.Console.URL, "--console-api-key", console.APIKey, "agent"}
+		args = append(args, "--console-url", in.Console.URL, "--console-api-key", console.APIKey, "agent")
+	} else {
+		args = append(args, "monitoring")
 	}
-	in.launch(t, bin, root, args)
+	in.launch(t, bin, args)
 	t.Cleanup(func() { in.finish(t) })
 	return in
 }
 
-// launch starts the binary built in bin with args, in dir, and kills it, with
-// everything it started, at the end of the test.
-func (in *Instance) launch(t *testing.T, bin, dir string, args []string) {
+// launch starts the binary built in bin with args, in the root of the
+// instance, and kills it, with everything it started, at the end of the test.
+func (in *Instance) launch(t *testing.T, bin string, args []string) {
 	t.Helper()
-	in.bin, in.dir, in.args = bin, dir, args
+	in.bin, in.args = bin, args
 	// Not tied to the context of the test, which ends before the cleanups: the
 	// process is stopped by finish, then killed.
 	cmd := exec.CommandContext(context.Background(), filepath.Join(bin, "GMHost"), args...) //nolint:gosec // G204: the binary the test built, with arguments of its own
 	cmd.Stderr = in.Stderr
 	cmd.Stdout = in.Stderr
-	cmd.Dir = dir
+	cmd.Dir = in.Root
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	in.start = time.Now()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	in.Cmd = cmd
+	in.waited = false
 	exited := make(chan struct{})
 	in.exited = exited
 	go func() {
@@ -192,9 +191,7 @@ func (in *Instance) launch(t *testing.T, bin, dir string, args []string) {
 	// the process gracefully first.
 	in.killOnce.Do(func() {
 		t.Cleanup(func() {
-			// A negative pid is the process group: the 7-Zip processes of the
-			// connector must not outlive the test.
-			if err := syscall.Kill(-in.Cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			if err := in.killGroup(); err != nil {
 				t.Logf("kill: %v", err)
 			}
 			if t.Failed() {
@@ -204,6 +201,15 @@ func (in *Instance) launch(t *testing.T, bin, dir string, args []string) {
 	})
 }
 
+func (in *Instance) killGroup() error {
+	// A negative pid is the process group: the 7-Zip processes of the
+	// connector must not outlive the test.
+	if err := syscall.Kill(-in.Cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
+}
+
 // finish ends the process as an operator would, whatever the test did or
 // failed to do, then holds what is left to the invariants: a failed test never
 // hides a violation.
@@ -211,6 +217,9 @@ func (in *Instance) finish(t *testing.T) {
 	t.Helper()
 	select {
 	case <-in.exited:
+		if !in.waited {
+			t.Errorf("the process exited on its own: %v", in.exitErr)
+		}
 	default:
 		if err := in.Cmd.Process.Signal(syscall.SIGTERM); err != nil {
 			t.Logf("SIGTERM: %v", err)
@@ -223,23 +232,6 @@ func (in *Instance) finish(t *testing.T) {
 	}
 	for _, v := range outputViolations(in.checkSpec(), in.gm) {
 		t.Errorf("OUTPUT invariant: %s", v)
-	}
-	for _, e := range in.gm.Errors() {
-		t.Errorf("fake GMalware: %s", e)
-	}
-	if n := in.gm.AbortedUploads(); n != in.abortedUploads {
-		t.Errorf("fake GMalware: %d aborted uploads, the scenario announced %d", n, in.abortedUploads)
-	}
-	if n := in.gm.Unconsumed(); n != 0 {
-		t.Errorf("fake GMalware: %d announced aborted uploads never happened", n)
-	}
-	for _, n := range in.gm.Notes() {
-		t.Logf("fake GMalware (expected): %s", n)
-	}
-	if in.Console != nil {
-		for _, e := range in.Console.ProtocolErrors() {
-			t.Errorf("console protocol: %s", e)
-		}
 	}
 }
 
@@ -255,6 +247,7 @@ func (in *Instance) Wait(t *testing.T, limit time.Duration) (took time.Duration,
 	at := time.Now()
 	select {
 	case <-in.exited:
+		in.waited = true
 		return time.Since(at), in.exitErr
 	case <-time.After(limit):
 		t.Fatalf("the process did not exit within %s; log:\n%s", limit, in.Stderr.String())
@@ -262,11 +255,13 @@ func (in *Instance) Wait(t *testing.T, limit time.Duration) (took time.Duration,
 	}
 }
 
-// ExpectAbortedUploads announces that the connector is going to cut n uploads
-// short; finish holds the run to exactly that.
-func (in *Instance) ExpectAbortedUploads(n int) {
-	in.abortedUploads += n
-	in.gm.ExpectAbortedUploads(n)
+// Stop stops the connector with SIGTERM; it must exit cleanly.
+func (in *Instance) Stop(t *testing.T) {
+	t.Helper()
+	in.Signal(t, syscall.SIGTERM)
+	if _, err := in.Wait(t, 20*time.Second); err != nil {
+		t.Fatalf("the connector did not stop cleanly: %v", err)
+	}
 }
 
 // Drop writes a file in INPUT, below the owner folder, and returns its path.

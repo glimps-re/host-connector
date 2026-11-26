@@ -44,7 +44,8 @@ func TestE2E_unanalyzablePolicyPass(t *testing.T) {
 
 // The empty policy beside P15: with no empty key an empty file is delivered,
 // marked empty; with skip it stays in INPUT, unreported. Mirrors
-// TestPipeline_anEmptyFileIsDeliveredByDefault.
+// TestPipeline_anEmptyFileIsDeliveredByDefault. The control file, delivered,
+// shows the connector has seen the files.
 func TestE2E_emptyFilePolicy(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -58,8 +59,8 @@ func TestE2E_emptyFilePolicy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			harness.Run(t, harness.Scenario{
 				Config: tt.config,
-				Files:  []harness.File{{Path: "empty.txt"}},
-				Want:   map[string]harness.Outcome{"empty.txt": tt.want},
+				Files:  []harness.File{{Path: "empty.txt"}, {Path: "control.txt", Content: []byte("control")}},
+				Want:   map[string]harness.Outcome{"empty.txt": tt.want, "control.txt": {In: harness.Output}},
 			})
 		})
 	}

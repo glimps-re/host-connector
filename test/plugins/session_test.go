@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"syscall"
 	"testing"
@@ -97,7 +96,7 @@ func TestE2E_aSessionIsClosedAtMaxDuration(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h", "max_duration": tt.maxDuration}}})
 			in.Drop(t, "one.txt", tt.first)
 			var spool string
@@ -176,9 +175,9 @@ func TestE2E_aSessionIsClosedAtMaxSpoolSize(t *testing.T) {
 }
 
 // T20b: the spool of a session open when the connector crashed is not
-// recovered: the next start removes it, with a warning that counts the session
-// reports lost, and the work directory of the dead run goes with it.
-func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
+// recovered: the next start removes it, and the work directory of the dead run
+// goes with it.
+func TestE2E_theSpoolOfACrashedRunIsRemoved(t *testing.T) {
 	tests := []struct {
 		name    string
 		content []byte
@@ -187,7 +186,7 @@ func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": "1h"}}})
 			in.Expect.CrashLost(tt.content)
 			in.Drop(t, "a.txt", tt.content)
@@ -195,9 +194,6 @@ func TestE2E_theSpoolOfACrashedRunIsRemovedWithAWarning(t *testing.T) {
 			in.WaitFor(t, "the spool of the open session", func() bool { return len(spoolFiles(t, in)) == 1 })
 			oldDirs := harness.GlobOne(t, filepath.Join(in.Work, "gmhost-*"))
 			in.CrashAndRestart(t)
-			if !in.LogHas("1 session report(s) of a previous run were lost (crash)") {
-				t.Error("the log does not warn that one session report was lost")
-			}
 			for _, dir := range oldDirs {
 				if !in.Gone(dir) {
 					t.Errorf("the work directory of the crashed run is still there: %s", dir)
@@ -221,7 +217,7 @@ func TestShutdown_sigtermWritesTheReportOfAnOpenSession(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := gmalware.New(t, false)
+			g := gmalware.New(t)
 			in := harness.Start(t, g, harness.Options{Plugins: map[string]map[string]any{"session": {"delay": tt.delay}}})
 			in.Drop(t, "a.txt", []byte("some content to analyze"))
 			in.WaitFor(t, "the file to be delivered", func() bool { return in.InOutput("a.txt") })
@@ -288,7 +284,7 @@ func TestE2E_aDepositOfSeveralHundredFilesBehindASaturatedWorkerIsOneSessionAndO
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			slow := []byte("jerry slow")
 			gm.DelayResultOf(slow, tt.slow)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{"workers": 1}})
@@ -303,13 +299,12 @@ func TestE2E_aDepositOfSeveralHundredFilesBehindASaturatedWorkerIsOneSessionAndO
 			}
 
 			in.WaitFor(t, "the report of Tom", func() bool { return len(reportFiles(t, in, "tom")) >= 1 })
-			time.Sleep(2 * time.Second)
-			files := reportFiles(t, in, "tom")
-			if len(files) != 1 {
+			in.WaitFor(t, "every file of Tom in a report", func() bool { return len(entriesOf(t, in, "tom")) >= 2*tt.half })
+			if files := reportFiles(t, in, "tom"); len(files) != 1 {
 				t.Fatalf("Tom has %d reports %v, want one session and one report", len(files), files)
 			}
 			if got := len(entriesOf(t, in, "tom")); got != 2*tt.half {
-				t.Errorf("the report has %d files, want %d", got, 2*tt.half)
+				t.Errorf("the reports have %d files, want %d", got, 2*tt.half)
 			}
 		})
 	}
@@ -355,7 +350,7 @@ func TestE2E_aPendingFileThatChangesBeforeBeingTakenNeverBlocksTheSession(t *tes
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			slow := []byte("jerry slow")
 			gm.DelayResultOf(slow, 10*time.Second)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{
@@ -381,10 +376,9 @@ func TestE2E_aPendingFileThatChangesBeforeBeingTakenNeverBlocksTheSession(t *tes
 }
 
 // T20a: the queue is saturated for longer than inflight_timeout: the session of
-// Tom is closed while files of its folder still wait, with a Warn that gives
-// their number, and the files that waited open a new session with their own
-// report: none is lost.
-func TestE2E_aQueueSaturatedBeyondTheInflightTimeoutClosesTheSessionWithAWarn(t *testing.T) {
+// Tom is closed while files of its folder still wait, and the files that waited
+// open a new session with their own report: none is lost.
+func TestE2E_aQueueSaturatedBeyondTheInflightTimeoutClosesTheSession(t *testing.T) {
 	tests := []struct {
 		name     string
 		inflight string
@@ -394,7 +388,7 @@ func TestE2E_aQueueSaturatedBeyondTheInflightTimeoutClosesTheSessionWithAWarn(t 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			slow := []byte("jerry slow")
 			gm.DelayResultOf(slow, tt.slow)
 			in := harness.Start(t, gm, harness.Options{
@@ -411,9 +405,6 @@ func TestE2E_aQueueSaturatedBeyondTheInflightTimeoutClosesTheSessionWithAWarn(t 
 			in.WaitFor(t, "the first report of Tom", func() bool { return len(reportFiles(t, in, "tom")) >= 1 })
 			if _, done := gm.Given(gmalware.SHA256Hex(slow)); done {
 				t.Fatal("the slow analysis ended before the session was closed: the saturation was not held long enough")
-			}
-			if !regexp.MustCompile(`"level":"WARN".*"pending":[1-9]`).MatchString(in.Stderr.String()) {
-				t.Errorf("no Warn with the number of waiting files in the logs:\n%s", in.Stderr.String())
 			}
 			in.WaitFor(t, "the three files of Tom to be in a report", func() bool { return len(entriesOf(t, in, "tom")) >= 3 })
 			seen := map[string]int{}

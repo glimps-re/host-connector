@@ -24,7 +24,8 @@ func TestShutdown_aSecondSignalStopsImmediately(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := gmalware.New(t, true)
+			g := gmalware.New(t)
+			g.Hang()
 			in := harness.Start(t, g, harness.Options{Timeout: tt.timeout})
 			in.Drop(t, "a.txt", []byte("some content to analyze"))
 			in.WaitFor(t, "the analysis to start", func() bool { return g.Submitted.Load() > 0 })
@@ -69,7 +70,8 @@ func TestShutdown_sigintStopsLikeSigterm(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := gmalware.New(t, true)
+			g := gmalware.New(t)
+			g.Hang()
 			in := harness.Start(t, g, harness.Options{Timeout: "4s"})
 			in.Drop(t, "a.txt", []byte("some content to analyze"))
 			in.WaitFor(t, "the analysis to start", func() bool { return g.Submitted.Load() > 0 })
@@ -94,7 +96,8 @@ func TestShutdown_sigtermStopsTheAgent(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			g := gmalware.New(t, true)
+			g := gmalware.New(t)
+			g.Hang()
 			in := harness.Start(t, g, harness.Options{Timeout: "4s", Agent: true})
 			in.Drop(t, "a.txt", []byte("some content to analyze"))
 			in.WaitFor(t, "the analysis to start", func() bool { return g.Submitted.Load() > 0 })

@@ -758,7 +758,7 @@ func (sze *sevenZipExtract) extract(ctx context.Context, archivePath string, ext
 				if rmErr := removeInside(extractLocation, relPath); rmErr != nil {
 					return rmErr
 				}
-				extraction.drop(filepath.ToSlash(relPath), info.Size(), datamodel.NotAnalyzedTooBig)
+				extraction.drop(filepath.ToSlash(relPath), info.Size(), datamodel.NotAnalyzedExtractLimit)
 				return nil
 			}
 			producedBytes += info.Size()
@@ -958,7 +958,7 @@ func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extr
 			if rmErr := removeInside(extractLocation, hit.offender); rmErr != nil {
 				return nil, true, fmt.Errorf("%w: a file past the size limit could not be removed: %w", errOutputFolder, rmErr)
 			}
-			extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedTooBig)
+			extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedExtractLimit)
 			return links, false, nil
 		}
 		if err = sze.removeRun(extractLocation, before); err != nil {
@@ -969,7 +969,7 @@ func (sze *sevenZipExtract) runBatch(ctx context.Context, pwd, archivePath, extr
 			sze.abandon(extraction, remaining, "too many members written past the size limit")
 			return nil, true, nil
 		}
-		extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedTooBig)
+		extraction.drop(hit.offender, hit.size, datamodel.NotAnalyzedExtractLimit)
 		remaining = slices.DeleteFunc(slices.Clone(remaining), func(n string) bool { return n == hit.offender })
 		if len(remaining) == 0 {
 			return nil, false, nil

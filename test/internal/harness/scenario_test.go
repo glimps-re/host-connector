@@ -73,7 +73,7 @@ func newRun(t *testing.T, s Scenario, st state) *run {
 	for _, d := range []string{tom, filepath.Join(in.Output, "tom"), in.Quarantine, filepath.Join(in.Export, "tom")} {
 		mkdir(t, d)
 	}
-	r := &run{s: s, in: in, gm: gmalware.New(t, false), files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}, inodes: map[string]uint64{}}
+	r := &run{s: s, in: in, gm: gmalware.New(t), files: map[string]File{}, final: map[string]File{}, consumed: map[string]int{}, inodes: map[string]uint64{}}
 	r.validate(t)
 	for _, f := range s.Files {
 		r.remember("", f)

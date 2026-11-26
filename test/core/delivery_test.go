@@ -88,7 +88,7 @@ func TestE2E_gmalwareOutageThenRecovery(t *testing.T) {
 func TestE2E_destinationConflictKeepsBoth(t *testing.T) {
 	for _, mode := range []string{"copy", "rename"} {
 		t.Run(mode, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{
 				"move":                map[string]any{"mode": mode},
 				"unanalyzable_policy": map[string]any{"empty": "skip"},
@@ -106,6 +106,9 @@ func TestE2E_destinationConflictKeepsBoth(t *testing.T) {
 			got, err := os.ReadFile(filepath.Join(in.Output, "tom", "a.txt"))
 			if err != nil || !bytes.Equal(got, first) {
 				t.Errorf("a.txt in OUTPUT = %q, %v; want the first content untouched", got, err)
+			}
+			if !in.OutputHas(t, second) {
+				t.Error("the second content was not delivered")
 			}
 			in.WaitFor(t, "the report to name the conflict", func() bool {
 				return slices.ContainsFunc(in.ReportsOf(t, second), func(e datamodel.Report) bool { return e.MoveConflictOf != "" })
@@ -140,11 +143,11 @@ func TestE2E_watcherSwitch(t *testing.T) {
 			if disabled {
 				period = "2s"
 			}
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{
 				"monitoring": map[string]any{"disable_fs_watcher": disabled, "period": period},
 			}})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			if got := inotifyWatches(in.Cmd.Process.Pid); (got == 0) != disabled {
 				t.Errorf("inotify watches = %d with disable_fs_watcher=%v", got, disabled)
 			}
@@ -170,7 +173,7 @@ func TestE2E_slowUploadAndWriterThatKeepsTheFileOpen(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Config: map[string]any{"monitoring": map[string]any{"modification_delay": tt.modificationDelay}}})
 			path := filepath.Join(in.Input, "tom", "upload.bin")
 			f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -320,7 +323,7 @@ func TestE2E_aTransientFailureIsRetriedWithGrowingDelaysAndNeverTooOften(t *test
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			gm.FailWith(503)
 			in := harness.Start(t, gm, harness.Options{Config: rescanConfig()})
 			in.Drop(t, "flaky.bin", []byte("the service is down"))

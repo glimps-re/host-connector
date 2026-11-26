@@ -362,7 +362,7 @@ func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) 
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{Agent: true, Plugins: map[string]map[string]any{"extract": nil}, Config: harness.MergeMaps(harness.PathFilter([]string{`\.exe$`}, nil), map[string]any{
 				"unanalyzable_policy": map[string]any{"encrypted": "mitigate"},
 				"monitoring":          map[string]any{"period": "2s"},
@@ -388,6 +388,15 @@ func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) 
 			in.StaysInInput(t, path, archive)
 			if got := gm.Submitted.Load(); got != before {
 				t.Errorf("the restored archive was submitted again (%d submissions, %d before)", got, before)
+			}
+			var unchecked int
+			for _, e := range in.ReportsOf(t, archive) {
+				if strings.Contains(e.Error, "restored archive could not be checked against forbidden_paths") {
+					unchecked++
+				}
+			}
+			if unchecked != 1 {
+				t.Errorf("%d report entries say the restored archive could not be checked, want 1", unchecked)
 			}
 		})
 	}

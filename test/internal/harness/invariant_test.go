@@ -27,7 +27,7 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	root := t.TempDir()
-	f := &fixture{t: t, gm: gmalware.New(t, false)}
+	f := &fixture{t: t, gm: gmalware.New(t)}
 	f.spec = checkSpec{
 		output: filepath.Join(root, "output"), reports: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"),
 		Expectations: Expectations{maxFileSize: 1 << 20},
@@ -300,7 +300,7 @@ func TestOutputViolations(t *testing.T) {
 				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: "m", Size: 5, Reason: datamodel.NotAnalyzedEncrypted}}
 			}))
 			f.spec.Release(content)
-		}, want: `member "m" of the restored entry`},
+		}, want: `member "m" delivered not analyzed`},
 		{name: "restored entry in error", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
@@ -552,8 +552,8 @@ func TestEffectiveMaxFileSize(t *testing.T) {
 		{name: "not a string", conf: map[string]any{"max_file_size": 5}, wantErr: true},
 		{name: "syndetect", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": true}, wantErr: true},
 		{name: "syndetect as a string", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "true"}, wantErr: true},
-		{name: "syndetect as a string, off", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "false"}, want: 100 << 20},
-		{name: "syndetect off", conf: map[string]any{"max_file_size": "1MiB", "gmalware_syndetect": false}, want: 1 << 20},
+		{name: "syndetect as a string, off", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "false"}, wantErr: true},
+		{name: "syndetect off", conf: map[string]any{"max_file_size": "1MiB", "gmalware_syndetect": false}, wantErr: true},
 		{name: "syndetect as a number", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": 1}, wantErr: true},
 		{name: "syndetect not a boolean", conf: map[string]any{"max_file_size": "1GiB", "gmalware_syndetect": "maybe"}, wantErr: true},
 	}

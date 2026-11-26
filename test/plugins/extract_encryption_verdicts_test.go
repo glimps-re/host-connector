@@ -95,7 +95,7 @@ func TestE2E_aDetectionOfAnEncryptedArchiveWinsOverTheEncryptedPolicy(t *testing
 	}
 }
 
-// From TestPipeline_realEncryptedArchiveOverMaxFileSizeIsNotSubmitted and TestRecursiveExtract_anEncryptedArchiveOverMaxFileSizeIsNotSubmitted: an encrypted archive over max_file_size is never submitted; at the top level it follows the encrypted policy, in a plain zip the extraction leaves it out and too_big (error) holds the zip.
+// From TestPipeline_realEncryptedArchiveOverMaxFileSizeIsNotSubmitted and TestRecursiveExtract_anEncryptedArchiveOverMaxFileSizeIsNotSubmitted: an encrypted archive over max_file_size is never submitted; at the top level it follows the encrypted policy, in a plain zip it is opened (max_file_size bounds only what is submitted) and follows the encrypted policy too.
 func TestE2E_anEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *testing.T) {
 	t.Parallel()
 	enc := harness.File{Path: "enc.zip", Content: fixtureOf(t, "enc_zipcrypto.zip")}
@@ -118,15 +118,15 @@ func TestE2E_anEncryptedArchiveOverMaxFileSizeIsNotSubmitted(t *testing.T) {
 			"enc.zip": {In: harness.Quarantine, Malware: datamodel.Encrypted, ServiceVerdict: harness.NotGiven},
 		}},
 		{name: "in a plain zip", file: nested, policy: "error", want: map[string]harness.Outcome{
-			"n.zip":           {In: harness.Input, Error: "1 members were left out by the limits of the extraction"},
+			"n.zip":           {In: harness.Input, Error: "first: inner.zip: file is encrypted and cannot be analyzed"},
 			"n.zip/inner.zip": notGiven,
 		}},
 		{name: "in a plain zip", file: nested, policy: "pass", want: map[string]harness.Outcome{
-			"n.zip":           {In: harness.Input, Error: "1 members were left out by the limits of the extraction"},
+			"n.zip":           {In: harness.Output, NotAnalyzedMembers: &harness.MemberList{Reason: datamodel.NotAnalyzedEncrypted, Count: 1, Includes: "inner.zip"}},
 			"n.zip/inner.zip": notGiven,
 		}},
 		{name: "in a plain zip", file: nested, policy: "mitigate", want: map[string]harness.Outcome{
-			"n.zip":           {In: harness.Input, Error: "1 members were left out by the limits of the extraction"},
+			"n.zip":           {In: harness.Quarantine, Malware: datamodel.Encrypted},
 			"n.zip/inner.zip": notGiven,
 		}},
 	}

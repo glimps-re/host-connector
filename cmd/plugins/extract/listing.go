@@ -382,7 +382,7 @@ func (s *listSink) addLine(line string) error {
 	}
 	switch {
 	case size > s.maxFileSize:
-		t.skipped.add(fp.Name, int64(fp.Size), datamodel.NotAnalyzedTooBig)
+		t.skipped.add(fp.Name, int64(fp.Size), datamodel.NotAnalyzedExtractLimit)
 		t.skippedHashes = append(t.skippedHashes, maphash.String(s.seed, fp.Name))
 	case t.selectedCount >= s.maxFiles || t.selectedSize+max(size, 0) > s.maxTotal:
 		t.skipped.add(fp.Name, int64(fp.Size), datamodel.NotAnalyzedExtractLimit)

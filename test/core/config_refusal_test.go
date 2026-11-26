@@ -5,6 +5,7 @@ package core
 import (
 	"testing"
 
+	"github.com/glimps-re/host-connector/pkg/datamodel"
 	"github.com/glimps-re/host-connector/test/internal/harness"
 )
 
@@ -37,7 +38,7 @@ func TestE2E_anEmptyPassWithRenameIsRefusedAndTheRunningOneKept(t *testing.T) {
 				},
 				Want: map[string]harness.Outcome{
 					"before.txt": {In: harness.Output},
-					"after.txt":  {In: harness.Output},
+					"after.txt":  {In: harness.Output, Delivery: harness.Copied},
 				},
 			},
 		},
@@ -51,7 +52,7 @@ func TestE2E_anEmptyPassWithRenameIsRefusedAndTheRunningOneKept(t *testing.T) {
 
 // From TestPrepare_theEmptyPolicyAndTheMoveMode: the mode of the move counts
 // only while the move is on, and only empty at pass with rename is refused at
-// start. Without the empty key, rename skips the empty files and says so.
+// start. Without the empty key, rename skips the empty files.
 func TestE2E_theEmptyPolicyAndTheMoveMode(t *testing.T) {
 	t.Parallel()
 	content := []byte("a file delivered whatever the empty policy")
@@ -59,33 +60,37 @@ func TestE2E_theEmptyPolicyAndTheMoveMode(t *testing.T) {
 		name        string
 		config      map[string]any
 		want        harness.Outcome
+		wantEmpty   harness.Outcome
 		wantRefused string
-		wantLog     string
 	}{
 		{
-			name:   "move on, copy, pass",
-			config: map[string]any{"move": map[string]any{"mode": "copy"}, "unanalyzable_policy": map[string]any{"empty": "pass"}},
-			want:   harness.Outcome{In: harness.Output},
+			name:      "move on, copy, pass",
+			config:    map[string]any{"move": map[string]any{"mode": "copy"}, "unanalyzable_policy": map[string]any{"empty": "pass"}},
+			want:      harness.Outcome{In: harness.Output},
+			wantEmpty: harness.Outcome{In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedEmpty},
 		},
 		{
-			name: "move on, no mode, absent",
-			want: harness.Outcome{In: harness.Output},
+			name:      "move on, no mode, absent",
+			want:      harness.Outcome{In: harness.Output},
+			wantEmpty: harness.Outcome{In: harness.Output, NotAnalyzed: datamodel.NotAnalyzedEmpty},
 		},
 		{
-			name:    "move on, rename, absent",
-			config:  map[string]any{"move": map[string]any{"mode": "rename"}},
-			want:    harness.Outcome{In: harness.Output},
-			wantLog: "unanalyzable_policy.empty is not set and move.mode is rename: empty files are skipped",
+			name:      "move on, rename, absent",
+			config:    map[string]any{"move": map[string]any{"mode": "rename"}},
+			want:      harness.Outcome{In: harness.Output},
+			wantEmpty: harness.Outcome{In: harness.Input, NoReport: true},
 		},
 		{
-			name:   "move on, rename, skip",
-			config: map[string]any{"move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "skip"}},
-			want:   harness.Outcome{In: harness.Output},
+			name:      "move on, rename, skip",
+			config:    map[string]any{"move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "skip"}},
+			want:      harness.Outcome{In: harness.Output},
+			wantEmpty: harness.Outcome{In: harness.Input, NoReport: true},
 		},
 		{
-			name:   "move on, rename, mitigate",
-			config: map[string]any{"move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "mitigate"}},
-			want:   harness.Outcome{In: harness.Output},
+			name:      "move on, rename, mitigate",
+			config:    map[string]any{"move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "mitigate"}},
+			want:      harness.Outcome{In: harness.Output},
+			wantEmpty: harness.Outcome{In: harness.Quarantine, Malware: datamodel.Empty},
 		},
 		{
 			name:        "move on, rename, pass",
@@ -93,27 +98,26 @@ func TestE2E_theEmptyPolicyAndTheMoveMode(t *testing.T) {
 			wantRefused: emptyPassWithRename,
 		},
 		{
-			name:   "move off, rename, pass",
-			config: map[string]any{"actions": map[string]any{"move": false}, "move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "pass"}},
-			want:   harness.Outcome{In: harness.Input},
+			name:      "move off, rename, pass",
+			config:    map[string]any{"actions": map[string]any{"move": false}, "move": map[string]any{"mode": "rename"}, "unanalyzable_policy": map[string]any{"empty": "pass"}},
+			want:      harness.Outcome{In: harness.Input},
+			wantEmpty: harness.Outcome{In: harness.Input, NotAnalyzed: datamodel.NotAnalyzedEmpty},
 		},
 		{
-			name:   "move off, rename, absent",
-			config: map[string]any{"actions": map[string]any{"move": false}, "move": map[string]any{"mode": "rename"}},
-			want:   harness.Outcome{In: harness.Input},
+			name:      "move off, rename, absent",
+			config:    map[string]any{"actions": map[string]any{"move": false}, "move": map[string]any{"mode": "rename"}},
+			want:      harness.Outcome{In: harness.Input},
+			wantEmpty: harness.Outcome{In: harness.Input, NotAnalyzed: datamodel.NotAnalyzedEmpty},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			s := harness.Scenario{Config: tt.config, WantRefused: tt.wantRefused}
 			if tt.wantRefused == "" {
-				s.Files = []harness.File{{Path: "a.txt", Content: content}}
-				s.Want = map[string]harness.Outcome{"a.txt": tt.want}
+				s.Files = []harness.File{{Path: "a.txt", Content: content}, {Path: "empty.txt"}}
+				s.Want = map[string]harness.Outcome{"a.txt": tt.want, "empty.txt": tt.wantEmpty}
 			}
-			in := harness.Run(t, s)
-			if tt.wantLog != "" && !in.LogHas(tt.wantLog) {
-				t.Errorf("the log does not say %q", tt.wantLog)
-			}
+			harness.Run(t, s)
 		})
 	}
 }

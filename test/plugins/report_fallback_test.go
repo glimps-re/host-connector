@@ -27,7 +27,7 @@ func TestE2E_theFallbackIsToldOnceForSeveralSessions(t *testing.T) {
 			dir := t.TempDir()
 			broken := filepath.Join(dir, "broken")
 			wrapper := buildBrowserStub(t, dir, chrome, broken, alwaysFails)
-			gm := gmalware.New(t, false)
+			gm := gmalware.New(t)
 			in := harness.Start(t, gm, harness.Options{
 				Agent: true,
 				Plugins: map[string]map[string]any{
@@ -35,7 +35,7 @@ func TestE2E_theFallbackIsToldOnceForSeveralSessions(t *testing.T) {
 					"session": {"report_retries": 0},
 				},
 			})
-			in.WaitFor(t, "the monitoring to start", func() bool { return in.LogHas(harness.MonitoringStarted) })
+			in.WaitMonitoring(t)
 			harness.Write(t, broken, nil)
 			for _, user := range tt.users {
 				dropAs(t, in, user, "a.txt", []byte("a file of "+user))

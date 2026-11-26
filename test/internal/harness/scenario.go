@@ -284,10 +284,7 @@ func AwaitConsoleError(typ string) Step {
 func Stop() Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		r.in.Signal(t, syscall.SIGTERM)
-		if _, err := r.in.Wait(t, 20*time.Second); err != nil {
-			t.Fatalf("the connector did not stop cleanly: %v", err)
-		}
+		r.in.Stop(t)
 	}}
 }
 
@@ -313,7 +310,7 @@ type run struct {
 func Run(t *testing.T, s Scenario) *Instance {
 	t.Helper()
 	t.Parallel()
-	gm := gmalware.New(t, false)
+	gm := gmalware.New(t)
 	in := Start(t, gm, Options{Agent: s.Agent, Timeout: s.Timeout, Config: s.Config, Plugins: s.Plugins})
 	if s.WantRefused != "" {
 		if _, err := in.Wait(t, 20*time.Second); err == nil {
@@ -443,11 +440,7 @@ func (r *run) release(content []byte) {
 			n++
 		}
 	}
-	if n > 1 {
-		r.in.Expect.ReleaseCopies(content, n)
-		return
-	}
-	r.in.Expect.Release(content)
+	r.in.Expect.ReleaseCopies(content, n)
 }
 
 func (r *run) needConsole(t *testing.T) {
@@ -478,13 +471,13 @@ func (r *run) inputPath(key string) string {
 // for NotDeliveredWindow.
 func (r *run) wait(t *testing.T, what string, want map[string]Outcome, global bool) {
 	t.Helper()
-	if err := r.in.poll(time.Minute, func() bool { return r.reached(want, global) }); err != nil {
+	if err := r.in.poll(time.Minute, r.in.exited, func() bool { return r.reached(want, global) }); err != nil {
 		t.Fatalf("%s was not reached: %v:\n%s", what, err, r.table(want, global))
 	}
 	if !slices.ContainsFunc(slices.Collect(maps.Values(want)), func(o Outcome) bool { return o.In == Input }) {
 		return
 	}
-	if r.in.poll(NotDeliveredWindow, func() bool { return !r.reached(want, global) }) == nil {
+	if r.in.poll(NotDeliveredWindow, r.in.exited, func() bool { return !r.reached(want, global) }) == nil {
 		t.Fatalf("%s did not hold:\n%s", what, r.table(want, global))
 	}
 }
@@ -550,7 +543,7 @@ func (r *run) checks(key string, o Outcome, byName map[string][]datamodel.Report
 	}
 	if o.In != "" {
 		place := r.place(key)
-		c := row{want: string(o.In), got: string(place), ok: place == o.In}
+		c := same("", string(o.In), string(place))
 		if place == Output && !r.delivered(key) {
 			c.got, c.ok = "output (other bytes)", false
 		}
@@ -571,20 +564,16 @@ func (r *run) checks(key string, o Outcome, byName map[string][]datamodel.Report
 				want++
 			}
 		}
-		n := r.lockReports(path)
-		cs = append(cs, row{want: fmt.Sprintf("%d lock report(s)", want), got: fmt.Sprintf("%d lock report(s)", n), ok: n == want})
+		cs = append(cs, same("", fmt.Sprintf("%d lock report(s)", want), fmt.Sprintf("%d lock report(s)", r.lockReports(path))))
 	}
 	if o.Container != "" {
-		format := r.container(key)
-		cs = append(cs, row{want: "container " + string(o.Container), got: "container " + format, ok: format == string(o.Container)})
+		cs = append(cs, same("", "container "+string(o.Container), "container "+r.container(key)))
 	}
 	if o.Restored {
-		left := r.restoreLeftovers(key)
-		cs = append(cs, row{want: "container removed", got: left, ok: left == "container removed"})
+		cs = append(cs, same("", "container removed", r.restoreLeftovers(key)))
 	}
 	if o.Delivery != "" {
-		got := r.delivery(key)
-		cs = append(cs, row{want: string(o.Delivery), got: got, ok: got == string(o.Delivery)})
+		cs = append(cs, same("", string(o.Delivery), r.delivery(key)))
 	}
 	if o.SubmittedAs != nil {
 		names := r.gm.SubmittedNames(f.Content)
@@ -595,15 +584,14 @@ func (r *run) checks(key string, o Outcome, byName map[string][]datamodel.Report
 		cs = append(cs, row{want: fmt.Sprintf("submitted as %q", r.shortNames(want)), got: fmt.Sprintf("submitted as %q", r.shortNames(names)), ok: slices.Equal(names, want)})
 	}
 	if o.Submissions != 0 {
-		n := len(r.gm.SubmittedNames(f.Content))
-		cs = append(cs, row{want: fmt.Sprintf("%d submission(s)", o.Submissions), got: fmt.Sprintf("%d submission(s)", n), ok: n == o.Submissions})
+		cs = append(cs, same("", fmt.Sprintf("%d submission(s)", o.Submissions), fmt.Sprintf("%d submission(s)", len(r.gm.SubmittedNames(f.Content)))))
 	}
 	if o.ServiceVerdict != "" {
 		got := NotGiven
 		if _, given := r.gm.Given(gmalware.SHA256Hex(f.Content)); given {
 			got = Given
 		}
-		cs = append(cs, row{want: "verdict " + string(o.ServiceVerdict), got: "verdict " + string(got), ok: got == o.ServiceVerdict})
+		cs = append(cs, same("", "verdict "+string(o.ServiceVerdict), "verdict "+string(got)))
 	}
 	if o.MaliciousMembers != nil {
 		cs = append(cs, row{want: describeMalicious(o.MaliciousMembers), got: describeEntriesMalicious(entries), ok: maliciousMembersMatch(o.MaliciousMembers, entries)})
@@ -612,8 +600,7 @@ func (r *run) checks(key string, o Outcome, byName map[string][]datamodel.Report
 		cs = append(cs, row{want: describeMemberList(o.NotAnalyzedMembers), got: describeEntriesNotAnalyzed(entries), ok: notAnalyzedMembersMatch(o.NotAnalyzedMembers, entries)})
 	}
 	if o.Entry != nil {
-		problems := entryProblems(o.Entry, entries)
-		cs = append(cs, row{want: "entry check", got: problems, ok: problems == "entry check"})
+		cs = append(cs, same("", "entry check", entryProblems(o.Entry, entries)))
 	}
 	return cs
 }
@@ -775,15 +762,20 @@ func restored(entries []datamodel.Report) bool {
 
 // maliciousMember finds a malicious member by the suffix of its name.
 func maliciousMember(members []datamodel.ExtractedFile, suffix string) (datamodel.ExtractedFile, bool) {
-	for _, m := range members {
+	for _, m := range flatten(members) {
 		if m.FileName == suffix || strings.HasSuffix(m.FileName, "/"+suffix) {
 			return m, true
 		}
-		if found, ok := maliciousMember(m.ExtractedFiles, suffix); ok {
-			return found, true
-		}
 	}
 	return datamodel.ExtractedFile{}, false
+}
+
+func flatten(members []datamodel.ExtractedFile) (all []datamodel.ExtractedFile) {
+	for _, m := range members {
+		all = append(all, m)
+		all = append(all, flatten(m.ExtractedFiles)...)
+	}
+	return all
 }
 
 func maliciousMembersMatch(want map[string]datamodel.MalwareReason, entries []datamodel.Report) bool {
@@ -856,7 +848,7 @@ func (r *run) globalRows() (rows []row) {
 		}
 	}
 	locks, _ := filepath.Glob(filepath.Join(r.in.Quarantine, "*.lock"))
-	rows = append(rows, row{name: "containers", want: strconv.Itoa(wanted), got: strconv.Itoa(len(locks)), ok: len(locks) == wanted})
+	rows = append(rows, same("containers", strconv.Itoa(wanted), strconv.Itoa(len(locks))))
 	if c := r.in.Console; c != nil {
 		got := c.MitigationReasons()
 		rows = append(rows, row{
@@ -872,16 +864,20 @@ func (r *run) globalRows() (rows []row) {
 	}
 	if r.s.WantSessionReports != 0 {
 		reports, _ := filepath.Glob(filepath.Join(r.in.Export, "tom", datamodel.SessionReportPrefix+"*"))
-		rows = append(rows, row{name: "session reports", want: strconv.Itoa(r.s.WantSessionReports), got: strconv.Itoa(len(reports)), ok: len(reports) == r.s.WantSessionReports})
+		rows = append(rows, same("session reports", strconv.Itoa(r.s.WantSessionReports), strconv.Itoa(len(reports))))
 	}
 	for _, dir := range r.s.WantGone {
 		got := "gone"
 		if exists(r.inputPath(dir)) {
 			got = "still there"
 		}
-		rows = append(rows, row{name: dir, want: "gone", got: got, ok: got == "gone"})
+		rows = append(rows, same(dir, "gone", got))
 	}
 	return rows
+}
+
+func same(name, want, got string) row {
+	return row{name: name, want: want, got: got, ok: want == got}
 }
 
 func containsRow(name string, want, got []string) row {
@@ -974,15 +970,10 @@ func describeMalicious(want map[string]datamodel.MalwareReason) string {
 
 func describeEntriesMalicious(entries []datamodel.Report) string {
 	var parts []string
-	var walk func(members []datamodel.ExtractedFile)
-	walk = func(members []datamodel.ExtractedFile) {
-		for _, m := range members {
-			parts = append(parts, m.FileName+":"+string(m.MalwareReason))
-			walk(m.ExtractedFiles)
-		}
-	}
 	for _, e := range entries {
-		walk(e.MaliciousExtractedFiles)
+		for _, m := range flatten(e.MaliciousExtractedFiles) {
+			parts = append(parts, m.FileName+":"+string(m.MalwareReason))
+		}
 	}
 	return "malicious members " + strings.Join(parts, " ")
 }

@@ -56,11 +56,8 @@ func (e *Expectations) Allow(reasons ...datamodel.NotAnalyzedReason) {
 // (a forbidden path or type): they count as malware for the checker, as the
 // ones the test programmed in the fake service. It only adds to that set.
 func (e *Expectations) Flag(contents ...[]byte) {
-	if e.flagged == nil {
-		e.flagged = map[string]bool{}
-	}
 	for _, c := range contents {
-		e.flagged[gmalware.SHA256Hex(c)] = true
+		e.FlagSHA256(gmalware.SHA256Hex(c))
 	}
 }
 
@@ -324,15 +321,9 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 	var problems []string
 	valid := false
 	for _, e := range entries {
-		if released {
-			// The restored entry is the only one excused from the detection; the
-			// others are the earlier detection, which stays in the reports.
-			if RestoredEntry(e) {
-				ok, bad, issues := restoredEntryViolations(rel, size, e, spec)
-				valid = valid || ok
-				violations = append(violations, bad...)
-				problems = append(problems, issues...)
-			}
+		// The restored entry is the only one excused from the detection; the
+		// others are the earlier detection, which stays in the reports.
+		if released && !RestoredEntry(e) {
 			continue
 		}
 		ok, bad, issues := entryViolations(rel, sum, size, e, spec, gm)
@@ -347,27 +338,6 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 		violations = append(violations, problems...)
 	}
 	return violations
-}
-
-// restoredEntryViolations judges the entry that says an operator restored the
-// malware: it is held to the same checks as any delivery, except for the
-// detection itself.
-func restoredEntryViolations(rel string, size int64, e datamodel.Report, spec checkSpec) (valid bool, violations, problems []string) {
-	if e.Malicious || len(e.MaliciousExtractedFiles) > 0 {
-		violations = append(violations, rel+": the restored entry is reported malicious")
-	}
-	if e.Error != "" {
-		problems = append(problems, rel+": the restored entry is in error: "+e.Error)
-	}
-	if e.NotAnalyzedReason != "" && e.NotAnalyzedReason != datamodel.NotAnalyzedRestored && !spec.reasonAllowed(e.NotAnalyzedReason, size) {
-		violations = append(violations, fmt.Sprintf("%s: the restored entry says %q, which nothing justifies", rel, e.NotAnalyzedReason))
-	}
-	for _, sub := range e.NotAnalyzedExtractedFiles {
-		if !spec.reasonAllowed(sub.Reason, sub.Size) {
-			violations = append(violations, fmt.Sprintf("%s: member %q of the restored entry delivered not analyzed for %q", rel, sub.FileName, sub.Reason))
-		}
-	}
-	return len(violations) == 0 && len(problems) == 0, violations, problems
 }
 
 // entryViolations judges one report entry: whether it validates the delivery,
@@ -385,6 +355,10 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 	switch {
 	case e.Error != "":
 		problems = append(problems, rel+": reported in error: "+e.Error)
+	case spec.released[sum] && (e.NotAnalyzedReason == "" || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored):
+		// The entry that says an operator restored the malware: it is held to the
+		// same checks as any delivery, except for the detection itself.
+		valid = true
 	case e.NotAnalyzedReason != "":
 		if !spec.reasonAllowed(e.NotAnalyzedReason, size) {
 			violations = append(violations, fmt.Sprintf("%s: delivered not analyzed for %q, which nothing justifies", rel, e.NotAnalyzedReason))
@@ -413,7 +387,8 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 }
 
 // archiveViolations holds an archive to its declared members: none programmed
-// as malware, at least one seen by the service, none failed.
+// as malware, at least one seen by the service unless every member is listed
+// not analyzed, none failed.
 func archiveViolations(rel, sum string, e datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (valid bool, violations, problems []string) {
 	members, declared := spec.archives[sum]
 	if !declared {
@@ -429,7 +404,7 @@ func archiveViolations(rel, sum string, e datamodel.Report, spec checkSpec, gm *
 			seen = true
 		}
 	}
-	if !seen {
+	if !seen && e.NotAnalyzedExtractedCount < e.TotalExtractedFile {
 		problems = append(problems, rel+": no member was ever analyzed")
 	}
 	if len(e.ErrorExtractedFiles) > 0 {

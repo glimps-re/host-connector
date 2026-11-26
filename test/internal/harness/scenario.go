@@ -202,11 +202,7 @@ func AwaitDelivered(paths ...string) Step {
 func Restore(path, wantAckErr string) Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		f := r.files[path]
-		r.task(t, "restore", map[string]string{"id": hcquarantine.ComputeCacheID(r.inputPath(path), gmalware.SHA256Hex(f.Content))}, wantAckErr)
-		if wantAckErr == "" {
-			r.release(f.Content)
-		}
+		r.in.RestoreFile(t, r.inputPath(path), r.files[path].Content, wantAckErr)
 	}}
 }
 
@@ -214,7 +210,7 @@ func Restore(path, wantAckErr string) Step {
 func RestoreID(id, wantAckErr string) Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		r.task(t, "restore", map[string]string{"id": id}, wantAckErr)
+		r.in.task(t, "restore", map[string]string{"id": id}, wantAckErr)
 	}}
 }
 
@@ -224,9 +220,9 @@ func UpdateConfig(change map[string]any, wantAckErr string) Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
 		conf := r.in.WithConf(t, change)
-		r.needConsole(t)
+		r.in.needConsole(t)
 		r.in.Console.SetConfig(conf)
-		r.task(t, "update-config", nil, wantAckErr)
+		r.in.task(t, "update-config", nil, wantAckErr)
 		if wantAckErr == "" {
 			r.in.conf = conf
 			if !r.in.actionOn("quarantine") {
@@ -240,7 +236,7 @@ func UpdateConfig(change map[string]any, wantAckErr string) Step {
 func Task(action, wantAckErr string) Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		r.task(t, action, nil, wantAckErr)
+		r.in.task(t, action, nil, wantAckErr)
 	}}
 }
 
@@ -275,7 +271,7 @@ func AwaitServiceFailure() Step {
 func AwaitConsoleError(typ string) Step {
 	return Step{do: func(t *testing.T, r *run) {
 		t.Helper()
-		r.needConsole(t)
+		r.in.needConsole(t)
 		r.in.WaitFor(t, "the console error "+typ, func() bool { return slices.Contains(r.in.Console.ErrorTypes(), typ) })
 	}}
 }
@@ -428,37 +424,6 @@ func (r *run) declare(f File, o Outcome) {
 	}
 	if o.NotAnalyzedMembers != nil && o.NotAnalyzedMembers.Reason != "" {
 		r.in.Expect.Allow(o.NotAnalyzedMembers.Reason)
-	}
-}
-
-// release declares a restored content: it may be delivered once per file of
-// the scenario wanted in OUTPUT with it.
-func (r *run) release(content []byte) {
-	n := 0
-	for key, f := range r.final {
-		if bytes.Equal(f.Content, content) && r.s.Want[key].In == Output {
-			n++
-		}
-	}
-	r.in.Expect.ReleaseCopies(content, n)
-}
-
-func (r *run) needConsole(t *testing.T) {
-	t.Helper()
-	if r.in.Console == nil {
-		t.Fatal("a console task needs Agent")
-	}
-}
-
-func (r *run) task(t *testing.T, action string, content any, wantAckErr string) {
-	t.Helper()
-	r.needConsole(t)
-	got := r.in.WaitAck(t, r.in.Console.Push(t, action, content))
-	switch {
-	case wantAckErr == "" && got != "":
-		t.Fatalf("%s refused: %s", action, got)
-	case wantAckErr != "" && !strings.Contains(got, wantAckErr):
-		t.Fatalf("%s answered %q, want an error containing %q", action, got, wantAckErr)
 	}
 }
 
@@ -621,7 +586,7 @@ func (r *run) place(key string) Place {
 }
 
 func (r *run) lockPath(key string, content []byte) string {
-	return filepath.Join(r.in.Quarantine, hcquarantine.ComputeCacheID(r.inputPath(key), gmalware.SHA256Hex(content))+".lock")
+	return r.in.LockOf(r.inputPath(key), content)
 }
 
 // delivered tells whether the file in OUTPUT has the bytes of the file.

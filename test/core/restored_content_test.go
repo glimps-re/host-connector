@@ -42,6 +42,25 @@ func TestE2E_aRestoredEmptyFileDoesNotMakeTheOtherEmptyFilesSafe(t *testing.T) {
 				WantMitigations: []string{"invalid", "invalid"},
 			},
 		},
+		{
+			name: "empty files passed, refused by a forbidden path",
+			scenario: harness.Scenario{
+				Agent: true,
+				Config: harness.MergeMaps(harness.PathFilter([]string{`/forbidden/`}, nil),
+					map[string]any{"unanalyzable_policy": map[string]any{"empty": "pass"}}),
+				Files: []harness.File{{Path: "forbidden/empty-a.bin"}},
+				Steps: []harness.Step{
+					harness.Await("forbidden/empty-a.bin", harness.Outcome{In: harness.Quarantine, Malware: datamodel.FilteredFilePath}),
+					harness.Restore("forbidden/empty-a.bin", ""),
+					harness.AddFileToInput(harness.File{Path: "forbidden/elsewhere/empty-b.bin"}),
+				},
+				Want: map[string]harness.Outcome{
+					"forbidden/empty-a.bin":           {In: harness.Output, Restored: true},
+					"forbidden/elsewhere/empty-b.bin": {In: harness.Quarantine, Malware: datamodel.FilteredFilePath},
+				},
+				WantMitigations: []string{"filepath", "filepath"},
+			},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -51,10 +70,14 @@ func TestE2E_aRestoredEmptyFileDoesNotMakeTheOtherEmptyFilesSafe(t *testing.T) {
 }
 
 // oldRegistry writes a registry of the previous version (with its index on the
-// SHA256) holding one restored entry of content, at a location of its own.
-func oldRegistry(t *testing.T, content []byte) string {
+// SHA256) holding one restored entry of content at restored, or at a location
+// of its own when restored is empty.
+func oldRegistry(t *testing.T, restored string, content []byte) string {
 	t.Helper()
 	dir := t.TempDir()
+	if restored == "" {
+		restored = filepath.Join(dir, "old.bin")
+	}
 	path := filepath.Join(dir, "old-registry.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -77,7 +100,7 @@ func oldRegistry(t *testing.T, content []byte) string {
 			t.Fatal(err)
 		}
 	}
-	sha, restored := gmalware.SHA256Hex(content), filepath.Join(dir, "old.bin")
+	sha := gmalware.SHA256Hex(content)
 	if _, err = db.ExecContext(t.Context(), "INSERT INTO entries(id, sha256, created_at, updated_at, quarantine, location, restored_at) VALUES(?,?,?,?,?,?,?)",
 		hcquarantine.ComputeCacheID(restored, sha), sha, 1, 1, filepath.Join(dir, "old.lock"), restored, time.Now().UnixMilli()); err != nil {
 		t.Fatal(err)
@@ -98,12 +121,38 @@ func TestE2E_aContentRestoredInAnOldRegistryIsNotReleasedElsewhere(t *testing.T)
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			harness.Run(t, harness.Scenario{
-				Config: map[string]any{"quarantine": map[string]any{"registry": oldRegistry(t, tt.content)}},
+				Config: map[string]any{"quarantine": map[string]any{"registry": oldRegistry(t, "", tt.content)}},
 				Files:  []harness.File{{Path: "again.bin", Content: tt.content, Verdict: harness.Malicious}},
 				Want: map[string]harness.Outcome{
 					"again.bin": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
 				},
 			})
 		})
+	}
+}
+
+// Design §4.4, Q3 option A: a registry of the previous version, with its index
+// on the SHA256, keeps releasing the file it restored, at its place: delivered
+// with the restored mark. The same content anywhere else is a new file,
+// analyzed and quarantined.
+func TestE2E_aFileRestoredInAnOldRegistryStaysReleasedAtItsPlace(t *testing.T) {
+	t.Parallel()
+	content := []byte("a malware restored at its place with the previous version")
+	gm := gmalware.New(t)
+	gm.MarkMalicious(content)
+	in := harness.Start(t, gm, harness.Options{Agent: true})
+	in.WaitMonitoring(t)
+	kept := filepath.Join(in.Input, "tom", "kept.bin")
+	elsewhere := filepath.Join(in.Input, "tom", "other", "kept.bin")
+	in.Restart(t, map[string]any{"quarantine": map[string]any{"registry": oldRegistry(t, kept, content)}})
+	in.Expect.Release(kept, content)
+
+	harness.DropAt(t, kept, content)
+	harness.DropAt(t, elsewhere, content)
+	in.WaitFor(t, "the released file delivered", func() bool { return in.InOutput("kept.bin") })
+	in.AwaitQuarantine(t, elsewhere, content)
+	in.WaitFor(t, "the restored entry of the released file", func() bool { return restoredEntryAt(in, kept, content) })
+	if restoredEntryAt(in, elsewhere, content) {
+		t.Error("the same content elsewhere is reported restored")
 	}
 }

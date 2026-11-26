@@ -33,8 +33,7 @@ type Expectations struct {
 	maxFileSize int64
 	reasons     map[datamodel.NotAnalyzedReason]bool
 	archives    map[string][][]byte
-	released    map[string]bool
-	copies      map[string]int
+	released    map[releasedFile]bool
 	// QuarantineOff tells that the quarantine action is off in the run: a
 	// detection report in OUTPUT then names no container.
 	QuarantineOff bool
@@ -82,30 +81,30 @@ func (e *Expectations) CrashLost(contents ...[]byte) {
 	}
 }
 
-// Release declares that an operator restored this malware from the quarantine:
-// the connector then delivers it on purpose, with the restored mark, and the
-// detection it made earlier stays in the reports.
-func (e *Expectations) Release(content []byte) {
-	e.ReleaseSHA256(gmalware.SHA256Hex(content))
+// releasedFile is what an operator restores: one file, known by its location
+// in INPUT and its content. A release never covers the same content elsewhere.
+type releasedFile struct {
+	location, sha256 string
+}
+
+func released(location, sum string) releasedFile {
+	return releasedFile{location: filepath.Clean(location), sha256: strings.ToLower(sum)}
+}
+
+// Release declares that an operator restored this malware, found at location
+// in INPUT, from the quarantine: the connector then delivers it on purpose at
+// the same place below OUTPUT, with the restored mark, and the detection it made
+// earlier stays in the reports. The same content anywhere else is not covered.
+func (e *Expectations) Release(location string, content []byte) {
+	e.ReleaseSHA256(location, gmalware.SHA256Hex(content))
 }
 
 // ReleaseSHA256 is Release for a content known by its SHA256 only.
-func (e *Expectations) ReleaseSHA256(sum string) {
+func (e *Expectations) ReleaseSHA256(location, sum string) {
 	if e.released == nil {
-		e.released = map[string]bool{}
+		e.released = map[releasedFile]bool{}
 	}
-	e.released[sum] = true
-}
-
-// ReleaseCopies is Release for a malware an operator restored that is delivered
-// in more than one place: n copies may be in OUTPUT, each with the restored
-// mark.
-func (e *Expectations) ReleaseCopies(content []byte, n int) {
-	e.Release(content)
-	if e.copies == nil {
-		e.copies = map[string]int{}
-	}
-	e.copies[gmalware.SHA256Hex(content)] = n
+	e.released[released(location, sum)] = true
 }
 
 // Archive declares the members of an archive the scenario delivers: the
@@ -120,7 +119,7 @@ func (e *Expectations) Archive(content []byte, members ...[]byte) {
 // checkSpec is what the checker looks at: the folders of the run and the
 // expectations.
 type checkSpec struct {
-	output, reports, quarantine string
+	input, output, reports, quarantine string
 	Expectations
 }
 
@@ -137,7 +136,7 @@ func outputViolations(spec checkSpec, gm *gmalware.GMalware) (violations []strin
 	violations = append(violations, errs...)
 	files, problems := listEntries(spec.output)
 	violations = append(violations, problems...)
-	delivered := map[string]int{}
+	deliveries := map[releasedFile]int{}
 	for _, path := range files {
 		rel, relErr := filepath.Rel(spec.output, path)
 		if relErr != nil {
@@ -155,15 +154,34 @@ func outputViolations(spec checkSpec, gm *gmalware.GMalware) (violations []strin
 			violations = append(violations, lockReportViolations(rel, path, size, spec, gm, reports)...)
 			continue
 		}
-		delivered[sum]++
-		violations = append(violations, fileViolations(rel, sum, size, reports[sum], spec, gm)...)
+		source, isReleased := spec.releasedSource(rel, path, sum, reports[sum])
+		if isReleased {
+			deliveries[released(source, sum)]++
+		}
+		violations = append(violations, fileViolations(rel, path, sum, size, reports[sum], source, isReleased, spec, gm)...)
 	}
-	for sum, n := range delivered {
-		if n > max(1, spec.copies[sum]) && spec.released[sum] {
-			violations = append(violations, fmt.Sprintf("a restored malware (%s) is in OUTPUT %d times, %d allowed", sum[:12], n, max(1, spec.copies[sum])))
+	for f, n := range deliveries {
+		if n > 1 {
+			violations = append(violations, fmt.Sprintf("the released file %s (%s) is in OUTPUT %d times: a release delivers one file once", f.location, f.sha256[:12], n))
 		}
 	}
 	return violations
+}
+
+// releasedSource is the location in INPUT of the released file delivered at
+// path (rel below OUTPUT), if it is one. The connector keeps the tree of INPUT,
+// except when the place is taken: it then delivers under a conflict name, and
+// only the report that moved it (moved-to) tells where the file came from.
+func (spec checkSpec) releasedSource(rel, path, sum string, entries []datamodel.Report) (string, bool) {
+	if source := filepath.Join(spec.input, rel); spec.released[released(source, sum)] {
+		return source, true
+	}
+	for _, e := range entries {
+		if e.MovedTo != "" && filepath.Clean(e.MovedTo) == filepath.Clean(path) && spec.released[released(e.Filename, sum)] {
+			return e.Filename, true
+		}
+	}
+	return "", false
 }
 
 // listEntries returns the regular files below dir; what is neither a regular
@@ -243,7 +261,7 @@ func lockReportViolations(rel, path string, size int64, spec checkSpec, gm *gmal
 	if r.MitigationID == "" || r.MitigationID != id {
 		violations = append(violations, rel+": the mitigation ID of the lock report is not the one of its file")
 	}
-	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil && (!spec.released[r.SHA256] || !restoredIn(reports[r.SHA256])) {
+	if _, err = os.Stat(filepath.Join(quarantineDir, id+".lock")); err != nil && (!spec.released[released(r.Filename, r.SHA256)] || !restoredIn(r.Filename, reports[r.SHA256])) {
 		violations = append(violations, rel+": the file of the lock report is not in the quarantine")
 	}
 	return violations
@@ -298,19 +316,29 @@ func RestoredEntry(e datamodel.Report) bool {
 	return e.HasBeenRestored || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored
 }
 
-// restoredIn tells whether the reports hold a restored entry: the restore
-// really happened.
-func restoredIn(entries []datamodel.Report) bool {
-	return slices.ContainsFunc(entries, RestoredEntry)
+// restoredIn tells whether the reports hold a restored entry of the file at
+// location: the restore of that file really happened.
+func restoredIn(location string, entries []datamodel.Report) bool {
+	return slices.ContainsFunc(entries, func(e datamodel.Report) bool { return restoredAt(location, "", e) })
+}
+
+// restoredAt tells whether a report entry says that the file at location was
+// restored and, when delivered is set, delivered there: a restored entry of the
+// same content elsewhere does not count, nor one that moved the file to another
+// place in OUTPUT.
+func restoredAt(location, delivered string, e datamodel.Report) bool {
+	if !RestoredEntry(e) || filepath.Clean(e.Filename) != filepath.Clean(location) {
+		return false
+	}
+	return delivered == "" || e.MovedTo == "" || filepath.Clean(e.MovedTo) == filepath.Clean(delivered)
 }
 
 // fileViolations judges a delivered file by its reports. A malicious file, or
 // a report that says so, is always a violation. A report in error is not, when
 // a later attempt (a rescan after an outage) gave the file a valid report too:
 // one valid report is enough.
-func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (violations []string) {
-	released := spec.released[sum]
-	if !released && spec.programmedMalware(sum, gm) {
+func fileViolations(rel, path, sum string, size int64, entries []datamodel.Report, source string, isReleased bool, spec checkSpec, gm *gmalware.GMalware) (violations []string) {
+	if !isReleased && spec.programmedMalware(sum, gm) {
 		violations = append(violations, rel+": programmed as malware")
 	}
 	if len(entries) == 0 {
@@ -322,17 +350,18 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 	var problems []string
 	valid := false
 	for _, e := range entries {
-		// The restored entry is the only one excused from the detection; the
-		// others are the earlier detection, which stays in the reports.
-		if released && !RestoredEntry(e) {
+		// The restored entry of this file is the only one excused from the
+		// detection; the others are the earlier detection, which stays in the
+		// reports, or other files of the same content.
+		if isReleased && !restoredAt(source, path, e) {
 			continue
 		}
-		ok, bad, issues := entryViolations(rel, sum, size, e, spec, gm)
+		ok, bad, issues := entryViolations(rel, sum, size, e, isReleased, spec, gm)
 		valid = valid || ok
 		violations = append(violations, bad...)
 		problems = append(problems, issues...)
 	}
-	if released && !valid && len(violations) == 0 && len(problems) == 0 {
+	if isReleased && !valid && len(violations) == 0 && len(problems) == 0 {
 		problems = append(problems, rel+": a restored malware delivered without a restored entry in the reports")
 	}
 	if !valid {
@@ -344,7 +373,7 @@ func fileViolations(rel, sum string, size int64, entries []datamodel.Report, spe
 // entryViolations judges one report entry: whether it validates the delivery,
 // the violations it brings, and the problems that a valid entry elsewhere
 // cancels.
-func entryViolations(rel, sum string, size int64, e datamodel.Report, spec checkSpec, gm *gmalware.GMalware) (valid bool, violations, problems []string) {
+func entryViolations(rel, sum string, size int64, e datamodel.Report, isReleased bool, spec checkSpec, gm *gmalware.GMalware) (valid bool, violations, problems []string) {
 	if e.Malicious || len(e.MaliciousExtractedFiles) > 0 {
 		violations = append(violations, rel+": reported malicious")
 	}
@@ -356,7 +385,7 @@ func entryViolations(rel, sum string, size int64, e datamodel.Report, spec check
 	switch {
 	case e.Error != "":
 		problems = append(problems, rel+": reported in error: "+e.Error)
-	case spec.released[sum] && (e.NotAnalyzedReason == "" || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored):
+	case isReleased && (e.NotAnalyzedReason == "" || e.NotAnalyzedReason == datamodel.NotAnalyzedRestored):
 		// The entry that says an operator restored the malware: it is held to the
 		// same checks as any delivery, except for the detection itself.
 		valid = true

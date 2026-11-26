@@ -140,16 +140,18 @@ func TestE2E_aSkippedTypeIsNotWaivedForALargeFile(t *testing.T) {
 	}
 }
 
-// T56: a restored file of a forbidden type is quarantined again, never
-// delivered: the type rule is a refusal, which the restored mark does not waive.
-func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
+// D-003: a release lifts the filters for the released file at its place. A
+// restored file of a forbidden type is delivered with the restored mark, the
+// type filter is not called on it; the same content deposited elsewhere is not
+// released there and the filter still refuses it.
+func TestE2E_aRestoredFileOfAForbiddenTypeIsDeliveredRestored(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
 		scenario harness.Scenario
 	}{
 		{
-			name: "a restored image",
+			name: "a restored image, and a copy of it elsewhere",
 			scenario: harness.Scenario{
 				Agent: true,
 				Plugins: map[string]map[string]any{
@@ -161,9 +163,12 @@ func TestE2E_aRestoredFileOfAForbiddenTypeIsQuarantinedAgain(t *testing.T) {
 				Steps: []harness.Step{
 					harness.Await("pic.png", harness.Outcome{In: harness.Quarantine, Malware: datamodel.FilteredFileType}),
 					harness.Restore("pic.png", ""),
+					harness.AwaitDelivered("pic.png"),
+					harness.AddFileToInput(harness.File{Path: "copy/pic.png", Content: realPNG(t)}),
 				},
 				Want: map[string]harness.Outcome{
-					"pic.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
+					"pic.png":      {In: harness.Output, Restored: true},
+					"copy/pic.png": {In: harness.Quarantine, Malware: datamodel.FilteredFileType},
 				},
 				WantMitigations: []string{"filetype", "filetype"},
 			},

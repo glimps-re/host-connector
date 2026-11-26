@@ -279,18 +279,25 @@ func TestE2E_aVariationSelectorAfterTheExtensionDoesNotEscapeAForbiddenPath(t *t
 	}
 }
 
-// T56: with forbidden_paths set, a restored ARCHIVE is listed (never analyzed):
-// a member that matches makes it malware again, with the member named; an
-// archive with no match is delivered, unanalyzed.
-func TestE2E_aRestoredArchiveIsCheckedAgainstTheForbiddenPaths(t *testing.T) {
+// D-003: a release lifts the filters for the released archive at its place: it
+// is delivered with the restored mark, neither listed nor extracted, whether a
+// member matches forbidden_paths or not. The same archive deposited elsewhere is
+// not released there: it is extracted and refused for its member.
+func TestE2E_aRestoredArchiveIsDeliveredWithoutBeingListed(t *testing.T) {
 	t.Parallel()
 	detected := []byte(strings.Repeat("a member the service detects ", 40))
+	withExe := archive(t, "with.zip", zipOf,
+		harness.File{Path: "run.exe", Content: []byte(strings.Repeat("an executable member ", 40))},
+		harness.File{Path: "doc.txt", Content: detected, Verdict: harness.Malicious},
+	)
+	copied := withExe
+	copied.Path = "copy/with.zip"
 	tests := []struct {
 		name     string
 		scenario harness.Scenario
 	}{
 		{
-			name: "a restored zip without and one with an executable",
+			name: "a restored zip without and one with an executable, and a copy of the latter",
 			scenario: harness.Scenario{
 				Agent:   true,
 				Plugins: map[string]map[string]any{"extract": nil},
@@ -305,24 +312,35 @@ func TestE2E_aRestoredArchiveIsCheckedAgainstTheForbiddenPaths(t *testing.T) {
 					harness.Await("without.zip", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
 					harness.Restore("without.zip", ""),
 					harness.AwaitDelivered("without.zip"),
-					harness.AddFileToInput(archive(t, "with.zip", zipOf,
-						harness.File{Path: "run.exe", Content: []byte(strings.Repeat("an executable member ", 40))},
-						harness.File{Path: "doc.txt", Content: detected, Verdict: harness.Malicious},
-					)),
+					harness.AddFileToInput(withExe),
 					harness.Await("with.zip", harness.Outcome{In: harness.Quarantine, Malware: datamodel.MalwareDetected}),
 					harness.Restore("with.zip", ""),
+					harness.AwaitDelivered("with.zip"),
+					harness.AddFileToInput(copied),
 				},
 				Want: map[string]harness.Outcome{
-					"without.zip": {In: harness.Output, Restored: true},
-					"with.zip":    {In: harness.Quarantine, Malware: datamodel.FilteredFilePath, MaliciousMembers: map[string]datamodel.MalwareReason{"run.exe": datamodel.FilteredFilePath}},
+					"without.zip":   {In: harness.Output, Restored: true},
+					"with.zip":      {In: harness.Output, Restored: true},
+					"copy/with.zip": {In: harness.Quarantine, Malware: datamodel.MalwareDetected},
 				},
-				WantMitigations: []string{"malware", "malware", "filepath"},
+				WantMitigations: []string{"malware", "malware", "malware"},
 			},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			harness.Run(t, tt.scenario)
+			in := harness.Run(t, tt.scenario)
+			reports := harness.ReadReports(in)
+			for _, name := range []string{"without.zip", "with.zip"} {
+				location := filepath.Join(in.Input, "tom", name)
+				for _, entries := range reports {
+					for _, e := range entries {
+						if e.Filename == location && harness.RestoredEntry(e) && (e.TotalExtractedFile > 0 || len(e.NotAnalyzedExtractedFiles) > 0 || len(e.MaliciousExtractedFiles) > 0) {
+							t.Errorf("the restored %s was listed or extracted: %+v", name, e)
+						}
+					}
+				}
+			}
 		})
 	}
 }
@@ -349,11 +367,11 @@ func encrypted7z(t *testing.T, password string, members map[string]string) []byt
 	return raw
 }
 
-// T56: a restored 7z whose names cannot be listed (encrypted headers, no known
-// password) with forbidden_paths set stays in INPUT with an error and is not
-// submitted: a restore is the operator's decision, and analysis would only
-// quarantine it again. It is not retried on the next pass.
-func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) {
+// D-003: a restored 7z whose names cannot be listed (encrypted headers, no
+// known password), with forbidden_paths set, is delivered with the restored
+// mark: it is not listed, not submitted, and carries no error. The same archive
+// elsewhere is not released there and is quarantined again.
+func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedIsDeliveredRestored(t *testing.T) {
 	tests := []struct {
 		name     string
 		password string
@@ -373,31 +391,32 @@ func TestE2E_aRestoredArchiveWhoseNamesCannotBeListedStaysInInput(t *testing.T) 
 			id := hcquarantine.ComputeCacheID(path, gmalware.SHA256Hex(archive))
 			lock := filepath.Join(in.Quarantine, id+".lock")
 			in.WaitFor(t, "the quarantine of the encrypted archive", func() bool { return !in.Gone(lock) && in.Gone(path) })
+			before := gm.Submitted.Load()
 			if msg := in.WaitAck(t, in.Console.Push(t, "restore", map[string]string{"id": id})); msg != "" {
 				t.Fatalf("restore refused: %s", msg)
 			}
-			// The restore removes the container, not the detection report written when
-			// the archive was first mitigated: that report is history, and with its
-			// container gone it would fail the invariant, so the test removes it.
-			for _, report := range harness.GlobOne(t, filepath.Join(in.Output, "tom", "secret.7z-lockreport*.json")) {
-				if err := os.Remove(report); err != nil {
-					t.Fatal(err)
-				}
-			}
-			before := gm.Submitted.Load()
-			in.StaysInInput(t, path, archive)
+			in.Expect.Release(path, archive)
+			in.WaitFor(t, "the restored archive delivered", func() bool { return in.InOutput("secret.7z") })
 			if got := gm.Submitted.Load(); got != before {
 				t.Errorf("the restored archive was submitted again (%d submissions, %d before)", got, before)
 			}
-			var unchecked int
-			for _, e := range in.ReportsOf(t, archive) {
-				if strings.Contains(e.Error, "restored archive could not be checked against forbidden_paths") {
-					unchecked++
+			var restored *datamodel.Report
+			in.WaitFor(t, "the restored entry of the archive", func() bool {
+				for _, e := range harness.ReadReports(in)[gmalware.SHA256Hex(archive)] {
+					if e.Filename == path && harness.RestoredEntry(e) {
+						restored = &e
+						return true
+					}
 				}
+				return false
+			})
+			if restored.Error != "" || restored.NotAnalyzedReason != datamodel.NotAnalyzedRestored {
+				t.Errorf("restored entry = error %q, reason %q, want no error and the restored reason", restored.Error, restored.NotAnalyzedReason)
 			}
-			if unchecked != 1 {
-				t.Errorf("%d report entries say the restored archive could not be checked, want 1", unchecked)
-			}
+
+			elsewhere := in.Drop(t, "other/secret.7z", archive)
+			otherLock := filepath.Join(in.Quarantine, hcquarantine.ComputeCacheID(elsewhere, gmalware.SHA256Hex(archive))+".lock")
+			in.WaitFor(t, "the quarantine of the copy elsewhere", func() bool { return !in.Gone(otherLock) && in.Gone(elsewhere) })
 		})
 	}
 }

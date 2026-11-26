@@ -29,7 +29,7 @@ func newFixture(t *testing.T) *fixture {
 	root := t.TempDir()
 	f := &fixture{t: t, gm: gmalware.New(t)}
 	f.spec = checkSpec{
-		output: filepath.Join(root, "output"), reports: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"),
+		input: inputDir, output: filepath.Join(root, "output"), reports: filepath.Join(root, "reports"), quarantine: filepath.Join(root, "quarantine"),
 		maxFileSize: 1 << 20,
 	}
 	for _, d := range []string{f.spec.output, f.spec.reports, f.spec.quarantine} {
@@ -42,7 +42,11 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) deliver(name string, content []byte) {
 	f.t.Helper()
-	Write(f.t, filepath.Join(f.spec.output, name), content)
+	path := filepath.Join(f.spec.output, name)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		f.t.Fatal(err)
+	}
+	Write(f.t, path, content)
 }
 
 func (f *fixture) report(entries ...datamodel.Report) {
@@ -72,6 +76,19 @@ func entry(content []byte, mutate func(*datamodel.Report)) datamodel.Report {
 		mutate(&r)
 	}
 	return r
+}
+
+// inputDir is the INPUT of the fixture: a file delivered at rel below OUTPUT
+// comes from inputDir/rel.
+const inputDir = "/input"
+
+// restoredFrom marks an entry as the restored entry of the file delivered at
+// rel below OUTPUT.
+func restoredFrom(rel string) func(*datamodel.Report) {
+	return func(e *datamodel.Report) {
+		e.Filename = filepath.Join(inputDir, rel)
+		e.HasBeenRestored = true
+	}
 }
 
 func reason(r datamodel.NotAnalyzedReason) func(*datamodel.Report) {
@@ -237,78 +254,164 @@ func TestOutputViolations(t *testing.T) {
 		{name: "restored malware with the restored reason", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
-			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, reason(datamodel.NotAnalyzedRestored)))
-			f.spec.Release(content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, func(r *datamodel.Report) {
+				r.Filename = filepath.Join(inputDir, "a.txt")
+				r.NotAnalyzedReason = datamodel.NotAnalyzedRestored
+			}))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}},
 		{name: "restored malware with the restored flag", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
-			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
-			f.spec.Release(content)
+			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }), entry(content, restoredFrom("a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}},
 		{name: "restored malware with no restored report", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.report(entry(content, func(r *datamodel.Report) { r.Malicious = true }))
-			f.spec.Release(content)
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}, want: "without a restored entry"},
-		{name: "two copies of a restored malware", setup: func(f *fixture) {
+		{name: "released under another spelling of its location", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
-			f.deliver("a.txt", content)
-			f.deliver("b.txt", content)
-			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
-			f.spec.Release(content)
-		}, want: "in OUTPUT 2 times"},
-		{name: "two copies of a restored malware, two declared", setup: func(f *fixture) {
-			f.gm.MarkMalicious(content)
-			f.deliver("a.txt", content)
-			f.deliver("b.txt", content)
-			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
-			f.spec.ReleaseCopies(content, 2)
+			f.deliver("d/a.txt", content)
+			f.report(entry(content, restoredFrom("d/a.txt")))
+			f.spec.ReleaseSHA256(inputDir+"//d/./x/../a.txt", strings.ToUpper(gmalware.SHA256Hex(content)))
 		}},
-		{name: "three copies of a restored malware, two declared", setup: func(f *fixture) {
+		{name: "a restored entry of the same content elsewhere excuses nothing", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, restoredFrom("b.txt")))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}, want: "without a restored entry"},
+		{name: "a copy of a restored malware delivered elsewhere", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("tom/a.txt", content)
+			f.deliver("jerry/a.txt", content)
+			f.report(entry(content, restoredFrom("tom/a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "tom/a.txt"), content)
+		}, want: "jerry/a.txt: programmed as malware"},
+		{name: "a copy delivered elsewhere that the reports call restored", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("tom/a.txt", content)
+			f.deliver("jerry/a.txt", content)
+			f.report(entry(content, restoredFrom("tom/a.txt")), entry(content, restoredFrom("jerry/a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "tom/a.txt"), content)
+		}, want: "jerry/a.txt: programmed as malware"},
+		{name: "released at another location only", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, restoredFrom("a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "elsewhere/a.txt"), content)
+		}, want: "a.txt: programmed as malware"},
+		{name: "another content released at the same location", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, restoredFrom("a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), member)
+		}, want: "a.txt: programmed as malware"},
+		{name: "two files of the same content, each released", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.deliver("b.txt", content)
-			f.deliver("c.txt", content)
-			f.report(entry(content, func(r *datamodel.Report) { r.HasBeenRestored = true }))
-			f.spec.ReleaseCopies(content, 2)
-		}, want: "in OUTPUT 3 times, 2 allowed"},
+			f.report(entry(content, restoredFrom("a.txt")), entry(content, restoredFrom("b.txt")))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+			f.spec.Release(filepath.Join(inputDir, "b.txt"), content)
+		}},
+		{name: "released file delivered under a conflict name", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.conflict-20261126T191053Z.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				restoredFrom("a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "a.conflict-20261126T191053Z.txt")
+			}))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}},
+		{name: "a leak before the release, then the released file under a conflict name", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.deliver("a.conflict-20261126T191053Z.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				r.Filename = filepath.Join(inputDir, "a.txt")
+				r.MovedTo = filepath.Join(f.spec.output, "a.txt")
+			}), entry(content, func(r *datamodel.Report) {
+				restoredFrom("a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "a.conflict-20261126T191053Z.txt")
+			}))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}, want: "is in OUTPUT 2 times"},
+		{name: "a released file delivered twice after its release", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.deliver("a.conflict-20261126T191053Z.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				restoredFrom("a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "a.txt")
+			}), entry(content, func(r *datamodel.Report) {
+				restoredFrom("a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "a.conflict-20261126T191053Z.txt")
+			}))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}, want: "is in OUTPUT 2 times"},
+		{name: "a leak at the place of the released file, excused by no restored entry", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				restoredFrom("a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "elsewhere.txt")
+			}))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}, want: "without a restored entry"},
+		{name: "conflict name that no report moved there", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.conflict-20261126T191053Z.txt", content)
+			f.report(entry(content, restoredFrom("a.txt")))
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
+		}, want: "programmed as malware"},
+		{name: "conflict name moved there from a file that was not released", setup: func(f *fixture) {
+			f.gm.MarkMalicious(content)
+			f.deliver("a.conflict-20261126T191053Z.txt", content)
+			f.report(entry(content, func(r *datamodel.Report) {
+				restoredFrom("jerry/a.txt")(r)
+				r.MovedTo = filepath.Join(f.spec.output, "a.conflict-20261126T191053Z.txt")
+			}))
+			f.spec.Release(filepath.Join(inputDir, "tom/a.txt"), content)
+		}, want: "programmed as malware"},
 		{name: "restored entry reporting a malicious member", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.report(entry(content, func(r *datamodel.Report) {
-				r.HasBeenRestored = true
+				restoredFrom("a.txt")(r)
 				r.MaliciousExtractedFiles = []datamodel.ExtractedFile{{FileName: "m"}}
 			}))
-			f.spec.Release(content)
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}, want: "reported malicious"},
 		{name: "restored entry with a reason nothing justifies", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.report(entry(content, func(r *datamodel.Report) {
-				r.HasBeenRestored = true
+				restoredFrom("a.txt")(r)
 				r.NotAnalyzedReason = datamodel.NotAnalyzedTooBig
 			}))
-			f.spec.Release(content)
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}, want: "nothing justifies"},
 		{name: "restored entry with a member delivered not analyzed for nothing", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.report(entry(content, func(r *datamodel.Report) {
-				r.HasBeenRestored = true
+				restoredFrom("a.txt")(r)
 				r.NotAnalyzedExtractedFiles = []datamodel.NotAnalyzedFile{{FileName: "m", Size: 5, Reason: datamodel.NotAnalyzedEncrypted}}
 			}))
-			f.spec.Release(content)
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}, want: `member "m" delivered not analyzed`},
 		{name: "restored entry in error", setup: func(f *fixture) {
 			f.gm.MarkMalicious(content)
 			f.deliver("a.txt", content)
 			f.report(entry(content, func(r *datamodel.Report) {
-				r.HasBeenRestored = true
+				restoredFrom("a.txt")(r)
 				r.Error = "boom"
 			}))
-			f.spec.Release(content)
+			f.spec.Release(filepath.Join(inputDir, "a.txt"), content)
 		}, want: "in error"},
 		{name: "declared archive with a malware member, delivered whole and clean", setup: func(f *fixture) {
 			member := []byte("the malware inside")
@@ -467,21 +570,28 @@ func TestOutputViolations_lockReportOfAnArchive(t *testing.T) {
 }
 
 // The lock report of a malware that was restored stays in OUTPUT although the
-// quarantine no longer holds it, but only when the reports show the restore.
+// quarantine no longer holds it, but only when the restore of that very file is
+// declared and shown by the reports: the release of the same content elsewhere
+// does not count.
 func TestOutputViolations_lockReportOfARestoredMalware(t *testing.T) {
 	bad := []byte("a malware")
 	f := newFixture(t)
 	f.gm.MarkMalicious(bad)
 	sum := gmalware.SHA256Hex(bad)
-	f.deliver("bad.txt-lockreport211126_0818.json", []byte(detectionOf(sum, hcquarantine.ComputeCacheID(inputBadPath, sum))))
+	f.deliver("tom/bad.txt-lockreport211126_0818.json", []byte(detectionOf(sum, hcquarantine.ComputeCacheID(inputBadPath, sum))))
 	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
 		t.Errorf("violations = %q, want the missing container flagged", got)
 	}
-	f.report(entry(bad, func(r *datamodel.Report) { r.HasBeenRestored = true }))
+	f.report(entry(bad, restoredFrom("jerry/bad.txt")))
+	f.spec.Release(filepath.Join(inputDir, "jerry/bad.txt"), bad)
+	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
+		t.Errorf("violations = %q, want the missing container flagged: only the same content elsewhere was restored", got)
+	}
+	f.report(entry(bad, restoredFrom("tom/bad.txt")))
 	if got := f.violations(); !strings.Contains(got, "not in the quarantine") {
 		t.Errorf("violations = %q, want the missing container flagged: the scenario did not declare the restore", got)
 	}
-	f.spec.Release(bad)
+	f.spec.Release(inputBadPath, bad)
 	if got := f.violations(); got != "" {
 		t.Errorf("violations = %q, want none once the restore is declared and shown by the reports", got)
 	}

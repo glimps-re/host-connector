@@ -221,7 +221,7 @@ func TestE2E_aSparseFileOver5GiBIsRestored(t *testing.T) {
 			}
 			sum := hex.EncodeToString(h.Sum(nil))
 			in.Expect.FlagSHA256(sum)
-			in.Expect.ReleaseSHA256(sum)
+			in.Expect.ReleaseSHA256(src, sum)
 			id := hcquarantine.ComputeCacheID(src, sum)
 			lock := filepath.Join(in.Quarantine, id+".lock")
 			in.WaitFor(t, "the quarantine of the big file", func() bool { return !in.Gone(lock) && in.Gone(src) })

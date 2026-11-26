@@ -174,7 +174,11 @@ func (in *Instance) launch(t *testing.T, bin string, args []string) {
 	cmd.Stderr = in.Stderr
 	cmd.Stdout = in.Stderr
 	cmd.Dir = in.Root
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Killed with the test process: a GMHost left behind by a killed go test
+	// would go on writing into the folders of the test.
+	// Pdeathsig follows the thread that started GMHost (Linux): the runtime only
+	// ends threads locked by LockOSThread, so an early kill is accepted.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +291,7 @@ func (in *Instance) LogHas(text string) bool {
 }
 
 func (in *Instance) checkSpec() checkSpec {
-	return checkSpec{output: in.Output, reports: in.Export, quarantine: in.Quarantine, Expectations: in.Expect}
+	return checkSpec{input: in.Input, output: in.Output, reports: in.Export, quarantine: in.Quarantine, Expectations: in.Expect}
 }
 
 // maxLogSize bounds the log of a process the harness keeps; past it the

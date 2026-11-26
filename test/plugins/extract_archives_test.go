@@ -8,8 +8,10 @@ import (
 	le "encoding/binary"
 	"hash/crc32"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -24,7 +26,9 @@ func zipOf(t *testing.T, members map[string]string) []byte {
 	t.Helper()
 	var b bytes.Buffer
 	zw := zip.NewWriter(&b)
-	for name, content := range members {
+	// Sorted: the same members give the same bytes, hence the same SHA256.
+	for _, name := range slices.Sorted(maps.Keys(members)) {
+		content := members[name]
 		w, err := zw.Create(name)
 		if err != nil {
 			t.Fatal(err)

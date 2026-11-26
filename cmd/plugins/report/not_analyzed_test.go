@@ -42,6 +42,9 @@ var everyReason = map[datamodel.NotAnalyzedReason]string{
 	datamodel.NotAnalyzedPolicySkipped: "Liste blanche (non analysé)",
 	datamodel.NotAnalyzedRestored:      "Restauré (précédemment bloqué)",
 	datamodel.NotAnalyzedAnalysisError: "Analyse en échec (contenu non vérifié)",
+	datamodel.NotAnalyzedSkippedPath:   "Liste blanche par chemin (non analysé)",
+	datamodel.NotAnalyzedSkippedType:   "Liste blanche par type (non analysé)",
+	datamodel.NotAnalyzedSymlink:       "Lien symbolique (non suivi)",
 }
 
 func TestNotAnalyzedText_everyReasonIsSaidAndAnUnknownOneShowsItsCode(t *testing.T) {
